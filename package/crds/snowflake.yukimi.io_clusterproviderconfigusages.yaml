@@ -4,9 +4,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.18.0
-  name: clusterproviderconfigusages.yukimi.crossplane.io
+  name: clusterproviderconfigusages.snowflake.yukimi.io
 spec:
-  group: yukimi.crossplane.io
+  group: snowflake.yukimi.io
   names:
     categories:
     - crossplane

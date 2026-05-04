@@ -17,6 +17,6 @@ limitations under the License.
 
 // Package v1alpha1 contains the core resources of the Yukimi provider.
 // +kubebuilder:object:generate=true
-// +groupName=yukimi.crossplane.io
+// +groupName=snowflake.yukimi.io
 // +versionName=v1alpha1
 package v1alpha1

@@ -4,19 +4,19 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.18.0
-  name: clusterproviderconfigs.yukimi.crossplane.io
+  name: providerconfigs.snowflake.yukimi.io
 spec:
-  group: yukimi.crossplane.io
+  group: snowflake.yukimi.io
   names:
     categories:
     - crossplane
     - provider
     - yukimi
-    kind: ClusterProviderConfig
-    listKind: ClusterProviderConfigList
-    plural: clusterproviderconfigs
-    singular: clusterproviderconfig
-  scope: Cluster
+    kind: ProviderConfig
+    listKind: ProviderConfigList
+    plural: providerconfigs
+    singular: providerconfig
+  scope: Namespaced
   versions:
   - additionalPrinterColumns:
     - jsonPath: .metadata.creationTimestamp
@@ -29,7 +29,8 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: A ClusterProviderConfig configures a Yukimi provider.
+        description: A ProviderConfig configures a Helm 'provider', i.e. a connection
+          to a particular
         properties:
           apiVersion:
             description: |-

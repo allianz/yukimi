@@ -9,7 +9,7 @@ import (
 
 // Package type metadata.
 const (
-	Group   = "yukimi.crossplane.io"
+	Group   = "snowflake.yukimi.io"
 	Version = "v1alpha1"
 )
 

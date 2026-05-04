@@ -12,7 +12,7 @@ type: Opaque
 data:
   credentials: QkFTRTY0RU5DT0RFRF9QUk9WSURFUl9DUkVEUwo=
 ---
-apiVersion: yukimi.crossplane.io/v1alpha1
+apiVersion: snowflake.yukimi.io/v1alpha1
 kind: ProviderConfig
 metadata:
   name: example
@@ -25,7 +25,7 @@ spec:
       name: example-provider-secret
       key: credentials
 ---
-apiVersion: yukimi.crossplane.io/v1alpha1
+apiVersion: snowflake.yukimi.io/v1alpha1
 kind: ClusterProviderConfig
 metadata:
   name: example

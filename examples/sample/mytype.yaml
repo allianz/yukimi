@@ -1,4 +1,4 @@
-apiVersion: sample.yukimi.crossplane.io/v1alpha1
+apiVersion: sample.snowflake.allianz.io/v1alpha1
 kind: MyType
 metadata:
   name: example
@@ -10,7 +10,7 @@ spec:
     name: example
     kind: ProviderConfig
 ---
-apiVersion: sample.yukimi.crossplane.io/v1alpha1
+apiVersion: sample.snowflake.allianz.io/v1alpha1
 kind: MyType
 metadata:
   name: cluster-example
