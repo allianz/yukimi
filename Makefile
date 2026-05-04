@@ -55,15 +55,6 @@ fallthrough: submodules
 	@echo Initial setup complete. Running make again . . .
 	@make
 
-# end-2-end tests. Tests packaging and deployment of the provider to a real cluster.
-e2e.run: test-integration
-
-# Run integration tests.
-test-integration: $(KIND) $(KUBECTL) $(CROSSPLANE_CLI) $(HELM)
-	@$(INFO) running integration tests using kind $(KIND_VERSION)
-	@$(ROOT_DIR)/cluster/local/integration_tests.sh || $(FAIL)
-	@$(OK) integration tests passed
-
 # Update the submodules, such as the common build scripts.
 submodules:
 	@git submodule sync
@@ -102,16 +93,24 @@ dev: $(KIND) $(KUBECTL)
 		$(INFO) "Using existing kind cluster $(PROJECT_NAME)-dev"; \
 	fi
 	@$(KUBECTL) cluster-info --context kind-$(PROJECT_NAME)-dev
+	@$(INFO) Setting up AWS credentials from local profile
+	@KUBECTL=$(KUBECTL) $(ROOT_DIR)/cluster/local/setup-aws-credentials.sh
+	@$(INFO) Labeling default namespace for testing
+	@$(KUBECTL) label namespace default department="az_tech" costcenter="121212" --overwrite
+	@$(INFO) Creating platform-templates namespace
+	@$(KUBECTL) create namespace platform-templates --dry-run=client -o yaml | $(KUBECTL) apply -f -
 	@$(INFO) Installing/updating Provider Snowflake CRDs
 	@$(KUBECTL) apply -R -f package/crds
+	@$(INFO) Applying ProviderConfig
+	@$(KUBECTL) apply -f cluster/local/config-dev.yaml
 	@$(INFO) Starting Provider Snowflake controllers
-	@$(GO) run cmd/provider/main.go --controller-settings=hack/local-controller-settings.yaml
+	@$(GO) run cmd/provider/main.go --debug
 
 dev-clean: $(KIND) $(KUBECTL)
 	@$(INFO) Deleting kind cluster
 	@$(KIND) delete cluster --name=$(PROJECT_NAME)-dev
 
-.PHONY: submodules fallthrough test-integration run dev dev-clean publish promote tag release.tag
+.PHONY: submodules fallthrough run dev dev-clean publish promote tag release.tag e2e.automated e2e.manual
 
 # ====================================================================================
 # Disabled Targets
@@ -136,6 +135,37 @@ release.tag:
 e2e:
 	@echo "ERROR: 'make e2e' has been disabled for this project"
 	@exit 1
+
+e2e.run:
+	@echo "ERROR: 'make e2e.run' has been disabled for this project"
+	@echo "Use 'make e2e' or 'make e2e.automated' instead"
+	@exit 1
+
+test-integration:
+	@$(INFO) go test integration-tests
+	@mkdir -p $(GO_TEST_OUTPUT)
+	@CGO_ENABLED=$(GO_CGO_ENABLED) $(GOHOST) test -v -run Integration $(GO_TEST_FLAGS) $(GO_STATIC_FLAGS) $(GO_PACKAGES) 2>&1 | tee $(GO_TEST_OUTPUT)/integration-tests.log || $(FAIL)
+	@$(OK) go test integration-tests
+
+# New e2e test targets
+e2e.automated:
+	@$(INFO) Running fully automated e2e tests
+	@$(ROOT_DIR)/cluster/local/e2e_automated.sh || $(FAIL)
+	@$(OK) e2e tests passed
+
+e2e.manual:
+	@$(INFO) Running e2e tests against running provider
+	@$(INFO) Make sure 'make dev' is running in another terminal
+	@$(ROOT_DIR)/test/e2e/e2e_tests.sh || $(FAIL)
+	@$(OK) e2e tests passed
+
+# Override go.test.unit to add -short flag for skipping integration tests
+go.test.unit:
+	@$(INFO) go test unit-tests
+	@mkdir -p $(GO_TEST_OUTPUT)
+	@CGO_ENABLED=$(GO_CGO_ENABLED) $(GOHOST) test -short -cover $(GO_STATIC_FLAGS) $(GO_PACKAGES) || $(FAIL)
+	@CGO_ENABLED=$(GO_CGO_ENABLED) $(GOHOST) test -short -v -covermode=$(GO_COVER_MODE) -coverprofile=$(GO_TEST_OUTPUT)/coverage.txt $(GO_TEST_FLAGS) $(GO_STATIC_FLAGS) $(GO_PACKAGES) 2>&1 | tee $(GO_TEST_OUTPUT)/unit-tests.log || $(FAIL)
+	@$(OK) go test unit-tests
 
 # ====================================================================================
 # Special Targets
