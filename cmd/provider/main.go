@@ -99,7 +99,7 @@ func main() {
 		// server. Switching to Leases only and longer leases appears to
 		// alleviate this.
 		LeaderElection:             *leaderElection,
-		LeaderElectionID:           "crossplane-leader-election-provider-yukimi",
+		LeaderElectionID:           "crossplane-leader-election-yukimi",
 		LeaderElectionResourceLock: resourcelock.LeasesResourceLock,
 		LeaseDuration:              func() *time.Duration { d := 60 * time.Second; return &d }(),
 		RenewDeadline:              func() *time.Duration { d := 50 * time.Second; return &d }(),
@@ -144,7 +144,7 @@ func main() {
 		clo := controller.ChangeLogOptions{
 			ChangeLogger: managed.NewGRPCChangeLogger(
 				changelogsv1alpha1.NewChangeLogServiceClient(conn),
-				managed.WithProviderVersion(fmt.Sprintf("provider-yukimi:%s", version.Version))),
+				managed.WithProviderVersion(fmt.Sprintf("yukimi:%s", version.Version))),
 		}
 		o.ChangeLogOptions = &clo
 	}
