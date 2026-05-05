@@ -1,0 +1,32 @@
+/.cache
+/.work
+/_output
+cover.out
+/vendor
+/.vendor-new
+.vscode
+.idea
+.DS_Store
+
+# Go build artifacts
+*.exe
+*.test
+*.out
+*.prof
+
+# Environment files (secrets handling feature)
+.env
+.env.*
+!.env.example
+
+# Test coverage
+coverage.out
+coverage.html
+
+# IDE and editor files
+*.swp
+*.swo
+*~
+
+# OS files
+Thumbs.db

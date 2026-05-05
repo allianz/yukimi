@@ -94,15 +94,17 @@ dev: $(KIND) $(KUBECTL)
 	fi
 	@$(KUBECTL) cluster-info --context kind-$(PROJECT_NAME)-dev
 	@$(INFO) Setting up AWS credentials from local profile
-	@KUBECTL=$(KUBECTL) $(ROOT_DIR)/cluster/local/setup-aws-credentials.sh
-	@$(INFO) Labeling default namespace for testing
-	@$(KUBECTL) label namespace default department="az_tech" costcenter="121212" --overwrite
+	@KUBECTL=$(KUBECTL) $(ROOT_DIR)/cluster/local/sync-aws-credentials.sh
+	@$(INFO) Labeling tenant namespace for testing
+	@set -a && source .env && set +a && $(KUBECTL) create namespace $${SNOWFLAKE_TEST_TENANT} --dry-run=client -o yaml | $(KUBECTL) apply -f - && $(KUBECTL) label namespace $${SNOWFLAKE_TEST_TENANT} department="az_tech" costcenter="121212" --overwrite
 	@$(INFO) Creating platform-templates namespace
 	@$(KUBECTL) create namespace platform-templates --dry-run=client -o yaml | $(KUBECTL) apply -f -
-	@$(INFO) Installing/updating Provider Snowflake CRDs
-	@$(KUBECTL) apply -R -f package/crds
-	@$(INFO) Applying ProviderConfig
-	@$(KUBECTL) apply -f cluster/local/config-dev.yaml
+#	@$(INFO) Installing/updating Provider Snowflake CRDs
+#	@$(KUBECTL) apply -R -f package/crds
+#	@$(INFO) Applying ProviderConfig
+#	@set -a && source .env && set +a && envsubst < cluster/local/development-config.yaml | $(KUBECTL) apply -f -
+	@$(INFO) Switching kubectl default namespace to tenant namespace
+	@set -a && source .env && set +a && $(KUBECTL) config set-context --current --namespace=$${SNOWFLAKE_TEST_TENANT}
 	@$(INFO) Starting Provider Snowflake controllers
 	@$(GO) run cmd/provider/main.go --debug
 

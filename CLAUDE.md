@@ -209,8 +209,8 @@ make dev-clean          # Clean up local development cluster
 ```
 
 ### Adding New Resource Types
-- Uses `.allianz.io` domain instead of standard `.crossplane.io` for organizational ownership
-- API groups: `snowflake.allianz.io` (core) and `infra.snowflake.allianz.io` (infrastructure resources)
+- Uses `.yukimi.io` domain
+- API groups: `snowflake.yukimi.io` (core) and `infra.snowflake.yukimi.io` (infrastructure resources)
 - All APIs currently at v1alpha1 version
 
 Use the scaffolding system instead of manual creation:
@@ -290,8 +290,8 @@ func TestMyFeature_Integration(t *testing.T) {
     // 3. Access Snowflake (org-level or tenant-level)
     poolMgr, _ := pool.GetInstance()
     tenantDB, _ := poolMgr.TenantPool(ctx,
-        os.Getenv("SNOWFLAKE_TENANT_TEST_ACCOUNT"),
-        os.Getenv("SNOWFLAKE_TENANT_TEST_NAMESPACE"))
+        os.Getenv("SNOWFLAKE_TEST_ACCOUNT"),
+        os.Getenv("SNOWFLAKE_TEST_TENANT"))
 
     // Test logic validates against real AWS and Snowflake
 }
@@ -309,7 +309,7 @@ make e2e.manual     # Against running 'make dev' in another terminal
 Reference manifests:
 - `examples/infra/snowflake-account.yaml` - SnowflakeAccount example
 - `cluster/manifests/provider-config.yaml` - ProviderConfig template for production
-- `cluster/local/config-dev.yaml` - ProviderConfig for local development
+- `cluster/local/development-config.yaml` - ProviderConfig for local development
 
 ### General Reference Specs
 - `specs/product_design.md` - Product requirements, resource schemas, and behavior specifications
