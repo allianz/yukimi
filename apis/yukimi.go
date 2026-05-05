@@ -21,7 +21,7 @@ package apis
 import (
 	"k8s.io/apimachinery/pkg/runtime"
 
-	yukimiv1alpha1 "github.com/crossplane/provider-yukimi/apis/v1alpha1"
+	yukimiv1alpha1 "github.com/allianz/yukimi/apis/v1alpha1"
 )
 
 func init() {

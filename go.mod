@@ -1,4 +1,4 @@
-module github.com/crossplane/provider-yukimi
+module github.com/allianz/yukimi
 
 go 1.24.0
 

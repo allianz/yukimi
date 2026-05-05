@@ -45,9 +45,9 @@ import (
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
-	"github.com/crossplane/provider-yukimi/apis"
-	yukimi "github.com/crossplane/provider-yukimi/internal/controller"
-	"github.com/crossplane/provider-yukimi/internal/version"
+	"github.com/allianz/yukimi/apis"
+	yukimi "github.com/allianz/yukimi/internal/controller"
+	"github.com/allianz/yukimi/internal/version"
 )
 
 func main() {

@@ -21,7 +21,7 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/controller"
 	ctrl "sigs.k8s.io/controller-runtime"
 
-	"github.com/crossplane/provider-yukimi/internal/controller/config"
+	"github.com/allianz/yukimi/internal/controller/config"
 )
 
 // SetupGated creates all Yukimi controllers with safe-start support and adds them to
