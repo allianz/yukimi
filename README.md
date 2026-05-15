@@ -1,4 +1,5 @@
-
+<br />
+<br />
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/development/yukimi_light.png" />
@@ -6,8 +7,10 @@
   <img src="docs/development/yukimi_dark.png" alt="yukimi" />
 </picture>
 
-<br/>
-<br/>
+<br />
+<br />
+<br />
+<br />
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-22C2FF.svg)](LICENSE)
 [![Go Version](https://img.shields.io/badge/Go-1.24-22C2FF.svg)](https://golang.org/doc/go1.24)
