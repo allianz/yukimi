@@ -1,5 +1,4 @@
 <br />
-<br />
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/development/yukimi_light.png" />
@@ -7,8 +6,6 @@
   <img src="docs/development/yukimi_dark.png" alt="yukimi" />
 </picture>
 
-<br />
-<br />
 <br />
 <br />
 
