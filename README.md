@@ -1,9 +1,9 @@
 <br />
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/development/yukimi_light.png" />
-  <source media="(prefers-color-scheme: light)" srcset="docs/development/yukimi_dark.png" />
-  <img src="docs/development/yukimi_dark_blue.png" alt="yukimi" />
+  <source media="(prefers-color-scheme: dark)" srcset="docs/yukimi_light.png" />
+  <source media="(prefers-color-scheme: light)" srcset="docs/yukimi_dark.png" />
+  <img src="docs/yukimi_dark_blue.png" alt="yukimi" />
 </picture>
 
 <br />
