@@ -1,21 +1,26 @@
-NOTICE
+
+=================================================================================
+Yukimi
+Copyright 2026 The Yukimi Authors
+This product is licensed under the Apache-2.0 license.
+A copy of the license is available in the LICENSE file or at:
+https://github.com/allianz/yukimi/blob/main/LICENSE
+=================================================================================
 
 
 
-This repository includes the following third-party components:
+Third-Party Components
+-------------------------
 
+This repository includes the following third-party software components.
+Each component is subject to its own license terms as stated below.
 
-
-------------------------------------------------------------
-
+--------------------------------------------------------------------------------
 Component: Crossplane Provider Template
-
-Source: https://github.com/crossplane/provider-template
-
-License: Apache-2.0 
-
+License: Apache-2.0
 Copyright: Copyright 2025 The Crossplane Authors
-
+Source: https://github.com/crossplane/provider-template
+--------------------------------------------------------------------------------
 
                                  Apache License
                            Version 2.0, January 2004
