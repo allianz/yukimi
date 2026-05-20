@@ -92,7 +92,7 @@ func TestNewUser_TruncationPreservesFieldPath(t *testing.T) {
 	}
 }
 
-// SC-003: ErrorDetails() generates unique 5-digit incident IDs for system errors.
+// SC-003: ErrorDetails() generates unique 8-character incident IDs for system errors.
 func TestErrorDetails_SystemError_IncidentIDFormat(t *testing.T) {
 	rawErr := fmt.Errorf("failed to connect to Snowflake: timeout")
 	userMsg, _, _, _ := ErrorDetails(rawErr)
@@ -105,20 +105,20 @@ func TestErrorDetails_SystemError_IncidentIDFormat(t *testing.T) {
 	}
 
 	id := extractIncidentID(userMsg)
-	if len(id) != 5 {
-		t.Errorf("expected 5-digit incident ID, got %q (len %d)", id, len(id))
+	if len(id) != 8 {
+		t.Errorf("expected 8-char incident ID, got %q (len %d)", id, len(id))
 	}
 }
 
-// SC-003: 100 system errors produce at least 90 unique incident IDs.
+// SC-010: 100 system errors produce 100 unique incident IDs (UUID-based, no collisions).
 func TestErrorDetails_SystemError_IncidentIDUniqueness(t *testing.T) {
 	ids := make(map[string]bool)
 	for i := 0; i < 100; i++ {
 		userMsg, _, _, _ := ErrorDetails(fmt.Errorf("error %d", i))
 		ids[extractIncidentID(userMsg)] = true
 	}
-	if len(ids) < 90 {
-		t.Errorf("expected ≥90 unique IDs from 100 errors, got %d", len(ids))
+	if len(ids) != 100 {
+		t.Errorf("expected 100 unique IDs from 100 errors, got %d", len(ids))
 	}
 }
 
@@ -222,7 +222,7 @@ func TestErrorDetails_SystemError_LogMsgContainsDetails(t *testing.T) {
 	}
 }
 
-// SC-013: All error types implement the standard error interface.
+// SC-014: All error types implement the standard error interface.
 func TestControllerError_ImplementsErrorInterface(t *testing.T) {
 	var err error = &ControllerError{
 		Type:        TypeUser,
@@ -234,7 +234,7 @@ func TestControllerError_ImplementsErrorInterface(t *testing.T) {
 	}
 }
 
-// SC-014: Error wrapping with %w preserves user error classification through fmt.Errorf.
+// SC-015: Error wrapping with %w preserves user error classification through fmt.Errorf.
 func TestErrorDetails_UserError_WrappedMultipleLevels(t *testing.T) {
 	base := NewUser("invalid CIDR in spec.network.allowedIPs[0]")
 	wrapped := fmt.Errorf("layer 1: %w", base)
@@ -257,7 +257,7 @@ func TestErrorDetails_UserError_WrappedMultipleLevels(t *testing.T) {
 	}
 }
 
-// SC-014: Deep wrapping (10 levels) still correctly classifies user errors.
+// SC-015: Deep wrapping (10 levels) still correctly classifies user errors.
 func TestErrorDetails_UserError_DeepWrapping(t *testing.T) {
 	err := error(NewUser("deep user error"))
 	for i := 0; i < 10; i++ {
@@ -274,7 +274,7 @@ func TestErrorDetails_UserError_DeepWrapping(t *testing.T) {
 	}
 }
 
-// SC-015: Nil errors are handled gracefully — all return values are zero/empty.
+// SC-016: Nil errors are handled gracefully — all return values are zero/empty.
 func TestErrorDetails_NilError(t *testing.T) {
 	userMsg, logMsg, logLevel, retry := ErrorDetails(nil)
 
@@ -292,7 +292,7 @@ func TestErrorDetails_NilError(t *testing.T) {
 	}
 }
 
-// extractIncidentID parses the 5-digit ID from "An internal error occurred (NNNNN)".
+// extractIncidentID parses the 8-character ID from "An internal error occurred (XXXXXXXX)".
 func extractIncidentID(userMsg string) string {
 	prefix := "An internal error occurred ("
 	id := strings.TrimPrefix(userMsg, prefix)
