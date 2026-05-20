@@ -134,7 +134,11 @@ Format: **Question?** - Answer
 - **{Name}**: `{path}` - {Description}
 - **{Name}**: {URL} - {Description}
 
-## Usage Examples
+
+
+================
+
+## Appendix: Usage Examples
 
 <!--
 Show 2-4 concrete examples of how to use this feature's API in real controller/integration code.

@@ -238,7 +238,11 @@ internal/errors/
 - **Test Suite**: `internal/errors/errors_test.go` - 95% code coverage
 - **Usage Example**: `internal/controller/snowflakeaccount/snowflakeaccount.go` - Controller integration pattern
 
-## Usage Examples
+
+
+================
+
+## Appendix: Usage Examples
 
 ### Example 1: Creating User Errors (Primary Use Case)
 
