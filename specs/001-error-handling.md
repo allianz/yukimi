@@ -53,7 +53,8 @@ Incident IDs are generated using `github.com/google/uuid` and are globally uniqu
 //   - Be specific and actionable
 //
 // Parameters:
-//   - msg: Actionable error message (auto-truncated to 256 chars if longer)
+//   - msg: Actionable error message (must be non-empty, auto-truncated to 256 chars if longer)
+//           Falls back to "invalid configuration — no details provided" if empty.
 //
 // Returns:
 //   - error: ControllerError with Type=TypeUser, LogLevel=LogDebug
@@ -191,10 +192,8 @@ internal/errors/
 ## Edge Cases
 
 - **What happens when error messages exceed 256 characters?** - Automatically truncated with "..." suffix for Kubernetes status fields
-- **Can system errors be wrapped multiple times?** - Yes, incident IDs are preserved through error chains via fmt.Errorf("%w")
-- **What if incident ID generation fails?** - Falls back to "00000000" as incident ID, logs error separately
-- **How are nil errors handled?** - ErrorDetails returns all zero/empty values, no panic
-- **Can user errors contain sensitive data?** - No, user messages should never include credentials, tokens, or internal IPs
+- **What if incident ID generation fails?** - Falls back to "00000000" as incident ID to prevent error handling from blocking reconciliation
+- **What if the retry error from ErrorDetails is re-wrapped and passed to ErrorDetails again?** - A new incident ID is generated. The sanitized retry error is a plain string error with no ControllerError in its chain and no reference to the original error. Controllers must pass retryErr directly to Crossplane — never re-wrap and re-process it through ErrorDetails.
 
 ## Dependencies
 
@@ -210,6 +209,7 @@ internal/errors/
 
 - **SC-001**: NewUser() creates errors with TypeUser classification
 - **SC-002**: NewUser() auto-truncates messages to 256 characters
+- **SC-002b**: NewUser() falls back to "invalid configuration — no details provided" for empty messages
 - **SC-003**: ErrorDetails() generates unique 8-character incident IDs for system errors
 - **SC-004**: ErrorDetails() preserves incident IDs through wrapped error chains
 - **SC-005**: IsUserError() correctly identifies user errors in wrapped chains

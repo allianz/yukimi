@@ -92,6 +92,22 @@ func TestNewUser_TruncationPreservesFieldPath(t *testing.T) {
 	}
 }
 
+// SC-002b: NewUser() falls back to a generic message when called with an empty string.
+func TestNewUser_EmptyMessageFallback(t *testing.T) {
+	err := NewUser("")
+
+	var ctrlErr *ControllerError
+	if !errors.As(err, &ctrlErr) {
+		t.Fatal("expected ControllerError")
+	}
+	if ctrlErr.UserMessage == "" {
+		t.Error("expected non-empty fallback message, got empty string")
+	}
+	if ctrlErr.UserMessage != "invalid configuration — no details provided" {
+		t.Errorf("unexpected fallback message: %q", ctrlErr.UserMessage)
+	}
+}
+
 // SC-003: ErrorDetails() generates unique 8-character incident IDs for system errors.
 func TestErrorDetails_SystemError_IncidentIDFormat(t *testing.T) {
 	rawErr := fmt.Errorf("failed to connect to Snowflake: timeout")

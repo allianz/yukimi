@@ -155,7 +155,8 @@ func IsUserError(err error) bool {
 //     ❌ "Bad input"
 //
 // Parameters:
-//   - msg: Actionable error message (max 256 chars, truncated with "..." if longer)
+//   - msg: Actionable error message (must be non-empty, max 256 chars, truncated with "..." if longer)
+//           Falls back to "invalid configuration — no details provided" if empty.
 //
 // Returns:
 //   - error: ControllerError with Type=TypeUser, LogLevel=LogDebug
@@ -168,6 +169,9 @@ func IsUserError(err error) bool {
 //	        region))
 //	}
 func NewUser(msg string) error {
+	if msg == "" {
+		msg = "invalid configuration — no details provided"
+	}
 	if len(msg) > 256 {
 		msg = msg[:253] + "..."
 	}
