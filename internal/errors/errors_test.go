@@ -126,18 +126,6 @@ func TestErrorDetails_SystemError_IncidentIDFormat(t *testing.T) {
 	}
 }
 
-// SC-010: 100 system errors produce 100 unique incident IDs (UUID-based, no collisions).
-func TestErrorDetails_SystemError_IncidentIDUniqueness(t *testing.T) {
-	ids := make(map[string]bool)
-	for i := 0; i < 100; i++ {
-		userMsg, _, _, _ := ErrorDetails(fmt.Errorf("error %d", i))
-		ids[extractIncidentID(userMsg)] = true
-	}
-	if len(ids) != 100 {
-		t.Errorf("expected 100 unique IDs from 100 errors, got %d", len(ids))
-	}
-}
-
 // SC-004: Incident IDs are preserved when system errors are wrapped.
 func TestErrorDetails_SystemError_WrappedPreservesID(t *testing.T) {
 	raw := fmt.Errorf("connection timeout")
@@ -238,6 +226,18 @@ func TestErrorDetails_SystemError_LogMsgContainsDetails(t *testing.T) {
 	}
 }
 
+// SC-010: 100 system errors produce 100 unique incident IDs (UUID-based, no collisions).
+func TestErrorDetails_SystemError_IncidentIDUniqueness(t *testing.T) {
+	ids := make(map[string]bool)
+	for i := 0; i < 100; i++ {
+		userMsg, _, _, _ := ErrorDetails(fmt.Errorf("error %d", i))
+		ids[extractIncidentID(userMsg)] = true
+	}
+	if len(ids) != 100 {
+		t.Errorf("expected 100 unique IDs from 100 errors, got %d", len(ids))
+	}
+}
+
 // SC-014: All error types implement the standard error interface.
 func TestControllerError_ImplementsErrorInterface(t *testing.T) {
 	var err error = &ControllerError{
@@ -305,6 +305,23 @@ func TestErrorDetails_NilError(t *testing.T) {
 	}
 	if retry != nil {
 		t.Errorf("expected nil retry, got %v", retry)
+	}
+}
+
+// SC-011: Incident ID generation completes in <100μs.
+func BenchmarkGenerateIncidentID(b *testing.B) {
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ErrorDetails(fmt.Errorf("benchmark error"))
+	}
+}
+
+// SC-012: Happy path (no error) has zero allocations.
+func BenchmarkErrorDetails_NilError_ZeroAllocs(b *testing.B) {
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ErrorDetails(nil)
 	}
 }
 

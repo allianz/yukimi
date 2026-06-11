@@ -207,7 +207,7 @@ func NewUser(msg string) error {
 //	userMsg → "spec.awsRegion 'us-east-1' is not valid"
 //	logMsg  → "spec.awsRegion 'us-east-1' is not valid"
 //	level   → LogDebug
-//	retry   → the ControllerError (no K8s retry storm)
+//	retry   → the ControllerError (non-nil so Crossplane sets Ready=False)
 //
 // System Error Example:
 //
@@ -244,7 +244,7 @@ func ErrorDetails(err error) (userMsg string, logMsg string, logLevel LogLevel, 
 	logMsg = fmt.Sprintf("An internal error occurred (%s): %s", incidentID, err.Error())
 
 	// Sanitized error hides internal details from users, triggers K8s retry backoff.
-	return userMsg, logMsg, LogError, fmt.Errorf("%s", userMsg)
+	return userMsg, logMsg, LogError, errors.New(userMsg)
 }
 
 // generateIncidentID creates a unique 8-character identifier using a random UUID.
@@ -298,7 +298,7 @@ func LogWithLevel(logger logging.Logger, level LogLevel, msg string, keysAndValu
 	switch level {
 	case LogDebug:
 		logger.Debug(msg, keysAndValues...)
-	case LogError:
+	default:
 		logger.Info(msg, keysAndValues...)
 	}
 }

@@ -168,7 +168,7 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
 
 - **System Errors** (TypeSystem): Infrastructure failures requiring operator intervention
   - Logged at Info level (always visible to operators)
-  - Include unique 5-digit incident IDs for correlation
+  - Include unique 8-character incident IDs for correlation
   - Examples: Snowflake API unreachable, AWS Secrets Manager timeout
 
 ## Code Organization Philosophy
