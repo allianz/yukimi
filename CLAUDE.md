@@ -45,7 +45,7 @@ Each `internal/` package has a corresponding numbered spec in `specs/`. The spec
 
 | Spec | Package | Description |
 |------|---------|-------------|
-| `001-error-handling.md` | `internal/errors/` + `internal/logger/` | Error handling system (user vs system errors, incident IDs) and operation-scoped logging |
+| `001-error-and-logging.md` | `internal/errors/` + `internal/logger/` | Error handling system (user vs system errors, incident IDs) and operation-scoped logging |
 | `002-secrets-handling.md` | `internal/secrets/` | AWS Secrets Manager integration with caching |
 | `003-connection-pooling.md` | `internal/snowflake/pool/` | Connection pool management with JWT auth |
 | `004-statement-execution.md` | `internal/snowflake/statement/` | SQL execution with position-aware errors |
