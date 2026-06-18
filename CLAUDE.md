@@ -94,8 +94,8 @@ This provider uses the standard Crossplane managed resource reconciler (`crosspl
 - On successful observation, set condition to `xpv1.Available()`
 - On error in Observe, set `xpv1.Unavailable().WithMessage(userMsg)` and return nil to avoid retry flood
 - Do not implement retries in controller code. On error, return and let Kubernetes handle the retry.
-- **Error handling in Observe**: extract error details with `errors.ErrorDetails(err)`, log at the appropriate level, set condition, and return nil. Returning nil prevents exponential backoff retry loops for user-fixable errors.
-- **Error handling in Create/Update/Delete**: extract error details and log them, then return `retryErr`. The framework automatically sets conditions when these methods return an error, so the controller should not set conditions itself.
+- **Error handling in Observe**: create a `Logger` at method start, call `log.Handle(err)` to get `retryErr`, set `xpv1.Unavailable().WithMessage(retryErr.Error())`, and return nil. Returning nil prevents exponential backoff retry loops for user-fixable errors.
+- **Error handling in Create/Update/Delete**: call `log.Handle(err)` and return the result. The framework automatically sets conditions when these methods return an error, so the controller should not set conditions itself.
 
 ## Accessing Snowflake Connections
 
@@ -150,10 +150,12 @@ if err := snowflakeClient.Execute(sql); err != nil {
 import "github.com/crossplane/provider-snowflake/internal/errors"
 
 func (e *external) Observe(ctx context.Context, mg resource.Managed) (managed.ExternalObservation, error) {
+    log := errors.NewLogger(e.logger, cr.Namespace, "SnowflakeAccount", cr.Name, errors.OpObserve)
+
     result, err := e.policy.BuildTargetState(ctx, cr)
     if err != nil {
-        userMsg, logMsg, logLevel, retryErr := errors.ErrorDetails(err)
-        errors.LogWithLevel(e.logger, logLevel, logMsg, "resource", cr.Name)
+        retryErr := log.Handle(err)
+        cr.SetConditions(xpv1.Unavailable().WithMessage(retryErr.Error()))
         return managed.ExternalObservation{}, retryErr
     }
     // ... success path

@@ -57,7 +57,7 @@ Incident IDs are generated using `github.com/google/uuid` and are globally uniqu
 //           Falls back to "invalid configuration — no details provided" if empty.
 //
 // Returns:
-//   - error: ControllerError with Type=TypeUser, LogLevel=LogDebug
+//   - error: user error whose .Error() returns the message
 func NewUser(msg string) error
 
 // IsUserError checks if an error is a user error.
@@ -66,112 +66,81 @@ func NewUser(msg string) error
 //   - err: Error to check (supports wrapped errors)
 //
 // Returns:
-//   - bool: true if error chain contains TypeUser ControllerError
+//   - bool: true if the error chain contains a user error
 func IsUserError(err error) bool
 
-// ErrorDetails extracts error classification metadata for controller integration.
+// Operation identifies the controller lifecycle method in which an error occurred.
+// String-based so log output is self-documenting — operators see "operation":"create"
+// directly in structured logs without needing a lookup table.
+type Operation string
+
+const (
+    OpObserve Operation = "observe"
+    OpCreate  Operation = "create"
+    OpUpdate  Operation = "update"
+    OpDelete  Operation = "delete"
+)
+
+// Logger holds contextual dimensions for a single controller method invocation.
+// Create one Logger per controller method call and pass it to business logic
+// for consistent structured log fields across all log calls within that scope.
+type Logger struct { /* unexported fields */ }
+
+// NewLogger creates a Logger pre-loaded with the contextual dimensions for a
+// single controller method invocation. Every log call made through this Logger
+// includes namespace, kind, resource name, and operation as structured KV pairs.
 //
 // Parameters:
-//   - err: Error from business logic (may be ControllerError or raw error)
+//   - logger:    Crossplane logging.Logger from controller.Options.Logger
+//   - namespace: Kubernetes namespace of the managed resource (cr.Namespace)
+//   - kind:      Kubernetes Kind of the managed resource (e.g., "SnowflakeAccount")
+//   - name:      Name of the managed resource (cr.Name)
+//   - op:        Controller lifecycle method (OpObserve, OpCreate, OpUpdate, OpDelete)
 //
 // Returns:
-//   - userMsg: Clean message for Kubernetes status conditions
-//   - logMsg: Full error string for structured logging
-//   - logLevel: Severity level (LogDebug or LogError)
-//   - retry: Error to return to Crossplane (triggers failure handling and retry)
-//
-// Behavior:
-//   - If err contains ControllerError (user error):
-//     Returns ctrlErr.UserMessage as userMsg, full error chain as logMsg,
-//     LogDebug as logLevel, ctrlErr as retry error
-//   - If err is raw error (system error):
-//     Generates unique 8-character incident ID from UUID, returns
-//     "An internal error occurred (f47ac10b)" as userMsg, full details
-//     with incident ID as logMsg, LogError as logLevel,
-//     sanitized error as retry error
-//   - If err is nil:
-//     Returns all zero/empty values
-func ErrorDetails(err error) (userMsg, logMsg string, logLevel LogLevel, retry error)
+//   - *Logger: Logger ready for use; never nil
+func NewLogger(logger logging.Logger, namespace, kind, name string, op Operation) *Logger
 
-// LogWithLevel logs a message at the specified level using Crossplane logging framework.
+// Info logs an informational message with all contextual dimensions as structured
+// KV pairs: namespace, kind, resource name, and operation.
+//
+// Use for significant lifecycle events (resource created, deleted) that should
+// always be visible to operators regardless of log level settings.
+func (l *Logger) Info(msg string)
+
+// Debug logs a diagnostic message with all contextual dimensions as structured KV pairs.
+//
+// Use for detailed state information (observed state, computed diffs) only visible
+// when running with --debug flag.
+func (l *Logger) Debug(msg string)
+
+// Handle processes an error from business logic in a single call: it classifies
+// the error, logs at the appropriate level with all contextual dimensions, and
+// returns the retry error for Crossplane.
+//
+// Behavior by error type:
+//   - nil:          Returns nil immediately. No logging occurs.
+//   - User error:   Logs at Debug level (only visible with --debug flag).
+//                   Returns an error whose .Error() gives the user-facing message directly.
+//   - System error: Logs at Info level (always visible) with full internal details
+//                   and incident ID. Returns a sanitized error whose .Error() gives
+//                   "An internal error occurred (XXXXXXXX)" — safe for status conditions.
+//
+// The returned error's .Error() is always suitable for cr.SetConditions(...WithMessage(...)).
 //
 // Parameters:
-//   - logger: Crossplane logging.Logger instance
-//   - level: Severity level (LogDebug or LogError)
-//   - msg: Log message (typically from ErrorDetails logMsg)
-//   - keysAndValues: Structured fields (e.g., "resource", cr.Name, "namespace", cr.Namespace)
+//   - err: Error from business logic (user error, wrapped error, or raw error)
 //
-// Log Level Mapping:
-//   - LogDebug → logger.Debug(msg, kv...) - Only visible with --debug flag
-//   - LogError → logger.Info(msg, kv...) - Always visible to operators
-func LogWithLevel(logger logging.Logger, level LogLevel, msg string, keysAndValues ...interface{})
-
-// ErrorType distinguishes between user errors (actionable by the user)
-// and raw errors (requiring incident ID generation in ErrorDetails).
-type ErrorType int
-
-const (
-    // TypeUser indicates a user-actionable configuration error.
-    // These errors are logged at Debug level and include specific field paths
-    // and expected formats to enable self-service resolution.
-    TypeUser ErrorType = iota
-)
-
-// LogLevel defines logging severity levels aligned with error classification
-// and the Crossplane logging framework.
-type LogLevel int
-
-const (
-    // LogDebug indicates user errors that should only be logged in verbose mode.
-    // These represent expected configuration mistakes that don't require operator attention.
-    LogDebug LogLevel = iota
-
-    // LogError indicates infrastructure errors that should always be visible to operators.
-    // These represent system failures requiring immediate investigation and are logged
-    // using logger.Info() for maximum visibility.
-    LogError
-)
-
-// ControllerError is a custom error type that wraps user errors with
-// classification metadata and user-facing messages.
-//
-// Fields:
-//   - Type: Classification (TypeUser)
-//   - UserMessage: Clean, actionable message for Kubernetes status conditions (max 256 chars)
-//   - LogLevel: Logging severity level (LogDebug for user errors)
-//
-// Implements error interface via Error() method.
-type ControllerError struct {
-    Type        ErrorType
-    UserMessage string
-    LogLevel    LogLevel
-}
-```
-
-## Types
-
-```go
-type ErrorType int
-const TypeUser ErrorType = iota  // user-actionable configuration error
-
-type LogLevel int
-const (
-    LogDebug LogLevel = iota  // logger.Debug() — user errors
-    LogError                  // logger.Info() — system errors
-)
-
-type ControllerError struct {
-    Type        ErrorType
-    UserMessage string
-    LogLevel    LogLevel
-}
+// Returns:
+//   - error: nil if err is nil; otherwise the retry error (non-nil tells Crossplane the operation failed)
+func (l *Logger) Handle(err error) error
 ```
 
 ## Project Structure
 
 ```text
 internal/errors/
-├── errors.go              # All types and functions (NewUser, ErrorDetails, LogWithLevel, types, incident ID generation)
+├── errors.go              # All types and functions (NewUser, Logger, Operation, types, incident ID generation)
 └── errors_test.go         # Unit tests (95% coverage)
 ```
 
@@ -193,7 +162,7 @@ internal/errors/
 
 - **What happens when error messages exceed 256 characters?** - Automatically truncated with "..." suffix for Kubernetes status fields
 - **What if incident ID generation fails?** - Falls back to "00000000" as incident ID to prevent error handling from blocking reconciliation
-- **What if the retry error from ErrorDetails is re-wrapped and passed to ErrorDetails again?** - A new incident ID is generated. The sanitized retry error is a plain string error with no ControllerError in its chain and no reference to the original error. Controllers must pass retryErr directly to Crossplane — never re-wrap and re-process it through ErrorDetails.
+- **What if the retry error from Handle is re-wrapped and passed to Handle again?** - A new incident ID is generated. The sanitized retry error is a plain string error with no ControllerError in its chain and no reference to the original error. Controllers must pass the result of Handle directly to Crossplane — never re-wrap and re-process it through Handle.
 
 ## Dependencies
 
@@ -201,29 +170,36 @@ internal/errors/
 
 ## Integration Points
 
-- **Controller Layer** - Controllers call ErrorDetails() to extract metadata for logging and status updates - Key functions: `ErrorDetails()`, `LogWithLevel()` - Notes: Must return retryErr to Crossplane, not original error
+- **Controller Layer** - Controllers create a Logger at the start of each method and call Handle() for all error paths - Key functions: `NewLogger()`, `Logger.Handle()`, `Logger.Info()`, `Logger.Debug()` - Notes: Must return the error from Handle() to Crossplane; use Handle().Error() for status condition messages
 - **Business Logic Layer** - Policy engines and provisioners create user errors for validation failures - Key functions: `NewUser()`, `IsUserError()` - Notes: Use NewUser() for config errors, raw errors for infrastructure failures
 - **Crossplane Runtime** - Integration with managed.External interface and status conditions - Key functions: Returns errors from Observe/Create/Update/Delete - Notes: Crossplane automatically sets Ready=False and manages retry backoff
 
 ## Success Criteria
 
-- **SC-001**: NewUser() creates errors with TypeUser classification
+- **SC-001**: NewUser() creates errors that IsUserError() recognises
 - **SC-002**: NewUser() auto-truncates messages to 256 characters
 - **SC-002b**: NewUser() falls back to "invalid configuration — no details provided" for empty messages
-- **SC-003**: ErrorDetails() generates unique 8-character incident IDs for system errors
-- **SC-004**: ErrorDetails() preserves incident IDs through wrapped error chains
+- **SC-003**: Handle() generates unique 8-character incident IDs for system errors
+- **SC-004**: Handle() preserves incident IDs through wrapped error chains
 - **SC-005**: IsUserError() correctly identifies user errors in wrapped chains
-- **SC-006**: LogWithLevel() maps LogDebug to logger.Debug()
-- **SC-007**: LogWithLevel() maps LogError to logger.Info()
 - **SC-008**: System error user messages follow format "An internal error occurred (XXXXXXXX)"
 - **SC-009**: System error log messages include full error details with incident ID
 - **SC-010**: Incident IDs are globally unique (UUID-based, 4,294,967,296 possible values)
 - **SC-011**: Incident ID generation completes in <100μs
 - **SC-012**: Happy path (no error) has zero allocations
 - **SC-013**: Unit test coverage exceeds 95%
-- **SC-014**: All error types implement standard error interface
+- **SC-014**: User errors implement the standard error interface (.Error() returns the user-facing message)
 - **SC-015**: Error wrapping with %w preserves classification through fmt.Errorf
-- **SC-016**: Nil errors handled gracefully (ErrorDetails returns empty values)
+- **SC-016**: Nil errors handled gracefully (Handle returns nil)
+- **SC-017**: Operation constants produce correct string values (`observe`, `create`, `update`, `delete`)
+- **SC-018**: NewLogger() returns a non-nil `*Logger`
+- **SC-019**: Logger.Info() calls underlying logger at Info level with namespace, kind, resource, and operation KV pairs
+- **SC-020**: Logger.Debug() calls underlying logger at Debug level with the same KV pairs
+- **SC-021**: Logger.Handle(nil) returns nil and makes no log calls
+- **SC-022**: Logger.Handle with user error logs at Debug level; returned error's .Error() equals the user-facing message
+- **SC-023**: Logger.Handle with wrapped user error correctly classifies via error chain
+- **SC-024**: Logger.Handle with system error logs at Info level with full internal details; returned error's .Error() follows the incident ID format
+- **SC-025**: Logger.Handle produces unique incident IDs across multiple calls
 
 ## Performance Considerations
 
@@ -280,11 +256,10 @@ func ValidateContacts(contacts []string) error {
 }
 ```
 
-### Example 2: Handling Errors in Controllers (Integration Pattern)
+### Example 2: Handling Errors in Controllers (Logger Pattern)
 
 ```go
 import (
-    "github.com/crossplane/crossplane-runtime/pkg/logging"
     "github.com/crossplane/crossplane-runtime/pkg/reconciler/managed"
     "github.com/allianz/yukimi/internal/errors"
 )
@@ -300,22 +275,19 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
         return managed.ExternalObservation{}, fmt.Errorf("managed resource is not a SnowflakeAccount")
     }
 
-    // Call business logic (may return user error or system error)
-    result, err := e.provisioner.Observe(ctx, cr, e.policy, e.namespace)
+    // Create Logger once per method call — pre-loads namespace, kind, name, operation
+    log := errors.NewLogger(e.logger, cr.Namespace, "SnowflakeAccount", cr.Name, errors.OpObserve)
+
+    result, err := e.provisioner.Observe(ctx, cr)
     if err != nil {
-        // Extract error metadata
-        userMsg, logMsg, logLevel, retryErr := errors.ErrorDetails(err)
-
-        // Log with structured fields
-        errors.LogWithLevel(e.logger, logLevel, logMsg,
-            "resource", cr.Name,
-            "namespace", cr.Namespace)
-
-        // Return error to Crossplane (triggers status update and retry)
+        // Single call: classifies, logs, and returns sanitized retry error
+        retryErr := log.Handle(err)
+        cr.SetConditions(xpv1.Unavailable().WithMessage(retryErr.Error()))
         return managed.ExternalObservation{}, retryErr
     }
 
-    // Success path
+    log.Debug("observed current state")
+    cr.SetConditions(xpv1.Available())
     return managed.ExternalObservation{
         ResourceExists:   result.Exists,
         ResourceUpToDate: result.UpToDate,
@@ -330,7 +302,7 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
 func (e *Engine) BuildTargetState(ctx context.Context, cr *v1alpha1.SnowflakeAccount) (AccountState, error) {
     // Validate configuration (may return errors.NewUser())
     if err := e.ValidateRegion(cr.Spec.Region); err != nil {
-        // Wrap with context - preserves ControllerError classification
+        // Wrap with context - preserves user error classification
         return AccountState{}, fmt.Errorf("validation failed: %w", err)
     }
 
@@ -345,7 +317,7 @@ func (e *Engine) BuildTargetState(ctx context.Context, cr *v1alpha1.SnowflakeAcc
 // Infrastructure failure - return raw error
 func (c *Client) Execute(ctx context.Context, sql string) error {
     if err := c.snowflake.Exec(ctx, sql); err != nil {
-        // Return wrapped error - ErrorDetails() treats this as system error
+        // Return wrapped error - Handle() treats this as a system error
         return fmt.Errorf("failed to execute SQL: %w", err)
     }
     return nil
