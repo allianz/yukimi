@@ -28,7 +28,8 @@ internal/
 ├── secrets/            # AWS Secrets Manager with in-memory caching
 ├── template/           # Template validation (naming, version chain, SQL)
 ├── execution/          # SQL execution orchestration (inline & template modes)
-├── errors/             # Error handling (user vs system, incident IDs)
+├── errors/             # User error types (NewUserError, IsUserError)
+├── logger/             # Operation-scoped logging and error handling (Handle, incident IDs)
 ├── features/           # Feature flags
 └── version/            # Version information
 
@@ -44,7 +45,7 @@ Each `internal/` package has a corresponding numbered spec in `specs/`. The spec
 
 | Spec | Package | Description |
 |------|---------|-------------|
-| `001-error-handling.md` | `internal/errors/` | Error handling system (user vs system errors, incident IDs) |
+| `001-error-and-logging.md` | `internal/errors/` + `internal/logger/` | Error handling system (user vs system errors, incident IDs) and operation-scoped logging |
 | `002-secrets-handling.md` | `internal/secrets/` | AWS Secrets Manager integration with caching |
 | `003-connection-pooling.md` | `internal/snowflake/pool/` | Connection pool management with JWT auth |
 | `004-statement-execution.md` | `internal/snowflake/statement/` | SQL execution with position-aware errors |
@@ -94,8 +95,8 @@ This provider uses the standard Crossplane managed resource reconciler (`crosspl
 - On successful observation, set condition to `xpv1.Available()`
 - On error in Observe, set `xpv1.Unavailable().WithMessage(userMsg)` and return nil to avoid retry flood
 - Do not implement retries in controller code. On error, return and let Kubernetes handle the retry.
-- **Error handling in Observe**: extract error details with `errors.ErrorDetails(err)`, log at the appropriate level, set condition, and return nil. Returning nil prevents exponential backoff retry loops for user-fixable errors.
-- **Error handling in Create/Update/Delete**: extract error details and log them, then return `retryErr`. The framework automatically sets conditions when these methods return an error, so the controller should not set conditions itself.
+- **Error handling in Observe**: create a `Logger` at method start, call `log.Handle(err)` to get `retryErr`, set `xpv1.Unavailable().WithMessage(retryErr.Error())`, and return nil. Returning nil prevents exponential backoff retry loops for user-fixable errors.
+- **Error handling in Create/Update/Delete**: call `log.Handle(err)` and return the result. The framework automatically sets conditions when these methods return an error, so the controller should not set conditions itself.
 
 ## Accessing Snowflake Connections
 
@@ -124,7 +125,7 @@ secretsMgr, err := secrets.GetInstance()  // Returns error if not initialized
 Once initialized, all controllers can safely call `GetInstance()` to access these shared resources.
 ## Error Handling
 
-The project uses a standardized error handling system in `internal/errors` that distinguishes between user errors (configuration mistakes) and system errors (infrastructure failures).
+The project uses a standardized error handling system split across two packages: `internal/errors` provides user error types (imported by business logic), and `internal/logger` provides operation-scoped logging plus the `Handle` entry point (imported by controllers). `internal/logger` depends on `internal/errors`; never the reverse.
 
 ### Usage in Business Logic
 
@@ -133,7 +134,7 @@ import "github.com/crossplane/provider-snowflake/internal/errors"
 
 // User error - configuration mistake
 if !regionPattern.MatchString(region) {
-    return errors.NewUser(fmt.Sprintf(
+    return errors.NewUserError(fmt.Sprintf(
         "Region '%s' does not match allowed format (expected: aws-eu-central-1)",
         region))
 }
@@ -147,13 +148,15 @@ if err := snowflakeClient.Execute(sql); err != nil {
 ### Usage in Controllers
 
 ```go
-import "github.com/crossplane/provider-snowflake/internal/errors"
+import "github.com/crossplane/provider-snowflake/internal/logger"
 
 func (e *external) Observe(ctx context.Context, mg resource.Managed) (managed.ExternalObservation, error) {
+    log := logger.New(e.logger, cr.Namespace, "SnowflakeAccount", cr.Name, logger.OpObserve)
+
     result, err := e.policy.BuildTargetState(ctx, cr)
     if err != nil {
-        userMsg, logMsg, logLevel, retryErr := errors.ErrorDetails(err)
-        errors.LogWithLevel(e.logger, logLevel, logMsg, "resource", cr.Name)
+        retryErr := log.Handle(err)
+        cr.SetConditions(xpv1.Unavailable().WithMessage(retryErr.Error()))
         return managed.ExternalObservation{}, retryErr
     }
     // ... success path
@@ -168,7 +171,7 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
 
 - **System Errors** (TypeSystem): Infrastructure failures requiring operator intervention
   - Logged at Info level (always visible to operators)
-  - Include unique 5-digit incident IDs for correlation
+  - Include unique 8-character incident IDs for correlation
   - Examples: Snowflake API unreachable, AWS Secrets Manager timeout
 
 ## Code Organization Philosophy
@@ -186,7 +189,27 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
 
 ## Copyright Headers
 
-New files use `Copyright 2026 The Yukimi Authors.` Files inherited from the Crossplane provider template have both headers: the original `Copyright 2025 The Crossplane Authors.` followed by `Copyright 2026 The Yukimi Authors.`
+New files use 
+
+```
+/*
+Copyright 2026 The Yukimi Authors. 
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+```
+
+Files inherited from the Crossplane provider template have both headers: the original `Copyright 2025 The Crossplane Authors.` followed by `Copyright 2026 The Yukimi Authors.`
 
 ## Development Commands
 
