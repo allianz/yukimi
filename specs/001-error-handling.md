@@ -30,18 +30,7 @@ The error handling system categorizes errors into two types: **user errors** and
 
 For every system error, the error handling system generates a unique 8-character incident ID derived from a random UUID (e.g. `f47ac10b`). This ID appears in both the user-facing status message and the operator logs, enabling correlation: when a user reports `"An internal error occurred (f47ac10b)"`, operators can search logs for `f47ac10b` to find the full error details including stack traces and internal context.
 
-Incident IDs are generated using `github.com/google/uuid` and are globally unique — no two errors will ever share the same ID regardless of when or where they occur. With 16^8 = 4,294,967,296 possible values, collisions are practically impossible even at high error rates.
-
-**Important**: Unlike random numeric IDs, UUID-based IDs require no shared state and are safe to generate concurrently across multiple pods and controllers.
-
-## Technical Context
-
-**Language/Version**: Go 1.24.0
-**Primary Dependencies**: Crossplane runtime v0.19+, `github.com/google/uuid`, Go stdlib (errors, fmt)
-**Storage**: N/A (errors are ephemeral, logged to stdout/stderr)
-**Testing**: Go testing with comprehensive unit tests, 95% code coverage
-**Performance Goals**: <100μs incident ID generation, zero allocations on happy path
-**Constraints**: Thread-safe incident ID generation, Crossplane reconciliation compatible, 256-char message truncation for Kubernetes status fields
+IDs are UUID-based: globally unique, stateless, and safe to generate concurrently across multiple pods.
 
 ## Public API
 
@@ -181,7 +170,7 @@ internal/logger/
 ## Edge Cases
 
 - **What happens when error messages exceed 256 characters?** - Automatically truncated with "..." suffix for Kubernetes status fields
-- **What if incident ID generation fails?** - Falls back to "00000000" as incident ID to prevent error handling from blocking reconciliation
+- **What if incident ID generation fails?** - `uuid.New()` panics on `crypto/rand` failure (an OS-level catastrophe). The Crossplane reconciler's built-in panic handler catches it and requeues the resource — the same outcome as a reconciliation error, without silently producing duplicate IDs.
 - **What if the retry error from Handle is re-wrapped and passed to Handle again?** - A new incident ID is generated. The sanitized retry error is a plain string error with no user error in its chain and no reference to the original error. Controllers must pass the result of Handle directly to Crossplane — never re-wrap and re-process it through Handle.
 
 ## Dependencies
@@ -234,11 +223,10 @@ internal/logger/
 - **Error Package**: `internal/errors/errors.go` - User error type, NewUserError, IsUserError
 - **Logger Package**: `internal/logger/logger.go` - Logger, New, Operation, Info/Debug/Handle, incident ID generation
 - **Test Suites**: `internal/errors/errors_test.go`, `internal/logger/logger_test.go` - 95% code coverage
-- **Usage Example**: `internal/controller/snowflakeaccount/snowflakeaccount.go` - Controller integration pattern
 
+---
 
-
-================
+<br/><br/><br/><br/>
 
 ## Appendix: Usage Examples
 

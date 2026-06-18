@@ -189,7 +189,27 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
 
 ## Copyright Headers
 
-New files use `Copyright 2026 The Yukimi Authors.` Files inherited from the Crossplane provider template have both headers: the original `Copyright 2025 The Crossplane Authors.` followed by `Copyright 2026 The Yukimi Authors.`
+New files use 
+
+```
+/*
+Copyright 2026 The Yukimi Authors. 
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+```
+
+Files inherited from the Crossplane provider template have both headers: the original `Copyright 2025 The Crossplane Authors.` followed by `Copyright 2026 The Yukimi Authors.`
 
 ## Development Commands
 
