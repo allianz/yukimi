@@ -19,6 +19,7 @@ package logger
 import (
 	"fmt"
 	"regexp"
+	"strings"
 	"sync"
 	"testing"
 
@@ -242,8 +243,8 @@ func TestHandle_SystemError(t *testing.T) {
 	if c.level != "info" {
 		t.Errorf("expected info level for system error, got %q", c.level)
 	}
-	if !hasKV(c.contextFields, "error", sysErr.Error()) {
-		t.Error("full error details missing from system error log")
+	if !strings.Contains(c.msg, sysErr.Error()) {
+		t.Error("error message missing from system error log message")
 	}
 }
 

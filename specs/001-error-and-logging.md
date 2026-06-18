@@ -125,8 +125,8 @@ func (l *Logger) Debug(msg string)
 //   - nil:          Returns nil immediately. No logging occurs.
 //   - User error:   Logs at Debug level (only visible with --debug flag).
 //                   Returns an error whose .Error() gives the user-facing message directly.
-//   - System error: Logs at Info level (always visible) with full internal details
-//                   and incident ID. Returns a sanitized error whose .Error() gives
+//   - System error: Logs at Info level (always visible) with the error message and
+//                   incident ID. Returns a sanitized error whose .Error() gives
 //                   "An internal error occurred (XXXXXXXX)" — safe for status conditions.
 //
 // The returned error's .Error() is always suitable for cr.SetConditions(...WithMessage(...)).
@@ -193,7 +193,7 @@ internal/logger/
 - **SC-004**: Handle() preserves incident IDs through wrapped error chains
 - **SC-005**: IsUserError() correctly identifies user errors in wrapped chains
 - **SC-008**: System error user messages follow format "An internal error occurred (XXXXXXXX)"
-- **SC-009**: System error log messages include full error details with incident ID
+- **SC-009**: System error log messages include the error message and incident ID
 - **SC-010**: Incident IDs are globally unique (UUID-based, 4,294,967,296 possible values)
 - **SC-011**: Incident ID generation completes in <100μs
 - **SC-012**: Happy path (no error) has zero allocations
@@ -208,7 +208,7 @@ internal/logger/
 - **SC-021**: Logger.Handle(nil) returns nil and makes no log calls
 - **SC-022**: Logger.Handle with user error logs at Debug level; returned error's .Error() equals the user-facing message
 - **SC-023**: Logger.Handle with wrapped user error correctly classifies via error chain
-- **SC-024**: Logger.Handle with system error logs at Info level with full internal details; returned error's .Error() follows the incident ID format
+- **SC-024**: Logger.Handle with system error logs at Info level with the error message and incident ID; returned error's .Error() follows the incident ID format
 - **SC-025**: Logger.Handle produces unique incident IDs across multiple calls
 
 ## Performance Considerations
