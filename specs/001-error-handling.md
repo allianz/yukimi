@@ -1,5 +1,7 @@
 # Specification: Error Handling (001)
 
+This specification covers two packages: `internal/errors` (user error types) and `internal/logger` (operation-scoped structured logging and error handling). They are documented together because the logger's `Handle` method is the consumer that ties error classification to logging behavior.
+
 ## Overview
 
 This specification defines the error handling system for the Crossplane provider that distinguishes between user errors (configuration mistakes users can fix) and system errors (infrastructure failures requiring operator intervention). The system ensures appropriate logging levels, retry behavior, and seamless integration with Crossplane's managed resource pattern. By providing clear, actionable feedback for configuration errors and generating unique incident IDs for system errors, it enables self-service resolution while facilitating operator troubleshooting of infrastructure failures.
@@ -22,7 +24,7 @@ This specification defines the error handling system that:
 
 The error handling system categorizes errors into two types: **user errors** and **system errors**. User errors represent configuration mistakes that users can fix by editing their CRD (e.g., invalid region format, malformed CIDR). These are logged at Debug level and include specific field paths and expected formats to enable self-service resolution. System errors represent infrastructure failures that users cannot fix (e.g., Snowflake API unreachable, AWS Secrets Manager timeout). These are logged at Error level with unique incident IDs for correlation between user status messages and operator logs.
 
-**Important**: User errors must be created explicitly using `errors.NewUser()`, while system errors are implicit (any raw error). The logging level distinction is critical: Debug-level logging for user errors prevents noise in production logs, while Error-level logging for system errors ensures operator visibility for infrastructure failures.
+**Important**: User errors must be created explicitly using `errors.NewUserError()`, while system errors are implicit (any raw error). The logging level distinction is critical: Debug-level logging for user errors prevents noise in production logs, while Error-level logging for system errors ensures operator visibility for infrastructure failures.
 
 ## Key Concept: Incident Correlation
 
@@ -43,8 +45,14 @@ Incident IDs are generated using `github.com/google/uuid` and are globally uniqu
 
 ## Public API
 
+The system spans two packages with a one-way dependency: `internal/logger` imports `internal/errors` (to classify errors via `IsUserError`); `internal/errors` imports nothing internal.
+
+### Package `internal/errors`
+
+Error types and constructors, imported by business logic (validators, policy engines, provisioners). Has no logging concern.
+
 ```go
-// NewUser creates a user error with an actionable message.
+// NewUserError creates a user error with an actionable message.
 //
 // Message Guidelines:
 //   - Include field path: spec.region, spec.network.allowedIPs[0]
@@ -58,7 +66,7 @@ Incident IDs are generated using `github.com/google/uuid` and are globally uniqu
 //
 // Returns:
 //   - error: user error whose .Error() returns the message
-func NewUser(msg string) error
+func NewUserError(msg string) error
 
 // IsUserError checks if an error is a user error.
 //
@@ -68,7 +76,13 @@ func NewUser(msg string) error
 // Returns:
 //   - bool: true if the error chain contains a user error
 func IsUserError(err error) bool
+```
 
+### Package `internal/logger`
+
+Structured, operation-scoped logging plus the error-handling entry point, imported by controllers.
+
+```go
 // Operation identifies the controller lifecycle method in which an error occurred.
 // String-based so log output is self-documenting — operators see "operation":"create"
 // directly in structured logs without needing a lookup table.
@@ -86,7 +100,7 @@ const (
 // for consistent structured log fields across all log calls within that scope.
 type Logger struct { /* unexported fields */ }
 
-// NewLogger creates a Logger pre-loaded with the contextual dimensions for a
+// New creates a Logger pre-loaded with the contextual dimensions for a
 // single controller method invocation. Every log call made through this Logger
 // includes namespace, kind, resource name, and operation as structured KV pairs.
 //
@@ -99,7 +113,7 @@ type Logger struct { /* unexported fields */ }
 //
 // Returns:
 //   - *Logger: Logger ready for use; never nil
-func NewLogger(logger logging.Logger, namespace, kind, name string, op Operation) *Logger
+func New(logger logging.Logger, namespace, kind, name string, op Operation) *Logger
 
 // Info logs an informational message with all contextual dimensions as structured
 // KV pairs: namespace, kind, resource name, and operation.
@@ -140,13 +154,19 @@ func (l *Logger) Handle(err error) error
 
 ```text
 internal/errors/
-├── errors.go              # All types and functions (NewUser, Logger, Operation, types, incident ID generation)
+├── errors.go              # User error type, NewUserError, IsUserError
 └── errors_test.go         # Unit tests (95% coverage)
+
+internal/logger/
+├── logger.go              # Logger, New, Operation, Info/Debug/Handle, incident ID generation
+└── logger_test.go         # Unit tests (95% coverage)
 ```
+
+`internal/logger` depends on `internal/errors` (via `IsUserError`). The reverse never happens.
 
 ## Error Classification
 
-**User Errors** (use `errors.NewUser()`):
+**User Errors** (use `errors.NewUserError()`):
 - Invalid region format: `Region 'invalid' does not match allowed format (expected: aws-eu-central-1)`
 - Malformed CIDR: `Invalid CIDR '10.0.0.256/24' in spec.network.allowedIPs[0]: not a valid IP range`
 - Missing required field: `At least one contact email is required in spec.contacts`
@@ -162,23 +182,24 @@ internal/errors/
 
 - **What happens when error messages exceed 256 characters?** - Automatically truncated with "..." suffix for Kubernetes status fields
 - **What if incident ID generation fails?** - Falls back to "00000000" as incident ID to prevent error handling from blocking reconciliation
-- **What if the retry error from Handle is re-wrapped and passed to Handle again?** - A new incident ID is generated. The sanitized retry error is a plain string error with no ControllerError in its chain and no reference to the original error. Controllers must pass the result of Handle directly to Crossplane — never re-wrap and re-process it through Handle.
+- **What if the retry error from Handle is re-wrapped and passed to Handle again?** - A new incident ID is generated. The sanitized retry error is a plain string error with no user error in its chain and no reference to the original error. Controllers must pass the result of Handle directly to Crossplane — never re-wrap and re-process it through Handle.
 
 ## Dependencies
 
-**N/A** - This is a foundational package with no internal dependencies
+- `internal/errors` - Foundational package with no internal dependencies
+- `internal/logger` - Depends only on `internal/errors` (via `IsUserError`)
 
 ## Integration Points
 
-- **Controller Layer** - Controllers create a Logger at the start of each method and call Handle() for all error paths - Key functions: `NewLogger()`, `Logger.Handle()`, `Logger.Info()`, `Logger.Debug()` - Notes: Must return the error from Handle() to Crossplane; use Handle().Error() for status condition messages
-- **Business Logic Layer** - Policy engines and provisioners create user errors for validation failures - Key functions: `NewUser()`, `IsUserError()` - Notes: Use NewUser() for config errors, raw errors for infrastructure failures
+- **Controller Layer** - Controllers create a Logger at the start of each method and call Handle() for all error paths - Key functions: `logger.New()`, `Logger.Handle()`, `Logger.Info()`, `Logger.Debug()` - Notes: Must return the error from Handle() to Crossplane; use Handle().Error() for status condition messages
+- **Business Logic Layer** - Policy engines and provisioners create user errors for validation failures - Key functions: `errors.NewUserError()`, `errors.IsUserError()` - Notes: Use NewUserError() for config errors, raw errors for infrastructure failures
 - **Crossplane Runtime** - Integration with managed.External interface and status conditions - Key functions: Returns errors from Observe/Create/Update/Delete - Notes: Crossplane automatically sets Ready=False and manages retry backoff
 
 ## Success Criteria
 
-- **SC-001**: NewUser() creates errors that IsUserError() recognises
-- **SC-002**: NewUser() auto-truncates messages to 256 characters
-- **SC-002b**: NewUser() falls back to "invalid configuration — no details provided" for empty messages
+- **SC-001**: NewUserError() creates errors that IsUserError() recognises
+- **SC-002**: NewUserError() auto-truncates messages to 256 characters
+- **SC-002b**: NewUserError() falls back to "invalid configuration — no details provided" for empty messages
 - **SC-003**: Handle() generates unique 8-character incident IDs for system errors
 - **SC-004**: Handle() preserves incident IDs through wrapped error chains
 - **SC-005**: IsUserError() correctly identifies user errors in wrapped chains
@@ -192,7 +213,7 @@ internal/errors/
 - **SC-015**: Error wrapping with %w preserves classification through fmt.Errorf
 - **SC-016**: Nil errors handled gracefully (Handle returns nil)
 - **SC-017**: Operation constants produce correct string values (`observe`, `create`, `update`, `delete`)
-- **SC-018**: NewLogger() returns a non-nil `*Logger`
+- **SC-018**: logger.New() returns a non-nil `*Logger`
 - **SC-019**: Logger.Info() calls underlying logger at Info level with namespace, kind, resource, and operation KV pairs
 - **SC-020**: Logger.Debug() calls underlying logger at Debug level with the same KV pairs
 - **SC-021**: Logger.Handle(nil) returns nil and makes no log calls
@@ -210,8 +231,9 @@ internal/errors/
 
 ## References
 
-- **Error Package**: `internal/errors/errors.go` - Complete implementation (types, functions, incident ID generation)
-- **Test Suite**: `internal/errors/errors_test.go` - 95% code coverage
+- **Error Package**: `internal/errors/errors.go` - User error type, NewUserError, IsUserError
+- **Logger Package**: `internal/logger/logger.go` - Logger, New, Operation, Info/Debug/Handle, incident ID generation
+- **Test Suites**: `internal/errors/errors_test.go`, `internal/logger/logger_test.go` - 95% code coverage
 - **Usage Example**: `internal/controller/snowflakeaccount/snowflakeaccount.go` - Controller integration pattern
 
 
@@ -228,7 +250,7 @@ import "github.com/allianz/yukimi/internal/errors"
 // Validate region format
 func ValidateRegion(region string) error {
     if !regionPattern.MatchString(region) {
-        return errors.NewUser(fmt.Sprintf(
+        return errors.NewUserError(fmt.Sprintf(
             "Region '%s' does not match allowed format (expected: aws-eu-central-1)",
             region))
     }
@@ -239,7 +261,7 @@ func ValidateRegion(region string) error {
 func ValidateNetworkPolicy(policy *NetworkPolicy) error {
     for i, cidr := range policy.AllowedIPs {
         if _, _, err := net.ParseCIDR(cidr); err != nil {
-            return errors.NewUser(fmt.Sprintf(
+            return errors.NewUserError(fmt.Sprintf(
                 "Invalid CIDR '%s' in spec.network.allowedIPs[%d]: not a valid IP range",
                 cidr, i))
         }
@@ -250,7 +272,7 @@ func ValidateNetworkPolicy(policy *NetworkPolicy) error {
 // Validate required fields
 func ValidateContacts(contacts []string) error {
     if len(contacts) == 0 {
-        return errors.NewUser("At least one contact email is required in spec.contacts")
+        return errors.NewUserError("At least one contact email is required in spec.contacts")
     }
     return nil
 }
@@ -261,7 +283,7 @@ func ValidateContacts(contacts []string) error {
 ```go
 import (
     "github.com/crossplane/crossplane-runtime/pkg/reconciler/managed"
-    "github.com/allianz/yukimi/internal/errors"
+    "github.com/allianz/yukimi/internal/logger"
 )
 
 type external struct {
@@ -276,7 +298,7 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
     }
 
     // Create Logger once per method call — pre-loads namespace, kind, name, operation
-    log := errors.NewLogger(e.logger, cr.Namespace, "SnowflakeAccount", cr.Name, errors.OpObserve)
+    log := logger.New(e.logger, cr.Namespace, "SnowflakeAccount", cr.Name, logger.OpObserve)
 
     result, err := e.provisioner.Observe(ctx, cr)
     if err != nil {
@@ -300,7 +322,7 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
 ```go
 // In internal/policy/engine.go
 func (e *Engine) BuildTargetState(ctx context.Context, cr *v1alpha1.SnowflakeAccount) (AccountState, error) {
-    // Validate configuration (may return errors.NewUser())
+    // Validate configuration (may return errors.NewUserError())
     if err := e.ValidateRegion(cr.Spec.Region); err != nil {
         // Wrap with context - preserves user error classification
         return AccountState{}, fmt.Errorf("validation failed: %w", err)

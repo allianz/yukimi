@@ -28,7 +28,8 @@ internal/
 ├── secrets/            # AWS Secrets Manager with in-memory caching
 ├── template/           # Template validation (naming, version chain, SQL)
 ├── execution/          # SQL execution orchestration (inline & template modes)
-├── errors/             # Error handling (user vs system, incident IDs)
+├── errors/             # User error types (NewUserError, IsUserError)
+├── logger/             # Operation-scoped logging and error handling (Handle, incident IDs)
 ├── features/           # Feature flags
 └── version/            # Version information
 
@@ -44,7 +45,7 @@ Each `internal/` package has a corresponding numbered spec in `specs/`. The spec
 
 | Spec | Package | Description |
 |------|---------|-------------|
-| `001-error-handling.md` | `internal/errors/` | Error handling system (user vs system errors, incident IDs) |
+| `001-error-handling.md` | `internal/errors/` + `internal/logger/` | Error handling system (user vs system errors, incident IDs) and operation-scoped logging |
 | `002-secrets-handling.md` | `internal/secrets/` | AWS Secrets Manager integration with caching |
 | `003-connection-pooling.md` | `internal/snowflake/pool/` | Connection pool management with JWT auth |
 | `004-statement-execution.md` | `internal/snowflake/statement/` | SQL execution with position-aware errors |
@@ -124,7 +125,7 @@ secretsMgr, err := secrets.GetInstance()  // Returns error if not initialized
 Once initialized, all controllers can safely call `GetInstance()` to access these shared resources.
 ## Error Handling
 
-The project uses a standardized error handling system in `internal/errors` that distinguishes between user errors (configuration mistakes) and system errors (infrastructure failures).
+The project uses a standardized error handling system split across two packages: `internal/errors` provides user error types (imported by business logic), and `internal/logger` provides operation-scoped logging plus the `Handle` entry point (imported by controllers). `internal/logger` depends on `internal/errors`; never the reverse.
 
 ### Usage in Business Logic
 
@@ -133,7 +134,7 @@ import "github.com/crossplane/provider-snowflake/internal/errors"
 
 // User error - configuration mistake
 if !regionPattern.MatchString(region) {
-    return errors.NewUser(fmt.Sprintf(
+    return errors.NewUserError(fmt.Sprintf(
         "Region '%s' does not match allowed format (expected: aws-eu-central-1)",
         region))
 }
@@ -147,10 +148,10 @@ if err := snowflakeClient.Execute(sql); err != nil {
 ### Usage in Controllers
 
 ```go
-import "github.com/crossplane/provider-snowflake/internal/errors"
+import "github.com/crossplane/provider-snowflake/internal/logger"
 
 func (e *external) Observe(ctx context.Context, mg resource.Managed) (managed.ExternalObservation, error) {
-    log := errors.NewLogger(e.logger, cr.Namespace, "SnowflakeAccount", cr.Name, errors.OpObserve)
+    log := logger.New(e.logger, cr.Namespace, "SnowflakeAccount", cr.Name, logger.OpObserve)
 
     result, err := e.policy.BuildTargetState(ctx, cr)
     if err != nil {
