@@ -88,7 +88,7 @@ func (l *Logger) Handle(err error) error {
 	}
 
 	incidentID := generateIncidentID()
-	contextFields := append(l.contextFields(), "incidentID", incidentID, "error", err.Error())
+	contextFields := append(l.contextFields(), "incidentID", incidentID)
 	l.log.Info(fmt.Sprintf("system error (incidentID=%s): %s", incidentID, err.Error()), contextFields...)
 	return fmt.Errorf("An internal error occurred (%s)", incidentID) //nolint:goerr113
 }
