@@ -36,19 +36,19 @@ type spyLogger struct {
 type logCall struct {
 	level  string // "info" or "debug"
 	msg    string
-	kvs    []any
+	contextFields    []any
 }
 
-func (s *spyLogger) Info(msg string, kvs ...any) {
+func (s *spyLogger) Info(msg string, contextFields ...any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.calls = append(s.calls, logCall{level: "info", msg: msg, kvs: kvs})
+	s.calls = append(s.calls, logCall{level: "info", msg: msg, contextFields: contextFields})
 }
 
-func (s *spyLogger) Debug(msg string, kvs ...any) {
+func (s *spyLogger) Debug(msg string, contextFields ...any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.calls = append(s.calls, logCall{level: "debug", msg: msg, kvs: kvs})
+	s.calls = append(s.calls, logCall{level: "debug", msg: msg, contextFields: contextFields})
 }
 
 func (s *spyLogger) WithValues(_ ...any) logging.Logger { return s }
@@ -73,9 +73,9 @@ func newLogger(spy *spyLogger) *Logger {
 }
 
 // hasKV checks whether the KV slice contains a key with the given value.
-func hasKV(kvs []any, key string, value any) bool {
-	for i := 0; i+1 < len(kvs); i += 2 {
-		if kvs[i] == key && fmt.Sprintf("%v", kvs[i+1]) == fmt.Sprintf("%v", value) {
+func hasKV(contextFields []any, key string, value any) bool {
+	for i := 0; i+1 < len(contextFields); i += 2 {
+		if contextFields[i] == key && fmt.Sprintf("%v", contextFields[i+1]) == fmt.Sprintf("%v", value) {
 			return true
 		}
 	}
@@ -131,7 +131,7 @@ func TestInfo_LogsAtInfoLevel(t *testing.T) {
 		{"name", "my-account"},
 		{"operation", "observe"},
 	} {
-		if !hasKV(c.kvs, kv.k, kv.v) {
+		if !hasKV(c.contextFields, kv.k, kv.v) {
 			t.Errorf("KV pair %q=%q missing from Info log", kv.k, kv.v)
 		}
 	}
@@ -156,7 +156,7 @@ func TestDebug_LogsAtDebugLevel(t *testing.T) {
 		{"name", "my-account"},
 		{"operation", "observe"},
 	} {
-		if !hasKV(c.kvs, kv.k, kv.v) {
+		if !hasKV(c.contextFields, kv.k, kv.v) {
 			t.Errorf("KV pair %q=%q missing from Debug log", kv.k, kv.v)
 		}
 	}
@@ -242,7 +242,7 @@ func TestHandle_SystemError(t *testing.T) {
 	if c.level != "info" {
 		t.Errorf("expected info level for system error, got %q", c.level)
 	}
-	if !hasKV(c.kvs, "error", sysErr.Error()) {
+	if !hasKV(c.contextFields, "error", sysErr.Error()) {
 		t.Error("full error details missing from system error log")
 	}
 }

@@ -56,7 +56,7 @@ func New(log logging.Logger, namespace, kind, name string, op Operation) *Logger
 	}
 }
 
-func (l *Logger) kvs() []any {
+func (l *Logger) contextFields() []any {
 	return []any{
 		"namespace", l.namespace,
 		"kind", l.kind,
@@ -67,12 +67,12 @@ func (l *Logger) kvs() []any {
 
 // Info logs an informational message with all contextual dimensions.
 func (l *Logger) Info(msg string) {
-	l.log.Info(msg, l.kvs()...)
+	l.log.Info(msg, l.contextFields()...)
 }
 
 // Debug logs a diagnostic message with all contextual dimensions.
 func (l *Logger) Debug(msg string) {
-	l.log.Debug(msg, l.kvs()...)
+	l.log.Debug(msg, l.contextFields()...)
 }
 
 // Handle classifies err, logs at the appropriate level, and returns the
@@ -83,13 +83,13 @@ func (l *Logger) Handle(err error) error {
 	}
 
 	if errors.IsUserError(err) {
-		l.log.Debug(err.Error(), l.kvs()...)
+		l.log.Debug(err.Error(), l.contextFields()...)
 		return fmt.Errorf("%s", err.Error()) //nolint:goerr113
 	}
 
 	incidentID := generateIncidentID()
-	kvs := append(l.kvs(), "incidentID", incidentID, "error", err.Error())
-	l.log.Info(fmt.Sprintf("system error (incidentID=%s): %s", incidentID, err.Error()), kvs...)
+	contextFields := append(l.contextFields(), "incidentID", incidentID, "error", err.Error())
+	l.log.Info(fmt.Sprintf("system error (incidentID=%s): %s", incidentID, err.Error()), contextFields...)
 	return fmt.Errorf("An internal error occurred (%s)", incidentID) //nolint:goerr113
 }
 
