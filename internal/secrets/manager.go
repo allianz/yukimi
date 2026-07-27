@@ -24,44 +24,63 @@ import (
 	"time"
 
 	"github.com/allianz/yukimi/internal/errors"
-	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 )
 
 // SecretManager provides credential retrieval, generation, and cache management.
 type SecretManager interface {
 	// GetOrgAdminCredentials retrieves organization-level admin credentials.
-	// Path: snowflake/org/{org}/org-admin-credentials
+	// Path: snowflake/org/{org}/{account}/org-admin-credentials
 	//
 	// Returns:
-	//   - User error if secret not found or backend permissions denied
-	//   - System error if backend unavailable or credential parsing fails
-	GetOrgAdminCredentials(ctx context.Context, orgName string) (*OrgAdminCredentials, error)
+	//   - System error if secret not found, backend permissions denied, backend unavailable, or credential parsing fails
+	GetOrgAdminCredentials(ctx context.Context, orgName, account string) (*OrgAdminCredentials, error)
 
 	// GetTenantCredentials retrieves namespace-specific tenant credentials.
-	// Path: snowflake/tenant/{namespace}/{org}/{account}/platform-credentials
+	// Path: snowflake/tenant/{org}/{namespace}/{account}/platform-credentials
 	//
 	// Returns:
-	//   - User error if secret not found or backend permissions denied
-	//   - System error if empty parameters, backend unavailable, or credential parsing fails
-	GetTenantCredentials(ctx context.Context, namespace, orgName, account string) (*PlatformCredentials, error)
+	//   - System error if secret not found, empty parameters, backend permissions denied, backend unavailable, or credential parsing fails
+	GetTenantCredentials(ctx context.Context, orgName, namespace, account string) (*PlatformCredentials, error)
 
 	// GenerateAndStore creates a new RSA key pair and stores it via backend.
-	// If the secret path is pending deletion, returns a user error — never restores silently.
+	// If the secret path is pending deletion, returns a system error — never cancels the deletion silently.
+	// The operator must cancel the pending deletion in the backend before retrying.
 	//
 	// Returns:
-	//   - User error if secret is pending deletion, or backend permissions denied
 	//   - User error if spec.org or spec.account is empty
-	//   - System error if key generation fails or backend unavailable
-	GenerateAndStore(ctx context.Context, namespace, orgName, account string) (*PlatformCredentials, error)
+	//   - System error if secret is pending deletion, key generation fails, backend permissions denied, or backend unavailable
+	GenerateAndStore(ctx context.Context, orgName, namespace, account string) (*PlatformCredentials, error)
 
 	// DeleteTenantSecret removes tenant credentials via backend and invalidates cache.
-	DeleteTenantSecret(ctx context.Context, namespace, orgName, account string) error
+	DeleteTenantSecret(ctx context.Context, orgName, namespace, account string) error
+
+	// RotateTenantCredentials generates a new RSA key pair and overwrites the
+	// existing tenant secret in the backend, then invalidates the cache entry.
+	// The caller is responsible for pushing the new public key to Snowflake
+	// (ALTER USER ... SET RSA_PUBLIC_KEY) — this method only replaces the stored
+	// secret. Any live connection still using the old private key will fail once
+	// the Snowflake-side key is updated; the caller must coordinate that update
+	// with reconnection.
+	//
+	// Returns:
+	//   - User error if spec.org or spec.account is empty
+	//   - System error if secret is pending deletion, key generation fails, backend permissions denied, or backend unavailable
+	RotateTenantCredentials(ctx context.Context, orgName, namespace, account string) (*PlatformCredentials, error)
+
+	// RotateOrgAdminCredentials generates a new RSA key pair and overwrites the
+	// existing org admin secret in the backend, then invalidates the cache entry.
+	// Same caller responsibility as RotateTenantCredentials: pushing the new
+	// public key to Snowflake is not handled by this package.
+	//
+	// Returns:
+	//   - System error if secret is pending deletion, key generation fails, backend permissions denied, or backend unavailable
+	RotateOrgAdminCredentials(ctx context.Context, orgName, account string) (*OrgAdminCredentials, error)
 
 	// InvalidateTenantCache forces cache refresh on next GetTenantCredentials call.
-	InvalidateTenantCache(namespace, orgName, account string)
+	InvalidateTenantCache(orgName, namespace, account string)
 
 	// InvalidateOrgAdminCache forces cache refresh on next GetOrgAdminCredentials call.
-	InvalidateOrgAdminCache(orgName string)
+	InvalidateOrgAdminCache(orgName, account string)
 
 	// ClearCache removes all cached credentials.
 	ClearCache()
@@ -77,23 +96,25 @@ var (
 )
 
 type secretManager struct {
-	backend    SecretBackend
-	tenantCache  *credentialCache[*PlatformCredentials]
-	orgCache     *credentialCache[*OrgAdminCredentials]
-	logger     logging.Logger
+	backend     SecretBackend
+	tenantCache *credentialCache[*PlatformCredentials]
+	orgCache    *credentialCache[*OrgAdminCredentials]
 }
 
 // Initialize sets up the secrets manager singleton with a pre-built backend.
 // Called once by the ProviderConfig controller during startup.
 // Thread-safe using sync.Once — subsequent calls are silently ignored.
-func Initialize(backend SecretBackend, cacheTTL time.Duration, logger logging.Logger) error {
+//
+// The secrets package is business logic — it never logs. It only returns
+// errors; the calling controller creates its own scoped Logger and calls
+// Handle() on whatever error propagates up.
+func Initialize(backend SecretBackend, cacheTTL time.Duration) error {
 	instanceOnce.Do(func() {
 		instanceMu.Lock()
 		instance = &secretManager{
 			backend:     backend,
 			tenantCache: newCredentialCache[*PlatformCredentials](cacheTTL),
 			orgCache:    newCredentialCache[*OrgAdminCredentials](cacheTTL),
-			logger:      logger,
 		}
 		instanceMu.Unlock()
 	})
@@ -113,12 +134,6 @@ func GetInstance() (SecretManager, error) {
 	return mgr, nil
 }
 
-// InitializeForIntegrationTesting initializes with a real backend selected via SECRET_BACKEND env var.
-// Defaults to "aws". Cache TTL is hardcoded to 30 seconds. Panics if config loading fails.
-func InitializeForIntegrationTesting() {
-	panic("InitializeForIntegrationTesting: not yet implemented — add backend selection logic here")
-}
-
 // InitializeForMockTesting initializes with the provided mock backend.
 // For unit tests that don't need real backend dependencies.
 func InitializeForMockTesting(backend SecretBackend, cacheTTL time.Duration) {
@@ -127,7 +142,6 @@ func InitializeForMockTesting(backend SecretBackend, cacheTTL time.Duration) {
 		backend:     backend,
 		tenantCache: newCredentialCache[*PlatformCredentials](cacheTTL),
 		orgCache:    newCredentialCache[*OrgAdminCredentials](cacheTTL),
-		logger:      logging.NewNopLogger(),
 	}
 	instanceMu.Unlock()
 }
@@ -141,13 +155,13 @@ func ResetForTesting() {
 	instanceMu.Unlock()
 }
 
-func (m *secretManager) GetOrgAdminCredentials(ctx context.Context, orgName string) (*OrgAdminCredentials, error) {
-	key := orgAdminCacheKey(orgName)
+func (m *secretManager) GetOrgAdminCredentials(ctx context.Context, orgName, account string) (*OrgAdminCredentials, error) {
+	key := orgAdminCacheKey(orgName, account)
 	if creds, ok := m.orgCache.get(key); ok {
 		return creds, nil
 	}
 
-	path, err := orgAdminSecretPath(orgName)
+	path, err := orgAdminSecretPath(orgName, account)
 	if err != nil {
 		return nil, fmt.Errorf("invalid org admin secret path: %w", err)
 	}
@@ -169,13 +183,13 @@ func (m *secretManager) GetOrgAdminCredentials(ctx context.Context, orgName stri
 	return &creds, nil
 }
 
-func (m *secretManager) GetTenantCredentials(ctx context.Context, namespace, orgName, account string) (*PlatformCredentials, error) {
-	key := tenantCacheKey(namespace, orgName, account)
+func (m *secretManager) GetTenantCredentials(ctx context.Context, orgName, namespace, account string) (*PlatformCredentials, error) {
+	key := tenantCacheKey(orgName, namespace, account)
 	if creds, ok := m.tenantCache.get(key); ok {
 		return creds, nil
 	}
 
-	path, err := tenantSecretPath(namespace, orgName, account)
+	path, err := tenantSecretPath(orgName, namespace, account)
 	if err != nil {
 		return nil, fmt.Errorf("invalid tenant secret path: %w", err)
 	}
@@ -197,15 +211,96 @@ func (m *secretManager) GetTenantCredentials(ctx context.Context, namespace, org
 	return &creds, nil
 }
 
-func (m *secretManager) GenerateAndStore(ctx context.Context, namespace, orgName, account string) (*PlatformCredentials, error) {
+func (m *secretManager) GenerateAndStore(ctx context.Context, orgName, namespace, account string) (*PlatformCredentials, error) {
 	if orgName == "" {
 		return nil, errors.NewUserError("spec.org must not be empty")
 	}
 	if account == "" {
 		return nil, errors.NewUserError("spec.account must not be empty")
 	}
+	return m.generateAndPutTenantSecret(ctx, orgName, namespace, account)
+}
 
-	path, err := tenantSecretPath(namespace, orgName, account)
+func (m *secretManager) DeleteTenantSecret(ctx context.Context, orgName, namespace, account string) error {
+	path, err := tenantSecretPath(orgName, namespace, account)
+	if err != nil {
+		return fmt.Errorf("invalid tenant secret path: %w", err)
+	}
+
+	if err := m.backend.DeleteSecret(ctx, path); err != nil {
+		return fmt.Errorf("failed to delete tenant secret: %w", err)
+	}
+
+	m.tenantCache.delete(tenantCacheKey(orgName, namespace, account))
+	return nil
+}
+
+// RotateTenantCredentials generates a new RSA key pair and overwrites the
+// existing tenant secret in the backend. It never contacts Snowflake — the
+// caller is responsible for pushing the new public key via ALTER USER.
+func (m *secretManager) RotateTenantCredentials(ctx context.Context, orgName, namespace, account string) (*PlatformCredentials, error) {
+	if orgName == "" {
+		return nil, errors.NewUserError("spec.org must not be empty")
+	}
+	if account == "" {
+		return nil, errors.NewUserError("spec.account must not be empty")
+	}
+	return m.generateAndPutTenantSecret(ctx, orgName, namespace, account)
+}
+
+// RotateOrgAdminCredentials generates a new RSA key pair and overwrites the
+// existing org admin secret in the backend. It never contacts Snowflake — the
+// caller is responsible for pushing the new public key via ALTER USER.
+func (m *secretManager) RotateOrgAdminCredentials(ctx context.Context, orgName, account string) (*OrgAdminCredentials, error) {
+	path, err := orgAdminSecretPath(orgName, account)
+	if err != nil {
+		return nil, fmt.Errorf("invalid org admin secret path: %w", err)
+	}
+
+	pending, err := m.backend.IsSecretPendingDeletion(ctx, path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check secret deletion status: %w", err)
+	}
+	if pending {
+		return nil, fmt.Errorf(
+			"secret for org admin account '%s' in org '%s' is pending deletion — "+
+				"the operator must cancel the pending deletion in the backend before this secret can be regenerated",
+			sanitizeField(account), sanitizeField(orgName),
+		)
+	}
+
+	keyPair, err := generateRSAKeyPair()
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate RSA key pair: %w", err)
+	}
+
+	creds := &OrgAdminCredentials{
+		Account:    account,
+		Username:   "PLATFORM",
+		PublicKey:  keyPair.PublicKey,
+		PrivateKey: keyPair.PrivateKey,
+	}
+
+	raw, err := json.Marshal(creds)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal credentials: %w", err)
+	}
+
+	if err := m.backend.PutSecret(ctx, path, raw); err != nil {
+		return nil, fmt.Errorf("failed to store credentials: %w", err)
+	}
+
+	m.orgCache.set(orgAdminCacheKey(orgName, account), creds)
+
+	return creds, nil
+}
+
+// generateAndPutTenantSecret checks for a pending deletion, generates a new
+// RSA key pair, stores it via the backend, and updates the cache. Shared by
+// GenerateAndStore and RotateTenantCredentials, which differ only in caller
+// intent (creating vs. replacing), not in behavior.
+func (m *secretManager) generateAndPutTenantSecret(ctx context.Context, orgName, namespace, account string) (*PlatformCredentials, error) {
+	path, err := tenantSecretPath(orgName, namespace, account)
 	if err != nil {
 		return nil, fmt.Errorf("invalid tenant secret path: %w", err)
 	}
@@ -215,12 +310,11 @@ func (m *secretManager) GenerateAndStore(ctx context.Context, namespace, orgName
 		return nil, fmt.Errorf("failed to check secret deletion status: %w", err)
 	}
 	if pending {
-		return nil, errors.NewUserError(fmt.Sprintf(
-			"Secret for account '%s' in namespace '%s' is pending deletion. "+
-				"If accidental, restore it manually in the backend and retry. "+
-				"If intentional, wait for deletion to complete before recreating.",
+		return nil, fmt.Errorf(
+			"secret for account '%s' in namespace '%s' is pending deletion — "+
+				"the operator must cancel the pending deletion in the backend before this secret can be regenerated",
 			sanitizeField(account), sanitizeField(namespace),
-		))
+		)
 	}
 
 	keyPair, err := generateRSAKeyPair()
@@ -244,32 +338,17 @@ func (m *secretManager) GenerateAndStore(ctx context.Context, namespace, orgName
 		return nil, fmt.Errorf("failed to store credentials: %w", err)
 	}
 
-	key := tenantCacheKey(namespace, orgName, account)
-	m.tenantCache.set(key, creds)
+	m.tenantCache.set(tenantCacheKey(orgName, namespace, account), creds)
 
 	return creds, nil
 }
 
-func (m *secretManager) DeleteTenantSecret(ctx context.Context, namespace, orgName, account string) error {
-	path, err := tenantSecretPath(namespace, orgName, account)
-	if err != nil {
-		return fmt.Errorf("invalid tenant secret path: %w", err)
-	}
-
-	if err := m.backend.DeleteSecret(ctx, path); err != nil {
-		return fmt.Errorf("failed to delete tenant secret: %w", err)
-	}
-
-	m.tenantCache.delete(tenantCacheKey(namespace, orgName, account))
-	return nil
+func (m *secretManager) InvalidateTenantCache(orgName, namespace, account string) {
+	m.tenantCache.delete(tenantCacheKey(orgName, namespace, account))
 }
 
-func (m *secretManager) InvalidateTenantCache(namespace, orgName, account string) {
-	m.tenantCache.delete(tenantCacheKey(namespace, orgName, account))
-}
-
-func (m *secretManager) InvalidateOrgAdminCache(orgName string) {
-	m.orgCache.delete(orgAdminCacheKey(orgName))
+func (m *secretManager) InvalidateOrgAdminCache(orgName, account string) {
+	m.orgCache.delete(orgAdminCacheKey(orgName, account))
 }
 
 func (m *secretManager) ClearCache() {

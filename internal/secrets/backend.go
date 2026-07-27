@@ -19,12 +19,11 @@ package secrets
 import "context"
 
 // SecretBackend abstracts secret storage operations.
-// Implementations live in internal/secrets/backends/{aws,azure,vault,gcp}/.
+// Implementations live in internal/secrets/backends/ (one sub-package per backend, e.g. aws/).
 // All methods operate on raw JSON bytes — no credential parsing.
 type SecretBackend interface {
 	// GetSecret retrieves raw secret bytes at the given path.
-	// Returns user error if path not found or permissions denied.
-	// Returns system error if backend unavailable.
+	// Returns system error if path not found, permissions denied, or backend unavailable.
 	GetSecret(ctx context.Context, path string) ([]byte, error)
 
 	// PutSecret stores raw secret bytes at the given path.
@@ -36,21 +35,11 @@ type SecretBackend interface {
 	DeleteSecret(ctx context.Context, path string) error
 
 	// IsSecretPendingDeletion checks if a secret exists but is pending deletion.
-	// Used by GenerateAndStore() to detect and surface the conflict as a user error.
+	// Used by GenerateAndStore() to detect and surface the conflict as a system error.
 	// Returns false for backends that do not support soft-delete.
 	IsSecretPendingDeletion(ctx context.Context, path string) (bool, error)
 
 	// HealthCheck verifies backend connectivity and credentials.
-	// Returns user error if credentials invalid or permissions denied.
-	// Returns system error if backend unavailable.
+	// Returns system error if credentials invalid, permissions denied, or backend unavailable.
 	HealthCheck(ctx context.Context) error
-}
-
-// SecretReference points to a Kubernetes Secret containing backend credentials.
-// The ProviderConfig controller reads the referenced Secret and passes the raw
-// credential value to NewBackend(). NewBackend() never touches Kubernetes directly.
-type SecretReference struct {
-	Name      string // Kubernetes Secret name
-	Namespace string // Kubernetes Secret namespace
-	Key       string // Key within the Secret's data map
 }

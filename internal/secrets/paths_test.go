@@ -18,25 +18,25 @@ package secrets
 
 import "testing"
 
-// SC-014: Tenant paths include namespace.
+// SC-014: Tenant paths include namespace, ordered org/namespace/account.
 func TestTenantSecretPath_Format(t *testing.T) {
-	path, err := tenantSecretPath("team-a", "myorg", "myaccount")
+	path, err := tenantSecretPath("myorg", "team-a", "myaccount")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := "snowflake/tenant/team-a/myorg/myaccount/platform-credentials"
+	want := "snowflake/tenant/myorg/team-a/myaccount/platform-credentials"
 	if path != want {
 		t.Errorf("got %q, want %q", path, want)
 	}
 }
 
-// SC-015: Org admin paths exclude namespace.
+// SC-015: Org admin paths exclude namespace, ordered org/account.
 func TestOrgAdminSecretPath_Format(t *testing.T) {
-	path, err := orgAdminSecretPath("myorg")
+	path, err := orgAdminSecretPath("myorg", "myaccount")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := "snowflake/org/myorg/org-admin-credentials"
+	want := "snowflake/org/myorg/myaccount/org-admin-credentials"
 	if path != want {
 		t.Errorf("got %q, want %q", path, want)
 	}
@@ -45,16 +45,32 @@ func TestOrgAdminSecretPath_Format(t *testing.T) {
 // SC-013: Empty path components return error.
 func TestTenantSecretPath_EmptyComponents(t *testing.T) {
 	cases := []struct {
-		name, org, account string
+		org, namespace, account string
 	}{
-		{"", "org", "acc"},
-		{"ns", "", "acc"},
-		{"ns", "org", ""},
+		{"", "ns", "acc"},
+		{"org", "", "acc"},
+		{"org", "ns", ""},
 	}
 	for _, c := range cases {
-		_, err := tenantSecretPath(c.name, c.org, c.account)
+		_, err := tenantSecretPath(c.org, c.namespace, c.account)
 		if err == nil {
-			t.Errorf("expected error for empty component: namespace=%q org=%q account=%q", c.name, c.org, c.account)
+			t.Errorf("expected error for empty component: org=%q namespace=%q account=%q", c.org, c.namespace, c.account)
+		}
+	}
+}
+
+// SC-013: Empty path components return error for org admin paths.
+func TestOrgAdminSecretPath_EmptyComponents(t *testing.T) {
+	cases := []struct {
+		org, account string
+	}{
+		{"", "acc"},
+		{"org", ""},
+	}
+	for _, c := range cases {
+		_, err := orgAdminSecretPath(c.org, c.account)
+		if err == nil {
+			t.Errorf("expected error for empty component: org=%q account=%q", c.org, c.account)
 		}
 	}
 }
@@ -62,14 +78,14 @@ func TestTenantSecretPath_EmptyComponents(t *testing.T) {
 // Path traversal characters are rejected.
 func TestTenantSecretPath_TraversalRejected(t *testing.T) {
 	cases := []struct {
-		namespace, org, account string
+		org, namespace, account string
 	}{
-		{"../etc", "org", "acc"},
-		{"ns", "org/evil", "acc"},
-		{"ns", "org", "acc\x00null"},
+		{"../etc", "ns", "acc"},
+		{"org", "ns/evil", "acc"},
+		{"org", "ns", "acc\x00null"},
 	}
 	for _, c := range cases {
-		_, err := tenantSecretPath(c.namespace, c.org, c.account)
+		_, err := tenantSecretPath(c.org, c.namespace, c.account)
 		if err == nil {
 			t.Errorf("expected error for traversal attempt: %v", c)
 		}

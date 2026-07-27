@@ -36,35 +36,38 @@ func validatePathComponent(name, value string) error {
 }
 
 // tenantSecretPath constructs and validates the path for tenant credentials.
-// Format: snowflake/tenant/{namespace}/{org}/{account}/platform-credentials
-func tenantSecretPath(namespace, org, account string) (string, error) {
+// Format: snowflake/tenant/{org}/{namespace}/{account}/platform-credentials
+func tenantSecretPath(org, namespace, account string) (string, error) {
+	if err := validatePathComponent("org", org); err != nil {
+		return "", err
+	}
 	if err := validatePathComponent("namespace", namespace); err != nil {
 		return "", err
 	}
+	if err := validatePathComponent("account", account); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("snowflake/tenant/%s/%s/%s/platform-credentials", org, namespace, account), nil
+}
+
+// orgAdminSecretPath constructs and validates the path for org admin credentials.
+// Format: snowflake/org/{org}/{account}/org-admin-credentials
+func orgAdminSecretPath(org, account string) (string, error) {
 	if err := validatePathComponent("org", org); err != nil {
 		return "", err
 	}
 	if err := validatePathComponent("account", account); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("snowflake/tenant/%s/%s/%s/platform-credentials", namespace, org, account), nil
-}
-
-// orgAdminSecretPath constructs and validates the path for org admin credentials.
-// Format: snowflake/org/{org}/org-admin-credentials
-func orgAdminSecretPath(org string) (string, error) {
-	if err := validatePathComponent("org", org); err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("snowflake/org/%s/org-admin-credentials", org), nil
+	return fmt.Sprintf("snowflake/org/%s/%s/org-admin-credentials", org, account), nil
 }
 
 // tenantCacheKey returns the cache key for tenant credentials.
-func tenantCacheKey(namespace, org, account string) string {
-	return fmt.Sprintf("%s/%s/%s", namespace, org, account)
+func tenantCacheKey(org, namespace, account string) string {
+	return fmt.Sprintf("%s/%s/%s", org, namespace, account)
 }
 
 // orgAdminCacheKey returns the cache key for org admin credentials.
-func orgAdminCacheKey(org string) string {
-	return org
+func orgAdminCacheKey(org, account string) string {
+	return fmt.Sprintf("%s/%s", org, account)
 }
