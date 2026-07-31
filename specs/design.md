@@ -257,7 +257,7 @@ ALTER ACCOUNT ADD ORGANIZATION USER GROUP '<group-name-from-crd>';
 -- ... repeated for each entry in userManaged
 ```
 
-If a referenced group does not yet exist or is not visible to the account's region, the import fails and account creation surfaces a user error.
+**TODO:** Either all users and groups are synced with SCIM or the controller must trigger to add all groups in the CRD to the Azure Entra ID Enterprise App.
 
 ### 3.4 Configuring an Account
 
@@ -265,12 +265,19 @@ After an account exists, its ongoing shape is governed by two things: the **Conf
 
 #### 3.4.1 ConfigRules
 
-ConfigRules is **CRD Governance**: it acts on the `SnowflakeAccount` Custom Resource itself, gating and defaulting the *user's input* before it is ever applied to Snowflake.
+ConfigRules gates and defaults the *user's input* before it is ever applied to Snowflake.
 
 **Scope:** ConfigRules applies exclusively to `SnowflakeAccount` resources. Other resource types have their own separate validation mechanisms.
 
   * **Validation:** Gates user input. If a user tries to commit a CRD that violates these patterns (e.g., bad naming, unsafe IP ranges), the resource is rejected with a validation error.
-  * **Defaults:** Populates fields in the CRD if the user omits them (e.g., setting a default TimeZone or corporate VPN CIDR).
+  * **Defaults:** Populates fields in the CRD if the user omits them.
+
+**CIDR Validation (two independent checks):** Each entry a tenant lists under `networkPolicy.whitelisting[].allowedIPs` is validated against two separate constraints, and must satisfy both:
+
+  1. **Containment** — the entry must be a subset of one of the `allowedCIDRs` supernets (e.g. Allianz corporate space). This keeps whitelisted ranges within approved networks. Note that `allowedCIDRs` may itself contain broad blocks like `10.0.0.0/8` — that is the *allowed supernet* a tenant's entry must fit inside, a distinct role from the tenant's own (narrower) entry.
+  2. **Size** — the entry must not be too large a block, capped by `maxCIDR` (the widest block a tenant may whitelist). Any entry wider than `maxCIDR` is rejected. With `maxCIDR: "/24"`, a `/24`–`/32` is accepted while `/8`, `/16`, and `0.0.0.0/0` are all rejected.
+
+Both must hold: e.g. `10.23.45.0/24` passes, `10.0.0.0/8` fails on size, and `1.1.1.0/24` fails on containment.
 
 **Matching Strategy (Top-Down):** Rules are evaluated top-down. Operators define a broad global baseline first, followed by specific rules that override settings for specific regions or environments. Changes to ConfigRules are validated immediately and applied automatically during the next reconciliation cycle.
 
@@ -292,32 +299,28 @@ configRules:
       # Validation: Gates user input.
       validation:
         accountName: "^[a-z][a-z0-9-]{2,62}$" # Lowercase, no special chars, RFC1123
-        groupNames: "^GIAM_[A-Z0-9_]+$"      # Must start with GIAM_ prefix
-        allowedCIDRs:
+        groupNames: "^[A-Z0-9_]+$"            # Name pattern for group names
+        allowedRegions:
+          - "*"
+        allowedCIDRs:                 # containment: an entry must be a subset of one of these
           - "10.0.0.0/8"    # Corporate Network
           - "172.16.0.0/12"
           - "192.168.0.0/16"
-        allowedRegions:
-          - "aws_eu_central_1"
-          - "aws_eu_west_3"
+        maxCIDR: "/24"                # size cap: widest block a tenant may whitelist (rejects /8, /16, 0.0.0.0/0)
 
       # Defaults: Applied if user omits these fields in their CRD.
       defaults:
         timeZone: "UTC"
-        defaultCIDRs:
-          - "10.0.0.0/8"    # Default Corporate VPN
 
-  # 2️⃣ Azure Overrides (Specific network needs)
+  # 2️⃣ Allianz DE Overrides
   - match:
-      region: "azure-*"
+      department: "Allianz_DE"
 
     policy:
-      defaults:
-        defaultCIDRs:
-          - "10.20.0.0/16" # Azure VNET default
       validation:
-        allowedCIDRs:
-          - "10.20.0.0/16" # Restrict to Azure VNET only
+          allowedRegions:
+            - "aws-eu-central-1"   # Frankfurt
+            - "aws-eu-west-3"      # Paris
 ```
 
 #### 3.4.2 User Configuration Surface
