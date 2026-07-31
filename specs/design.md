@@ -131,39 +131,7 @@ spec:
 ```
 
 
-### 3.2 Schema Specification
-
-Fields (spec)
-
-| Field Path | Type | Required | Mutability | Validation / Constraints |
-| -------- | ------ | ------- | --------------| ---------------------------------------------------------------------------------- |
-| `region` | string | **Yes** | **Immutable** | Must match cloud provider region format (e.g., `aws-eu-central-1`, `azure-westeurope`). |
-| `timeZone` | string | No | Mutable | Valid IANA Time Zone string (e.g., `Europe/Berlin`). Default: `UTC`. |
-| `description` | string | No | Mutable | Max length: 255 characters. |
-| `contacts` | []string | **Yes** | Mutable | Min items: 1. Must be valid email formats. |
-| `groups.accountAdmin` | string | **Yes** | Mutable | The AD group mapped to `ACCOUNTADMIN`. |
-| `groups.sysAdmin` | string | **No** | Mutable | The AD group mapped to `SYSADMIN`. |
-| `groups.userManaged` | []string | No | Mutable | List of AD groups to be synced as custom roles. |
-| `networkPolicy.whitelisting` | []object | No | Mutable | Defines network access exceptions for service users. |
-| `networkPolicy.whitelisting[].user` | string | **Yes** | Mutable | Functional user/service account name. |
-| `networkPolicy.whitelisting[].allowedIPs` | []string | No\* | Mutable | **Strict Mode.** The exact list of allowed CIDRs. If specified, environment defaults are **ignored**. <br>*Mutually exclusive with `additionalIPs`.* |
-| `networkPolicy.whitelisting[].additionalIPs`| []string | No\* | Mutable | **Additive Mode.** List of CIDRs to **append** to the environment defaults (e.g., Workstation IPs). <br>*Mutually exclusive with `allowedIPs`.* |
-| `authPolicy.exceptions` | []object | No | Mutable | Defines exceptions for mandatory SSO login. |
-| `authPolicy.exceptions[].user` | string | **Yes** | Mutable | The username. |
-| `authPolicy.exceptions[].rsaKeyAllowed` | boolean | **No** | Mutable | If true, key-pair authentication is enabled. |
-| `authPolicy.exceptions[].patKeyAllowed` | boolean | **No** | Mutable | If true, PAT key authentication is enabled. |
-| `authPolicy.exceptions[].reason` | string | **Yes** | Mutable | Justification required for audit logging. |
-
-Status Fields (status)
-
-| Field Path | Type | Description |
-| -------------------------| ------ | ------------------------------------------|
-| `accountName` | string | The actual Snowflake account name provisioned (sanitized from metadata.name). |
-| `accountUrl` | string | The full login URL for the provisioned Snowflake account. |
-
-
-
-### 3.3 Domain Concepts
+### 3.2 Domain Concepts
 
 The SnowflakeAccount CRD serves as the atomic unit of tenancy within the platform. It represents a fully isolated Snowflake Account Object combined with necessary enterprise bindings, specifically identity mapping (GIAM/SCIM) and network posture (Network Policies).
 
@@ -179,37 +147,136 @@ Integration is performed once per region (or globally where possible) rather tha
 Because the network integration is pre-configured and active, new accounts simply attach to this existing infrastructure via automated SQL commands. This mechanism transforms provisioning from a manual infrastructure project into an instant, logical operation.
 
 
-### 3.4 Configuration Rules
+### 3.3 Creating an Account
 
-To support the diverse requirements of different clouds (AWS/Azure) and environments (Dev/Prod), the platform utilizes a flexible configuration engine. This engine separates user intent (defined in the `SnowflakeAccount` CRD) from platform governance (defined in a central `ProviderGovernance` CRD).
+Account creation is the act of turning a committed `SnowflakeAccount` CRD into a live, network-bound Snowflake account. It draws on the **Region Config** — a platform-owned artifact that captures the per-region backplane — and then runs the controller's create flow.
 
-**Scope:** These configuration rules apply exclusively to `SnowflakeAccount` resources. Other resource types have their own separate validation mechanisms.
+#### 3.3.1 Region Config
 
-The ProviderGovernance serves two distinct purposes:
+The Region Config is **Platform Configuration**: settings applied directly against Snowflake that are invisible to the user and independent of the CRD. It is owned by platform operators, not tenants, and is structured **by region**, with each cloud region the platform supports having its own entry under `regions`.
 
-1.  **CRD Governance:** Validates and sets defaults for the *User's Input* (the YAML they commit).
-2.  **Platform Configuration:** Enforces settings in Snowflake that are *not* exposed to the user (e.g., global network blocks, account-level parameters).
+Bringing a region online is a manual, one-time procedure carried out by platform operators before the region can be consumed:
 
-Changes to the ProviderGovernance CRD are validated immediately and applied automatically during the next reconciliation cycle.
+  1. Ops runs `yukimi-infra`, the Terraform project that provisions the region's backplane.
+  2. Ops opens the follow-up tickets needed to finalize the region (e.g., a DNS change, Snowflake accepting the VPC endpoint connection).
+  3. Ops tests the region to confirm the backplane works end-to-end.
+  4. Once verified, ops adds the region's entry to the Region Config, using the Terraform outputs (S3 VPC endpoint DNS, browser-login ingress ranges) and setting `active: true`.
+  5. The region is now available: the controller can provision `SnowflakeAccount` resources into it.
 
-**1. Matching Strategy (Top-Down)**
-Configuration rules are evaluated top-down. Operators define a broad global baseline first, followed by specific rules that override settings for specific regions or environments.
+PrivateLink itself requires no stored configuration — once the backplane is in place, `SYSTEM$AUTHORIZE_PRIVATELINK` binds automatically at account creation (see 3.3.2).
 
-**2. CRD Governance (User Input)**
-These rules act on the `SnowflakeAccount` Custom Resource itself.
+  * **Backplane network:** Per region, `network.s3_stage_vpce_dns_name` captures the region-specific plug-in value consumed by the create flow (see 3.3.2).
+  * **Ingress Rules:** Per region, `network.ingressRules` defines the minimum network ingress the platform grants into the account — most commonly the ranges from which human users reach the account through a browser to log in (SSO), but the same mechanism can express any platform-owned ingress need. This is a baseline; tenants may add further ingress on top via their own CRD's `networkPolicy.whitelisting`.
+
+    A region is typically reachable through more than one PrivateLink VPC Endpoint (e.g. one for the corporate network, one for a third-party tool like DBT Cloud), and the same CIDR can legitimately appear behind different endpoints — or arrive over the public internet with no endpoint at all. A flat CIDR list can't express either distinction, so Snowflake's network rules come in two flavors: plain `IPV4` rules for public CIDRs, and `AWSVPCEID` rules that scope CIDRs to the VPC Endpoint they arrive through (tuple syntax `{vpce-id:cidr1,cidr2}`). Every Snowflake network rule also has a name, which the controller needs anyway to create and reference it.
+
+    The Region Config mirrors this directly: `network.ingressRules` is a list of named rules, each with an optional `vpceId` and optional `cidrs`. Omitting `vpceId` means the rule applies to public-internet ingress; setting it scopes the rule to that one PrivateLink endpoint. Omitting `cidrs` on a scoped rule allows **all** traffic through that endpoint (e.g. a fully trusted integration like DBT Cloud) — Snowflake treats a bare VPC Endpoint ID as equivalent to `0.0.0.0/0`, so this must be a deliberate choice per rule, not an accidental default.
+
+The Region Config only covers what is needed to bring a region online and bind an account to it. Account parameters (initial and enforced) are out of scope here and instead live in a separate, forthcoming configuration file.
+
+<!-- TODO: Formalize the field table (types, required/optional, defaults) for the
+     per-region blocks below. -->
+
+```yaml
+# Region Config (platform-owned). Organized by region; captures what's needed to
+# bring a region online and bind an account to it. Account parameter enforcement
+# lives in a separate, forthcoming configuration file.
+# yukimi-infra adds a new entry under `regions` each time a region is provisioned.
+regionConfig:
+
+  # --- REGIONS: one entry per cloud region, filled in by yukimi-infra ---
+  regions:
+
+    aws-eu-central-1:
+      active: true
+
+      # Backplane network values inserted after the IaC apply for this region, plus
+      # the minimum ingress the platform grants into the account (see "Ingress Rules"
+      # above). Each rule is named (Snowflake network rules require a name) and either
+      # scoped to a PrivateLink VPC Endpoint or, if vpceId is omitted, allowed over the
+      # public internet. Tenants may add further ingress on top via their own CRD.
+      network:
+        s3_stage_vpce_dns_name: "*.vpce-sd98fs0d9f8g.s3.eu-central-1.vpce.amazonaws.com"
+        ingressRules:
+          - name: "CORP_VPN_INGRESS"
+            vpceId: "vpce-00006900000000001"
+            cidrs: ["172.16.0.0/12"]
+          - name: "DBT_CLOUD_INGRESS"
+            vpceId: "vpce-00006900000000004" # no cidrs: allow all traffic through this endpoint
+          - name: "PUBLIC_OFFICE_INGRESS"
+            cidrs: ["203.0.113.0/24"] # public internet, no vpceId
+
+    # A region can be staged ahead of time and switched on once its backplane is confirmed.
+    aws-eu-west-3:
+      active: false
+      network:
+        s3_stage_vpce_dns_name: "*.vpce-9f8g7h6j5k.s3.eu-west-3.vpce.amazonaws.com"
+        ingressRules:
+          - name: "CORP_VPN_INGRESS"
+            vpceId: "vpce-00006900000000008"
+            cidrs: ["10.0.0.0/8"]
+```
+
+#### 3.3.2 Create Flow
+
+When the controller observes a `SnowflakeAccount` that does not yet exist in Snowflake, it runs the following sequence.
+
+1.  **Instantiation:** The controller executes the minimum logic required to instantiate the resource:
+    ```sql
+    CREATE ACCOUNT '<name-from-crd>' ADMIN_NAME='platform' ADMIN_RSA_PUBLIC_KEY = '<generated-by-controller>' ADMIN_USER_TYPE='SERVICE' EDITION='ENTERPRISE' REGION='<region-from-crd>' COMMENT='<description-from-crd>';
+    ```
+2.  **Initial Configuration (Generic Key-Value):**
+    Immediately following creation, the controller iterates through the **Initial Parameters** map defined in the Region Config. It generates and executes the specific `ALTER ACCOUNT` commands for every defined initial setting. This ensures the account starts with the correct defaults (e.g., Timezone) before any user interaction occurs.
+    ```sql
+    -- Apply one-time initialization settings
+    ALTER ACCOUNT SET TIMEZONE = '<timezone-from-crd>';
+    ALTER ACCOUNT SET RESOURCE_MONITOR = 'DEFAULT_MONITOR';
+    ```
+3.  **Backplane Integration:**
+    The controller binds the new account to the regional infrastructure captured in the Region Config:
+
+    ```sql
+    -- 1. Bind to Regional PrivateLink (The "Plug-in" Step)
+    -- TODO investigate regional private link configuration
+    SYSTEM$AUTHORIZE_PRIVATELINK('<cloud_provider_id>', '<federated_token>');
+
+    -- 2. Enable Regional Storage Integration
+    ALTER ACCOUNT SET ENABLE_INTERNAL_STAGES_PRIVATELINK = true;
+    ALTER ACCOUNT SET S3_STAGE_VPCE_DNS_NAME = "<dns-value-from-crd>";  
+
+    -- 3. Replicate groups from org to account 
+    -- TODO investigate preview feature
+    -- ALTER ACCOUNT ADD ORGANIZATION USER GROUP '<group-name-from-crd>';
+
+    -- 4. Enable replication feature, if account is labeled as prod in CRD  
+    SELECT SYSTEM$GLOBAL_ACCOUNT_SET_PARAMETER('<name-from-crd>', 'ENABLE_ACCOUNT_DATABASE_REPLICATION', 'true'); 
+    ```
+
+Once created, initialized, and bound, the account is live. The controller then proceeds to the ongoing configuration and enforcement loop described in 3.4.
+
+
+### 3.4 Configuring an Account
+
+After an account exists, its ongoing shape is governed by two things: the **ConfigRules** that gate and default what a tenant may write in their CRD, and the continuous reconcile loop that keeps the live account aligned with both the CRD and the platform's Region Config.
+
+#### 3.4.1 ConfigRules
+
+ConfigRules is **CRD Governance**: it acts on the `SnowflakeAccount` Custom Resource itself, gating and defaulting the *user's input* before it is ever applied to Snowflake.
+
+**Scope:** ConfigRules applies exclusively to `SnowflakeAccount` resources. Other resource types have their own separate validation mechanisms.
 
   * **Validation:** Gates user input. If a user tries to commit a CRD that violates these patterns (e.g., bad naming, unsafe IP ranges), the resource is rejected with a validation error.
   * **Defaults:** Populates fields in the CRD if the user omits them (e.g., setting a default TimeZone or corporate VPN CIDR).
 
-**3. Platform Configuration (Snowflake Backend)**
-These settings are independent of the CRD. They are invisible to the user but strictly enforced by the controller directly against the Snowflake account.
+**Matching Strategy (Top-Down):** Rules are evaluated top-down. Operators define a broad global baseline first, followed by specific rules that override settings for specific regions or environments. Changes to ConfigRules are validated immediately and applied automatically during the next reconciliation cycle.
 
-  * **Account Parameters:** Generic key-value pairs (e.g., `USER_TASK_TIMEOUT_MS`) that are not part of the CRD schema.
-  * **Global Network Policy:** A baseline policy (e.g., "Block All Public") that sits *above* the user's allowlist. The controller enforces this global safety net regardless of what the user defines in their CRD.
+<!-- TODO: Define the ConfigRules schema/field table and its match-selector semantics.
+     Now that platform config lives in the Region Config (3.3.1), confirm whether the
+     two artifacts share the same top-down matching engine or diverge. -->
 
 ```yaml
-# Example ProviderGovernance CRD
-configurationRules:
+# Example ConfigRules (governs user-committed SnowflakeAccount YAML)
+configRules:
   # 1️⃣ Global Baseline (Applies to everyone unless overridden)
   - match:
       environment: "*"
@@ -218,7 +285,6 @@ configurationRules:
       account: "*"
 
     policy:
-      # --- CRD GOVERNANCE (Acts on SnowflakeAccount YAML) ---
       # Validation: Gates user input.
       validation:
         accountName: "^[a-z][a-z0-9-]{2,62}$" # Lowercase, no special chars, RFC1123
@@ -237,70 +303,34 @@ configurationRules:
         defaultCIDRs:
           - "10.0.0.0/8"    # Default Corporate VPN
 
-      # --- PLATFORM CONFIGURATION (Acts on Snowflake directly) ---
-      # Parameters: Hidden Snowflake settings not exposed in CRD.
-      parameters:
-        initial:
-          RESOURCE_MONITOR: "DEFAULT_MONITOR"
-        enforced:
-          USER_TASK_TIMEOUT_MS: "10800000"
-          PREVENT_UNLOAD_TO_INLINE_URL: "true"
-
-      network:
-        privateLink:
-          aws_account_id: "123456789012"
-          s3_stage_vpce_dns_name: "*.vpce-sd98fs0d9f8g.s3.eu-central-1.vpce.amazonaws.com"
-
-        definitions:
-          - name: "CORP_VPN_INGRESS"
-            type: "IPV4"
-            mode: "INGRESS"
-            value_list: ["10.0.0.0/8", "172.16.0.0/12"]
-
-          - name: "BLOCKED_BOTNETS"
-            type: "IPV4"
-            mode: "INGRESS"
-            value_list: ["198.51.100.0/24"]
-
-        global_policy:
-          name: "PLATFORM_ENFORCED_ACCOUNT_POLICY"
-          allowed_rules:
-            - "CORP_VPN_INGRESS"
-          blocked_rules:
-            - "BLOCKED_BOTNETS"
-
   # 2️⃣ Azure Overrides (Specific network needs)
   - match:
       region: "azure-*"
 
     policy:
-      # Override CRD defaults/validation for Azure
       defaults:
         defaultCIDRs:
           - "10.20.0.0/16" # Azure VNET default
       validation:
         allowedCIDRs:
           - "10.20.0.0/16" # Restrict to Azure VNET only
-
-      # Override Platform Configuration for Azure
-      networkPolicy:
-        name: "AZURE_PrivateLink_Only"
-
-  # 3️⃣ Production Overrides (Stricter security)
-  - match:
-      environment: "prod"
-
-    policy:
-      parameters:
-        enforced:
-          USER_TASK_TIMEOUT_MS: "3600000" # Stricter timeout
-          DATA_RETENTION_TIME_IN_DAYS: "90"
 ```
 
+#### 3.4.2 User Configuration Surface
 
-### 3.5 Controller Behavior
+<!-- TODO: Describe the tenant-facing configuration surface in prose. These fields
+     currently appear only in the 3.1 example. Cover:
+       - groups: accountAdmin / sysAdmin / userManaged and their GIAM/SCIM mapping
+       - networkPolicy.whitelisting: strict mode (allowedIPs) vs additive mode
+         (additionalIPs), and how each composes with the Region Config global policy
+       - authPolicy.exceptions: rsaKeyAllowed / patKeyAllowed / reason and the
+         SSO-bypass semantics -->
 
-The controller implements a continuous reconciliation loop. For every `SnowflakeAccount` event, it performs the following logical phases to ensure the actual state matches the desired state defined by the user and the platform.
+The tenant configures their account through the `groups`, `networkPolicy`, and `authPolicy` sections of the `SnowflakeAccount` spec (see the example in 3.1). TODO: document each field's behavior and how it composes with the platform's Region Config baseline.
+
+#### 3.4.3 Reconcile: Drift Detection & Parameter Enforcement
+
+The controller implements a continuous reconciliation loop. For every `SnowflakeAccount` event on an existing account, it performs the following logical phases to ensure the actual state matches the desired state defined by the user and the platform.
 
 **Phase 1: State Discovery**
 The controller queries Snowflake to fetch the current state of the account:
@@ -308,58 +338,16 @@ The controller queries Snowflake to fetch the current state of the account:
   * `SHOW ACCOUNTS LIKE ...` to verify existence.
   * `SHOW PARAMETERS ...` to check current settings, including retention limits, network policies, and timeouts.
 
-**Phase 2: Execution (SQL Generation)**
-The controller compares the discovered state against the user's CRD and the platform's `ConfigurationRules`. If deviations are found, it executes the necessary SQL.
+**Phase 2: Parameter Enforcement (SQL Generation)**
+The controller iterates through the **Enforced Parameters** map (defined in the Region Config, 3.3.1). For each parameter, it compares the **Policy value** against the **Live Value** retrieved from Snowflake in Phase 1.
 
-  * **On Creation:**
+If a deviation is detected, it generates the specific SQL to revert that parameter:
 
-    1.  **Instantiation:** The controller executes the minimum logic required to instantiate the resource:
-        ```sql
-        CREATE ACCOUNT '<name-from-crd>' ADMIN_NAME='platform' ADMIN_RSA_PUBLIC_KEY = '<generated-by-controller>' ADMIN_USER_TYPE='SERVICE' EDITION='ENTERPRISE' REGION='<region-from-crd>' COMMENT='<description-from-crd>';
-        ```
-    2.  **Initial Configuration (Generic Key-Value):**
-        Immediately following creation, the controller iterates through the **Initial Parameters** map defined in `ConfigurationRules`. It generates and executes the specific `ALTER ACCOUNT` commands for every defined initial setting. This ensures the account starts with the correct defaults (e.g., Timezone) before any user interaction occurs.
-        ```sql
-        -- Apply one-time initialization settings
-        ALTER ACCOUNT SET TIMEZONE = '<timezone-from-crd>';
-        ALTER ACCOUNT SET RESOURCE_MONITOR = 'DEFAULT_MONITOR';
-        ```
-
-    Once created and initialized, the controller immediately proceeds to the **Update/Enforcement** phase to apply configuration and bindings.
-
-  * **On Update/Enforcement:**
-    This phase handles both the structural integration of the account and the continuous enforcement of parameters.
-
-    1.  **Backplane Integration:**
-        The controller verifies if the account is bound to the regional infrastructure. If missing (e.g., immediately after creation), it executes the binding sequence:
-
-        ```sql
-        -- 1. Bind to Regional PrivateLink (The "Plug-in" Step)
-        -- TODO investigate regional private link configuration
-        SYSTEM$AUTHORIZE_PRIVATELINK('<cloud_provider_id>', '<federated_token>');
-
-        -- 2. Enable Regional Storage Integration
-        ALTER ACCOUNT SET ENABLE_INTERNAL_STAGES_PRIVATELINK = true;
-        ALTER ACCOUNT SET S3_STAGE_VPCE_DNS_NAME = "<dns-value-from-crd>";  
-
-        -- 3. Replicate groups from org to account 
-        -- TODO investigate preview feature
-        -- ALTER ACCOUNT ADD ORGANIZATION USER GROUP '<group-name-from-crd>';
-
-        -- 4. Enable replication feature, if account is labeled as prod in CRD  
-        SELECT SYSTEM$GLOBAL_ACCOUNT_SET_PARAMETER('<name-from-crd>', 'ENABLE_ACCOUNT_DATABASE_REPLICATION', 'true'); 
-        ```
-
-    2.  **Parameter Enforcement (Generic Key-Value):**
-        The controller iterates through the **Enforced Parameters** map (defined in Configuration Rules). For each parameter, it compares the **Policy value** against the **Live Value** retrieved from Snowflake in Phase 1.
-
-        If a deviation is detected, it generates the specific SQL to revert that parameter:
-
-        ```sql
-        -- Example: Controller detects drift in timeout or network policy
-        ALTER ACCOUNT SET USER_TASK_TIMEOUT_MS = '10800000';
-        ALTER ACCOUNT SET PREVENT_UNLOAD_TO_INLINE_URL = 'true';
-        ```
+```sql
+-- Example: Controller detects drift in timeout or network policy
+ALTER ACCOUNT SET USER_TASK_TIMEOUT_MS = '10800000';
+ALTER ACCOUNT SET PREVENT_UNLOAD_TO_INLINE_URL = 'true';
+```
 
 **Phase 3: Status Update**
 Finally, the controller updates the Kubernetes `status` subresource:
@@ -369,7 +357,7 @@ Finally, the controller updates the Kubernetes `status` subresource:
   * **Failure:** Set `Ready=False` with a standardized error reason (as defined in Section 7).
 
 
-### 3.6 Security Constraints
+### 3.5 Security Constraints
 
 Security in this platform is not based on validation alone, but on strict structural constraints in how initial account credentials are managed. The implementation must adhere to the following definitions.
 
@@ -402,7 +390,7 @@ The platform operates on the principle that the Kubernetes Namespace is an untru
 The **`region`** and **`name`** of a `SnowflakeAccount` are **Immutable** after creation. This prevents identity spoofing where a user creates an account, lets the secret generate, and then attempts to switch the CRD to point to a different target resource while retaining the original credentials.
 
 
-### 3.7 Compliance & Auditability
+### 3.6 Compliance & Auditability
 
 Compliance in this platform is not verified by human audit but enforced by continuous code execution. This section defines the architectural strategies for defense-in-depth and the evidence required for regulatory reporting.
 
