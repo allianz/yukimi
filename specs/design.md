@@ -226,10 +226,38 @@ CREATE NETWORK RULE <name-from-region-config> TYPE = <type-from-region-config> M
 CREATE NETWORK POLICY PLATFORM_ACCOUNT_POLICY
   ALLOWED_NETWORK_RULE_LIST = (<all-rule-names-from-region-config>);
 ALTER ACCOUNT SET NETWORK_POLICY = 'PLATFORM_ACCOUNT_POLICY';
+
+-- 3. Identity Integration: import the org user groups referenced in the CRD's
+-- `groups` field (accountAdmin, sysAdmin, userManaged) into the new account.
+-- These groups must already exist and be visible to this account — see 3.3.3.
+ALTER ACCOUNT ADD ORGANIZATION USER GROUP '<group-name-from-crd>';
+-- ... repeated for every group referenced in the CRD
 ```
 
 **Note:** Snowflake is expected to release a new feature/syntax called Organization Policies, which will let this same network policy be enforced centrally on the account rather than via the `ALTER ACCOUNT` commands above. Once that syntax is available, this implementation will be swapped to use it — the enforced policy stays the same, but tenants will no longer be able to modify or unset it themselves. Not yet released as of this writing.
 
+#### 3.3.3 Identity Integration
+
+Identity, like networking, is integrated globally rather than per account. An Azure AD SCIM sync continuously feeds enterprise users and GIAM groups into a single Organization User Group backplane in Snowflake, independent of any `SnowflakeAccount` CRD. This sync makes groups available org-wide, but a group must still be explicitly imported into an account before it can be used there.
+
+That import is what the CRD's `groups` field drives. `accountAdmin`, `sysAdmin`, and every entry in `userManaged` (see the example in 3.1) name organization groups that must already exist in the backplane; the controller imports each one into the new account as part of the create flow (3.3.2). Importing a group creates a matching role in the account, and its members are granted that role automatically.
+
+```sql
+-- 1. accountAdmin: import the group, then grant it ACCOUNTADMIN so its members
+-- inherit the system role through the role hierarchy.
+ALTER ACCOUNT ADD ORGANIZATION USER GROUP '<accountAdmin-group-name-from-crd>';
+GRANT ROLE ACCOUNTADMIN TO ROLE "<accountAdmin-group-name-from-crd>";
+
+-- 2. sysAdmin: same pattern, granting SYSADMIN instead.
+ALTER ACCOUNT ADD ORGANIZATION USER GROUP '<sysAdmin-group-name-from-crd>';
+GRANT ROLE SYSADMIN TO ROLE "<sysAdmin-group-name-from-crd>";
+
+-- 3. userManaged: every remaining group is simply imported, no extra grant.
+ALTER ACCOUNT ADD ORGANIZATION USER GROUP '<group-name-from-crd>';
+-- ... repeated for each entry in userManaged
+```
+
+If a referenced group does not yet exist or is not visible to the account's region, the import fails and account creation surfaces a user error.
 
 ### 3.4 Configuring an Account
 
