@@ -163,24 +163,11 @@ Bringing a region online is a manual, one-time procedure carried out by platform
   4. Once verified, ops adds the region's entry to the Region Config, using the Terraform outputs (S3 VPC endpoint DNS, browser-login ingress ranges) and setting `active: true`.
   5. The region is now available: the controller can provision `SnowflakeAccount` resources into it.
 
-PrivateLink itself requires no stored configuration — once the backplane is in place, `SYSTEM$AUTHORIZE_PRIVATELINK` binds automatically at account creation (see 3.3.2).
-
-  * **Backplane network:** Per region, `network.s3_stage_vpce_dns_name` captures the region-specific plug-in value consumed by the create flow (see 3.3.2).
-  * **Ingress Rules:** Per region, `network.ingressRules` defines the minimum network ingress the platform grants into the account — most commonly the ranges from which human users reach the account through a browser to log in (SSO), but the same mechanism can express any platform-owned ingress need. This is a baseline; tenants may add further ingress on top via their own CRD's `networkPolicy.whitelisting`.
-
-    A region is typically reachable through more than one PrivateLink VPC Endpoint (e.g. one for the corporate network, one for a third-party tool like DBT Cloud), and the same CIDR can legitimately appear behind different endpoints — or arrive over the public internet with no endpoint at all. A flat CIDR list can't express either distinction, so Snowflake's network rules come in two flavors: plain `IPV4` rules for public CIDRs, and `AWSVPCEID` rules that scope CIDRs to the VPC Endpoint they arrive through (tuple syntax `{vpce-id:cidr1,cidr2}`). Every Snowflake network rule also has a name, which the controller needs anyway to create and reference it.
-
-    The Region Config mirrors this directly: `network.ingressRules` is a list of named rules, each with an optional `vpceId` and optional `cidrs`. Omitting `vpceId` means the rule applies to public-internet ingress; setting it scopes the rule to that one PrivateLink endpoint. Omitting `cidrs` on a scoped rule allows **all** traffic through that endpoint (e.g. a fully trusted integration like DBT Cloud) — Snowflake treats a bare VPC Endpoint ID as equivalent to `0.0.0.0/0`, so this must be a deliberate choice per rule, not an accidental default.
-
-The Region Config only covers what is needed to bring a region online and bind an account to it. Account parameters (initial and enforced) are out of scope here and instead live in a separate, forthcoming configuration file.
-
-<!-- TODO: Formalize the field table (types, required/optional, defaults) for the
-     per-region blocks below. -->
+When a user creates a `SnowflakeAccount`, the controller takes the `region` field from the CRD and uses it to look up that region's entry in the Region Config. The values found there — the backplane network settings and the platform's baseline ingress rules — are combined with the CRD's own fields to construct the SQL that provisions and binds the account. This flow is described in detail in 3.3.2.
 
 ```yaml
 # Region Config (platform-owned). Organized by region; captures what's needed to
-# bring a region online and bind an account to it. Account parameter enforcement
-# lives in a separate, forthcoming configuration file.
+# bring a region online and bind an account to it.
 # yukimi-infra adds a new entry under `regions` each time a region is provisioned.
 regionConfig:
 
@@ -190,21 +177,20 @@ regionConfig:
     aws-eu-central-1:
       active: true
 
-      # Backplane network values inserted after the IaC apply for this region, plus
-      # the minimum ingress the platform grants into the account (see "Ingress Rules"
-      # above). Each rule is named (Snowflake network rules require a name) and either
-      # scoped to a PrivateLink VPC Endpoint or, if vpceId is omitted, allowed over the
-      # public internet. Tenants may add further ingress on top via their own CRD.
+      # Backplane values from Terraform, plus this region's baseline ingressRules.
       network:
         s3_stage_vpce_dns_name: "*.vpce-sd98fs0d9f8g.s3.eu-central-1.vpce.amazonaws.com"
         ingressRules:
           - name: "CORP_VPN_INGRESS"
+            type: "AWSVPCEID"
             vpceId: "vpce-00006900000000001"
             cidrs: ["172.16.0.0/12"]
           - name: "DBT_CLOUD_INGRESS"
+            type: "AWSVPCEID"
             vpceId: "vpce-00006900000000004" # no cidrs: allow all traffic through this endpoint
           - name: "PUBLIC_OFFICE_INGRESS"
-            cidrs: ["203.0.113.0/24"] # public internet, no vpceId
+            type: "IPV4"
+            cidrs: ["203.0.113.0/24"]
 
     # A region can be staged ahead of time and switched on once its backplane is confirmed.
     aws-eu-west-3:
@@ -213,46 +199,36 @@ regionConfig:
         s3_stage_vpce_dns_name: "*.vpce-9f8g7h6j5k.s3.eu-west-3.vpce.amazonaws.com"
         ingressRules:
           - name: "CORP_VPN_INGRESS"
+            type: "AWSVPCEID"
             vpceId: "vpce-00006900000000008"
             cidrs: ["10.0.0.0/8"]
 ```
 
 #### 3.3.2 Create Flow
 
-When the controller observes a `SnowflakeAccount` that does not yet exist in Snowflake, it runs the following sequence.
+When the controller observes a `SnowflakeAccount` that does not yet exist in Snowflake, it runs the following script, drawing on two inputs: the `SnowflakeAccount` CRD itself, and the Region Config entry for `spec.region` — the controller looks up that region's entry in `regionConfig.regions` by the CRD's `region` field before it can resolve any of the values below.
 
-1.  **Instantiation:** The controller executes the minimum logic required to instantiate the resource:
-    ```sql
-    CREATE ACCOUNT '<name-from-crd>' ADMIN_NAME='platform' ADMIN_RSA_PUBLIC_KEY = '<generated-by-controller>' ADMIN_USER_TYPE='SERVICE' EDITION='ENTERPRISE' REGION='<region-from-crd>' COMMENT='<description-from-crd>';
-    ```
-2.  **Initial Configuration (Generic Key-Value):**
-    Immediately following creation, the controller iterates through the **Initial Parameters** map defined in the Region Config. It generates and executes the specific `ALTER ACCOUNT` commands for every defined initial setting. This ensures the account starts with the correct defaults (e.g., Timezone) before any user interaction occurs.
-    ```sql
-    -- Apply one-time initialization settings
-    ALTER ACCOUNT SET TIMEZONE = '<timezone-from-crd>';
-    ALTER ACCOUNT SET RESOURCE_MONITOR = 'DEFAULT_MONITOR';
-    ```
-3.  **Backplane Integration:**
-    The controller binds the new account to the regional infrastructure captured in the Region Config:
+```sql
+-- 1. Instantiation: create the account.
+CREATE ACCOUNT '<name-from-crd>' ADMIN_NAME='platform' ADMIN_RSA_PUBLIC_KEY = '<generated-by-controller>' ADMIN_USER_TYPE='SERVICE' EDITION='ENTERPRISE' REGION='<region-from-crd>' COMMENT='<description-from-crd>';
 
-    ```sql
-    -- 1. Bind to Regional PrivateLink (The "Plug-in" Step)
-    -- TODO investigate regional private link configuration
-    SYSTEM$AUTHORIZE_PRIVATELINK('<cloud_provider_id>', '<federated_token>');
+-- 2. Backplane Integration: bind the new account to the regional infrastructure
+-- held in the region's Region Config entry.
+ALTER ACCOUNT SET ENABLE_INTERNAL_STAGES_PRIVATELINK = true;
+ALTER ACCOUNT SET S3_STAGE_VPCE_DNS_NAME = '<network.s3_stage_vpce_dns_name-from-region-config>';
 
-    -- 2. Enable Regional Storage Integration
-    ALTER ACCOUNT SET ENABLE_INTERNAL_STAGES_PRIVATELINK = true;
-    ALTER ACCOUNT SET S3_STAGE_VPCE_DNS_NAME = "<dns-value-from-crd>";  
+-- 2a. Create one network rule per entry in the region's network.ingressRules
+CREATE NETWORK RULE <name-from-region-config> TYPE = <type-from-region-config> MODE = INGRESS
+  VALUE_LIST = (<vpceId-and/or-cidrs-from-region-config>);
+-- ... repeated for every ingress rule in the region's entry
 
-    -- 3. Replicate groups from org to account 
-    -- TODO investigate preview feature
-    -- ALTER ACCOUNT ADD ORGANIZATION USER GROUP '<group-name-from-crd>';
+-- 2b. Attach those rules to the account via the platform's fixed network policy
+CREATE NETWORK POLICY PLATFORM_ACCOUNT_POLICY
+  ALLOWED_NETWORK_RULE_LIST = (<all-rule-names-from-region-config>);
+ALTER ACCOUNT SET NETWORK_POLICY = 'PLATFORM_ACCOUNT_POLICY';
+```
 
-    -- 4. Enable replication feature, if account is labeled as prod in CRD  
-    SELECT SYSTEM$GLOBAL_ACCOUNT_SET_PARAMETER('<name-from-crd>', 'ENABLE_ACCOUNT_DATABASE_REPLICATION', 'true'); 
-    ```
-
-Once created, initialized, and bound, the account is live. The controller then proceeds to the ongoing configuration and enforcement loop described in 3.4.
+**Note:** Snowflake is expected to release a new feature/syntax called Organization Policies, which will let this same network policy be enforced centrally on the account rather than via the `ALTER ACCOUNT` commands above. Once that syntax is available, this implementation will be swapped to use it — the enforced policy stays the same, but tenants will no longer be able to modify or unset it themselves. Not yet released as of this writing.
 
 
 ### 3.4 Configuring an Account
