@@ -151,42 +151,42 @@ The following diagram shows how the three documents that drive account creation 
 
 ```mermaid
 flowchart LR
-    Tenant([Tenant]) -->|commits| CRD[SnowflakeAccount CRD]
-    Ops([Platform Ops]) -->|defines| ConfigRules[ConfigRules 3.3]
+    Tenant([Tenant]) -->|commits| CRD[SnowflakeAccount CRD 3.1]
+    Ops([Platform Ops]) -->|defines| ValidationRules[Validation & Defaults 3.3]
     Ops -->|defines| PlatformConfig[Platform Config 3.4.1]
 
     CRD --> Controller[[Controller]]
-    ConfigRules -->|gates & defaults| Controller
+    ValidationRules -->|gates & defaults| Controller
     PlatformConfig -->|backplane & baseline| Controller
 
     Controller -->|create flow 3.4.2| Snowflake[(Snowflake Account)]
 ```
 
 
-### 3.3 ConfigRules
+### 3.3 Validation & Defaults
 
-ConfigRules gates and defaults the *user's input* before it is ever applied to Snowflake. It governs everything a tenant may write into a `SnowflakeAccount` CRD — including the `networkPolicy.whitelisting` connections consumed by the create flow that follows (3.4.4) — before the controller's create flow (3.4) ever runs.
+Validation & Defaults gates and defaults the *user's input* before it is ever applied to Snowflake. It governs everything a tenant may write into a `SnowflakeAccount` CRD — including the `networkPolicy.whitelisting` connections consumed by the create flow that follows (3.4.4) — before the controller's create flow (3.4) ever runs.
 
-**Scope:** ConfigRules applies exclusively to `SnowflakeAccount` resources. Other resource types have their own separate validation mechanisms.
+**Scope:** Validation & Defaults applies exclusively to `SnowflakeAccount` resources. Other resource types have their own separate validation mechanisms.
 
   * **Validation:** Gates user input. If a user tries to commit a CRD that violates these patterns (e.g., bad naming, unsafe IP ranges), the resource is rejected with a validation error.
   * **Defaults:** Populates fields in the CRD if the user omits them.
 
-**Connection Validation:** ConfigRules governs how a tenant may reference each named connection (`agn`, `public`, …) under `networkPolicy.whitelisting`, via a single value per connection:
+**Connection Validation:** Validation & Defaults governs how a tenant may reference each named connection (`agn`, `public`, …) under `networkPolicy.whitelisting`, via a single value per connection:
 
   * **`"/NN"`** — a CIDR is **required**, capped at width `/NN` (the widest block allowed). E.g. `"/16"` accepts `/16`–`/32` and rejects anything broader.
   * **`"full"`** — no CIDR may be given; the user references the connection alone and inherits its full Platform Config range. Used for dev convenience and for VPCE-only connections that have no CIDR to narrow.
   * **`"off"`** — the connection may not be referenced at all.
 
-A connection not listed falls through to `defaultConnection`. Containment (does an entry sit inside the connection's range?) is **not** re-checked here — the network-policy builder enforces it at create time (3.4.4). ConfigRules only gates whether a CIDR is required, forbidden, or size-capped.
+A connection not listed falls through to `defaultConnection`. Containment (does an entry sit inside the connection's range?) is **not** re-checked here — the network-policy builder enforces it at create time (3.4.4). Validation & Defaults only gates whether a CIDR is required, forbidden, or size-capped.
 
-**Matching Strategy (Top-Down):** Rules are evaluated top-down. Operators define a broad global baseline first, followed by specific rules that override settings for specific regions or environments. Changes to ConfigRules are validated immediately and applied automatically during the next reconciliation cycle.
+**Matching Strategy (Top-Down):** Rules are evaluated top-down. Operators define a broad global baseline first, followed by specific rules that override settings for specific regions or environments. Changes to Validation & Defaults are validated immediately and applied automatically during the next reconciliation cycle.
 
-<!-- TODO: Define the ConfigRules schema/field table and its match-selector semantics. -->
+<!-- TODO: Define the Validation & Defaults schema/field table and its match-selector semantics. -->
 
 ```yaml
-# Example ConfigRules (governs user-committed SnowflakeAccount YAML)
-configRules:
+# Example Validation & Defaults rules (governs user-committed SnowflakeAccount YAML)
+validationRules:
   # 1️⃣ Global Baseline (Applies to everyone unless overridden)
   - match:
       environment: "*"
