@@ -16,7 +16,7 @@ The Snowflake Multi-Account Platform aims to deliver a secure, scalable, and ful
 
 **Scope:**
 * **Self-Service:** Enable teams to create and manage their own Snowflake accounts (tenants) without dependency on central operations tickets.
-* **Enterprise Security:** Ensure compliance through automated guardrails and continuous drift detection.
+* **Enterprise Security:** Ensure compliance through automated guardrails and server-side policy enforcement.
 * **Multi-Cloud/Region:** Support uniform operations across AWS and Azure regions.
 * **Integration:** Provide seamless connectivity with existing enterprise self-service and Identity Access Management (IAM) systems.
 
@@ -120,6 +120,7 @@ spec:
   networkPolicy:
     whitelisting:
       - user: airflow
+        connection: agn        # named network from the Platform Config; resolved to a VPCE per region
         allowedIPs:
           - 10.23.45.0/24
   # --- Allow human users to bypass SSO ---
@@ -149,27 +150,35 @@ Because the network integration is pre-configured and active, new accounts simpl
 
 ### 3.3 Creating an Account
 
-Account creation is the act of turning a committed `SnowflakeAccount` CRD into a live, network-bound Snowflake account. It draws on the **Region Config** — a platform-owned artifact that captures the per-region backplane — and then runs the controller's create flow.
+Account creation is the act of turning a committed `SnowflakeAccount` CRD into a live, network-bound Snowflake account. It draws on the **Platform Config** — a platform-owned artifact that captures the org-wide security baseline and the per-region backplane — and then runs the controller's create flow.
 
-#### 3.3.1 Region Config
+#### 3.3.1 Platform Config
 
-The Region Config is **Platform Configuration**: settings applied directly against Snowflake that are invisible to the user and independent of the CRD. It is owned by platform operators, not tenants, and is structured **by region**, with each cloud region the platform supports having its own entry under `regions`.
+The Platform Config holds **Platform Configuration**: settings applied directly against Snowflake that are invisible to the user and independent of the CRD. It is owned by platform operators, not tenants. It has two parts: a top-level `enforcedParameters` map — the org-wide security baseline applied to every account regardless of region — and a `regions` map holding one entry per cloud region the platform supports.
 
 Bringing a region online is a manual, one-time procedure carried out by platform operators before the region can be consumed:
 
   1. Ops runs `yukimi-infra`, the Terraform project that provisions the region's backplane.
   2. Ops opens the follow-up tickets needed to finalize the region (e.g., a DNS change, Snowflake accepting the VPC endpoint connection).
   3. Ops tests the region to confirm the backplane works end-to-end.
-  4. Once verified, ops adds the region's entry to the Region Config, using the Terraform outputs (S3 VPC endpoint DNS, browser-login ingress ranges) and setting `active: true`.
+  4. Once verified, ops adds the region's entry to the Platform Config, using the Terraform outputs (S3 VPC endpoint DNS, browser-login ingress ranges) and setting `active: true`.
   5. The region is now available: the controller can provision `SnowflakeAccount` resources into it.
 
-When a user creates a `SnowflakeAccount`, the controller takes the `region` field from the CRD and uses it to look up that region's entry in the Region Config. The values found there — the backplane network settings and the platform's baseline ingress rules — are combined with the CRD's own fields to construct the SQL that provisions and binds the account. This flow is described in detail in 3.3.2.
+When a user creates a `SnowflakeAccount`, the controller takes the `region` field from the CRD and uses it to look up that region's entry in the Platform Config. The values found there — the backplane network settings and the platform's baseline ingress rules — are combined with the CRD's own fields to construct the SQL that provisions and binds the account. This flow is described in detail in 3.3.2.
 
 ```yaml
-# Region Config (platform-owned). Organized by region; captures what's needed to
-# bring a region online and bind an account to it.
+# Platform Config (platform-owned). Captures the org-wide security baseline enforced on
+# every account, plus what's needed to bring a region online and bind an account to it.
 # yukimi-infra adds a new entry under `regions` each time a region is provisioned.
-regionConfig:
+platformConfig:
+
+  # --- ENFORCED PARAMETERS: org-wide security baseline, applied to every account
+  # in every region. Owned by platform ops; invisible to and unchangeable by tenants.
+  # Enforced server-side via Snowflake Organization Policies (3.4.3), so accounts
+  # cannot drift out of compliance in the first place.
+  enforcedParameters:
+    PREVENT_UNLOAD_TO_INLINE_URL: "true"  # block data exfiltration to arbitrary URLs
+    REQUIRE_STORAGE_INTEGRATION_FOR_STAGE_CREATION: "true"
 
   # --- REGIONS: one entry per cloud region, filled in by yukimi-infra ---
   regions:
@@ -177,54 +186,60 @@ regionConfig:
     aws-eu-central-1:
       active: true
 
-      # Backplane values from Terraform, plus this region's baseline ingressRules.
+      # Backplane values from Terraform, plus this region's named networks.
       network:
         s3_stage_vpce_dns_name: "*.vpce-sd98fs0d9f8g.s3.eu-central-1.vpce.amazonaws.com"
-        ingressRules:
-          - name: "CORP_VPN_INGRESS"
+
+        # Named networks: each is an ingress path (VPCE or public internet) with a
+        # tenant-facing handle. `baseCIDRs` is the platform's always-on whitelisting for
+        # that path, applied to every account regardless of the CRD. Tenants reference the
+        # name in their whitelisting and may add narrower CIDRs on top (subject to 3.4.1).
+        networks:
+          agn:                                    # Allianz Global Network (corp VPN)
             type: "AWSVPCEID"
             vpceId: "vpce-00006900000000001"
-            cidrs: ["172.16.0.0/12"]
-          - name: "DBT_CLOUD_INGRESS"
+            baseCIDRs: ["172.16.0.0/12"]          # always allowed
+          dbt-cloud:
             type: "AWSVPCEID"
-            vpceId: "vpce-00006900000000004" # no cidrs: allow all traffic through this endpoint
-          - name: "PUBLIC_OFFICE_INGRESS"
+            vpceId: "vpce-00006900000000004"      # no baseCIDRs: allow all traffic via this endpoint
+          public:
             type: "IPV4"
-            cidrs: ["203.0.113.0/24"]
+            baseCIDRs: ["203.0.113.0/24"]         # platform office egress — always allowed
 
     # A region can be staged ahead of time and switched on once its backplane is confirmed.
     aws-eu-west-3:
       active: false
       network:
         s3_stage_vpce_dns_name: "*.vpce-9f8g7h6j5k.s3.eu-west-3.vpce.amazonaws.com"
-        ingressRules:
-          - name: "CORP_VPN_INGRESS"
+        networks:
+          agn:
             type: "AWSVPCEID"
             vpceId: "vpce-00006900000000008"
-            cidrs: ["10.0.0.0/8"]
+            baseCIDRs: ["10.0.0.0/8"]
 ```
 
 #### 3.3.2 Create Flow
 
-When the controller observes a `SnowflakeAccount` that does not yet exist in Snowflake, it runs the following script, drawing on two inputs: the `SnowflakeAccount` CRD itself, and the Region Config entry for `spec.region` — the controller looks up that region's entry in `regionConfig.regions` by the CRD's `region` field before it can resolve any of the values below.
+When the controller observes a `SnowflakeAccount` that does not yet exist in Snowflake, it runs the following script, drawing on two inputs: the `SnowflakeAccount` CRD itself, and the Platform Config entry for `spec.region` — the controller looks up that region's entry in `platformConfig.regions` by the CRD's `region` field before it can resolve any of the values below.
 
 ```sql
 -- 1. Instantiation: create the account.
 CREATE ACCOUNT '<name-from-crd>' ADMIN_NAME='platform' ADMIN_RSA_PUBLIC_KEY = '<generated-by-controller>' ADMIN_USER_TYPE='SERVICE' EDITION='ENTERPRISE' REGION='<region-from-crd>' COMMENT='<description-from-crd>';
 
 -- 2. Backplane Integration: bind the new account to the regional infrastructure
--- held in the region's Region Config entry.
+-- held in the region's Platform Config entry.
 ALTER ACCOUNT SET ENABLE_INTERNAL_STAGES_PRIVATELINK = true;
 ALTER ACCOUNT SET S3_STAGE_VPCE_DNS_NAME = '<network.s3_stage_vpce_dns_name-from-region-config>';
 
--- 2a. Create one network rule per entry in the region's network.ingressRules
-CREATE NETWORK RULE <name-from-region-config> TYPE = <type-from-region-config> MODE = INGRESS
-  VALUE_LIST = (<vpceId-and/or-cidrs-from-region-config>);
--- ... repeated for every ingress rule in the region's entry
+-- 2a. Create one network rule per named network in the region's network.networks,
+-- combining its baseCIDRs with any tenant allowedIPs that reference this network.
+CREATE NETWORK RULE <network-name-from-region-config> TYPE = <type-from-region-config> MODE = INGRESS
+  VALUE_LIST = (<vpceId-and/or-baseCIDRs-plus-tenant-allowedIPs>);
+-- ... repeated for every named network in the region's entry
 
 -- 2b. Attach those rules to the account via the platform's fixed network policy
 CREATE NETWORK POLICY PLATFORM_ACCOUNT_POLICY
-  ALLOWED_NETWORK_RULE_LIST = (<all-rule-names-from-region-config>);
+  ALLOWED_NETWORK_RULE_LIST = (<all-network-names-from-region-config>);
 ALTER ACCOUNT SET NETWORK_POLICY = 'PLATFORM_ACCOUNT_POLICY';
 
 -- 3. Identity Integration: import the org user groups referenced in the CRD's
@@ -259,9 +274,38 @@ ALTER ACCOUNT ADD ORGANIZATION USER GROUP '<group-name-from-crd>';
 
 **TODO:** Either all users and groups are synced with SCIM or the controller must trigger to add all groups in the CRD to the Azure Entra ID Enterprise App.
 
+#### 3.3.4 Whitelisting Technical Users
+
+Technical users (service accounts like `airflow`) are the highest-value credential in an account: their tokens are long-lived and machine-held, so a leaked token is the platform's primary blast-radius concern. The `networkPolicy.whitelisting` field exists to contain that blast radius. The guiding principle is **deny-by-default**: a technical user with no whitelisting entry gets an **empty** network policy and therefore cannot log in from anywhere. Access is granted only by an explicit, narrow entry naming the user and the network they may reach.
+
+The intent is to force customers to commit to a tight ingress path for each technical user rather than reusing the broad browser-access ranges meant for humans (`agn`, `public`). A narrow per-user policy binds the token to the environment it is intended for: if it is copied elsewhere — such as a human workstation — it stops working.
+
+Each `allowedIPs` entry must fall inside the range the referenced connection defines in the Platform Config (3.3.1). The network-policy builder checks this containment at create time; an entry outside the connection's range — or any CIDR on a VPCE-only connection that defines none — is rejected.
+
+Snowflake network policies are either/or at the user level: setting `NETWORK_POLICY` on a user fully overrides the account-level default rather than merging with it. So each `user` referenced in `whitelisting` gets its own dedicated network policy, built from every whitelisting entry that names them; a user with no entry gets a dedicated policy that allows nothing.
+
+```sql
+-- For each distinct user in networkPolicy.whitelisting, create one network rule per
+-- named network that user's entries reference, combining that network's baseCIDRs
+-- (from the Platform Config) with the entry's own allowedIPs.
+CREATE NETWORK RULE <user-and-network-derived-name> TYPE = <type-from-region-config> MODE = INGRESS
+  VALUE_LIST = (<vpceId-and/or-baseCIDRs-plus-entry-allowedIPs>);
+-- ... repeated for every named network referenced by this user's entries
+
+-- Collect that user's rules into a single dedicated policy — one policy per user,
+-- covering every network they were granted, since a user can only have one active
+-- NETWORK_POLICY at a time.
+CREATE NETWORK POLICY <user-derived-policy-name>
+  ALLOWED_NETWORK_RULE_LIST = (<all-rule-names-for-this-user>);
+ALTER USER '<user-from-crd>' SET NETWORK_POLICY = '<user-derived-policy-name>';
+-- ... repeated for every distinct user in networkPolicy.whitelisting
+```
+
+**Note:** As with the account-level policy in 3.3.2, once Snowflake's Organization Policies feature is available these per-user policies will be enforced centrally as org policies rather than through `ALTER USER ... SET NETWORK_POLICY`. The deny-by-default posture and the per-user narrowing stay the same; the enforcement mechanism moves server-side so tenants cannot loosen it. Not yet released as of this writing.
+
 ### 3.4 Configuring an Account
 
-After an account exists, its ongoing shape is governed by two things: the **ConfigRules** that gate and default what a tenant may write in their CRD, and the continuous reconcile loop that keeps the live account aligned with both the CRD and the platform's Region Config.
+After an account exists, its ongoing shape is governed by two things: the **ConfigRules** that gate and default what a tenant may write in their CRD, and the **Organization Policies** that enforce the Platform Config security baseline server-side.
 
 #### 3.4.1 ConfigRules
 
@@ -272,18 +316,17 @@ ConfigRules gates and defaults the *user's input* before it is ever applied to S
   * **Validation:** Gates user input. If a user tries to commit a CRD that violates these patterns (e.g., bad naming, unsafe IP ranges), the resource is rejected with a validation error.
   * **Defaults:** Populates fields in the CRD if the user omits them.
 
-**CIDR Validation (two independent checks):** Each entry a tenant lists under `networkPolicy.whitelisting[].allowedIPs` is validated against two separate constraints, and must satisfy both:
+**Connection Validation:** ConfigRules governs how a tenant may reference each named connection (`agn`, `public`, …) under `networkPolicy.whitelisting`, via a single value per connection:
 
-  1. **Containment** — the entry must be a subset of one of the `allowedCIDRs` supernets (e.g. Allianz corporate space). This keeps whitelisted ranges within approved networks. Note that `allowedCIDRs` may itself contain broad blocks like `10.0.0.0/8` — that is the *allowed supernet* a tenant's entry must fit inside, a distinct role from the tenant's own (narrower) entry.
-  2. **Size** — the entry must not be too large a block, capped by `maxCIDR` (the widest block a tenant may whitelist). Any entry wider than `maxCIDR` is rejected. With `maxCIDR: "/24"`, a `/24`–`/32` is accepted while `/8`, `/16`, and `0.0.0.0/0` are all rejected.
+  * **`"/NN"`** — a CIDR is **required**, capped at width `/NN` (the widest block allowed). E.g. `"/16"` accepts `/16`–`/32` and rejects anything broader.
+  * **`"full"`** — no CIDR may be given; the user references the connection alone and inherits its full Platform Config range. Used for dev convenience and for VPCE-only connections that have no CIDR to narrow.
+  * **`"off"`** — the connection may not be referenced at all.
 
-Both must hold: e.g. `10.23.45.0/24` passes, `10.0.0.0/8` fails on size, and `1.1.1.0/24` fails on containment.
+A connection not listed falls through to `defaultConnection`. Containment (does an entry sit inside the connection's range?) is **not** re-checked here — the network-policy builder enforces it at create time (3.3.4). ConfigRules only gates whether a CIDR is required, forbidden, or size-capped.
 
 **Matching Strategy (Top-Down):** Rules are evaluated top-down. Operators define a broad global baseline first, followed by specific rules that override settings for specific regions or environments. Changes to ConfigRules are validated immediately and applied automatically during the next reconciliation cycle.
 
-<!-- TODO: Define the ConfigRules schema/field table and its match-selector semantics.
-     Now that platform config lives in the Region Config (3.3.1), confirm whether the
-     two artifacts share the same top-down matching engine or diverge. -->
+<!-- TODO: Define the ConfigRules schema/field table and its match-selector semantics. -->
 
 ```yaml
 # Example ConfigRules (governs user-committed SnowflakeAccount YAML)
@@ -302,25 +345,36 @@ configRules:
         groupNames: "^[A-Z0-9_]+$"            # Name pattern for group names
         allowedRegions:
           - "*"
-        allowedCIDRs:                 # containment: an entry must be a subset of one of these
-          - "10.0.0.0/8"    # Corporate Network
-          - "172.16.0.0/12"
-          - "192.168.0.0/16"
-        maxCIDR: "/24"                # size cap: widest block a tenant may whitelist (rejects /8, /16, 0.0.0.0/0)
+        connections:              # per-connection: "/NN" = CIDR required (max width),
+          agn: "/16"              #   "full" = no CIDR (inherit full range), "off" = forbidden
+          public: "/32"           # public: single IPs only
+          dbt-cloud: "full"       # VPCE-only: no CIDR to narrow
+        defaultConnection: "off"  # unlisted connection → rejected
 
       # Defaults: Applied if user omits these fields in their CRD.
       defaults:
         timeZone: "UTC"
 
-  # 2️⃣ Allianz DE Overrides
+  # 2️⃣ Dev Overrides — agn needs no CIDR (convenience)
+  - match:
+      environment: "dev"
+
+    policy:
+      validation:
+        connections:
+          agn: "full"             # just `connection: agn`, no allowedIPs
+
+  # 3️⃣ Allianz DE Overrides
   - match:
       department: "Allianz_DE"
 
     policy:
       validation:
-          allowedRegions:
-            - "aws-eu-central-1"   # Frankfurt
-            - "aws-eu-west-3"      # Paris
+        allowedRegions:
+          - "aws-eu-central-1"    # Frankfurt
+          - "aws-eu-west-3"       # Paris
+        connections:
+          agn: "/24"              # DE tightens agn further
 ```
 
 #### 3.4.2 User Configuration Surface
@@ -329,39 +383,19 @@ configRules:
      currently appear only in the 3.1 example. Cover:
        - groups: accountAdmin / sysAdmin / userManaged and their GIAM/SCIM mapping
        - networkPolicy.whitelisting: strict mode (allowedIPs) vs additive mode
-         (additionalIPs), and how each composes with the Region Config global policy
+         (additionalIPs), and how each composes with the Platform Config global policy
        - authPolicy.exceptions: rsaKeyAllowed / patKeyAllowed / reason and the
          SSO-bypass semantics -->
 
-The tenant configures their account through the `groups`, `networkPolicy`, and `authPolicy` sections of the `SnowflakeAccount` spec (see the example in 3.1). TODO: document each field's behavior and how it composes with the platform's Region Config baseline.
+The tenant configures their account through the `groups`, `networkPolicy`, and `authPolicy` sections of the `SnowflakeAccount` spec (see the example in 3.1). TODO: document each field's behavior and how it composes with the Platform Config baseline.
 
-#### 3.4.3 Reconcile: Drift Detection & Parameter Enforcement
+#### 3.4.3 Parameter Enforcement via Organization Policies
 
-The controller implements a continuous reconciliation loop. For every `SnowflakeAccount` event on an existing account, it performs the following logical phases to ensure the actual state matches the desired state defined by the user and the platform.
+The security baseline in `enforcedParameters` (3.3.1) is enforced **server-side by Snowflake Organization Policies**, not by a controller-side drift loop. The platform sets these policies once at the organization level; Snowflake then applies them to every account and rejects any `ALTER` that would violate them. This is prevention rather than correction — a non-compliant change never takes effect in the first place, so there is no drift window to detect or revert.
 
-**Phase 1: State Discovery**
-The controller queries Snowflake to fetch the current state of the account:
+Because enforcement lives server-side, the controller does not poll accounts or issue `ALTER ACCOUNT SET` to revert parameters. Its role for the baseline is limited to establishing the Organization Policies (an ops/bootstrap concern) and surfacing compliance state on the CRD; ongoing enforcement requires no per-account controller action.
 
-  * `SHOW ACCOUNTS LIKE ...` to verify existence.
-  * `SHOW PARAMETERS ...` to check current settings, including retention limits, network policies, and timeouts.
-
-**Phase 2: Parameter Enforcement (SQL Generation)**
-The controller iterates through the **Enforced Parameters** map (defined in the Region Config, 3.3.1). For each parameter, it compares the **Policy value** against the **Live Value** retrieved from Snowflake in Phase 1.
-
-If a deviation is detected, it generates the specific SQL to revert that parameter:
-
-```sql
--- Example: Controller detects drift in timeout or network policy
-ALTER ACCOUNT SET USER_TASK_TIMEOUT_MS = '10800000';
-ALTER ACCOUNT SET PREVENT_UNLOAD_TO_INLINE_URL = 'true';
-```
-
-**Phase 3: Status Update**
-Finally, the controller updates the Kubernetes `status` subresource:
-
-  * **Success:** Set `Ready=True`, `Synced=True`, and populate `status.accountUrl`.
-  * **Compliance:** If parameters were reverted during enforcement, update the `Compliance` condition (Status=`True`, Reason=`PolicyEnforced`) and list the reverted keys in the message.
-  * **Failure:** Set `Ready=False` with a standardized error reason (as defined in Section 7).
+**Note:** The `enforcedParameters` map remains the single source of truth for the baseline regardless of mechanism. Where a given parameter is not yet expressible as an Organization Policy, it is documented as a gap rather than backfilled by a drift loop.
 
 
 ### 3.5 Security Constraints
@@ -399,23 +433,20 @@ The **`region`** and **`name`** of a `SnowflakeAccount` are **Immutable** after 
 
 ### 3.6 Compliance & Auditability
 
-Compliance in this platform is not verified by human audit but enforced by continuous code execution. This section defines the architectural strategies for defense-in-depth and the evidence required for regulatory reporting.
+Compliance in this platform is not verified by human audit but enforced server-side by Snowflake Organization Policies. This section defines the enforcement strategy and the evidence required for regulatory reporting.
 
-#### 1. Defense in Depth (Organization vs. Account)
+#### 1. Server-Side Prevention (Organization Policies)
 
-The platform employs a two-tiered enforcement strategy to minimize the "time-to-remediation" gap.
+The platform enforces its security baseline through Snowflake's native **Organization Policies**. This is prevention, not correction: policies are set once at the organization level, and Snowflake applies them to every account and blocks any `ALTER` that would violate them. A non-compliant action is rejected the moment it is attempted rather than reverted after the fact, which eliminates the "time-to-remediation" gap entirely — there is no window in which an account sits out of compliance.
 
-  * **Tier 1: Server-Side Prevention (Organization Policies):**
-    Where available, the platform leverages Snowflake's native Organization Policies (e.g., Image Restrictions). This is the preferred mechanism as it prevents non-compliant actions from occurring in the first place (blocking the `ALTER` command) rather than reverting them after the fact.
-  * **Tier 2: Controller-Side Correction (Automated Drift):**
-    For settings not yet covered by Organization Policies, the Controller's reconciliation loop acts as the mandatory fallback. It detects and reverts unauthorized changes within minutes, ensuring that no account remains non-compliant.
+Any parameter in the `enforcedParameters` baseline (3.3.1) that is not yet expressible as an Organization Policy is tracked as a known gap. The platform does not fall back to a controller-side drift loop to cover such gaps.
 
 #### 2. Auditability & Evidence
 
-To satisfy regulatory requirements, the controller provides a transparent, immutable audit trail of every enforcement action.
+To satisfy regulatory requirements, compliance state is transparent and queryable.
 
-  * **Kubernetes Events:** The controller emits permanent events for the historical log whenever an enforcement action occurs.
-  * **Status Visibility:** The `SnowflakeAccount` status exposes the current compliance state via standard conditions. This allows operators to instantly query the cluster to identify accounts that are fighting against the baseline configuration, distinguishing active enforcement from system errors.
+  * **Organization Policy Audit:** Because the baseline is enforced server-side, Snowflake's own logs record every attempt that a policy blocked, providing an immutable trail of prevented violations at the source.
+  * **Status Visibility:** The `SnowflakeAccount` status exposes the current compliance state via standard conditions, allowing operators to instantly query the cluster to confirm which accounts are bound by the platform baseline.
 
 
 
@@ -520,7 +551,7 @@ Every Custom Resource (CR) in this platform surfaces three standard condition ty
 | :--- | :--- | :--- |
 | **`Ready`** | **Availability** | Indicates whether the resource is provisioned and usable. <br>**During Creation:** Set to **False** until the resource is successfully created. Creation errors are reported here. <br>**After Creation:** Set to **True** once the resource is fully operational. <br>**During Updates:** Remains **True** (updates are non-disruptive). |
 | **`Synced`** | **State Consistency** | Indicates whether the live state matches the desired state. <br>**During Creation:** Set to **True** once the CRD is accepted and processing begins. <br>**After Creation:** Remains **True** when no changes are pending. <br>**During Updates:** Set to **False** while changes are being applied. Update errors are reported here. Returns to **True** once synchronized. |
-| **`Compliance`** | **Governance** | **True:** The account adheres to policy (even if enforced). <br>**Reason `PolicyEnforced`:** Indicates active intervention was required. |
+| **`Compliance`** | **Governance** | **True:** The account is bound by the platform's Organization Policies and adheres to the baseline. <br>**Reason `PolicyBound`:** The server-side Organization Policies are in effect for this account. |
 
 ### 7.2 Status Examples
 
