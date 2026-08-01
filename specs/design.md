@@ -147,29 +147,19 @@ Integration is performed once per region (or globally where possible) rather tha
 
 Because the network integration is pre-configured and active, new accounts simply attach to this existing infrastructure via automated SQL commands. This mechanism transforms provisioning from a manual infrastructure project into an instant, logical operation.
 
-The following diagram summarizes the end-to-end provisioning flow: the tenant's CRD is gated by ConfigRules (3.3) before the controller draws on the Platform Config (3.4.1) to create and bind the account (3.4.2).
+The following diagram shows how the three documents that drive account creation relate to each other and who owns each one:
 
 ```mermaid
-sequenceDiagram
-    actor Tenant
-    participant Controller
-    participant ConfigRules as ConfigRules (3.3)
-    participant PlatformConfig as Platform Config (3.4.1)
-    participant Snowflake
+flowchart LR
+    Tenant([Tenant]) -->|commits| CRD[SnowflakeAccount CRD]
+    Ops([Platform Ops]) -->|defines| ConfigRules[ConfigRules 3.3]
+    Ops -->|defines| PlatformConfig[Platform Config 3.4.1]
 
-    Tenant->>Controller: commit SnowflakeAccount CRD
-    Controller->>ConfigRules: validate & default spec
-    alt invalid
-        ConfigRules-->>Controller: validation error
-        Controller-->>Tenant: reject (status: validation error)
-    else valid
-        ConfigRules-->>Controller: validated & defaulted spec
-        Controller->>PlatformConfig: look up region entry (spec.region)
-        PlatformConfig-->>Controller: backplane network + baseline
-        Controller->>Snowflake: create account, network policy,<br/>identity groups, OIDC (3.4)
-        Snowflake-->>Controller: account provisioned
-        Controller-->>Tenant: status: Ready
-    end
+    CRD --> Controller[[Controller]]
+    ConfigRules -->|gates & defaults| Controller
+    PlatformConfig -->|backplane & baseline| Controller
+
+    Controller -->|create flow 3.4.2| Snowflake[(Snowflake Account)]
 ```
 
 
