@@ -394,10 +394,44 @@ Isolation is enforced physically by the storage path of the credentials in **AWS
 
 * **The Trust Anchor:** The **Kubernetes Namespace** (`metadata.namespace`) is the sole source of truth for tenancy. It is derived directly from the runtime environment (not user input) and is used to cryptographically bind the account to the team's sandbox.
 * **Path Construction:** The controller must construct the ASM Secret ID using the following strict pattern:
-    `snowflake/tenant/<kubernetes-ns>/<org-name>/<account-name>/platform-credentials`
+    `snowflake/tenant/<snowflake-org-name>/<kubernetes-ns>/<snowflake-account-name>/platform-credentials`
 * **The Constraint:** When the controller attempts to access an existing account, it **must** derive the lookup path using the CRD's namespace. This ensures that any attempt to manage an account outside the team's namespace will fail at the AWS IAM level due to an incorrect secret path, thereby preventing cross-tenant access.
 
-#### 2. Platform User Lifecycle
+#### 2. OIDC Authentication (Optional)
+
+Every account is always created with the secret-based `platform` user described above and in 3.3.2 — that mechanism is not replaced. OIDC is an **additional**, optional authentication path layered on top of the same account, established immediately after creation, that lets the controller reach a tenant's account without reading its RSA private key from AWS Secrets Manager (ASM) on every connection.
+
+**Principal:** Unlike the account-birth credential, which belongs to a single `platform` service user, the OIDC principal is scoped to the **tenant's Kubernetes namespace** — the same trust anchor used for secret-path isolation above. The controller creates a dedicated Kubernetes `ServiceAccount` in the tenant's namespace alongside the `SnowflakeAccount` resource (e.g. `sa-<account-name>-oidc`). This ServiceAccount never runs a pod — it exists purely as an identity primitive. When the controller needs to connect to that account, it uses the Kubernetes `TokenRequest` API to mint a short-lived, narrowly-audienced JWT for that ServiceAccount, uses it once, and discards it. The token's `sub` claim — `system:serviceaccount:<namespace>:sa-<account-name>-oidc` — encodes both the tenant namespace and the account name, mirroring the granularity of the ASM secret path.
+
+**Global setup (one-time, like the network/identity backplane in 3.2):** The Kubernetes cluster's OIDC issuer and JWKS endpoint are registered once, platform-wide, as a trusted external identity provider in the Platform Config. This is an ops/bootstrap concern, not a per-account step.
+
+**Per-account setup (added to the create flow, 3.3.2):**
+
+```sql
+-- 4. OIDC Integration: trust the cluster's OIDC issuer for this account, and map
+-- this account's namespace-and-account-scoped ServiceAccount subject to one of
+-- the CRD's already-imported groups (3.3.3) — no new identity or role is created.
+CREATE SECURITY INTEGRATION PLATFORM_OIDC
+  TYPE = EXTERNAL_OAUTH OAUTH_TYPE = CUSTOM
+  OAUTH_ISSUER = '<k8s-oidc-issuer-url-from-platform-config>'
+  OAUTH_JWS_KEYS_URL = '<k8s-oidc-jwks-url-from-platform-config>'
+  OAUTH_AUDIENCE_LIST = ('snowflake')
+  EXTERNAL_OAUTH_TOKEN_USER_MAPPING_CLAIM = 'sub';
+
+-- The mapped Snowflake user's LOGIN_NAME is derived deterministically from the
+-- expected `sub` claim value, and is granted the existing imported group role
+-- (e.g. sysAdmin, 3.3.3) — OIDC authenticates as an *existing* role, it does not
+-- introduce a new one.
+ALTER USER '<sysAdmin-group-name-from-crd>' SET LOGIN_NAME = '<sub-claim-derived-from-namespace-and-account>';
+```
+
+**Isolation:** Cross-tenant access is rejected by Snowflake itself, not merely by client-side path construction. Each tenant account's `PLATFORM_OIDC` integration only maps its own namespace-and-account-derived `sub` to a valid user; a token minted for namespace B's ServiceAccount, presented to namespace A's account, matches no mapped user there and is rejected during Snowflake's own signature-and-claims verification — before any SQL executes. This is a stronger guarantee than the ASM path check above, which relies on the calling code correctly constructing a path string: here the Kubernetes API server cryptographically signs the `sub` claim, and Snowflake independently verifies it.
+
+**Fallback:** The secret-based `platform` credential in ASM remains fully functional and is not deprecated by enabling OIDC. `CREATE ACCOUNT` always requires the RSA key pair (see "Platform User Lifecycle" below), so the secret path and its isolation guarantees stay exactly as documented. OIDC is consulted first for routine reconciliation once established; the controller falls back to the ASM-stored key if OIDC is unavailable.
+
+**TODO:** Define the precise fallback trigger (automatic detection vs. explicit CRD flag), and the Kubernetes RBAC model that lets the controller mint `TokenRequest` tokens for ServiceAccounts across every tenant namespace (a cluster-scoped capability that itself deserves the same "why can this not be abused cross-tenant" scrutiny given to the ASM IAM role below).
+
+#### 3. Platform User Lifecycle
 
 The `platform` user is the high-privilege key for a specific account. Its lifecycle is tightly controlled, and its credentials must never leave the controller's memory space except for secure storage.
 
@@ -405,14 +439,14 @@ The `platform` user is the high-privilege key for a specific account. Its lifecy
 * **Atomic Provisioning:** These credentials are injected directly into the `CREATE ACCOUNT` SQL command (e.g., via the `ADMIN_RSA_PUBLIC_KEY` parameter). The `platform` user is thus **"born" simultaneously with the account**.
 * **Leakage Prevention:** These credentials must **never** be written to logs, exposed in the CRD `status`, or otherwise shared with human users. The credentials are only managed by the controller and stored outside of Kubernetes.
 
-#### 3. Credential Isolation from Kubernetes
+#### 4. Credential Isolation from Kubernetes
 
 The platform operates on the principle that the Kubernetes Namespace is an untrusted zone for high-privilege credentials.
 
 * **Access Boundary:** Credentials exist *only* in AWS Secrets Manager. Access is controlled solely by the AWS IAM Role attached to the Controller's Service Account.
 * **Result:** Even if a user gains full administrative control over their namespace, they cannot retrieve the Snowflake `ACCOUNTADMIN` credentials because they cannot assume the Controller's privileged IAM role.
 
-#### 4. Immutable Identity Binding
+#### 5. Immutable Identity Binding
 
 The **`region`** and **`name`** of a `SnowflakeAccount` are **Immutable** after creation. This prevents identity spoofing where a user creates an account, lets the secret generate, and then attempts to switch the CRD to point to a different target resource while retaining the original credentials.
 
