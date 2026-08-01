@@ -174,7 +174,7 @@ platformConfig:
 
   # --- ENFORCED PARAMETERS: org-wide security baseline, applied to every account
   # in every region. Owned by platform ops; invisible to and unchangeable by tenants.
-  # Enforced server-side via Snowflake Organization Policies (3.4.3), so accounts
+  # Enforced server-side via Snowflake Organization Policies (3.4.2), so accounts
   # cannot drift out of compliance in the first place.
   enforcedParameters:
     PREVENT_UNLOAD_TO_INLINE_URL: "true"  # block data exfiltration to arbitrary URLs
@@ -377,25 +377,11 @@ configRules:
           agn: "/24"              # DE tightens agn further
 ```
 
-#### 3.4.2 User Configuration Surface
+#### 3.4.2 Parameter Enforcement via Organization Policies
 
-<!-- TODO: Describe the tenant-facing configuration surface in prose. These fields
-     currently appear only in the 3.1 example. Cover:
-       - groups: accountAdmin / sysAdmin / userManaged and their GIAM/SCIM mapping
-       - networkPolicy.whitelisting: strict mode (allowedIPs) vs additive mode
-         (additionalIPs), and how each composes with the Platform Config global policy
-       - authPolicy.exceptions: rsaKeyAllowed / patKeyAllowed / reason and the
-         SSO-bypass semantics -->
+The platform's security baseline is enforced **server-side by Snowflake Organization Policies**, not by a controller-side drift loop. Policies are set once at the organization level; Snowflake applies them to every account and rejects any `ALTER` that would violate them — prevention rather than correction, so there is no drift window to detect or revert.
 
-The tenant configures their account through the `groups`, `networkPolicy`, and `authPolicy` sections of the `SnowflakeAccount` spec (see the example in 3.1). TODO: document each field's behavior and how it composes with the Platform Config baseline.
-
-#### 3.4.3 Parameter Enforcement via Organization Policies
-
-The security baseline in `enforcedParameters` (3.3.1) is enforced **server-side by Snowflake Organization Policies**, not by a controller-side drift loop. The platform sets these policies once at the organization level; Snowflake then applies them to every account and rejects any `ALTER` that would violate them. This is prevention rather than correction — a non-compliant change never takes effect in the first place, so there is no drift window to detect or revert.
-
-Because enforcement lives server-side, the controller does not poll accounts or issue `ALTER ACCOUNT SET` to revert parameters. Its role for the baseline is limited to establishing the Organization Policies (an ops/bootstrap concern) and surfacing compliance state on the CRD; ongoing enforcement requires no per-account controller action.
-
-**Note:** The `enforcedParameters` map remains the single source of truth for the baseline regardless of mechanism. Where a given parameter is not yet expressible as an Organization Policy, it is documented as a gap rather than backfilled by a drift loop.
+The controller's role is limited to establishing these policies (an ops/bootstrap concern) and surfacing compliance state on the CRD. It does not poll accounts or revert parameters itself. A setting not yet expressible as an Organization Policy is tracked as a known gap rather than backfilled by a drift loop.
 
 
 ### 3.5 Security Constraints
@@ -437,9 +423,7 @@ Compliance in this platform is not verified by human audit but enforced server-s
 
 #### 1. Server-Side Prevention (Organization Policies)
 
-The platform enforces its security baseline through Snowflake's native **Organization Policies**. This is prevention, not correction: policies are set once at the organization level, and Snowflake applies them to every account and blocks any `ALTER` that would violate them. A non-compliant action is rejected the moment it is attempted rather than reverted after the fact, which eliminates the "time-to-remediation" gap entirely — there is no window in which an account sits out of compliance.
-
-Any parameter in the `enforcedParameters` baseline (3.3.1) that is not yet expressible as an Organization Policy is tracked as a known gap. The platform does not fall back to a controller-side drift loop to cover such gaps.
+See 3.4.2 for how the `enforcedParameters` baseline is enforced server-side via Organization Policies rather than a controller-side drift loop.
 
 #### 2. Auditability & Evidence
 
