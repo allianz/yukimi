@@ -5,8 +5,8 @@
 1. [Introduction](#1-introduction)
 2. [Tenant Onboarding](#2-tenant-onboarding)
 3. [SnowflakeAccount Resource](#3-snowflakeaccount-resource)
-
-7. [Error Handling & Observability](#7-global-error-handling--observability)
+4. [SnowflakeDeletionRequest Resource](#4-snowflakedeletionrequest-resource)
+5. [Error Handling & Observability](#5-global-error-handling--observability)
 
 
 ## 1. Introduction
@@ -304,7 +304,7 @@ backplaneConfig:
 
   # --- ENFORCED PARAMETERS: org-wide security baseline, applied to every account
   # in every region. Owned by platform ops; invisible to and unchangeable by tenants.
-  # Enforced server-side via Snowflake Organization Policies (3.9), so accounts
+  # Enforced server-side via Snowflake Organization Policies (3.10), so accounts
   # cannot drift out of compliance in the first place.
   enforcedParameters:
     PREVENT_UNLOAD_TO_INLINE_URL: "true"  # block data exfiltration to arbitrary URLs
@@ -455,20 +455,11 @@ ALTER USER '<user-from-crd>' SET NETWORK_POLICY = '<user-derived-policy-name>';
 
 **Note:** As with the account-level policy in 3.6, once Snowflake's Organization Policies feature is available these per-user policies will be enforced centrally as org policies rather than through `ALTER USER ... SET NETWORK_POLICY`. The deny-by-default posture and the per-user narrowing stay the same; the enforcement mechanism moves server-side so tenants cannot loosen it. Not yet released as of this writing.
 
-### 3.9 Configuring an Account
-
-After an account exists, its ongoing shape is governed by the **Organization Policies** that enforce the Backplane Config security baseline server-side.
-
-The platform's security baseline is enforced **server-side by Snowflake Organization Policies**, not by a controller-side drift loop. Policies are set once at the organization level; Snowflake applies them to every account and rejects any `ALTER` that would violate them — prevention rather than correction, so there is no drift window to detect or revert.
-
-The controller's role is limited to establishing these policies (an ops/bootstrap concern) and surfacing compliance state on the CRD. It does not poll accounts or revert parameters itself. A setting not yet expressible as an Organization Policy is tracked as a known gap rather than backfilled by a drift loop.
-
-
-### 3.10 Security Constraints
+### 3.9 Security Constraints
 
 Security in this platform is not based on validation alone, but on strict structural constraints in how initial account credentials are managed. The implementation must adhere to the following definitions.
 
-#### 1. Tenant Isolation via Secret Paths
+#### 3.9.1. Tenant Isolation via Secret Paths
 
 Isolation is enforced physically by the storage path of the credentials in **AWS Secrets Manager (ASM)**.
 
@@ -477,7 +468,7 @@ Isolation is enforced physically by the storage path of the credentials in **AWS
     `snowflake/tenant/<snowflake-org-name>/<kubernetes-ns>/<snowflake-account-name>/platform-credentials`
 * **The Constraint:** When the controller attempts to access an existing account, it **must** derive the lookup path using the CRD's namespace. This ensures that any attempt to manage an account outside the team's namespace will fail at the AWS IAM level due to an incorrect secret path, thereby preventing cross-tenant access.
 
-#### 2. OIDC Authentication (Optional)
+#### 3.9.2. OIDC Authentication (Optional)
 
 Every account is always created with the secret-based `platform` user described above and in 3.6 — that mechanism is not replaced. OIDC is an **additional**, optional authentication path layered on top of the same account, established immediately after creation, that lets the controller reach a tenant's account without reading its RSA private key from AWS Secrets Manager (ASM) on every connection.
 
@@ -507,52 +498,20 @@ ALTER USER '<sysAdmin-group-name-from-crd>' SET LOGIN_NAME = '<sub-claim-derived
 
 **Isolation:** Cross-tenant access is rejected by Snowflake itself, not merely by client-side path construction. Each tenant account's `PLATFORM_OIDC` integration only maps its own namespace-and-account-derived `sub` to a valid user; a token minted for namespace B's ServiceAccount, presented to namespace A's account, matches no mapped user there and is rejected during Snowflake's own signature-and-claims verification — before any SQL executes. This is a stronger guarantee than the ASM path check above, which relies on the calling code correctly constructing a path string: here the Kubernetes API server cryptographically signs the `sub` claim, and Snowflake independently verifies it.
 
-**Fallback:** The secret-based `platform` credential in ASM remains fully functional and is not deprecated by enabling OIDC. `CREATE ACCOUNT` always requires the RSA key pair (see "Platform User Lifecycle" below), so the secret path and its isolation guarantees stay exactly as documented. OIDC is consulted first for routine reconciliation once established; the controller falls back to the ASM-stored key if OIDC is unavailable.
+**Fallback:** The secret-based `platform` credential in ASM remains fully functional and is not deprecated by enabling OIDC. `CREATE ACCOUNT` always requires the RSA key pair, so the secret path and its isolation guarantees stay exactly as documented. OIDC is consulted first for routine reconciliation once established; the controller falls back to the ASM-stored key if OIDC is unavailable.
 
 **TODO:** Define the precise fallback trigger (automatic detection vs. explicit CRD flag), and the Kubernetes RBAC model that lets the controller mint `TokenRequest` tokens for ServiceAccounts across every tenant namespace (a cluster-scoped capability that itself deserves the same "why can this not be abused cross-tenant" scrutiny given to the ASM IAM role below).
 
-#### 3. Platform User Lifecycle
 
-The `platform` user is the high-privilege key for a specific account. Its lifecycle is tightly controlled, and its credentials must never leave the controller's memory space except for secure storage.
-
-* **Generation:** Before executing the SQL to create the account, the controller generates the credentials (e.g., RSA Key Pair) in memory.
-* **Atomic Provisioning:** These credentials are injected directly into the `CREATE ACCOUNT` SQL command (e.g., via the `ADMIN_RSA_PUBLIC_KEY` parameter). The `platform` user is thus **"born" simultaneously with the account**.
-* **Leakage Prevention:** These credentials must **never** be written to logs, exposed in the CRD `status`, or otherwise shared with human users. The credentials are only managed by the controller and stored outside of Kubernetes.
-
-#### 4. Credential Isolation from Kubernetes
-
-The platform operates on the principle that the Kubernetes Namespace is an untrusted zone for high-privilege credentials.
-
-* **Access Boundary:** Credentials exist *only* in AWS Secrets Manager. Access is controlled solely by the AWS IAM Role attached to the Controller's Service Account.
-* **Result:** Even if a user gains full administrative control over their namespace, they cannot retrieve the Snowflake `ACCOUNTADMIN` credentials because they cannot assume the Controller's privileged IAM role.
-
-#### 5. Immutable Identity Binding
+#### 3.9.3. Immutable Identity Binding
 
 The **`region`** and **`name`** of a `SnowflakeAccount` are **Immutable** after creation. This prevents identity spoofing where a user creates an account, lets the secret generate, and then attempts to switch the CRD to point to a different target resource while retaining the original credentials.
 
 
-### 3.11 Compliance & Auditability
 
-Compliance in this platform is not verified by human audit but enforced server-side by Snowflake Organization Policies. This section defines the enforcement strategy and the evidence required for regulatory reporting.
+## 4. SnowflakeDeletionRequest Resource
 
-#### 1. Server-Side Prevention (Organization Policies)
-
-See 3.9 for how the `enforcedParameters` baseline is enforced server-side via Organization Policies rather than a controller-side drift loop.
-
-#### 2. Auditability & Evidence
-
-To satisfy regulatory requirements, compliance state is transparent and queryable.
-
-  * **Organization Policy Audit:** Because the baseline is enforced server-side, Snowflake's own logs record every attempt that a policy blocked, providing an immutable trail of prevented violations at the source.
-  * **Status Visibility:** The `SnowflakeAccount` status exposes the current compliance state via standard conditions, allowing operators to instantly query the cluster to confirm which accounts are bound by the platform baseline.
-
-
-
-
-
-## 6. SnowflakeDeletionRequest Resource
-
-### 6.1 Example
+### 4.1 Example
 
 ```yaml
 apiVersion: infra.snowflake.allianz.io/v1alpha1
@@ -568,26 +527,8 @@ spec:
   reason: "Ticket OPS-1234: Project sunsetting, data archived."
 ```
 
-### 6.2 Schema Specification
 
-**Fields (`spec`)**
-
-| Field Path | Type | Required | Validation / Constraints |
-| :--- | :--- | :--- | :--- |
-| `targetRef.kind` | string | **Yes** | Must be `SnowflakeAccount` or another finalizer-protected resource type. |
-| `targetRef.name` | string | **Yes** | Must match an existing resource in the same namespace. |
-| `duration` | duration | No | **Max: 8h.** Default: `1h`. Format: Go duration string (e.g., `30m`, `2h`). Defines how long the deletion window remains open. |
-| `reason` | string | **Yes** | Min length: 10 chars. Mandatory audit justification. |
-
-**Status Fields (`status`)**
-
-| Field Path | Type | Description |
-| :--- | :--- | :--- |
-| `validUntil` | timestamp | The absolute time (UTC) when this window expires. Calculated as `creationTimestamp + duration`. |
-| `state` | enum | `Active`: Window is open. <br>`Expired`: Duration passed without deletion occurring. <br>`Consumed`: Deletion successfully executed. |
-| `message` | string | Human-readable details on the current state. |
-
-### 6.3 Domain Concepts
+### 4.2 Domain Concepts
 
 #### Positive Control (The "Two-Key" System)
 
@@ -604,7 +545,7 @@ Deletion permissions are ephemeral. By defining a `duration` (max 8 hours), the 
 
 While the target resource disappears after deletion, the `SnowflakeDeletionRequest` (or its logs) remains. This creates a permanent audit trail linking the destruction of infrastructure to a specific reason (e.g., a ticket number) and a specific timeframe, satisfying compliance requirements for data destruction.
 
-### 6.4 Controller Behavior
+### 4.3 Controller Behavior
 
 The controller logic focuses on the interaction between the Target Resource (e.g., `SnowflakeAccount`) and the `SnowflakeDeletionRequest`.
 
@@ -635,13 +576,13 @@ When a user deletes a `SnowflakeAccount` (sets `deletionTimestamp`):
 
 
 
-## 7. Global Error Handling & Observability
+## 5. Global Error Handling & Observability
 
 Reliable and transparent error handling is essential for a self-service platform. To ensure a consistent user experience, the platform enforces a **standardized status schema** across all CRDs (`SnowflakeAccount`).
 
 Users must be able to instantly determine whether a resource is healthy, still reconciling, or requires manual intervention. The controller exposes this information via Kubernetes-compliant `status.conditions`.
 
-### 7.1 Condition Model
+### 5.1 Condition Model
 
 Every Custom Resource (CR) in this platform surfaces three standard condition types. These conditions provide a high-level summary of the resource's lifecycle state.
 
@@ -651,7 +592,7 @@ Every Custom Resource (CR) in this platform surfaces three standard condition ty
 | **`Synced`** | **State Consistency** | Indicates whether the live state matches the desired state. <br>**During Creation:** Set to **True** once the CRD is accepted and processing begins. <br>**After Creation:** Remains **True** when no changes are pending. <br>**During Updates:** Set to **False** while changes are being applied. Update errors are reported here. Returns to **True** once synchronized. |
 | **`Compliance`** | **Governance** | **True:** The account is bound by the platform's Organization Policies and adheres to the baseline. <br>**Reason `PolicyBound`:** The server-side Organization Policies are in effect for this account. |
 
-### 7.2 Status Examples
+### 5.2 Status Examples
 
 **Example A: A Healthy Resource**
 
