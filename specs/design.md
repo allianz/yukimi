@@ -116,10 +116,12 @@ flowchart LR
     Ops -->|defines| BackplaneConfig[Backplane Config 3.4]
 
     CRD --> Controller[[Controller]]
-    ValidationRules -->|gates & defaults| Controller
-    BackplaneConfig -->|backplane & baseline| Controller
+    Controller -->|reads| ValidationRules
+    Controller -->|reads| BackplaneConfig
 
     Controller -->|create flow 3.5| Snowflake[(Snowflake Account)]
+    Controller -->|identity integration 3.6| Snowflake
+    Controller -->|whitelisting 3.7| Snowflake
 ```
 
 
