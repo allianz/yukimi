@@ -125,7 +125,7 @@ flowchart LR
 
     subgraph createFlowGroup [" "]
         direction TB
-        CreateFlow[Create Flow 3.6] --> IdentityIntegration[Identity Integration 3.7]
+        CreateFlow[Account Bootstrapping 3.6] --> IdentityIntegration[Identity Integration 3.7]
         IdentityIntegration --> Whitelisting[Whitelisting Technical Users 3.8]
     end
 
@@ -133,7 +133,7 @@ flowchart LR
 ```
 
 
-### 3.2 Example
+### 3.2 SnowflakeAccount CRD
 
 ```yaml
 apiVersion: infra.snowflake.allianz.io/v1alpha1
@@ -175,7 +175,7 @@ spec:
 
 ### 3.3 Validation & Defaults
 
-Validation & Defaults gates and defaults the *user's input* before it is ever applied to Snowflake. It governs everything a tenant may write into a `SnowflakeAccount` CRD — including the `networkPolicy.whitelisting` connections consumed by the whitelisting logic that follows (3.8) — before the controller's create flow (3.6) ever runs.
+Validation & Defaults gates and defaults the *user's input* before it is ever applied to Snowflake. It governs everything a tenant may write into a `SnowflakeAccount` CRD — including the `networkPolicy.whitelisting` connections consumed by the whitelisting logic that follows (3.8) — before the controller's account bootstrapping (3.6) ever runs.
 
 **Scope:** Validation & Defaults applies exclusively to `SnowflakeAccount` resources. Other resource types have their own separate validation mechanisms.
 
@@ -266,7 +266,7 @@ exceptions:
 
 ### 3.5 Backplane Config
 
-Account creation is the act of turning a committed `SnowflakeAccount` CRD into a live, network-bound Snowflake account. It draws on the **Backplane Config** — a platform-owned artifact that captures the org-wide security baseline and the per-region backplane — and then runs the controller's create flow (3.6).
+Account creation is the act of turning a committed `SnowflakeAccount` CRD into a live, network-bound Snowflake account. It draws on the **Backplane Config** — a platform-owned artifact that captures the org-wide security baseline and the per-region backplane — and then runs the controller's account bootstrapping (3.6).
 
 The Backplane Config holds settings applied directly against Snowflake that are invisible to the user and independent of the CRD. It is owned by platform operators, not tenants. It has two parts: a top-level `enforcedParameters` map — the org-wide security baseline applied to every account regardless of region — and a `regions` map holding one entry per cloud region the platform supports.
 
@@ -332,7 +332,7 @@ backplaneConfig:
             baseCIDRs: ["10.0.0.0/8"]
 ```
 
-### 3.6 Create Flow
+### 3.6 Account Bootstrapping
 
 When the controller observes a `SnowflakeAccount` that does not yet exist in Snowflake, it runs the following script, drawing on two inputs: the `SnowflakeAccount` CRD itself, and the Backplane Config entry for `spec.region` — the controller looks up that region's entry in `backplaneConfig.regions` by the CRD's `region` field before it can resolve any of the values below.
 
@@ -369,7 +369,7 @@ ALTER ACCOUNT ADD ORGANIZATION USER GROUP '<group-name-from-crd>';
 
 Identity, like networking, is integrated globally rather than per account. An Azure AD SCIM sync continuously feeds enterprise users and GIAM groups into a single Organization User Group backplane in Snowflake, independent of any `SnowflakeAccount` CRD. This sync makes groups available org-wide, but a group must still be explicitly imported into an account before it can be used there.
 
-That import is what the CRD's `groups` field drives. `accountAdmin`, `sysAdmin`, and every entry in `userManaged` (see the example in 3.2) name organization groups that must already exist in the backplane; the controller imports each one into the new account as part of the create flow (3.6). Importing a group creates a matching role in the account, and its members are granted that role automatically.
+That import is what the CRD's `groups` field drives. `accountAdmin`, `sysAdmin`, and every entry in `userManaged` (see the example in 3.2) name organization groups that must already exist in the backplane; the controller imports each one into the new account as part of account bootstrapping (3.6). Importing a group creates a matching role in the account, and its members are granted that role automatically.
 
 ```sql
 -- 1. accountAdmin: import the group, then grant it ACCOUNTADMIN so its members
@@ -447,7 +447,7 @@ Every account is always created with the secret-based `platform` user described 
 
 **Global setup (one-time, like the network/identity backplane in 3.1):** The Kubernetes cluster's OIDC issuer and JWKS endpoint are registered once, platform-wide, as a trusted external identity provider in the Backplane Config. This is an ops/bootstrap concern, not a per-account step.
 
-**Per-account setup (added to the create flow, 3.6):**
+**Per-account setup (added to account bootstrapping, 3.6):**
 
 ```sql
 -- 4. OIDC Integration: trust the cluster's OIDC issuer for this account, and map
