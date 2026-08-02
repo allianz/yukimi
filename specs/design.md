@@ -107,7 +107,7 @@ Integration is performed once per region (or globally where possible) rather tha
 
 Because the network integration is pre-configured and active, new accounts simply attach to this existing infrastructure via automated SQL commands. This mechanism transforms provisioning from a manual infrastructure project into an instant, logical operation.
 
-Account creation is driven by four inputs, each owned by a different party: the customer commits the `SnowflakeAccount` CRD (3.2), OEs define the Validation & Defaults rules (3.3), ISO approves one-off Exceptions (3.4), and Platform Ops maintains the Backplane Config (3.5). The controller reads all four and reconciles them into a live account through a fixed sequence — bootstrapping the account (3.6), integrating identity (3.7), and whitelisting technical users (3.8). The diagram below shows how these inputs relate, who owns each one, and how they feed the create flow; the sections that follow detail each in turn.
+Account creation is driven by four inputs, each owned by a different party, which the controller reconciles into a live account through a fixed sequence. The diagram below shows how these inputs relate, who owns each one, and how they feed the create flow; the bullets and sections that follow detail each in turn.
 
 ```mermaid
 flowchart LR
