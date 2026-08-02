@@ -132,13 +132,13 @@ flowchart LR
     style createFlowGroup fill:transparent
 ```
 
-* **3.2 SnowflakeAccount CRD:** The customer commits a `SnowflakeAccount` CRD describing the account they want, kicking off the reconciliation flow.
-* **3.3 Validation & Defaults:** OEs (Operating Entities) define the rules that gate and default the customer's CRD input before it is ever applied to Snowflake.
-* **3.4 Exception Approval:** ISO approves one-off exceptions to what validation would otherwise reject — e.g. whitelisting a public-internet IP.
-* **3.5 Backplane Config:** Once Ops has provisioned a region's network via Terraform and closed out the follow-up setup tickets, they record the resulting IDs and IP ranges in the Backplane Config for the controller to use.
-* **3.6 Account Bootstrapping:** The controller creates the Snowflake account and binds it to the regional backplane infrastructure from the Backplane Config.
-* **3.7 Identity Integration:** The controller imports the CRD's referenced company groups into the new account, so their members can log in via SSO with their existing company roles carried over.
-* **3.8 Whitelisting Technical Users:** The controller builds a dedicated, deny-by-default network policy for each technical user named in the CRD's whitelisting entries.
+* **SnowflakeAccount CRD:** The customer commits a `SnowflakeAccount` CRD describing the account they want, kicking off the reconciliation flow.
+* **Validation & Defaults:** OEs (Operating Entities) define the rules that gate and default the customer's CRD input before it is ever applied to Snowflake.
+* **Exception Approval:** ISO approves one-off exceptions to what validation would otherwise reject — e.g. whitelisting a public-internet IP.
+* **Backplane Config:** Once Ops has provisioned a region's network via Terraform and closed out the follow-up setup tickets, they record the resulting IDs and IP ranges in the Backplane Config for the controller to use.
+* **Account Bootstrapping:** The controller creates the Snowflake account and binds it to the regional backplane infrastructure from the Backplane Config.
+* **Identity Integration:** The controller imports the CRD's referenced company groups into the new account, so their members can log in via SSO with their existing company roles carried over.
+* **Whitelisting Technical Users:** The controller builds a dedicated, deny-by-default network policy for each technical user named in the CRD's whitelisting entries.
 
 
 ### 3.2 SnowflakeAccount CRD
@@ -255,21 +255,21 @@ validationRules:
 
 When a `SnowflakeAccount` CRD fails Validation & Defaults (3.3), the controller does not reject it outright. Before returning a validation error, it checks a separate exceptions file for a matching approved exception. If one exists, the otherwise-failing input is allowed through; if not, the resource is rejected as usual.
 
-This exists for cases where a customer has a legitimate, one-off need that the standing Validation & Defaults baseline would otherwise block — for example, whitelisting the `public` connection with a wider CIDR than `defaultConnection` normally permits. Getting one added is a manual, email-driven process, not a self-service one: the customer emails ISO (Information Security Office) to request approval for their specific use case; ISO reviews it and, if approved, forwards the request to platform ops; ops then adds the corresponding entry to the exceptions file. Only after that entry exists does the customer's CRD pass validation.
+This exists for cases where a customer has a legitimate, one-off need that the standing Validation baseline would otherwise block — for example, whitelisting the `public` connection with a wider CIDR than `defaultConnection` normally permits. Getting one added is a manual, email-driven process, not a self-service one: the customer emails ISO (Information Security Office) to request approval for their specific use case; ISO reviews it and, if approved, forwards the request to platform ops; ops then adds the corresponding entry to the exceptions file. Only after that entry exists does the customer's CRD pass validation.
 
 **Ownership:** The exceptions file is owned and maintained by platform ops, not ISO — ISO grants the security approval, but ops is the one who edits the file that the controller reads. The approval itself happens outside the platform, over email; the file is just the durable record of what was approved.
-
-<!-- TODO: Define the exceptions file schema, its match/scope fields, and expiry semantics. -->
 
 ```yaml
 # Example Exceptions file (ops-owned). Approves specific, otherwise-invalid inputs
 # on a case-by-case basis, once ISO has approved them by email; matched against a
 # CRD only after Validation & Defaults (3.3) rejects it.
 exceptions:
-  - match:
-      account: "analytics-team-eu"
-      field: "networkPolicy.whitelisting.public"
-    approvedValue: "203.0.113.50/32"   # wider than defaultConnection normally allows
+  - account: "analytics-team-eu"        # exact account name — no wildcards
+    whitelisting:                         # the full entry being approved, verbatim
+      user: airflow
+      connection: public
+      allowedIPs:
+        - 203.0.113.50/32                 # wider than defaultConnection normally allows
     reason: "ISO-4821: temporary vendor integration, approved by ISO via email 2026-06-01"
 ```
 
