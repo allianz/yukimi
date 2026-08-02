@@ -119,9 +119,7 @@ flowchart LR
     Controller -->|reads| ValidationRules
     Controller -->|reads| BackplaneConfig
 
-    Controller -->|create flow 3.5| Snowflake[(Snowflake Account)]
-    Controller -->|identity integration 3.6| Snowflake
-    Controller -->|whitelisting 3.7| Snowflake
+    Controller -->|create flow 3.5-3.7| Snowflake[(Snowflake Account)]
 ```
 
 
