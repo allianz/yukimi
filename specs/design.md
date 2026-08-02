@@ -111,10 +111,10 @@ Account creation is driven by four inputs, each owned by a different party: the 
 
 ```mermaid
 flowchart LR
-    Customer([Customer]) -->|commits| CRD[SnowflakeAccount CRD 3.2]
-    OEs([OEs]) -->|defines| ValidationRules[Validation & Defaults 3.3]
-    ISO([ISO]) -->|approves| Exceptions[Exception Approval 3.4]
-    Ops([Platform Ops]) -->|defines| BackplaneConfig[Backplane Config 3.5]
+    Customer([Customer]) -->|commits| CRD["SnowflakeAccount CRD (3.2)"]
+    OEs([OEs]) -->|defines| ValidationRules["Validation & Defaults (3.3)"]
+    ISO([ISO]) -->|approves| Exceptions["Exception Approval (3.4)"]
+    Ops([Platform Ops]) -->|defines| BackplaneConfig["Backplane Config (3.5)"]
 
     CRD --> Controller[[Controller]]
     ValidationRules --> Controller
@@ -125,20 +125,20 @@ flowchart LR
 
     subgraph createFlowGroup [" "]
         direction TB
-        CreateFlow[Account Bootstrapping 3.6] --> IdentityIntegration[Identity Integration 3.7]
-        IdentityIntegration --> Whitelisting[Whitelisting Technical Users 3.8]
+        CreateFlow["Account Bootstrapping (3.6)"] --> IdentityIntegration["Identity Integration (3.7)"]
+        IdentityIntegration --> Whitelisting["Whitelisting Technical Users (3.8)"]
     end
 
     style createFlowGroup fill:transparent
 ```
 
-* **SnowflakeAccount CRD:** The customer commits a `SnowflakeAccount` CRD describing the account they want, kicking off the reconciliation flow.
-* **Validation & Defaults:** OEs (Operating Entities) define the rules that gate and default the customer's CRD input before it is ever applied to Snowflake.
-* **Exception Approval:** ISO approves one-off exceptions to what validation would otherwise reject — e.g. whitelisting a public-internet IP.
-* **Backplane Config:** Once Ops has provisioned a region's network via Terraform and closed out the follow-up setup tickets, they record the resulting IDs and IP ranges in the Backplane Config for the controller to use.
-* **Account Bootstrapping:** The controller creates the Snowflake account and binds it to the regional backplane infrastructure from the Backplane Config.
-* **Identity Integration:** The controller imports the CRD's referenced company groups into the new account, so their members can log in via SSO with their existing company roles carried over.
-* **Whitelisting Technical Users:** The controller builds a dedicated, deny-by-default network policy for each technical user named in the CRD's whitelisting entries.
+* **SnowflakeAccount CRD (3.2):** The customer commits a `SnowflakeAccount` CRD describing the account they want, kicking off the reconciliation flow.
+* **Validation & Defaults (3.3):** OEs (Operating Entities) define the rules that gate and default the customer's CRD input before it is ever applied to Snowflake.
+* **Exception Approval (3.4):** ISO approves one-off exceptions to what validation would otherwise reject — e.g. whitelisting a public-internet IP.
+* **Backplane Config (3.5):** Once Ops has provisioned a region's network via Terraform and closed out the follow-up setup tickets, they record the resulting IDs and IP ranges in the Backplane Config for the controller to use.
+* **Account Bootstrapping (3.6):** The controller creates the Snowflake account and binds it to the regional backplane infrastructure from the Backplane Config.
+* **Identity Integration (3.7):** The controller imports the CRD's referenced company groups into the new account, so their members can log in via SSO with their existing company roles carried over.
+* **Whitelisting Technical Users (3.8):** The controller builds a dedicated, deny-by-default network policy for each technical user named in the CRD's whitelisting entries.
 
 
 ### 3.2 SnowflakeAccount CRD
