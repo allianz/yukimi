@@ -113,13 +113,15 @@ The following diagram shows how the three documents that drive account creation 
 flowchart LR
     Tenant([Tenant]) -->|commits| CRD[SnowflakeAccount CRD 3.2]
     OEs([OEs]) -->|defines| ValidationRules[Validation & Defaults 3.3]
-    Ops([Platform Ops]) -->|defines| BackplaneConfig[Backplane Config 3.4]
+    ISO([ISO]) -->|approves| Exceptions[Exception Approval 3.4]
+    Ops([Platform Ops]) -->|defines| BackplaneConfig[Backplane Config 3.5]
 
     CRD --> Controller[[Controller]]
     ValidationRules --> Controller
+    Exceptions --> Controller
     BackplaneConfig --> Controller
 
-    Controller -->|create flow 3.5-3.7| Snowflake[(Snowflake Account)]
+    Controller -->|create flow 3.6-3.8| Snowflake[(Snowflake Account)]
 ```
 
 
@@ -165,7 +167,7 @@ spec:
 
 ### 3.3 Validation & Defaults
 
-Validation & Defaults gates and defaults the *user's input* before it is ever applied to Snowflake. It governs everything a tenant may write into a `SnowflakeAccount` CRD — including the `networkPolicy.whitelisting` connections consumed by the whitelisting logic that follows (3.7) — before the controller's create flow (3.5) ever runs.
+Validation & Defaults gates and defaults the *user's input* before it is ever applied to Snowflake. It governs everything a tenant may write into a `SnowflakeAccount` CRD — including the `networkPolicy.whitelisting` connections consumed by the whitelisting logic that follows (3.8) — before the controller's create flow (3.6) ever runs.
 
 **Scope:** Validation & Defaults applies exclusively to `SnowflakeAccount` resources. Other resource types have their own separate validation mechanisms.
 
@@ -178,7 +180,7 @@ Validation & Defaults gates and defaults the *user's input* before it is ever ap
   * **`"full"`** — no CIDR may be given; the user references the connection alone and inherits its full Backplane Config range. Used for dev convenience and for VPCE-only connections that have no CIDR to narrow.
   * **`"off"`** — the connection may not be referenced at all.
 
-A connection not listed falls through to `defaultConnection`. Containment (does an entry sit inside the connection's range?) is **not** re-checked here — the network-policy builder enforces it at create time (3.7). Validation & Defaults only gates whether a CIDR is required, forbidden, or size-capped.
+A connection not listed falls through to `defaultConnection`. Containment (does an entry sit inside the connection's range?) is **not** re-checked here — the network-policy builder enforces it at create time (3.8). Validation & Defaults only gates whether a CIDR is required, forbidden, or size-capped.
 
 **Matching Strategy (Top-Down):** Rules are evaluated top-down. Operators define a broad global baseline first, followed by specific rules that override settings for specific regions or environments. Changes to Validation & Defaults are validated immediately and applied automatically during the next reconciliation cycle.
 
@@ -233,9 +235,30 @@ validationRules:
           agn: "/24"              # DE tightens agn further
 ```
 
-### 3.4 Backplane Config
+### 3.4 Exception Approval
 
-Account creation is the act of turning a committed `SnowflakeAccount` CRD into a live, network-bound Snowflake account. It draws on the **Backplane Config** — a platform-owned artifact that captures the org-wide security baseline and the per-region backplane — and then runs the controller's create flow (3.5).
+When a `SnowflakeAccount` CRD fails Validation & Defaults (3.3), the controller does not reject it outright. Before returning a validation error, it checks a separate, ISO-owned exceptions file for a matching approved exception. If one exists, the otherwise-failing input is allowed through; if not, the resource is rejected as usual.
+
+This exists for cases where a tenant has a legitimate, one-off need that the standing Validation & Defaults baseline would otherwise block — for example, whitelisting the `public` connection with a wider CIDR than `defaultConnection` normally permits. Rather than loosening the baseline for everyone, ISO reviews and approves the specific case, and the approval is recorded as its own entry.
+
+**Ownership:** The exceptions file is owned and maintained by ISO (Information Security Office), not platform ops — approval is a security sign-off, distinct from the platform-defaults ownership in 3.3.
+
+<!-- TODO: Define the exceptions file schema, its match/scope fields, and expiry semantics. -->
+
+```yaml
+# Example Exceptions file (ISO-owned). Approves specific, otherwise-invalid inputs
+# on a case-by-case basis; matched against a CRD only after Validation & Defaults (3.3) rejects it.
+exceptions:
+  - match:
+      account: "analytics-team-eu"
+      field: "networkPolicy.whitelisting.public"
+    approvedValue: "203.0.113.50/32"   # wider than defaultConnection normally allows
+    reason: "ISO-4821: temporary vendor integration, reviewed 2026-06-01"
+```
+
+### 3.5 Backplane Config
+
+Account creation is the act of turning a committed `SnowflakeAccount` CRD into a live, network-bound Snowflake account. It draws on the **Backplane Config** — a platform-owned artifact that captures the org-wide security baseline and the per-region backplane — and then runs the controller's create flow (3.6).
 
 The Backplane Config holds settings applied directly against Snowflake that are invisible to the user and independent of the CRD. It is owned by platform operators, not tenants. It has two parts: a top-level `enforcedParameters` map — the org-wide security baseline applied to every account regardless of region — and a `regions` map holding one entry per cloud region the platform supports.
 
@@ -247,7 +270,7 @@ Bringing a region online is a manual, one-time procedure carried out by platform
   4. Once verified, ops adds the region's entry to the Backplane Config, using the Terraform outputs (S3 VPC endpoint DNS, browser-login ingress ranges) and setting `active: true`.
   5. The region is now available: the controller can provision `SnowflakeAccount` resources into it.
 
-When a user creates a `SnowflakeAccount`, the controller takes the `region` field from the CRD and uses it to look up that region's entry in the Backplane Config. The values found there — the backplane network settings and the platform's baseline ingress rules — are combined with the CRD's own fields to construct the SQL that provisions and binds the account. This flow is described in detail in 3.5.
+When a user creates a `SnowflakeAccount`, the controller takes the `region` field from the CRD and uses it to look up that region's entry in the Backplane Config. The values found there — the backplane network settings and the platform's baseline ingress rules — are combined with the CRD's own fields to construct the SQL that provisions and binds the account. This flow is described in detail in 3.6.
 
 ```yaml
 # Backplane Config (platform-owned). Captures the org-wide security baseline enforced on
@@ -257,7 +280,7 @@ backplaneConfig:
 
   # --- ENFORCED PARAMETERS: org-wide security baseline, applied to every account
   # in every region. Owned by platform ops; invisible to and unchangeable by tenants.
-  # Enforced server-side via Snowflake Organization Policies (3.8), so accounts
+  # Enforced server-side via Snowflake Organization Policies (3.9), so accounts
   # cannot drift out of compliance in the first place.
   enforcedParameters:
     PREVENT_UNLOAD_TO_INLINE_URL: "true"  # block data exfiltration to arbitrary URLs
@@ -301,7 +324,7 @@ backplaneConfig:
             baseCIDRs: ["10.0.0.0/8"]
 ```
 
-### 3.5 Create Flow
+### 3.6 Create Flow
 
 When the controller observes a `SnowflakeAccount` that does not yet exist in Snowflake, it runs the following script, drawing on two inputs: the `SnowflakeAccount` CRD itself, and the Backplane Config entry for `spec.region` — the controller looks up that region's entry in `backplaneConfig.regions` by the CRD's `region` field before it can resolve any of the values below.
 
@@ -327,18 +350,18 @@ ALTER ACCOUNT SET NETWORK_POLICY = 'PLATFORM_ACCOUNT_POLICY';
 
 -- 3. Identity Integration: import the org user groups referenced in the CRD's
 -- `groups` field (accountAdmin, sysAdmin, userManaged) into the new account.
--- These groups must already exist and be visible to this account — see 3.6.
+-- These groups must already exist and be visible to this account — see 3.7.
 ALTER ACCOUNT ADD ORGANIZATION USER GROUP '<group-name-from-crd>';
 -- ... repeated for every group referenced in the CRD
 ```
 
 **Note:** Snowflake is expected to release a new feature/syntax called Organization Policies, which will let this same network policy be enforced centrally on the account rather than via the `ALTER ACCOUNT` commands above. Once that syntax is available, this implementation will be swapped to use it — the enforced policy stays the same, but tenants will no longer be able to modify or unset it themselves. Not yet released as of this writing.
 
-### 3.6 Identity Integration
+### 3.7 Identity Integration
 
 Identity, like networking, is integrated globally rather than per account. An Azure AD SCIM sync continuously feeds enterprise users and GIAM groups into a single Organization User Group backplane in Snowflake, independent of any `SnowflakeAccount` CRD. This sync makes groups available org-wide, but a group must still be explicitly imported into an account before it can be used there.
 
-That import is what the CRD's `groups` field drives. `accountAdmin`, `sysAdmin`, and every entry in `userManaged` (see the example in 3.2) name organization groups that must already exist in the backplane; the controller imports each one into the new account as part of the create flow (3.5). Importing a group creates a matching role in the account, and its members are granted that role automatically.
+That import is what the CRD's `groups` field drives. `accountAdmin`, `sysAdmin`, and every entry in `userManaged` (see the example in 3.2) name organization groups that must already exist in the backplane; the controller imports each one into the new account as part of the create flow (3.6). Importing a group creates a matching role in the account, and its members are granted that role automatically.
 
 ```sql
 -- 1. accountAdmin: import the group, then grant it ACCOUNTADMIN so its members
@@ -357,13 +380,13 @@ ALTER ACCOUNT ADD ORGANIZATION USER GROUP '<group-name-from-crd>';
 
 **TODO:** Either all users and groups are synced with SCIM or the controller must trigger to add all groups in the CRD to the Azure Entra ID Enterprise App.
 
-### 3.7 Whitelisting Technical Users
+### 3.8 Whitelisting Technical Users
 
 Technical users (service accounts like `airflow`) are the highest-value credential in an account: their tokens are long-lived and machine-held, so a leaked token is the platform's primary blast-radius concern. The `networkPolicy.whitelisting` field exists to contain that blast radius. The guiding principle is **deny-by-default**: a technical user with no whitelisting entry gets an **empty** network policy and therefore cannot log in from anywhere. Access is granted only by an explicit, narrow entry naming the user and the network they may reach.
 
 The intent is to force customers to commit to a tight ingress path for each technical user rather than reusing the broad browser-access ranges meant for humans (`agn`, `public`). A narrow per-user policy binds the token to the environment it is intended for: if it is copied elsewhere — such as a human workstation — it stops working.
 
-Each `allowedIPs` entry must fall inside the range the referenced connection defines in the Backplane Config (3.4). The network-policy builder checks this containment at create time; an entry outside the connection's range — or any CIDR on a VPCE-only connection that defines none — is rejected.
+Each `allowedIPs` entry must fall inside the range the referenced connection defines in the Backplane Config (3.5). The network-policy builder checks this containment at create time; an entry outside the connection's range — or any CIDR on a VPCE-only connection that defines none — is rejected.
 
 Snowflake network policies are either/or at the user level: setting `NETWORK_POLICY` on a user fully overrides the account-level default rather than merging with it. So each `user` referenced in `whitelisting` gets its own dedicated network policy, built from every whitelisting entry that names them; a user with no entry gets a dedicated policy that allows nothing.
 
@@ -384,9 +407,9 @@ ALTER USER '<user-from-crd>' SET NETWORK_POLICY = '<user-derived-policy-name>';
 -- ... repeated for every distinct user in networkPolicy.whitelisting
 ```
 
-**Note:** As with the account-level policy in 3.5, once Snowflake's Organization Policies feature is available these per-user policies will be enforced centrally as org policies rather than through `ALTER USER ... SET NETWORK_POLICY`. The deny-by-default posture and the per-user narrowing stay the same; the enforcement mechanism moves server-side so tenants cannot loosen it. Not yet released as of this writing.
+**Note:** As with the account-level policy in 3.6, once Snowflake's Organization Policies feature is available these per-user policies will be enforced centrally as org policies rather than through `ALTER USER ... SET NETWORK_POLICY`. The deny-by-default posture and the per-user narrowing stay the same; the enforcement mechanism moves server-side so tenants cannot loosen it. Not yet released as of this writing.
 
-### 3.8 Configuring an Account
+### 3.9 Configuring an Account
 
 After an account exists, its ongoing shape is governed by the **Organization Policies** that enforce the Backplane Config security baseline server-side.
 
@@ -395,7 +418,7 @@ The platform's security baseline is enforced **server-side by Snowflake Organiza
 The controller's role is limited to establishing these policies (an ops/bootstrap concern) and surfacing compliance state on the CRD. It does not poll accounts or revert parameters itself. A setting not yet expressible as an Organization Policy is tracked as a known gap rather than backfilled by a drift loop.
 
 
-### 3.9 Security Constraints
+### 3.10 Security Constraints
 
 Security in this platform is not based on validation alone, but on strict structural constraints in how initial account credentials are managed. The implementation must adhere to the following definitions.
 
@@ -410,18 +433,18 @@ Isolation is enforced physically by the storage path of the credentials in **AWS
 
 #### 2. OIDC Authentication (Optional)
 
-Every account is always created with the secret-based `platform` user described above and in 3.5 — that mechanism is not replaced. OIDC is an **additional**, optional authentication path layered on top of the same account, established immediately after creation, that lets the controller reach a tenant's account without reading its RSA private key from AWS Secrets Manager (ASM) on every connection.
+Every account is always created with the secret-based `platform` user described above and in 3.6 — that mechanism is not replaced. OIDC is an **additional**, optional authentication path layered on top of the same account, established immediately after creation, that lets the controller reach a tenant's account without reading its RSA private key from AWS Secrets Manager (ASM) on every connection.
 
 **Principal:** Unlike the account-birth credential, which belongs to a single `platform` service user, the OIDC principal is scoped to the **tenant's Kubernetes namespace** — the same trust anchor used for secret-path isolation above. The controller creates a dedicated Kubernetes `ServiceAccount` in the tenant's namespace alongside the `SnowflakeAccount` resource (e.g. `sa-<account-name>-oidc`). This ServiceAccount never runs a pod — it exists purely as an identity primitive. When the controller needs to connect to that account, it uses the Kubernetes `TokenRequest` API to mint a short-lived, narrowly-audienced JWT for that ServiceAccount, uses it once, and discards it. The token's `sub` claim — `system:serviceaccount:<namespace>:sa-<account-name>-oidc` — encodes both the tenant namespace and the account name, mirroring the granularity of the ASM secret path.
 
 **Global setup (one-time, like the network/identity backplane in 3.1):** The Kubernetes cluster's OIDC issuer and JWKS endpoint are registered once, platform-wide, as a trusted external identity provider in the Backplane Config. This is an ops/bootstrap concern, not a per-account step.
 
-**Per-account setup (added to the create flow, 3.5):**
+**Per-account setup (added to the create flow, 3.6):**
 
 ```sql
 -- 4. OIDC Integration: trust the cluster's OIDC issuer for this account, and map
 -- this account's namespace-and-account-scoped ServiceAccount subject to one of
--- the CRD's already-imported groups (3.6) — no new identity or role is created.
+-- the CRD's already-imported groups (3.7) — no new identity or role is created.
 CREATE SECURITY INTEGRATION PLATFORM_OIDC
   TYPE = EXTERNAL_OAUTH OAUTH_TYPE = CUSTOM
   OAUTH_ISSUER = '<k8s-oidc-issuer-url-from-platform-config>'
@@ -431,7 +454,7 @@ CREATE SECURITY INTEGRATION PLATFORM_OIDC
 
 -- The mapped Snowflake user's LOGIN_NAME is derived deterministically from the
 -- expected `sub` claim value, and is granted the existing imported group role
--- (e.g. sysAdmin, 3.6) — OIDC authenticates as an *existing* role, it does not
+-- (e.g. sysAdmin, 3.7) — OIDC authenticates as an *existing* role, it does not
 -- introduce a new one.
 ALTER USER '<sysAdmin-group-name-from-crd>' SET LOGIN_NAME = '<sub-claim-derived-from-namespace-and-account>';
 ```
@@ -462,13 +485,13 @@ The platform operates on the principle that the Kubernetes Namespace is an untru
 The **`region`** and **`name`** of a `SnowflakeAccount` are **Immutable** after creation. This prevents identity spoofing where a user creates an account, lets the secret generate, and then attempts to switch the CRD to point to a different target resource while retaining the original credentials.
 
 
-### 3.10 Compliance & Auditability
+### 3.11 Compliance & Auditability
 
 Compliance in this platform is not verified by human audit but enforced server-side by Snowflake Organization Policies. This section defines the enforcement strategy and the evidence required for regulatory reporting.
 
 #### 1. Server-Side Prevention (Organization Policies)
 
-See 3.8 for how the `enforcedParameters` baseline is enforced server-side via Organization Policies rather than a controller-side drift loop.
+See 3.9 for how the `enforcedParameters` baseline is enforced server-side via Organization Policies rather than a controller-side drift loop.
 
 #### 2. Auditability & Evidence
 
