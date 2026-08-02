@@ -112,7 +112,8 @@ The following diagram shows how the three documents that drive account creation 
 ```mermaid
 flowchart LR
     Tenant([Tenant]) -->|commits| CRD[SnowflakeAccount CRD 3.2]
-    Ops([Platform Ops]) -->|defines| ValidationRules[Validation & Defaults 3.3]
+    Tenant ~~~ Ops([Platform Ops])
+    Ops -->|defines| ValidationRules[Validation & Defaults 3.3]
     Ops -->|defines| BackplaneConfig[Backplane Config 3.4]
 
     CRD --> Controller[[Controller]]
