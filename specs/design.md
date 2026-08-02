@@ -126,7 +126,7 @@ flowchart LR
     subgraph createFlowGroup [" "]
         direction TB
         CreateFlow["Account Bootstrapping (3.6)"] --> IdentityIntegration["Identity Integration (3.7)"]
-        IdentityIntegration --> Whitelisting["Whitelisting Technical Users (3.8)"]
+        IdentityIntegration --> Whitelisting["Technical Users (3.8)"]
     end
 
     style createFlowGroup fill:transparent
@@ -138,7 +138,7 @@ flowchart LR
 * **Backplane Config (3.5):** Once Ops has provisioned a region's network via Terraform and closed out the follow-up setup tickets, they record the resulting IDs and IP ranges in the Backplane Config for the controller to use.
 * **Account Bootstrapping (3.6):** The controller creates the Snowflake account and binds it to the regional backplane infrastructure from the Backplane Config.
 * **Identity Integration (3.7):** The controller imports the CRD's referenced company groups into the new account, so their members can log in via SSO with their existing company roles carried over.
-* **Whitelisting Technical Users (3.8):** The controller builds a dedicated, deny-by-default network policy for each technical user named in the CRD's whitelisting entries.
+* **Technical Users (3.8):** The controller builds a dedicated, deny-by-default network policy for each technical user named in the CRD's whitelisting entries.
 
 
 ### 3.2 SnowflakeAccount CRD
@@ -420,7 +420,7 @@ ALTER ACCOUNT ADD ORGANIZATION USER GROUP '<group-name-from-crd>';
 
 **TODO:** Either all users and groups are synced with SCIM or the controller must trigger to add all groups in the CRD to the Azure Entra ID Enterprise App.
 
-### 3.8 Whitelisting Technical Users
+### 3.8 Technical Users
 
 Technical users (service accounts like `airflow`) are the highest-value credential in an account: their tokens are long-lived and machine-held, so a leaked token is the platform's primary blast-radius concern. The `networkPolicy.whitelisting` field exists to contain that blast radius. The guiding principle is **deny-by-default**: a technical user with no whitelisting entry gets an **empty** network policy and therefore cannot log in from anywhere. Access is granted only by an explicit, narrow entry naming the user and the network they may reach.
 
