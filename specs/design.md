@@ -112,7 +112,7 @@ The following diagram shows how the three documents that drive account creation 
 ```mermaid
 flowchart LR
     Tenant([Tenant]) -->|commits| CRD[SnowflakeAccount CRD 3.2]
-    OEs([OEs]) -->|defines| ValidationRules[Validation & Defaults 3.3]
+    PM & OEs([OEs]) -->|defines| ValidationRules[Validation & Defaults 3.3]
     ISO([ISO]) -->|approves| Exceptions[Exception Approval 3.4]
     Ops([Platform Ops]) -->|defines| BackplaneConfig[Backplane Config 3.5]
 
@@ -121,7 +121,9 @@ flowchart LR
     Exceptions --> Controller
     BackplaneConfig --> Controller
 
-    Controller -->|create flow 3.6-3.8| Snowflake[(Snowflake Account)]
+    Controller --> CreateFlow[Create Flow 3.6]
+    Controller --> IdentityIntegration[Identity Integration 3.7]
+    Controller --> Whitelisting[Whitelisting Technical Users 3.8]
 ```
 
 
