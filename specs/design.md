@@ -129,7 +129,7 @@ flowchart LR
         IdentityIntegration --> Whitelisting[Whitelisting Technical Users 3.8]
     end
 
-    style createFlowGroup fill:transparent,stroke:transparent
+    style createFlowGroup fill:transparent
 ```
 
 
