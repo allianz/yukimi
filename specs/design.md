@@ -393,11 +393,6 @@ CREATE NETWORK POLICY PLATFORM_ACCOUNT_POLICY
   ALLOWED_NETWORK_RULE_LIST = (<all-network-names-from-accountWhitelisting>);
 ALTER ACCOUNT SET NETWORK_POLICY = 'PLATFORM_ACCOUNT_POLICY';
 
--- 3. Identity Integration: import the org user groups referenced in the CRD's
--- `groups` field (accountAdmin, sysAdmin, userManaged) into the new account.
--- These groups must already exist and be visible to this account — see 3.7.
-ALTER ACCOUNT ADD ORGANIZATION USER GROUP '<group-name-from-crd>';
--- ... repeated for every group referenced in the CRD
 ```
 
 **Note:** Snowflake is expected to release a new feature/syntax called Organization Policies, which will let this same network policy be enforced centrally on the account rather than via the `ALTER ACCOUNT` commands above. Once that syntax is available, this implementation will be swapped to use it — the enforced policy stays the same, but tenants will no longer be able to modify or unset it themselves. Not yet released as of this writing.
