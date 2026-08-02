@@ -123,11 +123,13 @@ flowchart LR
 
     Controller --> CreateFlow
 
-    subgraph " "
+    subgraph createFlowGroup [" "]
         direction TB
         CreateFlow[Create Flow 3.6] --> IdentityIntegration[Identity Integration 3.7]
         IdentityIntegration --> Whitelisting[Whitelisting Technical Users 3.8]
     end
+
+    style createFlowGroup fill:transparent,stroke:transparent
 ```
 
 
