@@ -117,8 +117,8 @@ flowchart LR
     Ops -->|defines| BackplaneConfig[Backplane Config 3.4]
 
     CRD --> Controller[[Controller]]
-    Controller -->|reads| ValidationRules
-    Controller -->|reads| BackplaneConfig
+    ValidationRules -->|gates & defaults| Controller
+    BackplaneConfig -->|backplane & baseline| Controller
 
     Controller -->|create flow 3.5-3.7| Snowflake[(Snowflake Account)]
 ```
