@@ -279,6 +279,13 @@ Account creation is the act of turning a committed `SnowflakeAccount` CRD into a
 
 The Backplane Config holds settings applied directly against Snowflake that are invisible to the user and independent of the CRD. It is owned by platform operators, not tenants. It has two parts: a top-level `enforcedParameters` map — the org-wide security baseline applied to every account regardless of region — and a `regions` map holding one entry per cloud region the platform supports.
 
+Each region entry splits its network configuration into two distinct concerns:
+
+  * **Network inventory (`network.networks`):** A catalogue of every ingress path (VPCE or public internet) that physically exists in the region, each with a tenant-facing handle and — for IP-bearing paths — a `maxCIDRs` field giving the widest range that path may ever carry. This is inventory only: it declares *what is available* to reference, but grants nothing on its own. `maxCIDRs` is optional and omitted for VPCE-only paths that manage no IPs (e.g. `dbt-cloud`).
+  * **Account whitelisting (`network.accountWhitelisting`):** The always-on, account-wide allow-list applied to every account in the region. Each entry references a network from the inventory and may optionally narrow its range. `cidrs` is optional: omit it to inherit the network's full `maxCIDRs` (or, for a VPCE-only network, to allow the endpoint with no IPs to manage); supply it to narrow to a subset. A network present in the inventory but absent from `accountWhitelisting` is *not* allowed account-wide, though it remains available for per-user whitelisting (3.8).
+
+**CIDR containment (enforced at create time):** Any narrowing `cidrs` — whether in `accountWhitelisting` here or in a tenant's per-user `whitelisting` (3.8) — must fall entirely inside the referenced network's `maxCIDRs`. The controller validates containment when it builds the network policy; an entry with a CIDR broader than (or outside) `maxCIDRs`, or any `cidrs` on a VPCE-only network that defines no `maxCIDRs`, is rejected with an error and the account is not provisioned.
+
 Bringing a region online is a manual, one-time procedure carried out by platform operators before the region can be consumed:
 
   1. Ops runs `yukimi-infra`, the Terraform project that provisions the region's backplane.
@@ -309,25 +316,43 @@ backplaneConfig:
     aws-eu-central-1:
       active: true
 
-      # Backplane values from Terraform, plus this region's named networks.
+      # Backplane values from Terraform, split into a network inventory and the
+      # account-wide whitelisting built on top of it.
       network:
         s3_stage_vpce_dns_name: "*.vpce-sd98fs0d9f8g.s3.eu-central-1.vpce.amazonaws.com"
 
-        # Named networks: each is an ingress path (VPCE or public internet) with a
-        # tenant-facing handle. `baseCIDRs` is the platform's always-on whitelisting for
-        # that path, applied to every account regardless of the CRD. Tenants reference the
-        # name in their whitelisting and may add narrower CIDRs on top (subject to 3.3).
+        # 1) NETWORK INVENTORY — every ingress path (VPCE or public internet) that
+        # physically exists in this region, each with a tenant-facing handle. This is
+        # a catalogue of what a tenant *could* reference (3.3/3.8); it grants nothing
+        # on its own. `maxCIDRs` is the widest range that path may ever carry, and is
+        # optional — omitted for VPCE-only paths that manage no IPs.
         networks:
           agn:                                    # Allianz Global Network (corp VPN)
             type: "AWSVPCEID"
             vpceId: "vpce-00006900000000001"
-            baseCIDRs: ["172.16.0.0/12"]          # always allowed
+            maxCIDRs: ["172.16.0.0/12"]           # widest block this path may carry
           dbt-cloud:
             type: "AWSVPCEID"
-            vpceId: "vpce-00006900000000004"      # no baseCIDRs: allow all traffic via this endpoint
+            vpceId: "vpce-00006900000000004"      # VPCE-only: no maxCIDRs, no IPs to manage
           public:
             type: "IPV4"
-            baseCIDRs: ["203.0.113.0/24"]         # platform office egress — always allowed
+            maxCIDRs: ["0.0.0.0/0"]                # any public IP may be narrowed from this
+
+        # 2) ACCOUNT WHITELISTING — the always-on, account-wide allow-list applied to
+        # every account in this region. Each entry references a network from the
+        # inventory above. `cidrs` is OPTIONAL:
+        #   - omitted        → inherit the network's full maxCIDRs (corp VPN paths like agn)
+        #   - omitted, VPCE  → allow the endpoint; there are no IPs to manage (dbt-cloud)
+        #   - present        → narrow to a subset of the network's maxCIDRs (public)
+        # Any `cidrs` given must fall entirely inside the network's maxCIDRs, else the
+        # controller rejects it at create time. A network in the inventory but omitted
+        # here is NOT allowed account-wide, though it stays available for per-user
+        # whitelisting (3.8).
+        accountWhitelisting:
+          - network: agn                          # inherit full 172.16.0.0/12
+          - network: dbt-cloud                    # VPCE-only, nothing to narrow
+          - network: public
+            cidrs: ["203.0.113.0/24"]             # narrowed: platform office egress only
 
     # A region can be staged ahead of time and switched on once its backplane is confirmed.
     aws-eu-west-3:
@@ -338,7 +363,9 @@ backplaneConfig:
           agn:
             type: "AWSVPCEID"
             vpceId: "vpce-00006900000000008"
-            baseCIDRs: ["10.0.0.0/8"]
+            maxCIDRs: ["10.0.0.0/8"]
+        accountWhitelisting:
+          - network: agn                          # inherit full 10.0.0.0/8
 ```
 
 ### 3.6 Account Bootstrapping
@@ -354,15 +381,16 @@ CREATE ACCOUNT '<name-from-crd>' ADMIN_NAME='platform' ADMIN_RSA_PUBLIC_KEY = '<
 ALTER ACCOUNT SET ENABLE_INTERNAL_STAGES_PRIVATELINK = true;
 ALTER ACCOUNT SET S3_STAGE_VPCE_DNS_NAME = '<network.s3_stage_vpce_dns_name-from-region-config>';
 
--- 2a. Create one network rule per named network in the region's network.networks,
--- combining its baseCIDRs with any tenant allowedIPs that reference this network.
-CREATE NETWORK RULE <network-name-from-region-config> TYPE = <type-from-region-config> MODE = INGRESS
-  VALUE_LIST = (<vpceId-and/or-baseCIDRs-plus-tenant-allowedIPs>);
--- ... repeated for every named network in the region's entry
+-- 2a. Create one network rule per entry in the region's network.accountWhitelisting,
+-- resolving each to its inventory network: use the entry's `cidrs` if given (validated
+-- to fall inside that network's maxCIDRs), otherwise inherit the network's full maxCIDRs.
+CREATE NETWORK RULE <network-name-from-accountWhitelisting> TYPE = <type-from-region-config> MODE = INGRESS
+  VALUE_LIST = (<vpceId-and/or-resolved-cidrs>);
+-- ... repeated for every entry in the region's accountWhitelisting
 
 -- 2b. Attach those rules to the account via the platform's fixed network policy
 CREATE NETWORK POLICY PLATFORM_ACCOUNT_POLICY
-  ALLOWED_NETWORK_RULE_LIST = (<all-network-names-from-region-config>);
+  ALLOWED_NETWORK_RULE_LIST = (<all-network-names-from-accountWhitelisting>);
 ALTER ACCOUNT SET NETWORK_POLICY = 'PLATFORM_ACCOUNT_POLICY';
 
 -- 3. Identity Integration: import the org user groups referenced in the CRD's
@@ -403,16 +431,17 @@ Technical users (service accounts like `airflow`) are the highest-value credenti
 
 The intent is to force customers to commit to a tight ingress path for each technical user rather than reusing the broad browser-access ranges meant for humans (`agn`, `public`). A narrow per-user policy binds the token to the environment it is intended for: if it is copied elsewhere — such as a human workstation — it stops working.
 
-Each `allowedIPs` entry must fall inside the range the referenced connection defines in the Backplane Config (3.5). The network-policy builder checks this containment at create time; an entry outside the connection's range — or any CIDR on a VPCE-only connection that defines none — is rejected.
+Each `allowedIPs` entry must fall entirely inside the `maxCIDRs` the referenced network defines in the Backplane Config inventory (3.5). The network-policy builder checks this containment at create time; an entry broader than or outside the network's `maxCIDRs` — or any CIDR on a VPCE-only network that defines no `maxCIDRs` — is rejected with an error and the account is not provisioned. This is the same containment rule that gates the account-wide `accountWhitelisting` in 3.5, applied here to per-user entries.
 
 Snowflake network policies are either/or at the user level: setting `NETWORK_POLICY` on a user fully overrides the account-level default rather than merging with it. So each `user` referenced in `whitelisting` gets its own dedicated network policy, built from every whitelisting entry that names them; a user with no entry gets a dedicated policy that allows nothing.
 
 ```sql
 -- For each distinct user in networkPolicy.whitelisting, create one network rule per
--- named network that user's entries reference, combining that network's baseCIDRs
--- (from the Backplane Config) with the entry's own allowedIPs.
+-- named network that user's entries reference. Resolve each entry's allowedIPs against
+-- the network's maxCIDRs (from the Backplane Config inventory), having validated that
+-- each allowedIPs entry falls inside that network's maxCIDRs.
 CREATE NETWORK RULE <user-and-network-derived-name> TYPE = <type-from-region-config> MODE = INGRESS
-  VALUE_LIST = (<vpceId-and/or-baseCIDRs-plus-entry-allowedIPs>);
+  VALUE_LIST = (<vpceId-and/or-validated-allowedIPs>);
 -- ... repeated for every named network referenced by this user's entries
 
 -- Collect that user's rules into a single dedicated policy — one policy per user,
