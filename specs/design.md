@@ -7,6 +7,7 @@
 3. [SnowflakeAccount Resource](#3-snowflakeaccount-resource)
 4. [SnowflakeDeletionRequest Resource](#4-snowflakedeletionrequest-resource)
 5. [Error Handling & Observability](#5-global-error-handling--observability)
+6. [Open TODOs](#6-open-todos)
 
 
 ## 1. Introduction
@@ -617,5 +618,13 @@ status:
       status: "True"
       reason: "ReconcileSuccess"
 ```
+
+
+## 6. Open TODOs
+
+Items flagged inline throughout this document, collected here for tracking. 
+
+* **Credits:** Cost/credit quota management — ensure teams cannot consume more credits than allotted.
+* **Region replication:** Cross-region replication support for SnowflakeAccount resources.
 
 
