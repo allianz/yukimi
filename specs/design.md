@@ -112,12 +112,12 @@ Account creation is driven by four inputs, each owned by a different party, whic
 ```mermaid
 flowchart LR
     Customer([Customer]) -->|commits| CRD["SnowflakeAccount CRD (3.2)"]
-    OEs([OEs]) -->|defines| ValidationRules["Validation & Defaults (3.3)"]
+    OEs([OEs]) -->|defines| Guardrails["Guardrails (3.3)"]
     ISO([ISO]) -->|approves| Exceptions["Exception Approval (3.4)"]
     Ops([Platform Ops]) -->|defines| BackplaneConfig["Backplane Config (3.5)"]
 
     CRD --> Controller[[Controller]]
-    ValidationRules --> Controller
+    Guardrails --> Controller
     Exceptions --> Controller
     BackplaneConfig --> Controller
 
@@ -133,8 +133,8 @@ flowchart LR
 ```
 
 * **SnowflakeAccount CRD (3.2):** The customer commits a `SnowflakeAccount` CRD describing the account they want, kicking off the reconciliation flow.
-* **Validation & Defaults (3.3):** OEs (Operating Entities) define the rules that gate and default the customer's CRD input before it is ever applied to Snowflake.
-* **Exception Approval (3.4):** ISO approves one-off exceptions to what validation would otherwise reject — e.g. whitelisting a public-internet IP.
+* **Guardrails (3.3):** OEs (Operating Entities) define the rules that gate and preset the customer's CRD input before it is ever applied to Snowflake.
+* **Exception Approval (3.4):** ISO approves one-off exceptions to what the guardrails would otherwise reject — e.g. whitelisting a public-internet IP.
 * **Backplane Config (3.5):** Once Ops has provisioned a region's network via Terraform and closed out the follow-up setup tickets, they record the resulting IDs and IP ranges in the Backplane Config for the controller to use.
 * **Account Bootstrapping (3.6):** The controller creates the Snowflake account and binds it to the regional backplane infrastructure from the Backplane Config.
 * **Identity Integration (3.7):** The controller imports the CRD's referenced company groups into the new account, so their members can log in via SSO with their existing company roles carried over.
@@ -169,7 +169,7 @@ spec:
   networkPolicy:
     whitelisting:
       - user: airflow
-        connection: agn        # named network from the Backplane Config; resolved to a VPCE per region
+        connection: agn        # from the region's inventory in the Backplane Config
         allowedIPs:
           - 10.23.45.0/24
   # --- Allow human users to bypass SSO ---
@@ -181,88 +181,95 @@ spec:
 ```
 
 
-### 3.3 Validation & Defaults
+### 3.3 Guardrails
 
-Validation & Defaults gates and defaults the *user's input* before it is ever applied to Snowflake. It governs everything a tenant may write into a `SnowflakeAccount` CRD — including the `networkPolicy.whitelisting` connections consumed by the whitelisting logic that follows (3.8) — before the controller's account bootstrapping (3.6) ever runs.
+Guardrails gate and preset the *user's input* before it is ever applied to Snowflake. They govern everything a tenant may write into a `SnowflakeAccount` CRD — including the `networkPolicy.whitelisting` connections consumed by the whitelisting logic that follows (3.8) — before the controller's account bootstrapping (3.6) ever runs.
 
-**Scope:** Validation & Defaults applies exclusively to `SnowflakeAccount` resources. Other resource types have their own separate validation mechanisms.
+**Scope:** Guardrails apply exclusively to `SnowflakeAccount` resources. Other resource types have their own separate validation mechanisms.
 
-  * **Validation:** Gates user input. If a user tries to commit a CRD that violates these patterns (e.g., bad naming, unsafe IP ranges), the resource is rejected with a validation error.
-  * **Defaults:** Populates fields in the CRD if the user omits them.
+Each guardrail declares three things:
 
-**Connection Validation:** Validation & Defaults governs how a tenant may reference each named connection (`agn`, `public`, …) under `networkPolicy.whitelisting`, via a single value per connection:
+  * **`target`:** Which accounts the guardrail applies to. An omitted or `"*"` field matches anything, so a guardrail scoped to one environment names only that field.
+  * **`constraints`:** Gates user input. If a user commits a CRD that violates these patterns (e.g., bad naming, unsafe IP ranges), the resource is rejected with a validation error.
+  * **`preset`:** Populates fields in the CRD if the user omits them.
+
+**Connection Constraints:** The `constraints.connections` map governs how a tenant may reference each named connection (`agn`, `public`, …) under `networkPolicy.whitelisting`, via a single value per connection:
 
   * **`"/NN"`** — a CIDR is **required**, capped at width `/NN` (the widest block allowed). E.g. `"/16"` accepts `/16`–`/32` and rejects anything broader.
   * **`"full"`** — no CIDR may be given; the user references the connection alone and inherits its full Backplane Config range. Used for dev convenience and for VPCE-only connections that have no CIDR to narrow.
   * **`"off"`** — the connection may not be referenced at all.
 
-A connection not listed falls through to `defaultConnection`. Containment (does an entry sit inside the connection's range?) is **not** re-checked here — the network-policy builder enforces it at create time (3.8). Validation & Defaults only gates whether a CIDR is required, forbidden, or size-capped.
+A connection not listed falls through to `defaultConnection`. Containment (does an entry sit inside the connection's range?) is **not** re-checked here — the network-policy builder enforces it at create time (3.8). The connection constraints only gate whether a CIDR is required, forbidden, or size-capped.
 
-**Matching Strategy (Top-Down):** Rules are evaluated top-down. Operators define a broad global baseline first, followed by specific rules that override settings for specific regions or environments. Changes to Validation & Defaults are validated immediately and applied automatically during the next reconciliation cycle.
+**Matching Strategy (Top-Down):** Guardrails are evaluated top-down. Operators define a broad global baseline first, followed by narrower guardrails that override settings for specific regions or environments. Every guardrail whose `target` matches contributes, and later matches win over earlier ones. Merging is per field:
 
-<!-- TODO: Define the Validation & Defaults schema/field table and its match-selector semantics. -->
+  * **Scalars and lists replace wholesale.** A later `allowedRegions` supersedes the earlier list rather than appending to it.
+  * **`connections` merges per key.** A guardrail naming only `agn` overrides `agn` alone and inherits `public` and `dbt-cloud` from the baseline.
+  * **Omitted fields are inherited, not cleared.** A guardrail that says nothing about `accountName` leaves the baseline's pattern intact.
+
+Changes to guardrails are validated immediately and applied automatically during the next reconciliation cycle.
+
+<!-- TODO: Define the guardrail field table (types, required/optional, and where each `target` fact is resolved from — `department` in particular has no source yet). -->
 
 ```yaml
-# Example Validation & Defaults rules (governs user-committed SnowflakeAccount YAML)
-validationRules:
+# Example guardrails (governs user-committed SnowflakeAccount YAML).
+# Evaluated top-down: broad baseline first, narrower guardrails override.
+guardrails:
   # 1️⃣ Global Baseline (Applies to everyone unless overridden)
-  - match:
+  - target:
       environment: "*"
       region: "*"
       department: "*"
       account: "*"
 
-    policy:
-      # Validation: Gates user input.
-      validation:
-        accountName: "^[a-z][a-z0-9-]{2,62}$" # Lowercase, no special chars, RFC1123
-        groupNames: "^[A-Z0-9_]+$"            # Name pattern for group names
-        allowedRegions:
-          - "*"
-        connections:              # per-connection: "/NN" = CIDR required (max width),
-          agn: "/16"              #   "full" = no CIDR (inherit full range), "off" = forbidden
-          public: "/32"           # public: single IPs only
-          dbt-cloud: "full"       # VPCE-only: no CIDR to narrow
-        defaultConnection: "off"  # unlisted connection → rejected
+    # constraints: Gates user input.
+    constraints:
+      accountName: "^[a-z][a-z0-9-]{2,62}$" # Lowercase, no special chars, RFC1123
+      groupNames: "^[A-Z0-9_]+$"            # Name pattern for group names
+      allowedRegions:
+        - "*"
+      connections:              # per-connection: "/NN" = CIDR required (max width),
+        agn: "/16"              #   "full" = no CIDR (inherit full range), "off" = forbidden
+        public: "/32"           # public: single IPs only
+        dbt-cloud: "full"       # VPCE-only: no CIDR to narrow
+      defaultConnection: "off"  # unlisted connection → rejected
 
-      # Defaults: Applied if user omits these fields in their CRD.
-      defaults:
-        timeZone: "UTC"
+    # preset: Applied if user omits these fields in their CRD.
+    preset:
+      timeZone: "UTC"
 
   # 2️⃣ Dev Overrides — agn needs no CIDR (convenience)
-  - match:
+  - target:
       environment: "dev"
 
-    policy:
-      validation:
-        connections:
-          agn: "full"             # just `connection: agn`, no allowedIPs
+    constraints:
+      connections:
+        agn: "full"             # just `connection: agn`, no allowedIPs
 
   # 3️⃣ Allianz DE Overrides
-  - match:
+  - target:
       department: "Allianz_DE"
 
-    policy:
-      validation:
-        allowedRegions:
-          - "aws-eu-central-1"    # Frankfurt
-          - "aws-eu-west-3"       # Paris
-        connections:
-          agn: "/24"              # DE tightens agn further
+    constraints:
+      allowedRegions:
+        - "aws-eu-central-1"    # Frankfurt
+        - "aws-eu-west-3"       # Paris
+      connections:
+        agn: "/24"              # DE tightens agn further
 ```
 
 ### 3.4 Exception Approval
 
-When a `SnowflakeAccount` CRD fails Validation & Defaults (3.3), the controller does not reject it outright. Before returning a validation error, it checks a separate exceptions file for a matching approved exception. If one exists, the otherwise-failing input is allowed through; if not, the resource is rejected as usual.
+When a `SnowflakeAccount` CRD fails its guardrails (3.3), the controller does not reject it outright. Before returning a validation error, it checks a separate exceptions file for a matching approved exception. If one exists, the otherwise-failing input is allowed through; if not, the resource is rejected as usual.
 
-This exists for cases where a customer has a legitimate, one-off need that the standing Validation baseline would otherwise block — for example, whitelisting the `public` connection with a wider CIDR than `defaultConnection` normally permits. Getting one added is a manual, email-driven process, not a self-service one: the customer emails ISO (Information Security Office) to request approval for their specific use case; ISO reviews it and, if approved, forwards the request to platform ops; ops then adds the corresponding entry to the exceptions file. Only after that entry exists does the customer's CRD pass validation.
+This exists for cases where a customer has a legitimate, one-off need that the standing guardrail baseline would otherwise block — for example, whitelisting the `public` connection with a wider CIDR than `defaultConnection` normally permits. Getting one added is a manual, email-driven process, not a self-service one: the customer emails ISO (Information Security Office) to request approval for their specific use case; ISO reviews it and, if approved, forwards the request to platform ops; ops then adds the corresponding entry to the exceptions file. Only after that entry exists does the customer's CRD pass validation.
 
 **Ownership:** The exceptions file is owned and maintained by platform ops, not ISO — ISO grants the security approval, but ops is the one who edits the file that the controller reads. The approval itself happens outside the platform, over email; the file is just the durable record of what was approved.
 
 ```yaml
 # Example Exceptions file (ops-owned). Approves specific, otherwise-invalid inputs
 # on a case-by-case basis, once ISO has approved them by email; matched against a
-# CRD only after Validation & Defaults (3.3) rejects it.
+# CRD only after its guardrails (3.3) reject it.
 exceptions:
   - account: "analytics-team-eu"        # exact account name — no wildcards
     whitelisting:                         # the full entry being approved, verbatim
@@ -277,14 +284,17 @@ exceptions:
 
 Account creation is the act of turning a committed `SnowflakeAccount` CRD into a live, network-bound Snowflake account. It draws on the **Backplane Config** — a platform-owned artifact that captures the org-wide security baseline and the per-region backplane — and then runs the controller's account bootstrapping (3.6).
 
-The Backplane Config holds settings applied directly against Snowflake that are invisible to the user and independent of the CRD. It is owned by platform operators, not tenants. It has two parts: a top-level `enforcedParameters` map — the org-wide security baseline applied to every account regardless of region — and a `regions` map holding one entry per cloud region the platform supports.
+The Backplane Config holds settings applied directly against Snowflake that are invisible to the user and independent of the CRD. It is owned by platform operators, not tenants. Everything sits under a `backplane` root with two parts: a `globalParameters` map — the org-wide security baseline applied to every account regardless of region — and a `regions` map holding one entry per cloud region the platform supports.
 
-Each region entry splits its network configuration into two distinct concerns:
+Each region entry splits its configuration into three distinct concerns:
 
-  * **Network inventory (`network.networks`):** A catalogue of every ingress path (VPCE or public internet) that physically exists in the region, each with a tenant-facing handle and — for IP-bearing paths — a `maxCIDRs` field giving the widest range that path may ever carry. This is inventory only: it declares *what is available* to reference, but grants nothing on its own. `maxCIDRs` is optional and omitted for VPCE-only paths that manage no IPs (e.g. `dbt-cloud`).
-  * **Account whitelisting (`network.accountWhitelisting`):** The always-on, account-wide allow-list applied to every account in the region. Each entry references a network from the inventory and may optionally narrow its range. `cidrs` is optional: omit it to inherit the network's full `maxCIDRs` (or, for a VPCE-only network, to allow the endpoint with no IPs to manage); supply it to narrow to a subset. A network present in the inventory but absent from `accountWhitelisting` is *not* allowed account-wide, though it remains available for per-user whitelisting (3.8).
+  * **Regional parameters (`regionalParameters`):** Snowflake account parameters specific to this region, taken from the Terraform outputs — principally the PrivateLink settings that bind an account's internal stages to the regional VPC endpoint. Same form as `globalParameters` (a map of Snowflake parameter name to value) but scoped to one region. A region may not redefine a `globalParameters` key: the loader rejects the config outright rather than letting a region quietly loosen the org-wide baseline.
+  * **Inventory (`inventory`):** A catalogue of every ingress path (VPCE or public internet) that physically exists in the region. Each entry opens with the `connection` handle a tenant references in their CRD (3.2) and in the guardrails (3.3), and carries a `type` plus — for IP-bearing paths — a `maxCidrs` field giving the widest range that path may ever carry. This is inventory only: it declares *what exists* to reference, but grants nothing on its own. `maxCidrs` is optional and omitted for VPCE-only paths that manage no IPs (e.g. `dbt-cloud`). A handle may appear only once; the loader rejects duplicates.
+  * **Ingress (`ingress`):** The always-on, account-wide allow-list applied to every account in the region, with no tenant involvement. Each entry names one `connection` from the inventory — the same handle, in the same leading position — and may optionally narrow its range. `allowedIPs` is optional: omit it to inherit the connection's full `maxCidrs` (or, for a VPCE-only connection, to allow the endpoint with no IPs to manage); supply it to narrow to a subset. A connection present in the inventory but absent from `ingress` is *not* allowed account-wide, though it remains referenceable for per-user whitelisting (3.8).
 
-**CIDR containment (enforced at create time):** Any narrowing `cidrs` — whether in `accountWhitelisting` here or in a tenant's per-user `whitelisting` (3.8) — must fall entirely inside the referenced network's `maxCIDRs`. The controller validates containment when it builds the network policy; an entry with a CIDR broader than (or outside) `maxCIDRs`, or any `cidrs` on a VPCE-only network that defines no `maxCIDRs`, is rejected with an error and the account is not provisioned.
+**Parameter application:** Both parameter maps are applied to a new account during bootstrapping (3.6) as one `ALTER ACCOUNT SET` per entry, the global baseline first and the region's own second. They differ in how durably they hold: the `globalParameters` baseline is intended to be enforced server-side via Snowflake Organization Policies, so accounts cannot drift out of compliance, whereas `regionalParameters` are set on the account and remain changeable by a tenant's `ACCOUNTADMIN` until that same feature lands (see the note in 3.6). Each region must define the parameters needed to bind an account to its backplane — `ENABLE_INTERNAL_STAGES_PRIVATELINK` and `S3_STAGE_VPCE_DNS_NAME` — and the loader rejects a region entry that omits them, so a half-filled region fails loudly rather than yielding accounts with no PrivateLink stage binding.
+
+**CIDR containment (enforced at create time):** Any narrowing `allowedIPs` — whether in the region's `ingress` here or in a tenant's per-user `whitelisting` (3.8) — must fall entirely inside the referenced connection's `maxCidrs`. The controller validates containment when it builds the network policy; an entry with a CIDR broader than (or outside) `maxCidrs`, or any `allowedIPs` on a VPCE-only connection that defines no `maxCidrs`, is rejected with an error and the account is not provisioned.
 
 Bringing a region online is a manual, one-time procedure carried out by platform operators before the region can be consumed:
 
@@ -294,20 +304,20 @@ Bringing a region online is a manual, one-time procedure carried out by platform
   4. Once verified, ops adds the region's entry to the Backplane Config, using the Terraform outputs (S3 VPC endpoint DNS, browser-login ingress ranges) and setting `active: true`.
   5. The region is now available: the controller can provision `SnowflakeAccount` resources into it.
 
-When a user creates a `SnowflakeAccount`, the controller takes the `region` field from the CRD and uses it to look up that region's entry in the Backplane Config. The values found there — the backplane network settings and the platform's baseline ingress rules — are combined with the CRD's own fields to construct the SQL that provisions and binds the account. This flow is described in detail in 3.6.
+When a user creates a `SnowflakeAccount`, the controller takes the `region` field from the CRD and uses it to look up that region's entry in the Backplane Config. The values found there — the region's parameters, its `inventory`, and its `ingress` rules — are combined with the CRD's own fields to construct the SQL that provisions and binds the account. This flow is described in detail in 3.6.
 
 ```yaml
 # Backplane Config (platform-owned). Captures the org-wide security baseline enforced on
 # every account, plus what's needed to bring a region online and bind an account to it.
-# yukimi-infra adds a new entry under `regions` each time a region is provisioned.
-backplaneConfig:
+# yukimi-infra adds a new entry under `backplane.regions` each time a region is provisioned.
+backplane:
 
-  # --- ENFORCED PARAMETERS: org-wide security baseline, applied to every account
-  # in every region. Owned by platform ops; invisible to and unchangeable by tenants.
-  # Enforced server-side via Snowflake Organization Policies (3.10), so accounts
-  # cannot drift out of compliance in the first place.
-  enforcedParameters:
-    PREVENT_UNLOAD_TO_INLINE_URL: "true"  # block data exfiltration to arbitrary URLs
+  # --- GLOBAL PARAMETERS: org-wide security baseline, applied to every account in
+  # every region. Owned by platform ops; invisible to and unchangeable by tenants.
+  # Intended to be enforced server-side via Snowflake Organization Policies, so
+  # accounts cannot drift out of compliance in the first place (see the note in 3.6).
+  globalParameters:
+    PREVENT_UNLOAD_TO_INLINE_URL: "true"        # block data exfiltration to arbitrary URLs
     REQUIRE_STORAGE_INTEGRATION_FOR_STAGE_CREATION: "true"
 
   # --- REGIONS: one entry per cloud region, filled in by yukimi-infra ---
@@ -316,61 +326,61 @@ backplaneConfig:
     aws-eu-central-1:
       active: true
 
-      # Backplane values from Terraform, split into a network inventory and the
-      # account-wide whitelisting built on top of it.
-      network:
-        s3_stage_vpce_dns_name: "*.vpce-sd98fs0d9f8g.s3.eu-central-1.vpce.amazonaws.com"
+      # Account parameters specific to this region, from the Terraform outputs. Both
+      # keys below are required; a region may not redefine a globalParameters key.
+      regionalParameters:
+        ENABLE_INTERNAL_STAGES_PRIVATELINK: "true"
+        S3_STAGE_VPCE_DNS_NAME: "*.vpce-sd98fs0d9f8g.s3.eu-central-1.vpce.amazonaws.com"
 
-        # 1) NETWORK INVENTORY — every ingress path (VPCE or public internet) that
-        # physically exists in this region, each with a tenant-facing handle. This is
-        # a catalogue of what a tenant *could* reference (3.3/3.8); it grants nothing
-        # on its own. `maxCIDRs` is the widest range that path may ever carry, and is
-        # optional — omitted for VPCE-only paths that manage no IPs.
-        networks:
-          agn:                                    # Allianz Global Network (corp VPN)
-            type: "AWSVPCEID"
-            vpceId: "vpce-00006900000000001"
-            maxCIDRs: ["172.16.0.0/12"]           # widest block this path may carry
-          dbt-cloud:
-            type: "AWSVPCEID"
-            vpceId: "vpce-00006900000000004"      # VPCE-only: no maxCIDRs, no IPs to manage
-          public:
-            type: "IPV4"
-            maxCIDRs: ["0.0.0.0/0"]                # any public IP may be narrowed from this
+      # Every ingress path that physically exists in this region, named by the handle
+      # tenants reference (3.2/3.3/3.8). Referenceable, not granted — grants live in
+      # ingress below. `maxCidrs` is the widest range a path may ever carry;
+      # absent on VPCE-only paths that manage no IPs.
+      inventory:
+        - connection: agn                       # Allianz Global Network (corp VPN)
+          type: "AWSVPCEID"
+          vpceId: "vpce-00006900000000001"
+          maxCidrs: ["172.16.0.0/12"]           # widest block this path may carry
+        - connection: dbt-cloud
+          type: "AWSVPCEID"
+          vpceId: "vpce-00006900000000004"      # VPCE-only: no maxCidrs, no IPs to manage
+        - connection: public
+          type: "IPV4"
+          maxCidrs: ["0.0.0.0/0"]               # any public IP may be narrowed from this
 
-        # 2) ACCOUNT WHITELISTING — the always-on, account-wide allow-list applied to
-        # every account in this region. Each entry references a network from the
-        # inventory above. `cidrs` is OPTIONAL:
-        #   - omitted        → inherit the network's full maxCIDRs (corp VPN paths like agn)
-        #   - omitted, VPCE  → allow the endpoint; there are no IPs to manage (dbt-cloud)
-        #   - present        → narrow to a subset of the network's maxCIDRs (public)
-        # Any `cidrs` given must fall entirely inside the network's maxCIDRs, else the
-        # controller rejects it at create time. A network in the inventory but omitted
-        # here is NOT allowed account-wide, though it stays available for per-user
-        # whitelisting (3.8).
-        accountWhitelisting:
-          - network: agn                          # inherit full 172.16.0.0/12
-          - network: dbt-cloud                    # VPCE-only, nothing to narrow
-          - network: public
-            cidrs: ["203.0.113.0/24"]             # narrowed: platform office egress only
+      # The always-on allow-list applied to every account in this region. Each entry
+      # grants one connection from the inventory above. `allowedIPs` is OPTIONAL:
+      #   - omitted        → inherit the connection's full maxCidrs (corp VPN paths like agn)
+      #   - omitted, VPCE  → allow the endpoint; there are no IPs to manage (dbt-cloud)
+      #   - present        → narrow to a subset of the connection's maxCidrs (public)
+      # Any `allowedIPs` given must fall entirely inside the connection's maxCidrs, else
+      # the controller rejects it at create time. A connection in the inventory but
+      # omitted here is NOT allowed account-wide, though it stays referenceable for
+      # per-user whitelisting (3.8).
+      ingress:
+        - connection: agn                       # inherit full 172.16.0.0/12
+        - connection: dbt-cloud                 # VPCE-only, nothing to narrow
+        - connection: public
+          allowedIPs: ["203.0.113.0/24"]        # narrowed: platform office egress only
 
     # A region can be staged ahead of time and switched on once its backplane is confirmed.
     aws-eu-west-3:
       active: false
-      network:
-        s3_stage_vpce_dns_name: "*.vpce-9f8g7h6j5k.s3.eu-west-3.vpce.amazonaws.com"
-        networks:
-          agn:
-            type: "AWSVPCEID"
-            vpceId: "vpce-00006900000000008"
-            maxCIDRs: ["10.0.0.0/8"]
-        accountWhitelisting:
-          - network: agn                          # inherit full 10.0.0.0/8
+      regionalParameters:
+        ENABLE_INTERNAL_STAGES_PRIVATELINK: "true"
+        S3_STAGE_VPCE_DNS_NAME: "*.vpce-9f8g7h6j5k.s3.eu-west-3.vpce.amazonaws.com"
+      inventory:
+        - connection: agn
+          type: "AWSVPCEID"
+          vpceId: "vpce-00006900000000008"
+          maxCidrs: ["10.0.0.0/8"]
+      ingress:
+        - connection: agn                       # inherit full 10.0.0.0/8
 ```
 
 ### 3.6 Account Bootstrapping
 
-When the controller observes a `SnowflakeAccount` that does not yet exist in Snowflake, it runs the following script, drawing on two inputs: the `SnowflakeAccount` CRD itself, and the Backplane Config entry for `spec.region` — the controller looks up that region's entry in `backplaneConfig.regions` by the CRD's `region` field before it can resolve any of the values below.
+When the controller observes a `SnowflakeAccount` that does not yet exist in Snowflake, it runs the following script, drawing on two inputs: the `SnowflakeAccount` CRD itself, and the Backplane Config entry for `spec.region` — the controller looks up that region's entry under `backplane.regions` by the CRD's `region` field before it can resolve any of the values below.
 
 ```sql
 -- 1. Instantiation: create the account.
@@ -378,19 +388,22 @@ CREATE ACCOUNT '<name-from-crd>' ADMIN_NAME='platform' ADMIN_RSA_PUBLIC_KEY = '<
 
 -- 2. Backplane Integration: bind the new account to the regional infrastructure
 -- held in the region's Backplane Config entry.
-ALTER ACCOUNT SET ENABLE_INTERNAL_STAGES_PRIVATELINK = true;
-ALTER ACCOUNT SET S3_STAGE_VPCE_DNS_NAME = '<network.s3_stage_vpce_dns_name-from-region-config>';
 
--- 2a. Create one network rule per entry in the region's network.accountWhitelisting,
--- resolving each to its inventory network: use the entry's `cidrs` if given (validated
--- to fall inside that network's maxCIDRs), otherwise inherit the network's full maxCIDRs.
-CREATE NETWORK RULE <network-name-from-accountWhitelisting> TYPE = <type-from-region-config> MODE = INGRESS
-  VALUE_LIST = (<vpceId-and/or-resolved-cidrs>);
--- ... repeated for every entry in the region's accountWhitelisting
+-- 2a. Apply the org-wide baseline, then the region's own parameters — one statement
+-- per entry in globalParameters followed by one per entry in regionalParameters.
+ALTER ACCOUNT SET <parameter-name> = '<parameter-value>';
+-- ... repeated for every entry in globalParameters, then every entry in regionalParameters
 
--- 2b. Attach those rules to the account via the platform's fixed network policy
+-- 2b. Create one network rule per entry in the region's ingress, resolving each
+-- to its inventory entry: use the entry's `allowedIPs` if given (validated to
+-- fall inside that connection's maxCidrs), otherwise inherit the connection's full maxCidrs.
+CREATE NETWORK RULE <connection-name-from-ingress> TYPE = <type-from-region-config> MODE = INGRESS
+  VALUE_LIST = (<vpceId-and/or-resolved-allowedIPs>);
+-- ... repeated for every entry in the region's ingress
+
+-- 2c. Attach those rules to the account via the platform's fixed network policy
 CREATE NETWORK POLICY PLATFORM_ACCOUNT_POLICY
-  ALLOWED_NETWORK_RULE_LIST = (<all-network-names-from-accountWhitelisting>);
+  ALLOWED_NETWORK_RULE_LIST = (<all-connection-names-from-ingress>);
 ALTER ACCOUNT SET NETWORK_POLICY = 'PLATFORM_ACCOUNT_POLICY';
 
 ```
@@ -422,25 +435,25 @@ ALTER ACCOUNT ADD ORGANIZATION USER GROUP '<group-name-from-crd>';
 
 ### 3.8 Technical Users
 
-Technical users (service accounts like `airflow`) are the highest-value credential in an account: their tokens are long-lived and machine-held, so a leaked token is the platform's primary blast-radius concern. The `networkPolicy.whitelisting` field exists to contain that blast radius. The guiding principle is **deny-by-default**: a technical user with no whitelisting entry gets an **empty** network policy and therefore cannot log in from anywhere. Access is granted only by an explicit, narrow entry naming the user and the network they may reach.
+Technical users (service accounts like `airflow`) are the highest-value credential in an account: their tokens are long-lived and machine-held, so a leaked token is the platform's primary blast-radius concern. The `networkPolicy.whitelisting` field exists to contain that blast radius. The guiding principle is **deny-by-default**: a technical user with no whitelisting entry gets an **empty** network policy and therefore cannot log in from anywhere. Access is granted only by an explicit, narrow entry naming the user and the connection they may reach.
 
 The intent is to force customers to commit to a tight ingress path for each technical user rather than reusing the broad browser-access ranges meant for humans (`agn`, `public`). A narrow per-user policy binds the token to the environment it is intended for: if it is copied elsewhere — such as a human workstation — it stops working.
 
-Each `allowedIPs` entry must fall entirely inside the `maxCIDRs` the referenced network defines in the Backplane Config inventory (3.5). The network-policy builder checks this containment at create time; an entry broader than or outside the network's `maxCIDRs` — or any CIDR on a VPCE-only network that defines no `maxCIDRs` — is rejected with an error and the account is not provisioned. This is the same containment rule that gates the account-wide `accountWhitelisting` in 3.5, applied here to per-user entries.
+Each `allowedIPs` entry must fall entirely inside the `maxCidrs` the referenced connection defines in the region's `inventory` (3.5). The network-policy builder checks this containment at create time; an entry broader than or outside the connection's `maxCidrs` — or any CIDR on a VPCE-only connection that defines no `maxCidrs` — is rejected with an error and the account is not provisioned. This is the same containment rule that gates the region's account-wide `ingress` in 3.5, applied here to per-user entries.
 
 Snowflake network policies are either/or at the user level: setting `NETWORK_POLICY` on a user fully overrides the account-level default rather than merging with it. So each `user` referenced in `whitelisting` gets its own dedicated network policy, built from every whitelisting entry that names them; a user with no entry gets a dedicated policy that allows nothing.
 
 ```sql
 -- For each distinct user in networkPolicy.whitelisting, create one network rule per
--- named network that user's entries reference. Resolve each entry's allowedIPs against
--- the network's maxCIDRs (from the Backplane Config inventory), having validated that
--- each allowedIPs entry falls inside that network's maxCIDRs.
-CREATE NETWORK RULE <user-and-network-derived-name> TYPE = <type-from-region-config> MODE = INGRESS
+-- connection that user's entries reference. Resolve each entry's allowedIPs against
+-- the connection's maxCidrs (from the region's inventory), having
+-- validated that each allowedIPs entry falls inside that connection's maxCidrs.
+CREATE NETWORK RULE <user-and-connection-derived-name> TYPE = <type-from-region-config> MODE = INGRESS
   VALUE_LIST = (<vpceId-and/or-validated-allowedIPs>);
--- ... repeated for every named network referenced by this user's entries
+-- ... repeated for every connection referenced by this user's entries
 
 -- Collect that user's rules into a single dedicated policy — one policy per user,
--- covering every network they were granted, since a user can only have one active
+-- covering every connection they were granted, since a user can only have one active
 -- NETWORK_POLICY at a time.
 CREATE NETWORK POLICY <user-derived-policy-name>
   ALLOWED_NETWORK_RULE_LIST = (<all-rule-names-for-this-user>);
