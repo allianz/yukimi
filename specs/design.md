@@ -462,7 +462,7 @@ ALTER NETWORK POLICY PLATFORM_ACCOUNT_POLICY
 
 ### 3.9 Security Constraints
 
-Security in this platform is not based on validation alone, but on strict structural constraints in how initial account credentials are managed. The implementation must adhere to the following definitions.
+Security in this platform is not based on validation alone, but on strict structural constraints in how initial account credentials are managed. The design goal is that security must be ensured even in case of bugs or breaches — every guarantee below is enforced outside the controller's own logic, by a system that does not trust it. The implementation must adhere to the following definitions.
 
 #### 3.9.1. Tenant Isolation via Secret Paths
 
