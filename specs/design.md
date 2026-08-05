@@ -127,7 +127,7 @@ flowchart LR
     subgraph createFlowGroup [" "]
         direction TB
         CreateFlow["Account Bootstrapping (3.6)"] --> IdentityIntegration["Identity Integration (3.7)"]
-        IdentityIntegration --> Whitelisting["Technical Users (3.8)"]
+        IdentityIntegration --> Whitelisting["Custom Whitelisting (3.8)"]
     end
 
     style createFlowGroup fill:transparent
@@ -139,7 +139,7 @@ flowchart LR
 * **Backplane Config (3.5):** Once Ops has provisioned a region's network via Terraform and closed out the follow-up setup tickets, they record the resulting IDs and IP ranges in the Backplane Config for the controller to use.
 * **Account Bootstrapping (3.6):** The controller creates the Snowflake account and binds it to the regional backplane infrastructure from the Backplane Config.
 * **Identity Integration (3.7):** The controller imports the CRD's referenced company groups into the new account, so their members can log in via SSO with their existing company roles carried over.
-* **Technical Users (3.8):** The controller builds a dedicated, deny-by-default network policy for each technical user named in the CRD's whitelisting entries.
+* **Custom Whitelisting (3.8):** The controller turns the CRD's whitelisting entries into network policies — a dedicated, deny-by-default one per technical user named, and account-wide additions where an entry names none.
 
 
 ### 3.2 SnowflakeAccount CRD
@@ -166,13 +166,14 @@ spec:
     sysAdmin: CDH_DEVELOPERS
     userManaged:
       - CDH_ANALYSTS
-  # --- Allow technical users to access Snowflake ---
+  # --- Allow custom whitelisting ---
   networkPolicy:
     whitelisting:
       - user: airflow
         connection: agn        # from the region's inventory in the Backplane Config
         allowedIPs:
           - 10.23.45.0/24
+      - connection: dbt-cloud  # no user → account-wide
   # --- Allow human users to bypass SSO ---
   authPolicy:
     exceptions:
@@ -194,18 +195,18 @@ Each guardrail declares three things:
   * **`constraints`:** Gates user input. If a user commits a CRD that violates these patterns (e.g., bad naming, unsafe IP ranges), the resource is rejected with a validation error.
   * **`preset`:** Populates fields in the CRD if the user omits them.
 
-**Connection Constraints:** The `constraints.connections` map governs how a tenant may reference each named connection (`agn`, `public`, …) under `networkPolicy.whitelisting`, via a single value per connection:
+**Connection Constraints:** The `constraints.connections` map governs how a tenant may reference each named connection (`agn`, `public`, …) under `networkPolicy.whitelisting`, keyed by scope (`user` or `account`) then connection, via a single value per connection:
 
   * **`"/NN"`** — a CIDR is **required**, capped at width `/NN` (the widest block allowed). E.g. `"/16"` accepts `/16`–`/32` and rejects anything broader.
   * **`"full"`** — no CIDR may be given; the user references the connection alone and inherits its full Backplane Config range. Used for dev convenience and for VPCE-only connections that have no CIDR to narrow.
   * **`"off"`** — the connection may not be referenced at all.
 
-A connection not listed falls through to `defaultConnection`. Containment (does an entry sit inside the connection's range?) is **not** re-checked here — the network-policy builder enforces it at create time (3.8). The connection constraints only gate whether a CIDR is required, forbidden, or size-capped.
+A connection not listed in a scope falls through to that scope's `"*"` key. Containment (does an entry sit inside the connection's range?) is **not** re-checked here — the network-policy builder enforces it at create time (3.8). The connection constraints only gate whether a CIDR is required, forbidden, or size-capped.
 
 **Matching Strategy (Top-Down):** Guardrails are evaluated top-down. Operators define a broad global baseline first, followed by narrower guardrails that override settings for specific regions or environments. Every guardrail whose `target` matches contributes, and later matches win over earlier ones. Merging is per field:
 
   * **Scalars and lists replace wholesale.** A later `allowedRegions` supersedes the earlier list rather than appending to it.
-  * **`connections` merges per key.** A guardrail naming only `agn` overrides `agn` alone and inherits `public` and `dbt-cloud` from the baseline.
+  * **`connections` merges per key.** A guardrail naming only `user.agn` overrides that one value and inherits everything else.
   * **Omitted fields are inherited, not cleared.** A guardrail that says nothing about `accountName` leaves the baseline's pattern intact.
 
 Changes to guardrails are validated immediately and applied automatically during the next reconciliation cycle.
@@ -230,10 +231,14 @@ guardrails:
       allowedRegions:
         - "*"
       connections:              # per-connection: "/NN" = CIDR required (max width),
-        agn: "/16"              #   "full" = no CIDR (inherit full range), "off" = forbidden
-        public: "/32"           # public: single IPs only
-        dbt-cloud: "full"       # VPCE-only: no CIDR to narrow
-      defaultConnection: "off"  # unlisted connection → rejected
+        user:                   #   "full" = no CIDR (inherit full range), "off" = forbidden
+          agn: "/16"
+          public: "/32"         # public: single IPs only
+          dbt-cloud: "full"     # VPCE-only: no CIDR to narrow
+          "*": "off"            # unlisted connection → rejected
+        account:
+          dbt-cloud: "full"     # VPCE-only: nothing to widen
+          "*": "off"            # no account-wide whitelisting by default
 
     # preset: Applied if user omits these fields in their CRD.
     preset:
@@ -245,7 +250,10 @@ guardrails:
 
     constraints:
       connections:
-        agn: "full"             # just `connection: agn`, no allowedIPs
+        user:
+          agn: "full"           # just `connection: agn`, no allowedIPs
+        account:
+          agn: "/16"            # dev may open agn account-wide
 
   # 3️⃣ Allianz DE Overrides
   - target:
@@ -256,14 +264,15 @@ guardrails:
         - "aws-eu-central-1"    # Frankfurt
         - "aws-eu-west-3"       # Paris
       connections:
-        agn: "/24"              # DE tightens agn further
+        user:
+          agn: "/24"            # DE tightens agn further
 ```
 
 ### 3.4 Exception Approval
 
 When a `SnowflakeAccount` CRD fails its guardrails (3.3), the controller does not reject it outright. Before returning a validation error, it checks a separate exceptions file for a matching approved exception. If one exists, the otherwise-failing input is allowed through; if not, the resource is rejected as usual.
 
-This exists for cases where a customer has a legitimate, one-off need that the standing guardrail baseline would otherwise block — for example, whitelisting the `public` connection with a wider CIDR than `defaultConnection` normally permits. Getting one added is a manual, email-driven process, not a self-service one: the customer emails ISO (Information Security Office) to request approval for their specific use case; ISO reviews it and, if approved, forwards the request to platform ops; ops then adds the corresponding entry to the exceptions file. Only after that entry exists does the customer's CRD pass validation.
+This exists for cases where a customer has a legitimate, one-off need that the standing guardrail baseline would otherwise block — for example, whitelisting the `public` connection with a wider CIDR than the guardrails normally permit. Getting one added is a manual, email-driven process, not a self-service one: the customer emails ISO (Information Security Office) to request approval for their specific use case; ISO reviews it and, if approved, forwards the request to platform ops; ops then adds the corresponding entry to the exceptions file. Only after that entry exists does the customer's CRD pass validation.
 
 **Ownership:** The exceptions file is owned and maintained by platform ops, not ISO — ISO grants the security approval, but ops is the one who edits the file that the controller reads. The approval itself happens outside the platform, over email; the file is just the durable record of what was approved.
 
@@ -277,7 +286,7 @@ exceptions:
       user: airflow
       connection: public
       allowedIPs:
-        - 203.0.113.50/32                 # wider than defaultConnection normally allows
+        - 203.0.113.50/32                 # wider than the guardrails normally allow
     reason: "ISO-4821: temporary vendor integration, approved by ISO via email 2026-06-01"
 ```
 
@@ -376,7 +385,8 @@ CREATE NETWORK RULE <connection-name-from-ingress> TYPE = <type-from-region-conf
   VALUE_LIST = (<vpceId-and/or-resolved-allowedIPs>);
 -- ... repeated for every entry in the region's ingress
 
--- 2c. Attach those rules to the account via the platform's fixed network policy
+-- 2c. Attach those rules to the account via the platform's fixed network policy.
+-- Further account-level rules are added to this policy in Custom Whitelisting (3.8).
 CREATE NETWORK POLICY PLATFORM_ACCOUNT_POLICY
   ALLOWED_NETWORK_RULE_LIST = (<all-connection-names-from-ingress>);
 ALTER ACCOUNT SET NETWORK_POLICY = 'PLATFORM_ACCOUNT_POLICY';
@@ -408,13 +418,13 @@ ALTER ACCOUNT ADD ORGANIZATION USER GROUP '<group-name-from-crd>';
 
 **TODO:** Either all users and groups are synced with SCIM or the controller must trigger to add all groups in the CRD to the Azure Entra ID Enterprise App.
 
-### 3.8 Technical Users
+### 3.8 Custom Whitelisting
 
 Technical users (service accounts like `airflow`) are the highest-value credential in an account: their tokens are long-lived and machine-held, so a leaked token is the platform's primary blast-radius concern. The `networkPolicy.whitelisting` field exists to contain that blast radius. The guiding principle is **deny-by-default**: a technical user with no whitelisting entry gets an **empty** network policy and therefore cannot log in from anywhere. Access is granted only by an explicit, narrow entry naming the user and the connection they may reach.
 
 The intent is to force customers to commit to a tight ingress path for each technical user rather than reusing the broad browser-access ranges meant for humans (`agn`, `public`). A narrow per-user policy binds the token to the environment it is intended for: if it is copied elsewhere — such as a human workstation — it stops working.
 
-Each `allowedIPs` entry must fall entirely inside the `maxCidrs` the referenced connection defines in the region's `inventory` (3.5). The network-policy builder checks this containment at create time; an entry broader than or outside the connection's `maxCidrs` — or any CIDR on a VPCE-only connection that defines no `maxCidrs` — is rejected with an error and the account is not provisioned. This is the same containment rule that gates the region's account-wide `ingress` in 3.5, applied here to per-user entries.
+Each `allowedIPs` entry must fall entirely inside the `maxCidrs` the referenced connection defines in the region's `inventory` (3.5). The network-policy builder checks this containment at create time; an entry broader than or outside the connection's `maxCidrs` — or any CIDR on a VPCE-only connection that defines no `maxCidrs` — is rejected with an error and the account is not provisioned. This is the same containment rule that gates the region's account-wide `ingress` in 3.5, applied here to every entry.
 
 Snowflake network policies are either/or at the user level: setting `NETWORK_POLICY` on a user fully overrides the account-level default rather than merging with it. So each `user` referenced in `whitelisting` gets its own dedicated network policy, built from every whitelisting entry that names them; a user with no entry gets a dedicated policy that allows nothing.
 
@@ -434,6 +444,18 @@ CREATE NETWORK POLICY <user-derived-policy-name>
   ALLOWED_NETWORK_RULE_LIST = (<all-rule-names-for-this-user>);
 ALTER USER '<user-from-crd>' SET NETWORK_POLICY = '<user-derived-policy-name>';
 -- ... repeated for every distinct user in networkPolicy.whitelisting
+
+-- Entries naming no user are account-scoped: they add their rules to the account policy
+-- created during bootstrapping (3.6) instead of getting a policy of their own. Same
+-- containment validation applies.
+CREATE NETWORK RULE CUSTOM_<connection-name> TYPE = <type-from-region-config> MODE = INGRESS
+  VALUE_LIST = (<vpceId-and/or-validated-allowedIPs>);
+-- ... repeated for every connection referenced by account-scoped entries
+
+-- Attach them to the account policy. The CUSTOM_ prefix keeps these separate from the
+-- region's ingress rules (3.6), which are named by the bare connection.
+ALTER NETWORK POLICY PLATFORM_ACCOUNT_POLICY
+  ADD ALLOWED_NETWORK_RULE_LIST = (<all-custom-rule-names>);
 ```
 
 **Note:** As with the account-level policy in 3.6, once Snowflake's Organization Policies feature is available these per-user policies will be enforced centrally as org policies rather than through `ALTER USER ... SET NETWORK_POLICY`. The deny-by-default posture and the per-user narrowing stay the same; the enforcement mechanism moves server-side so tenants cannot loosen it. Not yet released as of this writing.
