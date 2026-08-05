@@ -294,15 +294,9 @@ The config has three parts:
   * **`ingress`:** The baseline whitelisting every account in the region needs to be reachable at all — principally so its human users can log in via the browser. Accounts are deny-by-default once a network policy is attached, so this is the required minimum, applied with no tenant involvement. 
 
 ```yaml
-# Backplane Config (platform-owned). Captures the org-wide security baseline enforced on
-# every account, plus what's needed to bring a region online and bind an account to it.
-# A new entry is added under `backplane.regions` each time a region is provisioned.
 backplane:
 
-  # --- GLOBAL PARAMETERS: org-wide security baseline, applied to every account in
-  # every region. Owned by platform ops; invisible to and unchangeable by tenants.
-  # Intended to be enforced server-side via Snowflake Organization Policies, so
-  # accounts cannot drift out of compliance in the first place (see the note in 3.6).
+  # --- GLOBAL PARAMETERS: org-wide security baseline, applied to every account ---
   globalParameters:
     PREVENT_UNLOAD_TO_INLINE_URL: "true"        # block data exfiltration to arbitrary URLs
     REQUIRE_STORAGE_INTEGRATION_FOR_STAGE_CREATION: "true"
@@ -313,16 +307,15 @@ backplane:
     aws-eu-central-1:
       active: true
 
-      # Account parameters specific to this region, from the Terraform outputs. Both
-      # keys below are required; a region may not redefine a globalParameters key.
+      # Region-specific account parameters, from the Terraform outputs.
       regionalParameters:
         ENABLE_INTERNAL_STAGES_PRIVATELINK: "true"
         S3_STAGE_VPCE_DNS_NAME: "*.vpce-sd98fs0d9f8g.s3.eu-central-1.vpce.amazonaws.com"
 
-      # Every ingress path that physically exists in this region, named by the handle
-      # tenants reference (3.2/3.3/3.8). Referenceable, not granted — grants live in
-      # ingress below. `maxCidrs` is the widest range a path may ever carry;
-      # absent on VPCE-only paths that manage no IPs.
+      # Every ingress path that exists in this region. Listing one here only makes its
+      # handle referenceable and caps how wide it may ever be opened; it opens nothing
+      # on its own. Access is granted by `ingress` below (account-wide) or by a tenant's
+      # per-user `whitelisting` (3.8).
       inventory:
         - connection: agn                       # Allianz Global Network (corp VPN)
           type: "AWSVPCEID"
@@ -335,15 +328,10 @@ backplane:
           type: "IPV4"
           maxCidrs: ["0.0.0.0/0"]               # any public IP may be narrowed from this
 
-      # The always-on allow-list applied to every account in this region. Each entry
-      # grants one connection from the inventory above. `allowedIPs` is OPTIONAL:
-      #   - omitted        → inherit the connection's full maxCidrs (corp VPN paths like agn)
-      #   - omitted, VPCE  → allow the endpoint; there are no IPs to manage (dbt-cloud)
-      #   - present        → narrow to a subset of the connection's maxCidrs (public)
-      # Any `allowedIPs` given must fall entirely inside the connection's maxCidrs, else
-      # the controller rejects it at create time. A connection in the inventory but
-      # omitted here is NOT allowed account-wide, though it stays referenceable for
-      # per-user whitelisting (3.8).
+      # The paths actually opened for every account in this region — this is what lets
+      # people reach the account at all, e.g. logging in from the corporate network.
+      # Each entry picks one connection from the inventory above. Add `allowedIPs` to
+      # open only part of its range; leave it out to open the whole maxCidrs range.
       ingress:
         - connection: agn                       # inherit full 172.16.0.0/12
         - connection: dbt-cloud                 # VPCE-only, nothing to narrow
