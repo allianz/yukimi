@@ -285,32 +285,18 @@ exceptions:
 
 Account creation is the act of turning a committed `SnowflakeAccount` CRD into a live, network-bound Snowflake account. It draws on the **Backplane Config** — a platform-owned artifact that captures the org-wide security baseline and the per-region backplane — and then runs the controller's account bootstrapping (3.6).
 
-The Backplane Config holds settings applied directly against Snowflake that are invisible to the user and independent of the CRD. It is owned by platform operators, not tenants. Everything sits under a `backplane` root with two parts: a `globalParameters` map — the org-wide security baseline applied to every account regardless of region — and a `regions` map holding one entry per cloud region the platform supports.
+Bringing a region online is a one-time manual job for platform ops: run the Terraform project that provisions the region's backplane, close out the follow-up tickets that finalize it (DNS, Snowflake accepting the VPC endpoint), test it end-to-end, then add the region's entry from the Terraform outputs with `active: true`. From then on the controller can provision accounts into it, looking the region up by the CRD's `region` field.
 
-Each region entry splits its configuration into three distinct concerns:
+The config has three parts:
 
-  * **Regional parameters (`regionalParameters`):** Snowflake account parameters specific to this region, taken from the Terraform outputs — principally the PrivateLink settings that bind an account's internal stages to the regional VPC endpoint. Same form as `globalParameters` (a map of Snowflake parameter name to value) but scoped to one region. A region may not redefine a `globalParameters` key: the loader rejects the config outright rather than letting a region quietly loosen the org-wide baseline.
-  * **Inventory (`inventory`):** A catalogue of every ingress path (VPCE or public internet) that physically exists in the region. Each entry opens with the `connection` handle a tenant references in their CRD (3.2) and in the guardrails (3.3), and carries a `type` plus — for IP-bearing paths — a `maxCidrs` field giving the widest range that path may ever carry. This is inventory only: it declares *what exists* to reference, but grants nothing on its own. `maxCidrs` is optional and omitted for VPCE-only paths that manage no IPs (e.g. `dbt-cloud`). A handle may appear only once; the loader rejects duplicates.
-  * **Ingress (`ingress`):** The always-on, account-wide allow-list applied to every account in the region, with no tenant involvement. Each entry names one `connection` from the inventory — the same handle, in the same leading position — and may optionally narrow its range. `allowedIPs` is optional: omit it to inherit the connection's full `maxCidrs` (or, for a VPCE-only connection, to allow the endpoint with no IPs to manage); supply it to narrow to a subset. A connection present in the inventory but absent from `ingress` is *not* allowed account-wide, though it remains referenceable for per-user whitelisting (3.8).
-
-**Parameter application:** Both parameter maps are applied to a new account during bootstrapping (3.6) as one `ALTER ACCOUNT SET` per entry, the global baseline first and the region's own second. They differ in how durably they hold: the `globalParameters` baseline is intended to be enforced server-side via Snowflake Organization Policies, so accounts cannot drift out of compliance, whereas `regionalParameters` are set on the account and remain changeable by a tenant's `ACCOUNTADMIN` until that same feature lands (see the note in 3.6). Each region must define the parameters needed to bind an account to its backplane — `ENABLE_INTERNAL_STAGES_PRIVATELINK` and `S3_STAGE_VPCE_DNS_NAME` — and the loader rejects a region entry that omits them, so a half-filled region fails loudly rather than yielding accounts with no PrivateLink stage binding.
-
-**CIDR containment (enforced at create time):** Any narrowing `allowedIPs` — whether in the region's `ingress` here or in a tenant's per-user `whitelisting` (3.8) — must fall entirely inside the referenced connection's `maxCidrs`. The controller validates containment when it builds the network policy; an entry with a CIDR broader than (or outside) `maxCidrs`, or any `allowedIPs` on a VPCE-only connection that defines no `maxCidrs`, is rejected with an error and the account is not provisioned.
-
-Bringing a region online is a manual, one-time procedure carried out by platform operators before the region can be consumed:
-
-  1. Ops runs `yukimi-infra`, the Terraform project that provisions the region's backplane.
-  2. Ops opens the follow-up tickets needed to finalize the region (e.g., a DNS change, Snowflake accepting the VPC endpoint connection).
-  3. Ops tests the region to confirm the backplane works end-to-end.
-  4. Once verified, ops adds the region's entry to the Backplane Config, using the Terraform outputs (S3 VPC endpoint DNS, browser-login ingress ranges) and setting `active: true`.
-  5. The region is now available: the controller can provision `SnowflakeAccount` resources into it.
-
-When a user creates a `SnowflakeAccount`, the controller takes the `region` field from the CRD and uses it to look up that region's entry in the Backplane Config. The values found there — the region's parameters, its `inventory`, and its `ingress` rules — are combined with the CRD's own fields to construct the SQL that provisions and binds the account. This flow is described in detail in 3.6.
+  * **`parameters`:** Snowflake account parameters applied to every account during bootstrapping (3.6) — the org-wide security baseline plus each region's own settings.
+  * **`inventory`:** The catalogue of ingress paths that physically exist in the region, named by the `connection` handle tenants reference (3.2, 3.3, 3.8). It grants nothing itself; its `maxCidrs` is the security ceiling every `allowedIPs` is validated against.
+  * **`ingress`:** The baseline whitelisting every account in the region needs to be reachable at all — principally so its human users can log in via the browser. Accounts are deny-by-default once a network policy is attached, so this is the required minimum, applied with no tenant involvement. 
 
 ```yaml
 # Backplane Config (platform-owned). Captures the org-wide security baseline enforced on
 # every account, plus what's needed to bring a region online and bind an account to it.
-# yukimi-infra adds a new entry under `backplane.regions` each time a region is provisioned.
+# A new entry is added under `backplane.regions` each time a region is provisioned.
 backplane:
 
   # --- GLOBAL PARAMETERS: org-wide security baseline, applied to every account in
@@ -321,7 +307,7 @@ backplane:
     PREVENT_UNLOAD_TO_INLINE_URL: "true"        # block data exfiltration to arbitrary URLs
     REQUIRE_STORAGE_INTEGRATION_FOR_STAGE_CREATION: "true"
 
-  # --- REGIONS: one entry per cloud region, filled in by yukimi-infra ---
+  # --- REGIONS: one entry per cloud region, filled in from the Terraform outputs ---
   regions:
 
     aws-eu-central-1:
