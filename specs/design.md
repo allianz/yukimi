@@ -455,19 +455,18 @@ ALTER NETWORK POLICY PLATFORM_ACCOUNT_POLICY
 
 
 
-### 3.9 Credit Quota TODO
+### 3.9 Credit Quota
 
-A tenant's monthly credit allowance is set by the platform product owner at onboarding (2) and recorded as the `credit-quota` label on the tenant's Kubernetes namespace. Because the label lives outside the tenant's Git repository, a tenant cannot raise its own budget by committing YAML — the same trust-anchor argument that makes the namespace the tenancy boundary in 3.10.1.
+A tenant's overall monthly credit allowance is defined during onboarding and securely bound to their Kubernetes namespace via the `credit-quota` label. Because this limit is managed outside the tenant's Git repository, it acts as a strict trust anchor that teams cannot bypass or increase on their own — the same trust-anchor argument that makes the namespace the tenancy boundary in 3.10.1. Individual accounts claim a portion of this overall allowance via the mutable `creditQuota` field in their `SnowflakeAccount` CRD.
 
-Each account claims a share of that allowance through a `creditQuota` field in its CRD. The field is governed by the guardrails (3.3) like any other input, and is mutable — redistributing the allowance across a tenant's accounts is a normal edit.
+**Quota Lifecycle:**
 
-**Admission** works like a Kubernetes `ResourceQuota` and a pod's CPU request: on create and on update, the controller sums the `creditQuota` of the other accounts in the namespace and admits this one only if `used + claim` still fits under the allowance. Otherwise the resource is rejected with a user error naming the allowance, what is already used, and the overrun. Accounts already provisioned are never retroactively suspended because a later sibling asked for too much, so capacity is effectively first-come-first-served.
+* **Admission (Validation):** During every account creation or update, the controller loads all `SnowflakeAccount` resources within the namespace to calculate the total claimed quota. If the request exceeds the namespace allowance, it is rejected with a validation error.
+  * **Quota Reductions:** Capacity is evaluated on a first-come, first-served basis. If platform operations decreases the overall namespace allowance, existing accounts are never retroactively suspended. However, future creations or updates are blocked until the tenant lowers their CRD claims to fit within the newly reduced limit.
+* **Enforcement:** The approved quota is pushed directly into Snowflake as an account-level Resource Monitor and budget limit. This Resource Monitor strictly suspends compute warehouses when the quota is exhausted, physically stopping the majority of spend in real time.
+* **Exhaustion State:** If an account exceeds its allocated share, the system triggers a `QuotaExhausted` warning event in Kubernetes. This is not a provisioning failure — the account remains fully intact, and the condition automatically clears at the start of the next monthly billing cycle.
 
-**Enforcement** pushes the admitted share into Snowflake as an account-level resource monitor sized to the claim, with triggers that suspend warehouses when it is exhausted, plus an account budget set to the same limit. This covers warehouse credits — the majority of spend — server-side and in real time.
-
-Serverless features and AI are the gap: resource monitors do not cover them, and budgets can only notify, never suspend. Closing that gap means the controller withdrawing the underlying privileges (task execution, Cortex access, pipes) when a share is exhausted, which is both stateful and incomplete — some serverless billing is per-object and materialized-view maintenance cannot be suspended at all. An account over its share reports a `QuotaExhausted` reason with a Kubernetes warning event; it is not a provisioning failure, since the account is intact and the condition clears at the monthly boundary.
-
-**TODO:** Decide how serverless and AI spend is capped before implementing the privilege-revocation path above. Three options are open: check whether Snowflake now enforces spending limits at organization level (which would replace most of this section), grant serverless and AI only to accounts that explicitly claim them so no kill switch is needed, or accept notify-only for the long tail and rely on the resource monitor for warehouse spend. This also depends on where consumption is read — `ACCOUNT_USAGE` lags by up to three hours, too slow to gate AI spend reactively.
+**TODO (The Serverless & AI Gap):** Resource monitors currently only cover warehouse compute. Serverless features and AI functions cannot be physically suspended this way; budgets for these are notify-only. The platform must decide how to cap these costs before implementation. Options include waiting for Snowflake to release native Organization-level spending limits, strictly gating access to serverless/AI features, or attempting custom privilege-revocation logic.
 
 
 
@@ -594,7 +593,7 @@ When a user deletes a `SnowflakeAccount` (sets `deletionTimestamp`):
 
 ## 5. SnowflakeReplication Resource
 
-The `SnowflakeReplication` resource ties a set of existing `SnowflakeAccount` resources into one replication group, with exactly one of them holding the primary role at any time.
+The `SnowflakeReplication` resource links multiple existing `SnowflakeAccount` resources into a single replication group, with exactly one account acting as the primary.
 
 ### 5.1 Example
 
@@ -606,48 +605,42 @@ metadata:
   namespace: analytics-team-eu
 spec:
   description: "Cross-region standby for EU analytics"
-  # --- Group membership: SnowflakeAccount resources in this namespace ---
   accounts:
-    - analytics-team-eu        # aws-eu-central-1
-    - analytics-team-eu-dr     # aws-eu-west-3
-  # --- Which member currently holds the primary role; must be listed above ---
+    - analytics-team-eu # aws-eu-central-1
+    - analytics-team-eu-dr # aws-eu-west-3
   primaryAccount: analytics-team-eu
-  # --- What is replicated ---
   objectTypes:
     - DATABASES
     - ROLES
     - USERS
     - WAREHOUSES
-  databases:                   # required when objectTypes includes DATABASES;
-    - SALES                     #   exact name
-    - "PROD_*"                  #   or a wildcard matching several databases
-  # --- How often secondaries refresh ---
+  databases:
+    - SALES
+    - "PROD_*"
   schedule: "10 MINUTE"
-  # --- Whether a secondary may be promoted by editing primaryAccount (5.4) ---
   failoverEnabled: true
 ```
 
-### 5.2 Data Residency and Existing Guardrails
+### 5.2 Data Residency
 
-Replicating data inherently moves it across geographical and jurisdictional boundaries. To enforce compliance, this movement is strictly governed by the platform's existing guardrail engine (3.3). Rather than introducing a new validation system, the standard guardrail mechanism is used by Operations to define exactly which region pairs are legally permitted to share data. Tenants cannot bypass these rules to configure non-compliant replication topologies without going through the standard, formalized exception process (3.4).
+Data replication across regions is strictly governed by the platform's existing guardrails (3.3), ensuring data only moves between legally permitted region pairs.
 
 ### 5.3 Infrastructure vs. Data Replication
 
-Replication is strictly limited to customer data and logical objects (such as databases). Platform-level infrastructure is never replicated. Account-level configurations — like network rules, endpoints, and identity groups — are inherently tied to their specific region's Backplane Config (3.5). Replicating these objects would break connectivity by pushing the primary region's specific network IDs into a different region where they are invalid.
+Replication is strictly limited to customer data and logical objects (such as databases and roles). Platform-level infrastructure, like network rules and endpoints, is never replicated to avoid breaking regional connectivity.
 
-Which databases are in scope is declared per entry in `databases`, either as an exact name or as a wildcard pattern matching several — the same `*` selection syntax used by guardrail `target` fields and connection keys (3.3). A pattern lets a tenant state an intent that keeps holding as its account grows: `PROD_*` picks up a newly created `PROD_SALES` on the next reconciliation, without an edit that is easy to forget and only discovered as a gap after a failover. The controller resolves every entry against the primary's actual databases on each reconciliation, so the replicated set follows the account rather than a snapshot of it.
+**Native Snowflake Execution:**
 
-Because a pattern's reach is not obvious from reading it, the resolved database list is reported in `status` (5.4). A pattern that currently matches nothing is a user error, not an empty set — a misspelled pattern should surface as a validation failure rather than a silently empty standby.
+The Kubernetes controller does not actively manage the ongoing replication sync. Instead, it uses native Snowflake functionality:
 
-### 5.4 Controller Lifecycle and Behavior
+* **Stored Procedure & Timer:** During setup, the controller provisions a stored procedure and a scheduled timer (task) directly inside the primary Snowflake account.
+* **Autonomous Operation:** This native Snowflake setup runs on the defined schedule to evaluate configurations (such as resolving database wildcard patterns) and automatically updates the active replication group as the environment changes.
 
-The controller orchestrates the replication topology through the following high-level phases:
+### 5.4 Controller Lifecycle and Failover
 
-* **Validation:** Before applying any changes, the controller verifies that all participating accounts are healthy, reside in the same isolated namespace, and strictly adhere to the permitted region-pair guardrails. Each `databases` entry is checked to match at least one database in the primary.
-* **Bootstrapping:** The controller connects to the primary account to authorize replication, establishes the replicas on the secondary accounts, and triggers the initial data sync. Once bootstrapped, Snowflake natively handles the ongoing scheduled refreshes without controller intervention.
-* **Manual Failover:** A failover is explicitly triggered when a tenant updates the desired primary account in their Git repository. Crucially, the controller executes the promotion command directly on the new primary. This design ensures that failovers succeed even if the original primary region is completely offline and unreachable.
-* **No Auto-Failover:** The platform deliberately avoids automated failovers. Because the controller cannot safely distinguish between a true Snowflake regional outage and a temporary network disruption, auto-failover introduces severe risks of "split-brain" data corruption. Forcing a manual Git update ensures human intent.
-* **Health Monitoring:** The controller continuously monitors replication lag. If a secondary account falls too far behind its expected sync schedule, the controller flags the environment as unhealthy, alerting operators that the standby region is not up to date. It also reports the databases each `databases` entry currently resolves to, so tenants can see the real scope of a pattern rather than inferring it.
+* **Bootstrapping:** The controller validates the accounts, establishes the initial replication setup, provisions the stored procedure and timer, and then hands over ongoing execution entirely to Snowflake.
+* **Auto-Repair:** Because tenants have access to their Snowflake environment, they could inadvertently modify or break the replication code. If the controller detects replication errors or configuration drift during reconciliation, it automatically repairs the setup by completely removing and recreating the stored procedure and timer.
+* **Manual Failover:** Failovers are strictly manual to prevent "split-brain" data corruption caused by temporary network blips. A failover is executed only when a tenant explicitly updates the `primaryAccount` in their Git repository, prompting the controller to promote the new primary.
 
 
 
@@ -691,8 +684,5 @@ status:
 
 Items flagged inline throughout this document, collected here for tracking. 
 
-* **Credits:** How serverless and AI spend is capped, and where consumption is read (3.9). The namespace allowance and admission model itself is specified in 3.9.
-* **Replication guardrails:** The `replication` block in the guardrail schema — legal region pairs per department, permitted `objectTypes`, and a floor on `schedule` (5.3).
-* **Split-brain on failover:** What the controller does with a demoted primary it cannot reach at promotion time (5.5).
 
 
