@@ -171,33 +171,25 @@ flowchart LR
 
 ### 3.3 Guardrails
 
-Guardrails gate and preset the *user's input* before it is ever applied to Snowflake. They govern everything a tenant may write into a `SnowflakeAccount` CRD — including the `networkPolicy.whitelisting` connections consumed by the whitelisting logic that follows (3.8) — before the controller's account bootstrapping (3.6) ever runs.
+Guardrails act as a gatekeeper that validates and modifies a tenant's input before it is ever applied to Snowflake. They enforce compliance, govern input logic (such as whitelisting), and ensure no unsafe configurations are provisioned.
 
-**Scope:** Guardrails apply exclusively to `SnowflakeAccount` resources. Other resource types have their own separate validation mechanisms.
+**Scope:** Guardrails apply exclusively to `SnowflakeAccount` resources; other resource types handle their own separate validation.
 
-Each guardrail declares three things:
+Each guardrail defines three core components:
 
-  * **`target`:** Which accounts the guardrail applies to. An omitted or `"*"` field matches anything, so a guardrail scoped to one environment names only that field.
-  * **`constraints`:** Gates user input. If a user commits a CRD that violates these patterns (e.g., bad naming, unsafe IP ranges), the resource is rejected with a validation error.
-  * **`preset`:** Populates fields in the CRD if the user omits them.
+  * **`target`:** Defines which accounts the guardrail applies to. An omitted field or a `"*"` wildcard means the rule matches all accounts.
+  * **`constraints`:** The strict rules the user's input must pass, such as correct naming conventions, maximum credit quotas, and network rules. If a submitted CRD violates these rules, the system immediately rejects it with a validation error.
+  * **`preset`:** Automatically populates default values (like timezones or base credit quotas) if the user omits them in their request.
 
-**Connection Constraints:** The `constraints.connections` map governs how a tenant may reference each named connection (`agn`, `public`, …) under `networkPolicy.whitelisting`, keyed by scope (`user` or `account`) then connection, via a single value per connection:
+**Connection Constraints:** Guardrails strictly control how tenants can configure network access. These constraints are categorized by scope (either `user` or `account`) and then by connection name, applying one of three rules:
 
-  * **`"/NN"`** — a CIDR is **required**, capped at width `/NN` (the widest block allowed). E.g. `"/16"` accepts `/16`–`/32` and rejects anything broader.
-  * **`"full"`** — no CIDR may be given; the user references the connection alone and inherits its full Backplane Config range. Used for dev convenience and for VPCE-only connections that have no CIDR to narrow.
-  * **`"off"`** — the connection may not be referenced at all.
+  * **Max Width (`"/NN"`):** The user is required to provide an IP range (CIDR), but it is capped at the specified maximum width.
+  * **Inherit Full Range (`"full"`):** The user may not specify an IP range; they simply inherit the connection's full predefined range from the Backplane Config.
+  * **Forbidden (`"off"`):** The user is completely blocked from using this connection.
+  * **Fallback:** Any connection a user attempts to reference that isn't explicitly listed in a scope will fall back to that scope's wildcard (`"*"`) rule.
 
-A connection not listed in a scope falls through to that scope's `"*"` key. Containment (does an entry sit inside the connection's range?) is **not** re-checked here — the network-policy builder enforces it at create time (3.8). The connection constraints only gate whether a CIDR is required, forbidden, or size-capped.
+**Matching Strategy (Top-Down):** Guardrails merge top-down, applying broad global baselines first, followed by narrower, environment-specific overrides.
 
-**Matching Strategy (Top-Down):** Guardrails are evaluated top-down. Operators define a broad global baseline first, followed by narrower guardrails that override settings for specific regions or environments. Every guardrail whose `target` matches contributes, and later matches win over earlier ones. Merging is per field:
-
-  * **Scalars and lists replace wholesale.** A later `allowedRegions` supersedes the earlier list rather than appending to it.
-  * **`connections` merges per key.** A guardrail naming only `user.agn` overrides that one value and inherits everything else.
-  * **Omitted fields are inherited, not cleared.** A guardrail that says nothing about `accountName` leaves the baseline's pattern intact.
-
-Changes to guardrails are validated immediately and applied automatically during the next reconciliation cycle.
-
-<!-- TODO: Define the guardrail field table (types, required/optional, and where each `target` fact is resolved from — `department` in particular has no source yet). -->
 
 ```yaml
 # Example guardrails (governs user-committed SnowflakeAccount YAML).
