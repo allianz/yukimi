@@ -278,15 +278,15 @@ exceptions:
 
 ### 3.5 Backplane Config
 
-Account creation is the act of turning a committed `SnowflakeAccount` CRD into a live, network-bound Snowflake account. It draws on the **Backplane Config** — a platform-owned artifact that captures the org-wide security baseline and the per-region backplane — and then runs the controller's account bootstrapping (3.6).
+The Backplane Config is a platform-owned artifact that catalogs the pre-provisioned regional networking infrastructure (such as VPC endpoints) established via Terraform. The controller uses this active backplane to instantly network-bind new accounts without manual setup. Additionally, it enforces the organization-wide security posture through global parameters and strict network ingress ceilings.
 
 Bringing a region online is a one-time manual job for platform ops: run the Terraform project that provisions the region's backplane, close out the follow-up tickets that finalize it (DNS, Snowflake accepting the VPC endpoint), test it end-to-end, then add the region's entry from the Terraform outputs with `active: true`. From then on the controller can provision accounts into it, looking the region up by the CRD's `region` field.
 
-The config has three parts:
+The configuration consists of three core components:
 
-  * **`parameters`:** Snowflake account parameters applied to every account during bootstrapping (3.6) — the org-wide security baseline plus each region's own settings.
-  * **`inventory`:** The catalogue of ingress paths that physically exist in the region, named by the `connection` handle tenants reference (3.1, 3.3, 3.8). It grants nothing itself; its `maxCidrs` is the security ceiling every `allowedIPs` is validated against.
-  * **`ingress`:** The baseline whitelisting every account in the region needs to be reachable at all — principally so its human users can log in via the browser. Accounts are deny-by-default once a network policy is attached, so this is the required minimum, applied with no tenant involvement. 
+  * **`parameters`:** Snowflake account parameters applied during bootstrapping, covering both global security baselines and region-specific settings.
+  * **`inventory`:** A catalog of all physical ingress paths (connections) in a region. It defines the maximum allowed IP range (`maxCidrs`) for each connection, but does not grant access itself.
+  * **`ingress`:** The mandatory baseline whitelisting applied to every account in the region. This guarantees basic reachability (e.g., for browser logins) before any custom, user-specific rules are added.
 
 ```yaml
 backplane:
