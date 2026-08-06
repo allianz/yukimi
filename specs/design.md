@@ -6,8 +6,9 @@
 2. [Tenant Onboarding](#2-tenant-onboarding)
 3. [SnowflakeAccount Resource](#3-snowflakeaccount-resource)
 4. [SnowflakeDeletionRequest Resource](#4-snowflakedeletionrequest-resource)
-5. [Error Handling & Observability](#5-global-error-handling--observability)
-6. [Open TODOs](#6-open-todos)
+5. [SnowflakeReplication Resource](#5-snowflakereplication-resource)
+6. [Error Handling & Observability](#6-global-error-handling--observability)
+7. [Open TODOs](#7-open-todos)
 
 
 ## 1. Introduction
@@ -514,7 +515,7 @@ Isolation is enforced physically by the storage path of the credentials in **AWS
     `snowflake/tenant/<snowflake-org-name>/<kubernetes-ns>/<snowflake-account-name>/platform-credentials`
 * **The Constraint:** When the controller attempts to access an existing account, it **must** derive the lookup path using the CRD's namespace. This ensures that any attempt to manage an account outside the team's namespace will fail at the AWS IAM level due to an incorrect secret path, thereby preventing cross-tenant access.
 
-#### 3.10.2. OIDC Authentication (Optional)
+#### 3.10.2. OIDC Authentication (Optional) TODO
 
 Every account is always created with the secret-based `platform` user described above and in 3.6 — that mechanism is not replaced. OIDC is an **additional**, optional authentication path layered on top of the same account, established immediately after creation, that lets the controller reach a tenant's account without reading its RSA private key from AWS Secrets Manager (ASM) on every connection.
 
@@ -622,13 +623,73 @@ When a user deletes a `SnowflakeAccount` (sets `deletionTimestamp`):
 
 
 
-## 5. Global Error Handling & Observability
+## 5. SnowflakeReplication Resource
+
+The `SnowflakeReplication` resource ties a set of existing `SnowflakeAccount` resources into one replication group, with exactly one of them holding the primary role at any time.
+
+### 5.1 Example
+
+```yaml
+apiVersion: infra.snowflake.allianz.io/v1alpha1
+kind: SnowflakeReplication
+metadata:
+  name: analytics-team-dr
+  namespace: analytics-team-eu
+spec:
+  description: "Cross-region standby for EU analytics"
+  # --- Group membership: SnowflakeAccount resources in this namespace ---
+  accounts:
+    - analytics-team-eu        # aws-eu-central-1
+    - analytics-team-eu-dr     # aws-eu-west-3
+  # --- Which member currently holds the primary role; must be listed above ---
+  primaryAccount: analytics-team-eu
+  # --- What is replicated ---
+  objectTypes:
+    - DATABASES
+    - ROLES
+    - USERS
+    - WAREHOUSES
+  databases:                   # required when objectTypes includes DATABASES;
+    - SALES                     #   exact name
+    - "PROD_*"                  #   or a wildcard matching several databases
+  # --- How often secondaries refresh ---
+  schedule: "10 MINUTE"
+  # --- Whether a secondary may be promoted by editing primaryAccount (5.4) ---
+  failoverEnabled: true
+```
+
+### 5.2 Data Residency and Existing Guardrails
+
+Replicating data inherently moves it across geographical and jurisdictional boundaries. To enforce compliance, this movement is strictly governed by the platform's existing guardrail engine (3.3). Rather than introducing a new validation system, the standard guardrail mechanism is used by Operations to define exactly which region pairs are legally permitted to share data. Tenants cannot bypass these rules to configure non-compliant replication topologies without going through the standard, formalized exception process (3.4).
+
+### 5.3 Infrastructure vs. Data Replication
+
+Replication is strictly limited to customer data and logical objects (such as databases). Platform-level infrastructure is never replicated. Account-level configurations — like network rules, endpoints, and identity groups — are inherently tied to their specific region's Backplane Config (3.5). Replicating these objects would break connectivity by pushing the primary region's specific network IDs into a different region where they are invalid.
+
+Which databases are in scope is declared per entry in `databases`, either as an exact name or as a wildcard pattern matching several — the same `*` selection syntax used by guardrail `target` fields and connection keys (3.3). A pattern lets a tenant state an intent that keeps holding as its account grows: `PROD_*` picks up a newly created `PROD_SALES` on the next reconciliation, without an edit that is easy to forget and only discovered as a gap after a failover. The controller resolves every entry against the primary's actual databases on each reconciliation, so the replicated set follows the account rather than a snapshot of it.
+
+Because a pattern's reach is not obvious from reading it, the resolved database list is reported in `status` (5.4). A pattern that currently matches nothing is a user error, not an empty set — a misspelled pattern should surface as a validation failure rather than a silently empty standby.
+
+### 5.4 Controller Lifecycle and Behavior
+
+The controller orchestrates the replication topology through the following high-level phases:
+
+* **Validation:** Before applying any changes, the controller verifies that all participating accounts are healthy, reside in the same isolated namespace, and strictly adhere to the permitted region-pair guardrails. Each `databases` entry is checked to match at least one database in the primary.
+* **Bootstrapping:** The controller connects to the primary account to authorize replication, establishes the replicas on the secondary accounts, and triggers the initial data sync. Once bootstrapped, Snowflake natively handles the ongoing scheduled refreshes without controller intervention.
+* **Manual Failover:** A failover is explicitly triggered when a tenant updates the desired primary account in their Git repository. Crucially, the controller executes the promotion command directly on the new primary. This design ensures that failovers succeed even if the original primary region is completely offline and unreachable.
+* **No Auto-Failover:** The platform deliberately avoids automated failovers. Because the controller cannot safely distinguish between a true Snowflake regional outage and a temporary network disruption, auto-failover introduces severe risks of "split-brain" data corruption. Forcing a manual Git update ensures human intent.
+* **Health Monitoring:** The controller continuously monitors replication lag. If a secondary account falls too far behind its expected sync schedule, the controller flags the environment as unhealthy, alerting operators that the standby region is not up to date. It also reports the databases each `databases` entry currently resolves to, so tenants can see the real scope of a pattern rather than inferring it.
+
+
+
+
+## 6. Global Error Handling & Observability
 
 Reliable and transparent error handling is essential for a self-service platform. To ensure a consistent user experience, the platform enforces a **standardized status schema** across all CRDs (`SnowflakeAccount`).
 
 Users must be able to instantly determine whether a resource is healthy, still reconciling, or requires manual intervention. The controller exposes this information via Kubernetes-compliant `status.conditions`.
 
-### 5.1 Condition Model
+### 6.1 Condition Model
 
 Every Custom Resource (CR) in this platform surfaces three standard condition types. These conditions provide a high-level summary of the resource's lifecycle state.
 
@@ -638,7 +699,7 @@ Every Custom Resource (CR) in this platform surfaces three standard condition ty
 | **`Synced`** | **State Consistency** | Indicates whether the live state matches the desired state. <br>**During Creation:** Set to **True** once the CRD is accepted and processing begins. <br>**After Creation:** Remains **True** when no changes are pending. <br>**During Updates:** Set to **False** while changes are being applied. Update errors are reported here. Returns to **True** once synchronized. |
 | **`Compliance`** | **Governance** | **True:** The account is bound by the platform's Organization Policies and adheres to the baseline. <br>**Reason `PolicyBound`:** The server-side Organization Policies are in effect for this account. |
 
-### 5.2 Status Examples
+### 6.2 Status Examples
 
 **Example A: A Healthy Resource**
 
@@ -657,11 +718,12 @@ status:
 ```
 
 
-## 6. Open TODOs
+## 7. Open TODOs
 
 Items flagged inline throughout this document, collected here for tracking. 
 
 * **Credits:** How serverless and AI spend is capped, and where consumption is read (3.9). The namespace allowance and admission model itself is specified in 3.9.
-* **Region replication:** Cross-region replication support for SnowflakeAccount resources.
+* **Replication guardrails:** The `replication` block in the guardrail schema — legal region pairs per department, permitted `objectTypes`, and a floor on `schedule` (5.3).
+* **Split-brain on failover:** What the controller does with a demoted primary it cannot reach at promotion time (5.5).
 
 
