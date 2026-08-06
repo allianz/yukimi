@@ -73,59 +73,7 @@ argocd app create "$TENANT" \
 ## 3. SnowflakeAccount Resource
 The SnowflakeAccount resource enables teams to define, provision, and manage a fully isolated Snowflake account.
 
-### 3.1 Domain Concepts
-
-The SnowflakeAccount CRD serves as the atomic unit of tenancy within the platform. It represents a fully isolated Snowflake Account Object combined with necessary enterprise bindings, specifically identity mapping (GIAM/SCIM) and network posture (Network Policies).
-
-The platform’s scalability relies on a fundamental architectural shift: integrating regions rather than individual accounts. Previously, account creation required provisioning heavy infrastructure from scratch for every account. To address this, the architecture pre-provisions infrastructure once per cloud region as a shared "backplane".
-
-Integration is performed once per region (or globally where possible) rather than repeatedly for each tenant:
-
-* PrivateLink is configured once per Snowflake region.
-* DNS is registered using regional wildcards.
-* SSO is integrated globally.
-* Hardened network and authentication policies are defined centrally.
-
-Because the network integration is pre-configured and active, new accounts simply attach to this existing infrastructure via automated SQL commands. This mechanism transforms provisioning from a manual infrastructure project into an instant, logical operation.
-
-Account creation is driven by four inputs, each owned by a different party, which the controller reconciles into a live account through a fixed sequence. The diagram below shows how these inputs relate, who owns each one, and how they feed the create flow; the bullets and sections that follow detail each in turn.
-
-```mermaid
-flowchart LR
-    Customer([Customer]) -->|commits| CRD["SnowflakeAccount CRD (3.2)"]
-    OEs([OEs]) -->|defines| Guardrails["Guardrails (3.3)"]
-    ISO([ISO]) -->|approves| Exceptions["Exception Approval (3.4)"]
-    Ops([Platform Ops]) -->|defines| BackplaneConfig["Backplane Config (3.5)"]
-
-    CRD --> Controller[[Controller]]
-    Guardrails --> Controller
-    Exceptions --> Controller
-    BackplaneConfig --> Controller
-
-    Controller --> CreateFlow
-
-    subgraph createFlowGroup [" "]
-        direction TB
-        CreateFlow["Account Bootstrapping (3.6)"] --> IdentityIntegration["Identity Integration (3.7)"]
-        IdentityIntegration --> Whitelisting["Custom Whitelisting (3.8)"]
-        Whitelisting --> CreditQuota["Credit Quota (3.9)"]
-    end
-
-    style createFlowGroup fill:transparent
-```
-
-* **SnowflakeAccount CRD (3.2):** The customer commits a `SnowflakeAccount` CRD describing the account they want, kicking off the reconciliation flow.
-* **Guardrails (3.3):** OEs (Operating Entities) define the rules that gate and preset the customer's CRD input before it is ever applied to Snowflake.
-* **Exception Approval (3.4):** ISO approves one-off exceptions to what the guardrails would otherwise reject — e.g. whitelisting a public-internet IP.
-* **Backplane Config (3.5):** Once Ops has provisioned a region's network via Terraform and closed out the follow-up setup tickets, they record the resulting IDs and IP ranges in the Backplane Config for the controller to use.
-* **Account Bootstrapping (3.6):** The controller creates the Snowflake account and binds it to the regional backplane infrastructure from the Backplane Config.
-* **Identity Integration (3.7):** The controller imports the CRD's referenced company groups into the new account, so their members can log in via SSO with their existing company roles carried over.
-* **Custom Whitelisting (3.8):** The controller turns the CRD's whitelisting entries into network policies — a dedicated, deny-by-default one per technical user named, and account-wide additions where an entry names none.
-* **Credit Quota (3.9):** The controller checks the share of credits the CRD claims against the namespace allowance set at onboarding (2), then pushes that share into Snowflake as a resource monitor and a budget so consumption stops when it is used up.
-
-
-
-### 3.2 SnowflakeAccount CRD
+### 3.1 Example
 
 ```yaml
 apiVersion: infra.snowflake.allianz.io/v1alpha1
@@ -166,6 +114,58 @@ spec:
         rsaKeyAllowed: true
         reason: "Automation without SSO support"
 ```
+
+
+
+### 3.2 Domain Concepts
+
+The SnowflakeAccount CRD serves as the atomic unit of tenancy within the platform. It represents a fully isolated Snowflake Account Object combined with necessary enterprise bindings, specifically identity mapping (GIAM/SCIM) and network posture (Network Policies).
+
+The platform’s scalability relies on a fundamental architectural shift: integrating regions rather than individual accounts. Previously, account creation required provisioning heavy infrastructure from scratch for every account. To address this, the architecture pre-provisions infrastructure once per cloud region as a shared "backplane".
+
+Integration is performed once per region (or globally where possible) rather than repeatedly for each tenant:
+
+* PrivateLink is configured once per Snowflake region.
+* DNS is registered using regional wildcards.
+* SSO is integrated globally.
+* Hardened network and authentication policies are defined centrally.
+
+Because the network integration is pre-configured and active, new accounts simply attach to this existing infrastructure via automated SQL commands. This mechanism transforms provisioning from a manual infrastructure project into an instant, logical operation.
+
+Account creation is driven by four inputs, each owned by a different party, which the controller reconciles into a live account through a fixed sequence. The diagram below shows how these inputs relate, who owns each one, and how they feed the create flow; the bullets and sections that follow detail each in turn.
+
+```mermaid
+flowchart LR
+    Customer([Customer]) -->|commits| CRD["SnowflakeAccount CRD (3.1)"]
+    OEs([OEs]) -->|defines| Guardrails["Guardrails (3.3)"]
+    ISO([ISO]) -->|approves| Exceptions["Exception Approval (3.4)"]
+    Ops([Platform Ops]) -->|defines| BackplaneConfig["Backplane Config (3.5)"]
+
+    CRD --> Controller[[Controller]]
+    Guardrails --> Controller
+    Exceptions --> Controller
+    BackplaneConfig --> Controller
+
+    Controller --> CreateFlow
+
+    subgraph createFlowGroup [" "]
+        direction TB
+        CreateFlow["Account Bootstrapping (3.6)"] --> IdentityIntegration["Identity Integration (3.7)"]
+        IdentityIntegration --> Whitelisting["Custom Whitelisting (3.8)"]
+        Whitelisting --> CreditQuota["Credit Quota (3.9)"]
+    end
+
+    style createFlowGroup fill:transparent
+```
+
+* **SnowflakeAccount CRD (3.1):** The customer commits a `SnowflakeAccount` CRD describing the account they want, kicking off the reconciliation flow.
+* **Guardrails (3.3):** OEs (Operating Entities) define the rules that gate and preset the customer's CRD input before it is ever applied to Snowflake.
+* **Exception Approval (3.4):** ISO approves one-off exceptions to what the guardrails would otherwise reject — e.g. whitelisting a public-internet IP.
+* **Backplane Config (3.5):** Once Ops has provisioned a region's network via Terraform and closed out the follow-up setup tickets, they record the resulting IDs and IP ranges in the Backplane Config for the controller to use.
+* **Account Bootstrapping (3.6):** The controller creates the Snowflake account and binds it to the regional backplane infrastructure from the Backplane Config.
+* **Identity Integration (3.7):** The controller imports the CRD's referenced company groups into the new account, so their members can log in via SSO with their existing company roles carried over.
+* **Custom Whitelisting (3.8):** The controller turns the CRD's whitelisting entries into network policies — a dedicated, deny-by-default one per technical user named, and account-wide additions where an entry names none.
+* **Credit Quota (3.9):** The controller checks the share of credits the CRD claims against the namespace allowance set at onboarding (2), then pushes that share into Snowflake as a resource monitor and a budget so consumption stops when it is used up.
 
 
 
@@ -293,7 +293,7 @@ Bringing a region online is a one-time manual job for platform ops: run the Terr
 The config has three parts:
 
   * **`parameters`:** Snowflake account parameters applied to every account during bootstrapping (3.6) — the org-wide security baseline plus each region's own settings.
-  * **`inventory`:** The catalogue of ingress paths that physically exist in the region, named by the `connection` handle tenants reference (3.2, 3.3, 3.8). It grants nothing itself; its `maxCidrs` is the security ceiling every `allowedIPs` is validated against.
+  * **`inventory`:** The catalogue of ingress paths that physically exist in the region, named by the `connection` handle tenants reference (3.1, 3.3, 3.8). It grants nothing itself; its `maxCidrs` is the security ceiling every `allowedIPs` is validated against.
   * **`ingress`:** The baseline whitelisting every account in the region needs to be reachable at all — principally so its human users can log in via the browser. Accounts are deny-by-default once a network policy is attached, so this is the required minimum, applied with no tenant involvement. 
 
 ```yaml
@@ -397,7 +397,7 @@ ALTER ACCOUNT SET NETWORK_POLICY = 'PLATFORM_ACCOUNT_POLICY';
 
 Identity, like networking, is integrated globally rather than per account. An Azure AD SCIM sync continuously feeds enterprise users and GIAM groups into a single Organization User Group backplane in Snowflake, independent of any `SnowflakeAccount` CRD. This sync makes groups available org-wide, but a group must still be explicitly imported into an account before it can be used there.
 
-That import is what the CRD's `groups` field drives. `accountAdmin`, `sysAdmin`, and every entry in `userManaged` (see the example in 3.2) name organization groups that must already exist in the backplane; the controller imports each one into the new account as part of account bootstrapping (3.6). Importing a group creates a matching role in the account, and its members are granted that role automatically.
+That import is what the CRD's `groups` field drives. `accountAdmin`, `sysAdmin`, and every entry in `userManaged` (see the example in 3.1) name organization groups that must already exist in the backplane; the controller imports each one into the new account as part of account bootstrapping (3.6). Importing a group creates a matching role in the account, and its members are granted that role automatically.
 
 ```sql
 -- 1. accountAdmin: import the group, then grant it ACCOUNTADMIN so its members
@@ -497,7 +497,7 @@ Every account is always created with the secret-based `platform` user described 
 
 **Principal:** Unlike the account-birth credential, which belongs to a single `platform` service user, the OIDC principal is scoped to the **tenant's Kubernetes namespace** — the same trust anchor used for secret-path isolation above. The controller creates a dedicated Kubernetes `ServiceAccount` in the tenant's namespace alongside the `SnowflakeAccount` resource (e.g. `sa-<account-name>-oidc`). This ServiceAccount never runs a pod — it exists purely as an identity primitive. When the controller needs to connect to that account, it uses the Kubernetes `TokenRequest` API to mint a short-lived, narrowly-audienced JWT for that ServiceAccount, uses it once, and discards it. The token's `sub` claim — `system:serviceaccount:<namespace>:sa-<account-name>-oidc` — encodes both the tenant namespace and the account name, mirroring the granularity of the ASM secret path.
 
-**Global setup (one-time, like the network/identity backplane in 3.1):** The Kubernetes cluster's OIDC issuer and JWKS endpoint are registered once, platform-wide, as a trusted external identity provider in the Backplane Config. This is an ops/bootstrap concern, not a per-account step.
+**Global setup (one-time, like the network/identity backplane in 3.2):** The Kubernetes cluster's OIDC issuer and JWKS endpoint are registered once, platform-wide, as a trusted external identity provider in the Backplane Config. This is an ops/bootstrap concern, not a per-account step.
 
 **Per-account setup (added to account bootstrapping, 3.6):**
 
