@@ -412,13 +412,14 @@ ALTER ACCOUNT ADD ORGANIZATION USER GROUP '<group-name-from-crd>';
 
 ### 3.8 Custom Whitelisting
 
-Technical users (service accounts like `airflow`) are the highest-value credential in an account: their tokens are long-lived and machine-held, so a leaked token is the platform's primary blast-radius concern. The `networkPolicy.whitelisting` field exists to contain that blast radius. The guiding principle is **deny-by-default**: a technical user with no whitelisting entry gets an **empty** network policy and therefore cannot log in from anywhere. Access is granted only by an explicit, narrow entry naming the user and the connection they may reach.
+Custom whitelisting is a critical step in the account provisioning process. Additional network access defined in the `SnowflakeAccount` CRD is provisioned here for both the overall account and specific technical users. Securing technical users (e.g., service accounts like `airflow`) is the most important aspect of this process, as their long-lived credentials pose the highest security risk to the platform. This mechanism forces customers to define tight, explicit ingress paths rather than reusing the broad access ranges meant for human users.
 
-The intent is to force customers to commit to a tight ingress path for each technical user rather than reusing the broad browser-access ranges meant for humans (`agn`, `public`). A narrow per-user policy binds the token to the environment it is intended for: if it is copied elsewhere — such as a human workstation — it stops working.
+**Core Principles & Behavior:**
 
-Each `allowedIPs` entry must fall entirely inside the `maxCidrs` the referenced connection defines in the region's `inventory` (3.5). The network-policy builder checks this containment at create time; an entry broader than or outside the connection's `maxCidrs` — or any CIDR on a VPCE-only connection that defines no `maxCidrs` — is rejected with an error and the account is not provisioned. This is the same containment rule that gates the region's account-wide `ingress` in 3.5, applied here to every entry.
-
-Snowflake network policies are either/or at the user level: setting `NETWORK_POLICY` on a user fully overrides the account-level default rather than merging with it. So each `user` referenced in `whitelisting` gets its own dedicated network policy, built from every whitelisting entry that names them; a user with no entry gets a dedicated policy that allows nothing.
+  * **Deny-by-Default:** A technical user with no explicit whitelisting entry receives an empty network policy, completely blocking them from logging in. Access is only granted through narrow, explicitly defined entries.
+  * **Strict Containment:** Every requested IP range (`allowedIPs`) must fall entirely within the security ceiling (`maxCidrs`) defined for that connection in the region's Backplane Config. Any entry broader than or outside this limit is rejected, and the account is not provisioned.
+  * **User-Scoped Policies:** Snowflake network policies fully override the account-level default when applied to a specific user. Therefore, the system generates a dedicated, custom network policy for each technical user, built exclusively from the connections they are explicitly granted.
+  * **Account-Scoped Policies:** Whitelisting entries that do not name a specific user are applied account-wide. These rules are appended to the baseline platform account policy created during the initial bootstrapping phase.
 
 ```sql
 -- For each distinct user in networkPolicy.whitelisting, create one network rule per
@@ -450,7 +451,7 @@ ALTER NETWORK POLICY PLATFORM_ACCOUNT_POLICY
   ADD ALLOWED_NETWORK_RULE_LIST = (<all-custom-rule-names>);
 ```
 
-**Note:** As with the account-level policy in 3.6, once Snowflake's Organization Policies feature is available these per-user policies will be enforced centrally as org policies rather than through `ALTER USER ... SET NETWORK_POLICY`. The deny-by-default posture and the per-user narrowing stay the same; the enforcement mechanism moves server-side so tenants cannot loosen it. Not yet released as of this writing.
+**Note:** Snowflake will introduce Organization Policies that will centrally enforce these per-user network rules and natively enforce the empty policy by default.
 
 
 
