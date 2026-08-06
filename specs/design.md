@@ -33,30 +33,6 @@ This platform is not built using traditional, manual software development method
 
 
 
-### 1.3. User Journey
-
-The following describes how a customer team interacts with the Snowflake Multi-Account platform—from requesting access to managing its own Snowflake environments.
-
-#### Onboarding to the Self-Service Platform
-
-The journey begins when a customer team decides to set up its own Snowflake environment. After reviewing the landing page, the team follows the instructions to email the product owner with the required details.
-
-Once the request is approved, the operations team runs an onboarding script that prepares all necessary components:
-
-* A dedicated Git repository
-* Access to ArgoCD
-
-After setup, the team gains access to its fully isolated environment.
-
-#### Creating the First Snowflake Account
-
-With access in place, the team can create its Snowflake account by committing a simple YAML file to the repository. Once committed, the system automatically provisions the account, and progress can be tracked directly in ArgoCD.
-
-#### Extending the Environment With Templates
-
-Once the account is ready, teams often need additional resources such as databases, warehouses. They can choose to create these manually or use pre-built templates provided by the platform and community. These templates go beyond enforcing best practices—they simplify setup, ensure compliance, and eliminate the need for complex CI/CD pipelines with tools like Jenkins or Flyway. By using templates, teams can start immediately with Snowflake DBT projects and OpenFlow without leaving the Snowflake ecosystem.
-
-
 
 
 ## 2. Tenant Onboarding
@@ -65,7 +41,7 @@ The onboarding process begins when a team requests access to the self-service pl
 
 * A Kubernetes namespace with the same name is created and labeled with the cost center and credit quota.
 * A new GitHub repository is created under the shared organization using the tenant name.
-* Argo CD is then configured to automatically sync the team’s repo into this namespace so that any SnowflakeAccount or template resources are reconciled immediately.
+* Argo CD is then configured to automatically sync the team’s repo into this namespace so that any SnowflakeAccount resources are reconciled immediately.
 
 The following is a simple bash script to illustrate the required steps. (will be replaced by Terraform):
 
