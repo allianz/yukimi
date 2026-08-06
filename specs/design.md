@@ -132,7 +132,7 @@ Integration is performed once per region (or globally where possible) rather tha
 
 Because the network integration is pre-configured and active, new accounts simply attach to this existing infrastructure via automated SQL commands. This mechanism transforms provisioning from a manual infrastructure project into an instant, logical operation.
 
-Account creation is driven by four inputs, each owned by a different party, which the controller reconciles into a live account through a fixed sequence. The diagram below shows how these inputs relate, who owns each one, and how they feed the create flow; the bullets and sections that follow detail each in turn.
+Account creation is driven by four inputs, each associated with a different party, which the controller reconciles into a live account through a fixed sequence. The diagram below shows how these inputs relate, which party each is associated with, and how they feed the create flow; the bullets and sections that follow detail each in turn.
 
 ```mermaid
 flowchart LR
