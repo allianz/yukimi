@@ -96,18 +96,24 @@ spec:
   creditQuota: 500
   # --- GIAM roles to import and assign ---
   groups:
-    accountAdmin: XYZ_DATA_ENGINEERS
-    sysAdmin: XYZ_DEVELOPERS
-    userManaged:
+    import:                          # every group to import; must exist in the backplane
+      - XYZ_DATA_ENGINEERS
+      - XYZ_DEVELOPERS
       - XYZ_ANALYSTS
+    grants:                          # system role → imported group; ACCOUNTADMIN required
+      ACCOUNTADMIN: XYZ_DATA_ENGINEERS
+      SYSADMIN: XYZ_DEVELOPERS       # any Snowflake system role may be granted   
   # --- Allow custom whitelisting ---
   networkPolicy:
     whitelisting:
-      - user: tu_airflow
-        connection: agn        # from the region's inventory in the Backplane Config
-        allowedIPs:
-          - 10.23.45.0/24
-      - connection: dbt-cloud  # no user → account-wide
+      users:                       # one entry per technical user, deny-by-default (3.8)
+        tu_airflow:
+          - connection: agn        # from the region's inventory in the Backplane Config
+            allowedIPs:
+              - 10.23.45.0/24
+          - connection: dbt-cloud  # VPCE-only: nothing to narrow
+      account:                     # opened for every user in the account
+        - connection: dbt-cloud
   # --- Allow human users to bypass SSO ---
   authPolicy:
     exceptions:
@@ -165,7 +171,7 @@ flowchart LR
 * **Backplane Config (3.5):** Once Ops has provisioned a region's network via Terraform and closed out the follow-up setup tickets, they record the resulting IDs and IP ranges in the Backplane Config for the controller to use.
 * **Account Bootstrapping (3.6):** The controller creates the Snowflake account and binds it to the regional backplane infrastructure from the Backplane Config.
 * **Identity Integration (3.7):** The controller imports the CRD's referenced company groups into the new account, so their members can log in via SSO with their existing company roles carried over.
-* **Custom Whitelisting (3.8):** The controller turns the CRD's whitelisting entries into network policies — a dedicated, deny-by-default one per technical user named, and account-wide additions where an entry names none.
+* **Custom Whitelisting (3.8):** The controller turns the CRD's whitelisting entries into network policies — a dedicated, deny-by-default one per technical user listed under `users`, and account-wide additions for everything under `account`.
 * **Credit Quota (3.9):** The controller checks the share of credits the CRD claims against the namespace allowance set at onboarding (2), then pushes that share into Snowflake as a resource monitor and a budget so consumption stops when it is used up.
 
 
@@ -182,7 +188,7 @@ Each guardrail defines three core components:
   * **`constraints`:** The strict rules the user's input must pass, such as correct naming conventions, maximum credit quotas, and network rules. If a submitted CRD violates these rules, the system immediately rejects it with a validation error.
   * **`preset`:** Automatically populates default values (like timezones or base credit quotas) if the user omits them in their request.
 
-**Connection Constraints:** Guardrails strictly control how tenants can configure network access. These constraints are categorized by scope (either `user` or `account`) and then by connection name, applying one of three rules:
+**Connection Constraints:** Guardrails strictly control how tenants can configure network access. These constraints are categorized by scope (either `users` or `account`, mirroring the CRD's whitelisting keys) and then by connection name, applying one of three rules:
 
   * **Max Width (`"/NN"`):** The user is required to provide an IP range (CIDR), but it is capped at the specified maximum width.
   * **Inherit Full Range (`"full"`):** The user may not specify an IP range; they simply inherit the connection's full predefined range from the Backplane Config.
@@ -213,7 +219,7 @@ guardrails:
       allowedRegions:
         - "*"
       connections:              # per-connection: "/NN" = CIDR required (max width),
-        user:                   #   "full" = no CIDR (inherit full range), "off" = forbidden
+        users:                  #   "full" = no CIDR (inherit full range), "off" = forbidden
           agn: "/16"
           public: "/32"         # public: single IPs only
           dbt-cloud: "full"     # VPCE-only: no CIDR to narrow
@@ -233,7 +239,7 @@ guardrails:
 
     constraints:
       connections:
-        user:
+        users:
           agn: "full"           # just `connection: agn`, no allowedIPs
         account:
           agn: "/16"            # dev may open agn account-wide
@@ -247,7 +253,7 @@ guardrails:
         - "aws-eu-central-1"    # Frankfurt
         - "aws-eu-west-3"       # Paris
       connections:
-        user:
+        users:
           agn: "/24"            # DE tightens agn further
 ```
 
@@ -268,10 +274,11 @@ This exists for cases where a customer has a legitimate, one-off need that the s
 exceptions:
   - account: "analytics-team-eu"        # exact account name — no wildcards
     whitelisting:                         # the full entry being approved, verbatim
-      user: tu_airflow
-      connection: public
-      allowedIPs:
-        - 203.0.113.50/32                 # wider than the guardrails normally allow
+      users:
+        tu_airflow:
+          - connection: public
+            allowedIPs:
+              - 203.0.113.50/32           # wider than the guardrails normally allow
     reason: "ISO-4821: temporary vendor integration, approved by ISO via email 2026-06-01"
 ```
 
@@ -390,21 +397,25 @@ ALTER ACCOUNT SET NETWORK_POLICY = 'PLATFORM_ACCOUNT_POLICY';
 
 Identity, like networking, is integrated globally rather than per account. An Azure AD SCIM sync continuously feeds enterprise users and GIAM groups into a single Organization User Group backplane in Snowflake, independent of any `SnowflakeAccount` CRD. This sync makes groups available org-wide, but a group must still be explicitly imported into an account before it can be used there.
 
-That import is what the CRD's `groups` field drives. `accountAdmin`, `sysAdmin`, and every entry in `userManaged` (see the example in 3.1) name organization groups that must already exist in the backplane; the controller imports each one into the new account as part of account bootstrapping (3.6). Importing a group creates a matching role in the account, and its members are granted that role automatically.
+That import is what the CRD's `groups` field drives, and it splits the two questions that were previously conflated: which groups exist in the account, and which of them carry a system role.
+
+  * **`import`:** The complete list of organization groups to bring into the account. Each must already exist in the backplane. Importing a group creates a matching role in the account, and its members are granted that role automatically.
+  * **`grants`:** Binds Snowflake system roles to imported groups — each key is a literal system role name, each value the group that receives it. The set of keys is open: `USERADMIN`, `SECURITYADMIN` or any other system role may be granted without a change to this spec. Three rules apply:
+      * **`ACCOUNTADMIN` is required.** Without it nobody could log in to the freshly created account and administer it, since the `platform` service user is the only other principal that exists (3.6) and it is not a human login path. A CRD omitting it is rejected.
+      * **Every value must also appear in `import`.** A `grants` entry naming a group that is not being imported is a validation error, since there would be no role in the account to grant to.
+      * **One group per role.** A given system role is granted to exactly one group; listing the same role key twice is a validation error. Other groups needing the same privileges receive them through the role hierarchy inside the account, which is the tenant's own concern.
 
 ```sql
--- 1. accountAdmin: import the group, then grant it ACCOUNTADMIN so its members
--- inherit the system role through the role hierarchy.
-ALTER ACCOUNT ADD ORGANIZATION USER GROUP '<accountAdmin-group-name-from-crd>';
-GRANT ROLE ACCOUNTADMIN TO ROLE "<accountAdmin-group-name-from-crd>";
+-- 1. Import every group in groups.import, in the order listed. This is the only
+-- statement that creates roles in the account; grants below only bind to them.
+ALTER ACCOUNT ADD ORGANIZATION USER GROUP '<group-name-from-groups.import>';
+-- ... repeated for each entry in groups.import
 
--- 2. sysAdmin: same pattern, granting SYSADMIN instead.
-ALTER ACCOUNT ADD ORGANIZATION USER GROUP '<sysAdmin-group-name-from-crd>';
-GRANT ROLE SYSADMIN TO ROLE "<sysAdmin-group-name-from-crd>";
-
--- 3. userManaged: every remaining group is simply imported, no extra grant.
-ALTER ACCOUNT ADD ORGANIZATION USER GROUP '<group-name-from-crd>';
--- ... repeated for each entry in userManaged
+-- 2. Grant the system roles named in groups.grants — one statement per entry, the
+-- key used verbatim as the system role — so members of the referenced group inherit
+-- it through the role hierarchy. ACCOUNTADMIN is always among these (see above).
+GRANT ROLE <role-name-from-grants-key> TO ROLE "<group-name-from-grants-value>";
+-- ... repeated for each entry in groups.grants
 ```
 
 **TODO:** Either all users and groups are synced with SCIM or the controller must trigger to add all groups in the CRD to the Azure Entra ID Enterprise App.
@@ -419,17 +430,18 @@ Custom whitelisting is a critical step in the account provisioning process. Addi
 
   * **Deny-by-Default:** A technical user with no explicit whitelisting entry receives an empty network policy, completely blocking them from logging in. Access is only granted through narrow, explicitly defined entries.
   * **Strict Containment:** Every requested IP range (`allowedIPs`) must fall entirely within the security ceiling (`maxCidrs`) defined for that connection in the region's Backplane Config. Any entry broader than or outside this limit is rejected, and the account is not provisioned.
-  * **User-Scoped Policies:** Snowflake network policies fully override the account-level default when applied to a specific user. Therefore, the system generates a dedicated, custom network policy for each technical user, built exclusively from the connections they are explicitly granted.
-  * **Account-Scoped Policies:** Whitelisting entries that do not name a specific user are applied account-wide. These rules are appended to the baseline platform account policy created during the initial bootstrapping phase.
+  * **User-Scoped Policies:** Snowflake network policies fully override the account-level default when applied to a specific user. Therefore, the system generates a dedicated, custom network policy for each technical user under `whitelisting.users`, built exclusively from the connections they are explicitly granted. A user's list may name several connections; because a user can only have one active `NETWORK_POLICY` at a time, all of them collapse into that single policy.
+  * **Account-Scoped Policies:** Entries under `whitelisting.account` are applied account-wide. These rules are appended to the baseline platform account policy created during the initial bootstrapping phase.
+  * **No Duplicate Connections:** A connection may appear at most once in a given user's list, and at most once under `account`. A repeated connection within the same scope is a validation error rather than a silent merge of its IP ranges.
 
 ```sql
--- For each distinct user in networkPolicy.whitelisting, create one network rule per
--- connection that user's entries reference. Resolve each entry's allowedIPs against
--- the connection's maxCidrs (from the region's inventory), having
--- validated that each allowedIPs entry falls inside that connection's maxCidrs.
+-- For each user key in networkPolicy.whitelisting.users, create one network rule per
+-- entry in that user's list. Resolve each entry's allowedIPs against the connection's
+-- maxCidrs (from the region's inventory), having validated that each allowedIPs entry
+-- falls inside that connection's maxCidrs.
 CREATE NETWORK RULE <technical-user-and-connection-derived-name> TYPE = <type-from-region-config> MODE = INGRESS
   VALUE_LIST = (<vpceId-and/or-validated-allowedIPs>);
--- ... repeated for every connection referenced by this user's entries
+-- ... repeated for every entry in this user's list
 
 -- Collect that user's rules into a single dedicated policy — one policy per user,
 -- covering every connection they were granted, since a user can only have one active
@@ -437,14 +449,14 @@ CREATE NETWORK RULE <technical-user-and-connection-derived-name> TYPE = <type-fr
 CREATE NETWORK POLICY <technical-user-derived-policy-name>
   ALLOWED_NETWORK_RULE_LIST = (<all-rule-names-for-this-user>);
 ALTER USER '<technical-user-from-crd>' SET NETWORK_POLICY = '<technical-user-derived-policy-name>';
--- ... repeated for every distinct user in networkPolicy.whitelisting
+-- ... repeated for every user key in networkPolicy.whitelisting.users
 
--- Entries naming no user are account-scoped: they add their rules to the account policy
--- created during bootstrapping (3.6) instead of getting a policy of their own. Same
--- containment validation applies.
+-- Entries under networkPolicy.whitelisting.account are account-scoped: they add their
+-- rules to the account policy created during bootstrapping (3.6) instead of getting a
+-- policy of their own. Same containment validation applies.
 CREATE NETWORK RULE CUSTOM_<connection-name> TYPE = <type-from-region-config> MODE = INGRESS
   VALUE_LIST = (<vpceId-and/or-validated-allowedIPs>);
--- ... repeated for every connection referenced by account-scoped entries
+-- ... repeated for every entry under whitelisting.account
 
 -- Attach them to the account policy. The CUSTOM_ prefix keeps these separate from the
 -- region's ingress rules (3.6), which are named by the bare connection.
@@ -495,7 +507,7 @@ Every account is always created with the secret-based `platform` user described 
 **Per-account setup (added to account bootstrapping, 3.6):**
 
 ```sql
--- 4. OIDC Integration: trust the cluster's OIDC issuer for this account, and map
+-- 3. OIDC Integration: trust the cluster's OIDC issuer for this account, and map
 -- this account's namespace-and-account-scoped ServiceAccount subject to one of
 -- the CRD's already-imported groups (3.7) — no new identity or role is created.
 CREATE SECURITY INTEGRATION PLATFORM_OIDC
@@ -506,10 +518,10 @@ CREATE SECURITY INTEGRATION PLATFORM_OIDC
   EXTERNAL_OAUTH_TOKEN_USER_MAPPING_CLAIM = 'sub';
 
 -- The mapped Snowflake user's LOGIN_NAME is derived deterministically from the
--- expected `sub` claim value, and is granted the existing imported group role
--- (e.g. sysAdmin, 3.7) — OIDC authenticates as an *existing* role, it does not
--- introduce a new one.
-ALTER USER '<sysAdmin-group-name-from-crd>' SET LOGIN_NAME = '<sub-claim-derived-from-namespace-and-account>';
+-- expected `sub` claim value, and is granted the group role named by
+-- grants.ACCOUNTADMIN (3.7) — always present, so this mapping is always available.
+-- OIDC authenticates as an *existing* role, it does not introduce a new one.
+ALTER USER '<group-name-from-grants.ACCOUNTADMIN>' SET LOGIN_NAME = '<sub-claim-derived-from-namespace-and-account>';
 ```
 
 **Isolation:** Cross-tenant access is rejected by Snowflake itself, not merely by client-side path construction. Each tenant account's `PLATFORM_OIDC` integration only maps its own namespace-and-account-derived `sub` to a valid user; a token minted for namespace B's ServiceAccount, presented to namespace A's account, matches no mapped user there and is rejected during Snowflake's own signature-and-claims verification — before any SQL executes. This is a stronger guarantee than the ASM path check above, which relies on the calling code correctly constructing a path string: here the Kubernetes API server cryptographically signs the `sub` claim, and Snowflake independently verifies it.
