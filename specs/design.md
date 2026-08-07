@@ -5,11 +5,11 @@
 1. [Introduction](#1-introduction)
 2. [Tenant Onboarding](#2-tenant-onboarding)
 3. [SnowflakeAccount Resource](#3-snowflakeaccount-resource)
-4. [SnowflakeDeletionRequest Resource](#4-snowflakedeletionrequest-resource)
-5. [SnowflakeReplication Resource](#5-snowflakereplication-resource)
+4. [SnowflakeReplication Resource](#4-snowflakereplication-resource)
+5. [SnowflakeDeletionRequest Resource](#5-snowflakedeletionrequest-resource)
 6. [Error Handling & Observability](#6-global-error-handling--observability)
-7. [Open TODOs](#7-open-todos)
-8. [Appendix A: Organization Policy Requirements](#appendix-a-organization-policy-requirements)
+7. [Appendix A: Open TODOs](#appendix-a-open-todos)
+8. [Appendix B: Organization Policy Requirements](#appendix-b-organization-policy-requirements)
 
 
 ## 1. Introduction
@@ -525,9 +525,63 @@ The **`region`** and **`name`** of a `SnowflakeAccount` are **Immutable** after 
 
 
 
-## 4. SnowflakeDeletionRequest Resource
+## 4. SnowflakeReplication Resource
+
+The `SnowflakeReplication` resource links multiple existing `SnowflakeAccount` resources into a single replication group, with exactly one account acting as the primary.
 
 ### 4.1 Example
+
+```yaml
+apiVersion: base.snowflake.yukimi.io/v1alpha1
+kind: SnowflakeReplication
+metadata:
+  name: analytics-team-dr
+  namespace: analytics-team-eu
+spec:
+  description: "Cross-region standby for EU analytics"
+  accounts:
+    - analytics-team-eu # aws-eu-central-1
+    - analytics-team-eu-dr # aws-eu-west-3
+  primaryAccount: analytics-team-eu
+  objectTypes:
+    - DATABASES
+    - ROLES
+    - USERS
+    - WAREHOUSES
+  databases:
+    - SALES
+    - "PROD_*"
+  schedule: "10 MINUTE"
+  failoverEnabled: true
+```
+
+### 4.2 Data Residency
+
+Data replication across regions is strictly governed by the platform's existing guardrails (3.3), ensuring data only moves between legally permitted region pairs.
+
+### 4.3 Infrastructure vs. Data Replication
+
+Replication is strictly limited to customer data and logical objects (such as databases and roles). Platform-level infrastructure, like network rules and endpoints, is never replicated to avoid breaking regional connectivity.
+
+**Native Snowflake Execution:**
+
+The Kubernetes controller does not actively manage the ongoing replication sync. Instead, it uses native Snowflake functionality:
+
+* **Stored Procedure & Timer:** During setup, the controller provisions a stored procedure and a scheduled timer (task) directly inside the primary Snowflake account.
+* **Autonomous Operation:** This native Snowflake setup runs on the defined schedule to evaluate configurations (such as resolving database wildcard patterns) and automatically updates the active replication group as the environment changes.
+
+### 4.4 Controller Lifecycle and Failover
+
+* **Bootstrapping:** The controller validates the accounts, establishes the initial replication setup, provisions the stored procedure and timer, and then hands over ongoing execution entirely to Snowflake.
+* **Auto-Repair:** Because tenants have access to their Snowflake environment, they could inadvertently modify or break the replication code. If the controller detects replication errors or configuration drift during reconciliation, it automatically repairs the setup by completely removing and recreating the stored procedure and timer.
+* **Manual Failover:** Failovers are strictly manual to prevent "split-brain" data corruption caused by temporary network blips. A failover is executed only when a tenant explicitly updates the `primaryAccount` in their Git repository, prompting the controller to promote the new primary.
+
+
+
+
+## 5. SnowflakeDeletionRequest Resource
+
+### 5.1 Example
 
 ```yaml
 apiVersion: base.snowflake.yukimi.io/v1alpha1
@@ -544,7 +598,7 @@ spec:
 ```
 
 
-### 4.2 Domain Concepts
+### 5.2 Domain Concepts
 
 #### Positive Control (The "Two-Key" System)
 
@@ -561,7 +615,7 @@ Deletion permissions are ephemeral. By defining a `duration` (max 8 hours), the 
 
 While the target resource disappears after deletion, the `SnowflakeDeletionRequest` (or its logs) remains. This creates a permanent audit trail linking the destruction of infrastructure to a specific reason (e.g., a ticket number) and a specific timeframe, satisfying compliance requirements for data destruction.
 
-### 4.3 Controller Behavior
+### 5.3 Controller Behavior
 
 The controller logic focuses on the interaction between the Target Resource (e.g., `SnowflakeAccount`) and the `SnowflakeDeletionRequest`.
 
@@ -588,60 +642,6 @@ When a user deletes a `SnowflakeAccount` (sets `deletionTimestamp`):
     1.  **Block:** The controller **refuses** to drop the resource.
     2.  **Stall:** The resource remains in a `Terminating` state.
     3.  **Alert:** A Kubernetes Event (`Warning: DeletionBlocked`) is emitted, and `Ready=False` is set, causing ArgoCD to report a failure. This forces the user to either restore the file or create a valid Deletion Request.
-
-
-
-
-## 5. SnowflakeReplication Resource
-
-The `SnowflakeReplication` resource links multiple existing `SnowflakeAccount` resources into a single replication group, with exactly one account acting as the primary.
-
-### 5.1 Example
-
-```yaml
-apiVersion: base.snowflake.yukimi.io/v1alpha1
-kind: SnowflakeReplication
-metadata:
-  name: analytics-team-dr
-  namespace: analytics-team-eu
-spec:
-  description: "Cross-region standby for EU analytics"
-  accounts:
-    - analytics-team-eu # aws-eu-central-1
-    - analytics-team-eu-dr # aws-eu-west-3
-  primaryAccount: analytics-team-eu
-  objectTypes:
-    - DATABASES
-    - ROLES
-    - USERS
-    - WAREHOUSES
-  databases:
-    - SALES
-    - "PROD_*"
-  schedule: "10 MINUTE"
-  failoverEnabled: true
-```
-
-### 5.2 Data Residency
-
-Data replication across regions is strictly governed by the platform's existing guardrails (3.3), ensuring data only moves between legally permitted region pairs.
-
-### 5.3 Infrastructure vs. Data Replication
-
-Replication is strictly limited to customer data and logical objects (such as databases and roles). Platform-level infrastructure, like network rules and endpoints, is never replicated to avoid breaking regional connectivity.
-
-**Native Snowflake Execution:**
-
-The Kubernetes controller does not actively manage the ongoing replication sync. Instead, it uses native Snowflake functionality:
-
-* **Stored Procedure & Timer:** During setup, the controller provisions a stored procedure and a scheduled timer (task) directly inside the primary Snowflake account.
-* **Autonomous Operation:** This native Snowflake setup runs on the defined schedule to evaluate configurations (such as resolving database wildcard patterns) and automatically updates the active replication group as the environment changes.
-
-### 5.4 Controller Lifecycle and Failover
-
-* **Bootstrapping:** The controller validates the accounts, establishes the initial replication setup, provisions the stored procedure and timer, and then hands over ongoing execution entirely to Snowflake.
-* **Auto-Repair:** Because tenants have access to their Snowflake environment, they could inadvertently modify or break the replication code. If the controller detects replication errors or configuration drift during reconciliation, it automatically repairs the setup by completely removing and recreating the stored procedure and timer.
-* **Manual Failover:** Failovers are strictly manual to prevent "split-brain" data corruption caused by temporary network blips. A failover is executed only when a tenant explicitly updates the `primaryAccount` in their Git repository, prompting the controller to promote the new primary.
 
 
 
