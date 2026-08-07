@@ -9,6 +9,7 @@
 5. [SnowflakeReplication Resource](#5-snowflakereplication-resource)
 6. [Error Handling & Observability](#6-global-error-handling--observability)
 7. [Open TODOs](#7-open-todos)
+8. [Appendix A: Organization Policy Requirements](#appendix-a-organization-policy-requirements)
 
 
 ## 1. Introduction
@@ -52,14 +53,14 @@ The following is a simple bash script to illustrate the required steps. (will be
  COST_CENTER="$3" # provided by customer  
  CREDIT_QUOTA="$4" # set by platform PO  
  
- gh repo create "allianz/$TENANT" --template allianz/get-started
+ gh repo create "yukimi/$TENANT" --template yukimi/get-started
  kubectl create namespace "$TENANT"  
  kubectl label namespace "$TENANT" \  
     cost-center="$COST_CENTER" \  
     credit-quota="$CREDIT_QUOTA" \  --overwrite  
 
 argocd app create "$TENANT" \  
-    --repo "git@github.com:allianz/$TENANT.git" \  
+    --repo "git@github.com:yukimi/$TENANT.git" \  
     --path "." \  --dest-namespace "$TENANT" \  
     --dest-server https://kubernetes.default.svc \  
     --project "snowflake-accounts" \  
@@ -76,7 +77,7 @@ The SnowflakeAccount resource enables teams to define, provision, and manage a f
 ### 3.1 Example
 
 ```yaml
-apiVersion: infra.snowflake.allianz.io/v1alpha1
+apiVersion: base.snowflake.yukimi.io/v1alpha1
 kind: SnowflakeAccount
 metadata:
   name: analytics-team-eu
@@ -426,16 +427,16 @@ Custom whitelisting is a critical step in the account provisioning process. Addi
 -- connection that user's entries reference. Resolve each entry's allowedIPs against
 -- the connection's maxCidrs (from the region's inventory), having
 -- validated that each allowedIPs entry falls inside that connection's maxCidrs.
-CREATE NETWORK RULE <user-and-connection-derived-name> TYPE = <type-from-region-config> MODE = INGRESS
+CREATE NETWORK RULE <technical-user-and-connection-derived-name> TYPE = <type-from-region-config> MODE = INGRESS
   VALUE_LIST = (<vpceId-and/or-validated-allowedIPs>);
 -- ... repeated for every connection referenced by this user's entries
 
 -- Collect that user's rules into a single dedicated policy — one policy per user,
 -- covering every connection they were granted, since a user can only have one active
 -- NETWORK_POLICY at a time.
-CREATE NETWORK POLICY <user-derived-policy-name>
+CREATE NETWORK POLICY <technical-user-derived-policy-name>
   ALLOWED_NETWORK_RULE_LIST = (<all-rule-names-for-this-user>);
-ALTER USER '<user-from-crd>' SET NETWORK_POLICY = '<user-derived-policy-name>';
+ALTER USER '<technical-user-from-crd>' SET NETWORK_POLICY = '<technical-user-derived-policy-name>';
 -- ... repeated for every distinct user in networkPolicy.whitelisting
 
 -- Entries naming no user are account-scoped: they add their rules to the account policy
@@ -529,7 +530,7 @@ The **`region`** and **`name`** of a `SnowflakeAccount` are **Immutable** after 
 ### 4.1 Example
 
 ```yaml
-apiVersion: infra.snowflake.allianz.io/v1alpha1
+apiVersion: base.snowflake.yukimi.io/v1alpha1
 kind: SnowflakeDeletionRequest
 metadata:
   name: decommission-analytics-prod
@@ -598,7 +599,7 @@ The `SnowflakeReplication` resource links multiple existing `SnowflakeAccount` r
 ### 5.1 Example
 
 ```yaml
-apiVersion: infra.snowflake.allianz.io/v1alpha1
+apiVersion: base.snowflake.yukimi.io/v1alpha1
 kind: SnowflakeReplication
 metadata:
   name: analytics-team-dr
@@ -680,9 +681,61 @@ status:
 ```
 
 
-## 7. Open TODOs
+## Appendix A: Open TODOs
 
 Items flagged inline throughout this document, collected here for tracking. 
+
+
+
+## Appendix B: Organization Policy Requirements
+
+This appendix is addressed to Snowflake as input while Organization Policies are being designed.
+
+### A.1 Network
+
+| ID | Requirement | Today | Ref |
+| :--- | :--- | :--- | :--- |
+| **N1** | Account network-policy binding org-owned and not unsettable | `ALTER ACCOUNT SET NETWORK_POLICY` | 3.6 |
+| **N2** | Per-user network policies for service users org-enforced | `ALTER USER … SET NETWORK_POLICY` | 3.8 |
+| **N3** | Deny-by-default (empty policy) for service users with no explicit grant | `ALTER USER … SET NETWORK_POLICY` | 3.8 |
+
+On N3: a newly created service user should be born with an empty, deny-all network policy already attached, rather than inheriting the account policy or having no policy at all. Service users hold long-lived credentials and are the platform's highest-risk login path (3.8), so the safe default is that a new one cannot log in from anywhere until an ingress path is explicitly granted. This closes the window between `CREATE USER` and the platform attaching a policy, and it makes forgetting to attach one fail closed instead of silently leaving the user reachable from the whole account range.
+
+### A.2 Account Parameters
+
+| ID | Requirement | Today | Ref |
+| :--- | :--- | :--- | :--- |
+| **C1** | Pin **arbitrary** account parameters from org level, non-overridable | `ALTER ACCOUNT SET` | 3.5, 3.6 |
+
+Parameters in use today: `PREVENT_UNLOAD_TO_INLINE_URL`, `REQUIRE_STORAGE_INTEGRATION_FOR_STAGE_CREATION`, `ENABLE_INTERNAL_STAGES_PRIVATELINK`, `S3_STAGE_VPCE_DNS_NAME`. This set is open-ended and operator-owned (3.5), so C1 should not be limited to a fixed allowlist of parameter names.
+
+### A.3 Spend
+
+| ID | Requirement | Today | Ref |
+| :--- | :--- | :--- | :--- |
+| **S1** | Org-level credit limit the account admin cannot raise or detach | `ALTER ACCOUNT SET RESOURCE_MONITOR` | 3.9 |
+| **S2** | Limits covering serverless and AI consumption, enforcing not just notifying | budgets — notify-only, cannot suspend | 3.9 |
+
+### A.4 Authentication
+
+| ID | Requirement | Today | Ref |
+| :--- | :--- | :--- | :--- |
+| **A1** | Mandatory SSO, org-enforced | `ALTER ACCOUNT SET AUTHENTICATION_POLICY` | 3.1, 3.7 |
+| **A2** | Key-pair and PAT exceptions grantable only at org level | `ALTER USER … SET AUTHENTICATION_POLICY` | 3.4 |
+
+Both bind an authentication policy created with `AUTHENTICATION_METHODS` restricted to `SAML`/`OAUTH`, with `KEYPAIR` or `PROGRAMMATIC_ACCESS_TOKEN` added only for approved exceptions. The account admin can unset either binding, or alter the policy to re-admit a method. No SQL for this is written in 3.1/3.4 yet — the `authPolicy` field is specified without an implementing statement.
+
+### A.5 Platform Access
+
+Both rows concern the platform's own access paths into a tenant account; each is an ordinary in-account object owned by a role the tenant holds.
+
+| ID | Requirement | Today | Ref |
+| :--- | :--- | :--- | :--- |
+| **X1** | Org-owned break-glass service user, not droppable or alterable by the tenant | `CREATE ACCOUNT … ADMIN_NAME='platform'` | 3.6, 3.10.1 |
+| **X2** | Security integration immutable — issuer and JWKS URL not repointable | `CREATE SECURITY INTEGRATION PLATFORM_OIDC` | 3.10.2 |
+
+X1 concerns the `platform` user, created by the `CREATE ACCOUNT` statement itself via `ADMIN_NAME` (3.6). It is a service user with an RSA key pair the platform generates and stores externally (3.10.1), and it is how the platform reaches the account for every subsequent operation — applying parameters, network rules, group imports, and the quota. Once the tenant holds `ACCOUNTADMIN` it becomes an ordinary user they can drop or re-key, locking the platform out of an account it is responsible for managing.
+
 
 
 
