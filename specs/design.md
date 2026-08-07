@@ -91,7 +91,6 @@ spec:
     - team-analytics@company.com
   # --- Snowflake account configuration ---
   region: aws-eu-central-1
-  timeZone: Europe/Berlin
   # --- Share of the namespace's monthly credit allowance (3.9) ---
   creditQuota: 500
   # --- GIAM roles to import and assign ---
@@ -105,15 +104,13 @@ spec:
       SYSADMIN: XYZ_DEVELOPERS       # any Snowflake system role may be granted   
   # --- Allow custom whitelisting ---
   networkPolicy:
-    whitelisting:
-      users:                       # one entry per technical user, deny-by-default (3.8)
-        tu_airflow:
-          - connection: agn        # from the region's inventory in the Backplane Config
-            allowedIPs:
-              - 10.23.45.0/24
-          - connection: dbt-cloud  # VPCE-only: nothing to narrow
-      account:                     # opened for every user in the account
-        - connection: dbt-cloud
+    users:                       # one entry per technical user, deny-by-default (3.8)
+      tu_airflow:
+        - connection: agn        # from the region's inventory in the Backplane Config
+          allowedIPs: ["10.23.45.0/24"]
+        - connection: dbt-cloud  # VPCE-only: nothing to narrow
+    account:                     # opened for every user in the account
+      - connection: dbt-cloud
   # --- Allow human users to bypass SSO ---
   authPolicy:
     exceptions:
@@ -273,12 +270,11 @@ This exists for cases where a customer has a legitimate, one-off need that the s
 # CRD only after its guardrails (3.3) reject it.
 exceptions:
   - account: "analytics-team-eu"        # exact account name — no wildcards
-    whitelisting:                         # the full entry being approved, verbatim
+    networkPolicy:                        # the full entry being approved, verbatim
       users:
         tu_airflow:
           - connection: public
-            allowedIPs:
-              - 203.0.113.50/32           # wider than the guardrails normally allow
+            allowedIPs: ["203.0.113.50/32"] # wider than the guardrails normally allow
     reason: "ISO-4821: temporary vendor integration, approved by ISO via email 2026-06-01"
 ```
 
@@ -292,9 +288,9 @@ Bringing a region online is a one-time manual job for platform ops: run the Terr
 
 The configuration consists of three core components:
 
-  * **`parameters`:** Snowflake account parameters applied during bootstrapping, covering both global security baselines and region-specific settings.
   * **`inventory`:** A catalog of all physical ingress paths (connections) in a region. It defines the maximum allowed IP range (`maxCidrs`) for each connection, but does not grant access itself.
-  * **`ingress`:** The mandatory baseline whitelisting applied to every account in the region. This guarantees basic reachability (e.g., for browser logins) before any custom, user-specific rules are added.
+  * **`parameters`:** Snowflake account parameters applied during bootstrapping, covering both global security baselines and region-specific settings.
+  * **`allowlist`:** The mandatory baseline whitelisting applied to every account in the region. This guarantees basic reachability (e.g., for browser logins) before any custom, user-specific rules are added.
 
 ```yaml
 backplane:
@@ -310,14 +306,9 @@ backplane:
     aws-eu-central-1:
       active: true
 
-      # Region-specific account parameters, from the Terraform outputs.
-      regionalParameters:
-        ENABLE_INTERNAL_STAGES_PRIVATELINK: "true"
-        S3_STAGE_VPCE_DNS_NAME: "*.vpce-sd98fs0d9f8g.s3.eu-central-1.vpce.amazonaws.com"
-
       # Every ingress path that exists in this region. Listing one here only makes its
       # handle referenceable and caps how wide it may ever be opened; it opens nothing
-      # on its own. Access is granted by `ingress` below (account-wide) or by a tenant's
+      # on its own. Access is granted by `regionalAllowlist` below (account-wide) or by a tenant's
       # per-user `whitelisting` (3.8).
       inventory:
         - connection: agn                       # Allianz Global Network (corp VPN)
@@ -331,11 +322,16 @@ backplane:
           type: "IPV4"
           maxCidrs: ["0.0.0.0/0"]               # any public IP may be narrowed from this
 
+      # Region-specific account parameters, from the Terraform outputs.
+      regionalParameters:
+        ENABLE_INTERNAL_STAGES_PRIVATELINK: "true"
+        S3_STAGE_VPCE_DNS_NAME: "*.vpce-sd98fs0d9f8g.s3.eu-central-1.vpce.amazonaws.com"
+
       # The paths actually opened for every account in this region — this is what lets
       # people reach the account at all, e.g. logging in from the corporate network.
       # Each entry picks one connection from the inventory above. Add `allowedIPs` to
       # open only part of its range; leave it out to open the whole maxCidrs range.
-      ingress:
+      regionalAllowlist:
         - connection: agn                       # inherit full 172.16.0.0/12
         - connection: dbt-cloud                 # VPCE-only, nothing to narrow
         - connection: public
@@ -344,15 +340,15 @@ backplane:
     # A region can be staged ahead of time and switched on once its backplane is confirmed.
     aws-eu-west-3:
       active: false
-      regionalParameters:
-        ENABLE_INTERNAL_STAGES_PRIVATELINK: "true"
-        S3_STAGE_VPCE_DNS_NAME: "*.vpce-9f8g7h6j5k.s3.eu-west-3.vpce.amazonaws.com"
       inventory:
         - connection: agn
           type: "AWSVPCEID"
           vpceId: "vpce-00006900000000008"
           maxCidrs: ["10.0.0.0/8"]
-      ingress:
+      regionalParameters:
+        ENABLE_INTERNAL_STAGES_PRIVATELINK: "true"
+        S3_STAGE_VPCE_DNS_NAME: "*.vpce-9f8g7h6j5k.s3.eu-west-3.vpce.amazonaws.com"
+      regionalAllowlist:
         - connection: agn                       # inherit full 10.0.0.0/8
 ```
 
@@ -374,17 +370,17 @@ CREATE ACCOUNT '<name-from-crd>' ADMIN_NAME='platform' ADMIN_RSA_PUBLIC_KEY = '<
 ALTER ACCOUNT SET <parameter-name> = '<parameter-value>';
 -- ... repeated for every entry in globalParameters, then every entry in regionalParameters
 
--- 2b. Create one network rule per entry in the region's ingress, resolving each
+-- 2b. Create one network rule per entry in the region's regionalAllowlist, resolving each
 -- to its inventory entry: use the entry's `allowedIPs` if given (validated to
 -- fall inside that connection's maxCidrs), otherwise inherit the connection's full maxCidrs.
-CREATE NETWORK RULE <connection-name-from-ingress> TYPE = <type-from-region-config> MODE = INGRESS
+CREATE NETWORK RULE <connection-name-from-regionalAllowlist> TYPE = <type-from-region-config> MODE = INGRESS
   VALUE_LIST = (<vpceId-and/or-resolved-allowedIPs>);
--- ... repeated for every entry in the region's ingress
+-- ... repeated for every entry in the region's regionalAllowlist
 
 -- 2c. Attach those rules to the account via the platform's fixed network policy.
 -- Further account-level rules are added to this policy in Custom Whitelisting (3.8).
 CREATE NETWORK POLICY PLATFORM_ACCOUNT_POLICY
-  ALLOWED_NETWORK_RULE_LIST = (<all-connection-names-from-ingress>);
+  ALLOWED_NETWORK_RULE_LIST = (<all-connection-names-from-regionalAllowlist>);
 ALTER ACCOUNT SET NETWORK_POLICY = 'PLATFORM_ACCOUNT_POLICY';
 
 ```
@@ -430,12 +426,12 @@ Custom whitelisting is a critical step in the account provisioning process. Addi
 
   * **Deny-by-Default:** A technical user with no explicit whitelisting entry receives an empty network policy, completely blocking them from logging in. Access is only granted through narrow, explicitly defined entries.
   * **Strict Containment:** Every requested IP range (`allowedIPs`) must fall entirely within the security ceiling (`maxCidrs`) defined for that connection in the region's Backplane Config. Any entry broader than or outside this limit is rejected, and the account is not provisioned.
-  * **User-Scoped Policies:** Snowflake network policies fully override the account-level default when applied to a specific user. Therefore, the system generates a dedicated, custom network policy for each technical user under `whitelisting.users`, built exclusively from the connections they are explicitly granted. A user's list may name several connections; because a user can only have one active `NETWORK_POLICY` at a time, all of them collapse into that single policy.
-  * **Account-Scoped Policies:** Entries under `whitelisting.account` are applied account-wide. These rules are appended to the baseline platform account policy created during the initial bootstrapping phase.
+  * **User-Scoped Policies:** Snowflake network policies fully override the account-level default when applied to a specific user. Therefore, the system generates a dedicated, custom network policy for each technical user under `networkPolicy.users`, built exclusively from the connections they are explicitly granted. A user's list may name several connections; because a user can only have one active `NETWORK_POLICY` at a time, all of them collapse into that single policy.
+  * **Account-Scoped Policies:** Entries under `networkPolicy.account` are applied account-wide. These rules are appended to the baseline platform account policy created during the initial bootstrapping phase.
   * **No Duplicate Connections:** A connection may appear at most once in a given user's list, and at most once under `account`. A repeated connection within the same scope is a validation error rather than a silent merge of its IP ranges.
 
 ```sql
--- For each user key in networkPolicy.whitelisting.users, create one network rule per
+-- For each user key in networkPolicy.users, create one network rule per
 -- entry in that user's list. Resolve each entry's allowedIPs against the connection's
 -- maxCidrs (from the region's inventory), having validated that each allowedIPs entry
 -- falls inside that connection's maxCidrs.
@@ -448,18 +444,18 @@ CREATE NETWORK RULE <technical-user-and-connection-derived-name> TYPE = <type-fr
 -- NETWORK_POLICY at a time.
 CREATE NETWORK POLICY <technical-user-derived-policy-name>
   ALLOWED_NETWORK_RULE_LIST = (<all-rule-names-for-this-user>);
-ALTER USER '<technical-user-from-crd>' SET NETWORK_POLICY = '<technical-user-derived-policy-name>';
--- ... repeated for every user key in networkPolicy.whitelisting.users
+ALTER USER '<technical-user-from-crd>' SET NETWORK_POLICY = '<technical-user-derived-policy-name>'; -- technical users only, never human users
+-- ... repeated for every user key in networkPolicy.users
 
--- Entries under networkPolicy.whitelisting.account are account-scoped: they add their
+-- Entries under networkPolicy.account are account-scoped: they add their
 -- rules to the account policy created during bootstrapping (3.6) instead of getting a
 -- policy of their own. Same containment validation applies.
 CREATE NETWORK RULE CUSTOM_<connection-name> TYPE = <type-from-region-config> MODE = INGRESS
   VALUE_LIST = (<vpceId-and/or-validated-allowedIPs>);
--- ... repeated for every entry under whitelisting.account
+-- ... repeated for every entry under networkPolicy.account
 
 -- Attach them to the account policy. The CUSTOM_ prefix keeps these separate from the
--- region's ingress rules (3.6), which are named by the bare connection.
+-- region's regionalAllowlist rules (3.6), which are named by the bare connection.
 ALTER NETWORK POLICY PLATFORM_ACCOUNT_POLICY
   ADD ALLOWED_NETWORK_RULE_LIST = (<all-custom-rule-names>);
 ```
