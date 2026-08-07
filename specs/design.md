@@ -96,14 +96,14 @@ spec:
   creditQuota: 500
   # --- GIAM roles to import and assign ---
   groups:
-    accountAdmin: CDH_DATA_ENGINEERS
-    sysAdmin: CDH_DEVELOPERS
+    accountAdmin: XYZ_DATA_ENGINEERS
+    sysAdmin: XYZ_DEVELOPERS
     userManaged:
-      - CDH_ANALYSTS
+      - XYZ_ANALYSTS
   # --- Allow custom whitelisting ---
   networkPolicy:
     whitelisting:
-      - user: airflow
+      - user: tu_airflow
         connection: agn        # from the region's inventory in the Backplane Config
         allowedIPs:
           - 10.23.45.0/24
@@ -268,7 +268,7 @@ This exists for cases where a customer has a legitimate, one-off need that the s
 exceptions:
   - account: "analytics-team-eu"        # exact account name — no wildcards
     whitelisting:                         # the full entry being approved, verbatim
-      user: airflow
+      user: tu_airflow
       connection: public
       allowedIPs:
         - 203.0.113.50/32                 # wider than the guardrails normally allow
@@ -413,7 +413,7 @@ ALTER ACCOUNT ADD ORGANIZATION USER GROUP '<group-name-from-crd>';
 
 ### 3.8 Custom Whitelisting
 
-Custom whitelisting is a critical step in the account provisioning process. Additional network access defined in the `SnowflakeAccount` CRD is provisioned here for both the overall account and specific technical users. Securing technical users (e.g., service accounts like `airflow`) is the most important aspect of this process, as their long-lived credentials pose the highest security risk to the platform. This mechanism forces customers to define tight, explicit ingress paths rather than reusing the broad access ranges meant for human users.
+Custom whitelisting is a critical step in the account provisioning process. Additional network access defined in the `SnowflakeAccount` CRD is provisioned here for both the overall account and specific technical users. Securing technical users (e.g., service accounts like `tu_airflow`) is the most important aspect of this process, as their long-lived credentials pose the highest security risk to the platform. This mechanism forces customers to define tight, explicit ingress paths rather than reusing the broad access ranges meant for human users.
 
 **Core Principles & Behavior:**
 
