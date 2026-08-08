@@ -143,14 +143,15 @@ Account creation is driven by four inputs, each associated with a different part
 ```mermaid
 flowchart LR
     Customer([Customer]) -->|commits| CRD["SnowflakeAccount CRD (3.1)"]
-    OEs([OEs]) -->|defines| Guardrails["Guardrails (3.3)"]
-    ISO([ISO]) -->|approves| Exceptions["Approved Exceptions (3.4)"]
-    Ops([Platform Ops]) -->|defines| BackplaneConfig["Backplane Config (3.5)"]
-
     CRD --> Controller[[Controller]]
-    Guardrails --> Controller
-    Exceptions --> Controller
-    BackplaneConfig --> Controller
+
+    Controller -.->|reads| Guardrails["Guardrails (3.3)"]
+    Controller -.->|reads| Exceptions["Approved Exceptions (3.4)"]
+    Controller -.->|reads| BackplaneConfig["Backplane Config (3.5)"]
+
+    OEs([OEs]) -->|defines| Guardrails
+    ISO([ISO]) -->|approves| Exceptions
+    Ops([Platform Ops]) -->|defines| BackplaneConfig
 
     Controller --> CreateFlow
 
