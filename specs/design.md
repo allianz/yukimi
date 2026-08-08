@@ -175,11 +175,13 @@ During the reconciliation cycle, the controller processes these inputs through a
 
 ```mermaid
 flowchart TD
+    Commit(["Customer commits SnowflakeAccount CRD (3.1)"])
     Step1["1. Validation (3.3)\n(Inputs: CRD & Guardrails)"]
     Step2["2. Exception Check (3.4)\n(Inputs: CRD & Approved Exceptions)"]
     Step3["3. Bootstrapping (3.6)\n(Inputs: CRD & Backplane Config)"]
     Step4["4. Configuration\n- Identity Integration (3.7)\n- Custom Whitelisting (3.8)\n- Credit Quota (3.9)\n(Inputs: CRD & Backplane Config)"]
 
+    Commit --> Step1
     Step1 -- "Passes" --> Step3
     Step1 -- "Fails" --> Step2
     Step2 -- "Approved" --> Step3
