@@ -481,7 +481,9 @@ A tenant's overall monthly credit allowance is defined during onboarding and sec
 
 ### 3.10 Security Constraints
 
-Security in this platform is not based on validation alone, but on strict structural constraints in how initial account credentials are managed. The design goal is that security must be ensured even in case of bugs or breaches — every guarantee below is enforced outside the controller's own logic, by a system that does not trust it. The implementation must adhere to the following definitions.
+The platform's security and protection mechanisms are designed to remain resilient even in the event of system bugs or breaches. This resilience is achieved not merely through validation logic, but by strictly avoiding the routine use of highly privileged credentials, such as organization admin accounts. Organization-level credentials are restricted almost entirely to the initial account creation phase. While account deletion also requires organization admin access, it is protected by additional structural safeguards to prevent unauthorized or accidental destruction.
+
+Following the creation of an account, the controller transitions to impersonating the accountadmin role exclusively for that specific tenant. By stepping down from organization-level privileges to account-level access, the platform effectively minimizes the potential blast radius of any security incident to just that individual account. Every guarantee below is enforced outside the controller's own logic, and the implementation must adhere to the following definitions.
 
 #### 3.10.1. Tenant Isolation via Secret Paths
 
