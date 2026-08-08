@@ -136,13 +136,15 @@ Integration is performed once per region (or globally where possible) rather tha
 
 Because the network integration is pre-configured and active, new accounts simply attach to this existing infrastructure via automated SQL commands. This mechanism transforms provisioning from a manual infrastructure project into an instant, logical operation.
 
-Account creation is driven by four inputs, each associated with a different party, which the controller reconciles into a live account through a fixed sequence. The diagram below shows how these inputs relate, which party each is associated with, and how they feed the create flow; the bullets and sections that follow detail each in turn.
+#### 3.2.1 Configuration Origins and Ownership
+
+Account creation is driven by four inputs, each associated with a different party. The diagram below shows how these inputs relate, which party each is associated with, and how they feed the overall system. The numbers in parentheses map directly to the subsequent sections in this document for easy reference.
 
 ```mermaid
 flowchart LR
     Customer([Customer]) -->|commits| CRD["SnowflakeAccount CRD (3.1)"]
     OEs([OEs]) -->|defines| Guardrails["Guardrails (3.3)"]
-    ISO([ISO]) -->|approves| Exceptions["Exception Approval (3.4)"]
+    ISO([ISO]) -->|approves| Exceptions["Approved Exceptions (3.4)"]
     Ops([Platform Ops]) -->|defines| BackplaneConfig["Backplane Config (3.5)"]
 
     CRD --> Controller[[Controller]]
@@ -164,12 +166,34 @@ flowchart LR
 
 * **SnowflakeAccount CRD (3.1):** The customer commits a `SnowflakeAccount` CRD describing the account they want, kicking off the reconciliation flow.
 * **Guardrails (3.3):** OEs (Operating Entities) define the rules that gate and preset the customer's CRD input before it is ever applied to Snowflake.
-* **Exception Approval (3.4):** ISO approves one-off exceptions to what the guardrails would otherwise reject — e.g. whitelisting a public-internet IP.
+* **Approved Exceptions (3.4):** ISO approves one-off exceptions to what the guardrails would otherwise reject — e.g. whitelisting a public-internet IP.
 * **Backplane Config (3.5):** Once Ops has provisioned a region's network via Terraform and closed out the follow-up setup tickets, they record the resulting IDs and IP ranges in the Backplane Config for the controller to use.
-* **Account Bootstrapping (3.6):** The controller creates the Snowflake account and binds it to the regional backplane infrastructure from the Backplane Config.
-* **Identity Integration (3.7):** The controller imports the CRD's referenced company groups into the new account, so their members can log in via SSO with their existing company roles carried over.
-* **Custom Whitelisting (3.8):** The controller turns the CRD's whitelisting entries into network policies — a dedicated, deny-by-default one per technical user listed under `users`, and account-wide additions for everything under `account`.
-* **Credit Quota (3.9):** The controller checks the share of credits the CRD claims against the namespace allowance set at onboarding (2), then pushes that share into Snowflake as a resource monitor and a budget so consumption stops when it is used up.
+
+#### 3.2.2 Controller Execution Flow
+
+During the reconciliation cycle, the controller processes these inputs through a strict, multi-phased sequence. The system evaluates constraints and applies configurations progressively, ensuring compliance is established before proceeding to infrastructure provisioning.
+
+```mermaid
+flowchart TD
+    Step1["1. Validation (3.3)\n(Inputs: CRD & Guardrails)"]
+    Step2["2. Exception Check (3.4)\n(Inputs: CRD & Approved Exceptions)"]
+    Step3["3. Bootstrapping (3.6)\n(Inputs: CRD & Backplane Config)"]
+    Step4["4. Configuration\n- Identity Integration (3.7)\n- Custom Whitelisting (3.8)\n- Credit Quota (3.9)\n(Inputs: CRD & Backplane Config)"]
+
+    Step1 -- "Passes" --> Step3
+    Step1 -- "Fails" --> Step2
+    Step2 -- "Approved" --> Step3
+
+    Step3 --> Step4
+```
+
+* **Validation (3.3):** The controller evaluates the submitted `SnowflakeAccount` CRD against the organizational Guardrails to ensure baseline compliance.
+* **Exception Check (3.4):** If the CRD violates standard constraints, the system consults the Approved Exceptions to determine if a formal override exists for the requested configuration.
+* **Bootstrapping (3.6):** Upon successful validation, the controller provisions the Snowflake account and binds it to the pre-existing regional infrastructure defined in the Backplane Config. The controller extracts values from both the validated CRD and the Backplane Config to construct and execute the requisite SQL commands.
+* **Configuration (3.7 - 3.9):** Using the CRD and Backplane Config, the controller constructs the SQL commands to execute the final configuration sequence:
+  * **Identity Integration (3.7):** Imports the required organizational groups via the identity backplane.
+  * **Custom Whitelisting (3.8):** Enforces dedicated network ingress policies for technical users and the broader account.
+  * **Credit Quota (3.9):** Applies the namespace's allocated credit limit as an active resource monitor.
 
 
 
@@ -256,7 +280,7 @@ guardrails:
 
 
 
-### 3.4 Exception Approval
+### 3.4 Approved Exceptions
 
 When a `SnowflakeAccount` CRD fails its guardrails (3.3), the controller does not reject it outright. Before returning a validation error, it checks a separate exceptions file for a matching approved exception. If one exists, the otherwise-failing input is allowed through; if not, the resource is rejected as usual.
 
