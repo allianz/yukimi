@@ -511,7 +511,7 @@ A tenant's overall monthly credit allowance is defined during onboarding and sec
 * **Admission (Validation):** During every account creation or update, the controller loads all `SnowflakeAccount` resources within the namespace to calculate the total claimed quota. If the request exceeds the namespace allowance, it is rejected with a validation error.
   * **Quota Reductions:** Capacity is evaluated on a first-come, first-served basis. If platform operations decreases the overall namespace allowance, existing accounts are never retroactively suspended. However, future creations or updates are blocked until the tenant lowers their CRD claims to fit within the newly reduced limit.
 * **Enforcement:** The approved quota is pushed directly into Snowflake as an account-level Resource Monitor and budget limit. This Resource Monitor strictly suspends compute warehouses when the quota is exhausted, physically stopping the majority of spend in real time.
-* **Exhaustion State:** If an account exceeds its allocated share, the system triggers a `QuotaExhausted` warning event in Kubernetes. This is not a provisioning failure — the account remains fully intact, and the condition automatically clears at the start of the next monthly billing cycle.
+* **Exhaustion State:** If an account exceeds its allocated share, the controller sets `QuotaAvailable=False` with reason `QuotaExhausted` (6.1) and emits a matching warning event. This is not a provisioning failure — the account remains fully intact, and the condition automatically clears at the start of the next monthly billing cycle.
 
 **TODO (The Serverless & AI Gap):** Resource monitors currently only cover warehouse compute. Serverless features and AI functions cannot be physically suspended this way; budgets for these are notify-only. The platform must decide how to cap these costs before implementation. Options include waiting for Snowflake to release native Organization-level spending limits, strictly gating access to serverless/AI features, or attempting custom privilege-revocation logic.
 
@@ -606,7 +606,7 @@ spec:
 
 ### 4.3 Infrastructure vs. Data Replication
 
-Replication is strictly limited to customer data and logical objects (such as databases and roles). Platform-level infrastructure, like network rules and endpoints, is never replicated to avoid breaking regional connectivity.
+Replication is strictly limited to customer data and logical objects (such as databases and warehouses). Platform-level infrastructure, like network rules and endpoints, is never replicated to avoid breaking regional connectivity.
 
 **Native Snowflake Execution:**
 
@@ -661,7 +661,7 @@ While the target resource disappears after deletion, the `SnowflakeDeletionReque
 
 ### 5.3 Controller Behavior
 
-The controller logic focuses on the interaction between the Target Resource (e.g., `SnowflakeAccount`) and the `SnowflakeDeletionRequest`.
+The controller logic focuses on the interaction between the target `SnowflakeAccount` and the `SnowflakeDeletionRequest`.
 
 **Phase 1: Request Validation**
 Upon creation of a `SnowflakeDeletionRequest`:
@@ -669,6 +669,7 @@ Upon creation of a `SnowflakeDeletionRequest`:
 1.  **Validation:** The controller verifies the `duration` does not exceed 8 hours.
 2.  **Window Calculation:** It calculates `status.validUntil` based on the creation timestamp.
 3.  **Activation:** It sets `status.state = Active`.
+4.  **Expiry:** Once `validUntil` passes unused, the state becomes `Expired` and the request no longer authorizes a deletion. A new request is required.
 
 **Phase 2: Interception (The Block)**
 When a user deletes a `SnowflakeAccount` (sets `deletionTimestamp`):
@@ -679,7 +680,7 @@ When a user deletes a `SnowflakeAccount` (sets `deletionTimestamp`):
 **Phase 3: Resolution**
 
   * **If Valid Request Found:**
-    1.  **Execute:** The controller runs the SQL destruction logic (`DROP ACCOUNT` / `DROP DATABASE`).
+    1.  **Execute:** The controller runs the SQL destruction logic (`DROP ACCOUNT`).
     2.  **Unlock:** The controller removes the Finalizer, allowing the Kubernetes object to be garbage collected.
     3.  **Close:** The `SnowflakeDeletionRequest` status is updated to `Consumed`.
   * **If No Request / Expired:**
@@ -698,13 +699,14 @@ Users must be able to instantly determine whether a resource is healthy, still r
 
 ### 6.1 Condition Model
 
-Every `SnowflakeAccount` CRD in this platform surfaces three standard condition types. These conditions provide a high-level summary of the resource's lifecycle state.
+Every `SnowflakeAccount` CRD in this platform surfaces four standard condition types. These conditions provide a high-level summary of the resource's lifecycle state.
 
 | Condition Type | Scope | Description |
 | :--- | :--- | :--- |
 | **`Ready`** | **Availability** | Indicates whether the resource is provisioned and usable. <br>**During Creation:** Set to **False** until the resource is successfully created. Creation errors are reported here. <br>**After Creation:** Set to **True** once the resource is fully operational. <br>**During Updates:** Remains **True** (updates are non-disruptive). |
 | **`Synced`** | **State Consistency** | Indicates whether the live state matches the desired state. <br>**During Creation:** Set to **True** once the CRD is accepted and processing begins. <br>**After Creation:** Remains **True** when no changes are pending. <br>**During Updates:** Set to **False** while changes are being applied. Update errors are reported here. Returns to **True** once synchronized. |
 | **`Compliance`** | **Governance** | **True:** The account is bound by the platform's Organization Policies and adheres to the baseline. <br>**Reason `PolicyBound`:** The server-side Organization Policies are in effect for this account. <br>**TODO:** Organization Policies are not yet released by Snowflake (3.6, Appendix B); until then, this condition reflects the equivalent account-level enforcement (3.6, 3.8) instead. |
+| **`QuotaAvailable`** | **Spend** | Indicates whether the account still has credits left in the current billing cycle (3.9). <br>**True:** Credits remain; warehouses run normally. <br>**False, Reason `QuotaExhausted`:** The resource monitor has suspended warehouses. Not a provisioning failure — `Ready` stays **True** and the account is intact. Clears automatically at the start of the next monthly billing cycle. |
 
 ### 6.2 Status Example
 
@@ -725,6 +727,8 @@ status:
     - type: Compliance
       status: "True"
       reason: "PolicyBound"
+    - type: QuotaAvailable
+      status: "True"
 ```
 
 
