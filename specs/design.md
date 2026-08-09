@@ -227,7 +227,7 @@ Each guardrail defines up to three components — `target` plus at least one of 
 
 Any connection a user references that isn't explicitly listed in a scope falls back to that scope's wildcard (`"*"`) entry, which carries one of the three rules above.
 
-**Matching Strategy (Top-Down):** Guardrails merge top-down, applying broad global baselines first, followed by narrower, environment-specific overrides.
+**Matching Strategy (Top-Down):** Guardrails merge top-down, applying broad global baselines first, followed by narrower, more specific guardrails. A later match replaces the value it overrides, whether that tightens or loosens the baseline.
 
 
 ```yaml
@@ -369,7 +369,6 @@ backplane:
       # open only part of its range; leave it out to open the whole maxCidrs range.
       regionalAllowlist:
         - connection: agn                       # inherit full 172.16.0.0/12
-        - connection: dbt-cloud                 # VPCE-only, nothing to narrow
         - connection: public
           allowedIPs: ["203.0.113.0/24"]        # narrowed: platform office egress only
 
