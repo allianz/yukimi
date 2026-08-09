@@ -485,7 +485,7 @@ A tenant's overall monthly credit allowance is defined during onboarding and sec
 * **Admission (Validation):** During every account creation or update, the controller loads all `SnowflakeAccount` resources within the namespace to calculate the total claimed quota. If the request exceeds the namespace allowance, it is rejected with a validation error.
   * **Quota Reductions:** Capacity is evaluated on a first-come, first-served basis. If platform operations decreases the overall namespace allowance, existing accounts are never retroactively suspended. However, future creations or updates are blocked until the tenant lowers their CRD claims to fit within the newly reduced limit.
 * **Enforcement:** The approved quota is pushed directly into Snowflake as an account-level Resource Monitor and budget limit. This Resource Monitor strictly suspends compute warehouses when the quota is exhausted, physically stopping the majority of spend in real time.
-* **Exhaustion State:** If an account exceeds its allocated share, the controller sets `QuotaAvailable=False` with reason `QuotaExhausted` (6.1) and emits a matching warning event. This is not a provisioning failure — the account remains fully intact, and the condition automatically clears at the start of the next monthly billing cycle.
+* **Exhaustion State:** The controller surfaces a `QuotaAvailable` condition on the `SnowflakeAccount` — this resource's own condition, additional to the platform-wide `Ready` and `Synced` (6.1). It is **True** while credits remain and warehouses run normally. When an account exceeds its allocated share, the controller sets it to **False** with reason `QuotaExhausted` and emits a matching warning event. This is not a provisioning failure — the resource monitor has suspended warehouses but the account remains fully intact and `Ready` stays **True**. The condition clears automatically at the start of the next monthly billing cycle.
 
 **TODO (The Serverless & AI Gap):** Resource monitors currently only cover warehouse compute. Serverless features and AI functions cannot be physically suspended this way; budgets for these are notify-only. The platform must decide how to cap these costs before implementation. Options include waiting for Snowflake to release native Organization-level spending limits, strictly gating access to serverless/AI features, or attempting custom privilege-revocation logic.
 
@@ -499,18 +499,18 @@ Following the creation of an account, the controller transitions to impersonatin
 
 #### 3.10.1. Tenant Isolation via Secret Paths
 
-Isolation is enforced physically by the storage path of the credentials in **AWS Secrets Manager (ASM)**.
+Isolation is enforced physically by the storage path of the credentials in AWS Secrets Manager (ASM).
 
-* **The Trust Anchor:** The **Kubernetes Namespace** (`metadata.namespace`) is the sole source of truth for tenancy. It is derived directly from the runtime environment (not user input) and is used to cryptographically bind the account to the team's sandbox.
+* **The Trust Anchor:** The Kubernetes Namespace (`metadata.namespace`) is the sole source of truth for tenancy. It is derived directly from the runtime environment (not user input) and is used to cryptographically bind the account to the team's sandbox.
 * **Path Construction:** The controller must construct the ASM Secret ID using the following strict pattern:
     `snowflake/tenant/<snowflake-org-name>/<kubernetes-ns>/<snowflake-account-name>/platform-credentials`
-* **The Constraint:** When the controller attempts to access an existing account, it **must** derive the lookup path using the CRD's namespace. This ensures that any attempt to manage an account outside the team's namespace will fail at the AWS IAM level due to an incorrect secret path, thereby preventing cross-tenant access.
+* **The Constraint:** When the controller attempts to access an existing account, it must derive the lookup path using the CRD's namespace. This ensures that any attempt to manage an account outside the team's namespace will fail at the AWS IAM level due to an incorrect secret path, thereby preventing cross-tenant access.
 
 #### 3.10.2. OIDC Authentication (Optional) TODO
 
-Every account is always created with the secret-based `platform` user described above and in 3.6 — that mechanism is not replaced. OIDC is an **additional**, optional authentication path layered on top of the same account, established immediately after creation, that lets the controller reach a tenant's account without reading its RSA private key from AWS Secrets Manager (ASM) on every connection.
+Every account is always created with the secret-based `platform` user described above and in 3.6 — that mechanism is not replaced. OIDC is an additional, optional authentication path layered on top of the same account, established immediately after creation, that lets the controller reach a tenant's account without reading its RSA private key from AWS Secrets Manager (ASM) on every connection.
 
-**Principal:** Unlike the account-birth credential, which belongs to a single `platform` service user, the OIDC principal is scoped to the **tenant's Kubernetes namespace** — the same trust anchor used for secret-path isolation above. The controller creates a dedicated Kubernetes `ServiceAccount` in the tenant's namespace alongside the `SnowflakeAccount` resource (e.g. `sa-<account-name>-oidc`). This ServiceAccount never runs a pod — it exists purely as an identity primitive. When the controller needs to connect to that account, it uses the Kubernetes `TokenRequest` API to mint a short-lived, narrowly-audienced JWT for that ServiceAccount, uses it once, and discards it. The token's `sub` claim — `system:serviceaccount:<namespace>:sa-<account-name>-oidc` — encodes both the tenant namespace and the account name, mirroring the granularity of the ASM secret path.
+**Principal:** Unlike the account-birth credential, which belongs to a single `platform` service user, the OIDC principal is scoped to the tenant's Kubernetes namespace — the same trust anchor used for secret-path isolation above. The controller creates a dedicated Kubernetes `ServiceAccount` in the tenant's namespace alongside the `SnowflakeAccount` resource (e.g. `sa-<account-name>-oidc`). This ServiceAccount never runs a pod — it exists purely as an identity primitive. When the controller needs to connect to that account, it uses the Kubernetes `TokenRequest` API to mint a short-lived, narrowly-audienced JWT for that ServiceAccount, uses it once, and discards it. The token's `sub` claim — `system:serviceaccount:<namespace>:sa-<account-name>-oidc` — encodes both the tenant namespace and the account name, mirroring the granularity of the ASM secret path.
 
 **Global setup (one-time, like the network/identity backplane in 3.2):** The Kubernetes cluster's OIDC issuer and JWKS endpoint are recorded once, platform-wide, as a new org-level entry in the Backplane Config — not yet part of its schema (3.5), since OIDC is still a TODO. This is an ops/bootstrap concern, not a per-account step.
 
@@ -544,7 +544,7 @@ GRANT ROLE "<group-name-from-grants.ACCOUNTADMIN>" TO USER PLATFORM_OIDC;
 
 #### 3.10.3. Immutable Identity Binding
 
-The **`region`** and **`name`** of a `SnowflakeAccount` are **Immutable** after creation. This prevents identity spoofing where a user creates an account, lets the secret generate, and then attempts to switch the CRD to point to a different target resource while retaining the original credentials.
+The **`region`** and **`name`** of a `SnowflakeAccount` are Immutable after creation. This prevents identity spoofing where a user creates an account, lets the secret generate, and then attempts to switch the CRD to point to a different target resource while retaining the original credentials.
 
 
 
@@ -620,14 +620,14 @@ spec:
 
 #### Positive Control (The "Two-Key" System)
 
-To prevent catastrophic data loss via accidental Git operations, the platform enforces a **Positive Control** model. A resource cannot be destroyed simply by removing its definition file. Instead, deletion is treated as a privileged operation that requires a dedicated "Deletion Warrant."
+To prevent catastrophic data loss via accidental Git operations, the platform enforces a Positive Control model. A resource cannot be destroyed simply by removing its definition file. Instead, deletion is treated as a privileged operation that requires a dedicated "Deletion Warrant."
 
   * **The Lock:** Every critical resource is protected by a Kubernetes Finalizer (`snowflake.finalizer`) that blocks deletion by default.
   * **The Key:** The `SnowflakeDeletionRequest` acts as the temporary key that authorizes the controller to unlock and destroy the specific target resource.
 
 #### Time-Boxed Maintenance Windows
 
-Deletion permissions are ephemeral. By defining a `duration` (max 8 hours), the platform enforces strict **Time-Boxing**. This minimizes security risks by ensuring that an "open" deletion window automatically closes if not used promptly, preventing long-standing "dangling permissions" that could be exploited later.
+Deletion permissions are ephemeral. By defining a `duration` (max 8 hours), the platform enforces strict Time-Boxing. This minimizes security risks by ensuring that an "open" deletion window automatically closes if not used promptly, preventing long-standing "dangling permissions" that could be exploited later.
 
 #### Durable Audit Trail
 
@@ -658,7 +658,7 @@ When a user deletes a `SnowflakeAccount` (sets `deletionTimestamp`):
     2.  **Unlock:** The controller removes the Finalizer, allowing the Kubernetes object to be garbage collected.
     3.  **Close:** The `SnowflakeDeletionRequest` status is updated to `Consumed`.
   * **If No Request / Expired:**
-    1.  **Block:** The controller **refuses** to drop the resource.
+    1.  **Block:** The controller refuses to drop the resource.
     2.  **Stall:** The resource remains in a `Terminating` state.
     3.  **Alert:** A Kubernetes Event (`Warning: DeletionBlocked`) is emitted, and `Ready=False` is set, causing ArgoCD to report a failure. This forces the user to either restore the file or create a valid Deletion Request.
 
@@ -667,20 +667,20 @@ When a user deletes a `SnowflakeAccount` (sets `deletionTimestamp`):
 
 ## 6. Global Error Handling & Observability
 
-Reliable and transparent error handling is essential for a self-service platform. To ensure a consistent user experience, the platform enforces a **standardized status schema** across all CRDs (`SnowflakeAccount`).
+Reliable and transparent error handling is essential for a self-service platform. To ensure a consistent user experience, the platform enforces a standardized status schema across all CRDs (`SnowflakeAccount`).
 
 Users must be able to instantly determine whether a resource is healthy, still reconciling, or requires manual intervention. The controller exposes this information via Kubernetes-compliant `status.conditions`.
 
 ### 6.1 Condition Model
 
-Every `SnowflakeAccount` CRD in this platform surfaces four standard condition types. These conditions provide a high-level summary of the resource's lifecycle state.
+Every `SnowflakeAccount` CRD in this platform surfaces two standard condition types. These conditions provide a high-level summary of the resource's lifecycle state.
 
 | Condition Type | Scope | Description |
 | :--- | :--- | :--- |
 | **`Ready`** | **Availability** | Indicates whether the resource is provisioned and usable. <br>**During Creation:** Set to **False** until the resource is successfully created. Creation errors are reported here. <br>**After Creation:** Set to **True** once the resource is fully operational. <br>**During Updates:** Remains **True** (updates are non-disruptive). |
 | **`Synced`** | **State Consistency** | Indicates whether the live state matches the desired state. <br>**During Creation:** Set to **True** once the CRD is accepted and processing begins. <br>**After Creation:** Remains **True** when no changes are pending. <br>**During Updates:** Set to **False** while changes are being applied. Update errors are reported here. Returns to **True** once synchronized. |
-| **`Compliance`** | **Governance** | **True:** The account is bound by the platform's Organization Policies and adheres to the baseline. <br>**Reason `PolicyBound`:** The server-side Organization Policies are in effect for this account. <br>**TODO:** Organization Policies are not yet released by Snowflake (3.6, Appendix B); until then, this condition reflects the equivalent account-level enforcement (3.6, 3.8) instead. |
-| **`QuotaAvailable`** | **Spend** | Indicates whether the account still has credits left in the current billing cycle (3.9). <br>**True:** Credits remain; warehouses run normally. <br>**False, Reason `QuotaExhausted`:** The resource monitor has suspended warehouses. Not a provisioning failure — `Ready` stays **True** and the account is intact. Clears automatically at the start of the next monthly billing cycle. |
+
+Individual resource types may surface further conditions specific to their own concerns; `SnowflakeAccount` adds `QuotaAvailable` for credit exhaustion (3.9).
 
 ### 6.2 Status Example
 
@@ -698,17 +698,12 @@ status:
     - type: Synced
       status: "True"
       reason: "ReconcileSuccess"
-    - type: Compliance
-      status: "True"
-      reason: "PolicyBound"
-    - type: QuotaAvailable
-      status: "True"
 ```
 
 
 ## Appendix A: Open TODOs
 
-Items flagged inline throughout this document (3.7, 3.9, 3.10.2, 6.1).
+Items flagged inline throughout this document (3.7, 3.9, 3.10.2).
 
 
 
