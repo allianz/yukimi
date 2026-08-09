@@ -7,9 +7,9 @@
 3. [SnowflakeAccount Resource](#3-snowflakeaccount-resource)
 4. [SnowflakeReplication Resource](#4-snowflakereplication-resource)
 5. [SnowflakeDeletionRequest Resource](#5-snowflakedeletionrequest-resource)
-6. [Error Handling & Observability](#6-global-error-handling--observability)
-7. [Appendix A: Open TODOs](#appendix-a-open-todos)
-8. [Appendix B: Organization Policy Requirements](#appendix-b-organization-policy-requirements)
+6. [Global Error Handling & Observability](#6-global-error-handling--observability)
+- [Appendix A: Open TODOs](#appendix-a-open-todos)
+- [Appendix B: Organization Policy Requirements](#appendix-b-organization-policy-requirements)
 
 
 ## 1. Introduction
@@ -38,9 +38,9 @@ This platform is not built using traditional, manual software development method
 
 ## 2. Tenant Onboarding
 
-The onboarding process begins when a team requests access to the self-service platform and provides three pieces of information: the tenant name (called profile at FCP), the GIAM group that should be granted access in Argo CD, and the team’s cost center. The platform product owner defines the credit quota based on expected consumption. Once this information is available, the operations team performs a standardized onboarding workflow:
+The onboarding process begins when a team requests access to the self-service platform and provides four pieces of information: the tenant name (called profile at FCP), the GIAM group that should be granted access in Argo CD, the team’s cost center, and the team’s department (e.g. `Allianz_DE`) — used by Guardrails (3.3) to scope department-specific rules. The platform product owner defines the credit quota based on expected consumption. Once this information is available, the operations team performs a standardized onboarding workflow:
 
-* A Kubernetes namespace with the same name is created and labeled with the cost center and credit quota.
+* A Kubernetes namespace with the same name is created and labeled with the cost center, department, and credit quota. Like the credit quota (3.9), the department label is set by ops during onboarding and is not exposed as a CRD field, so tenants cannot alter it themselves.
 * A new GitHub repository is created under the shared organization using the tenant name.
 * Argo CD is then configured to automatically sync the team’s repo into this namespace so that any SnowflakeAccount resources are reconciled immediately.
 
@@ -51,12 +51,14 @@ The following is a simple bash script to illustrate the required steps. (will be
  TENANT="$1" # profile name, also repo + namespace name  
  AD_GROUP="$2" # AD group for Argo CD access  
  COST_CENTER="$3" # provided by customer  
- CREDIT_QUOTA="$4" # set by platform PO  
+ DEPARTMENT="$4" # provided by customer; used by Guardrails (3.3)  
+ CREDIT_QUOTA="$5" # set by platform PO  
  
  gh repo create "yukimi/$TENANT" --template yukimi/get-started
  kubectl create namespace "$TENANT"  
  kubectl label namespace "$TENANT" \  
     cost-center="$COST_CENTER" \  
+    department="$DEPARTMENT" \  
     credit-quota="$CREDIT_QUOTA" \  --overwrite  
 
 argocd app create "$TENANT" \  
@@ -315,8 +317,8 @@ Bringing a region online is a one-time manual job for platform ops: run the Terr
 The configuration consists of three core components:
 
   * **`inventory`:** A catalog of all physical ingress paths (connections) in a region. It defines the maximum allowed IP range (`maxCidrs`) for each connection, but does not grant access itself.
-  * **`parameters`:** Snowflake account parameters applied during bootstrapping, covering both global security baselines and region-specific settings.
-  * **`allowlist`:** The mandatory baseline whitelisting applied to every account in the region. This guarantees basic reachability (e.g., for browser logins) before any custom, user-specific rules are added.
+  * **`globalParameters` / `regionalParameters`:** Snowflake account parameters applied during bootstrapping — `globalParameters` holds the org-wide security baseline, `regionalParameters` the region-specific settings.
+  * **`regionalAllowlist`:** The mandatory baseline whitelisting applied to every account in the region. This guarantees basic reachability (e.g., for browser logins) before any custom, user-specific rules are added.
 
 ```yaml
 backplane:
@@ -690,13 +692,13 @@ Users must be able to instantly determine whether a resource is healthy, still r
 
 ### 6.1 Condition Model
 
-Every Custom Resource (CR) in this platform surfaces three standard condition types. These conditions provide a high-level summary of the resource's lifecycle state.
+Every `SnowflakeAccount` CRD in this platform surfaces three standard condition types. These conditions provide a high-level summary of the resource's lifecycle state.
 
 | Condition Type | Scope | Description |
 | :--- | :--- | :--- |
 | **`Ready`** | **Availability** | Indicates whether the resource is provisioned and usable. <br>**During Creation:** Set to **False** until the resource is successfully created. Creation errors are reported here. <br>**After Creation:** Set to **True** once the resource is fully operational. <br>**During Updates:** Remains **True** (updates are non-disruptive). |
 | **`Synced`** | **State Consistency** | Indicates whether the live state matches the desired state. <br>**During Creation:** Set to **True** once the CRD is accepted and processing begins. <br>**After Creation:** Remains **True** when no changes are pending. <br>**During Updates:** Set to **False** while changes are being applied. Update errors are reported here. Returns to **True** once synchronized. |
-| **`Compliance`** | **Governance** | **True:** The account is bound by the platform's Organization Policies and adheres to the baseline. <br>**Reason `PolicyBound`:** The server-side Organization Policies are in effect for this account. |
+| **`Compliance`** | **Governance** | **True:** The account is bound by the platform's Organization Policies and adheres to the baseline. <br>**Reason `PolicyBound`:** The server-side Organization Policies are in effect for this account. <br>**TODO:** Organization Policies are not yet released by Snowflake (3.6, Appendix B); until then, this condition reflects the equivalent account-level enforcement (3.6, 3.8) instead. |
 
 ### 6.2 Status Examples
 
