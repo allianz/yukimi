@@ -522,7 +522,7 @@ A tenant's overall monthly credit allowance is defined during onboarding and sec
 
 The platform's security and protection mechanisms are designed to remain resilient even in the event of system bugs or breaches. This resilience is achieved not merely through validation logic, but by strictly avoiding the routine use of highly privileged credentials, such as organization admin accounts. Organization-level credentials are restricted almost entirely to the initial account creation phase. While account deletion also requires organization admin access, it is protected by additional structural safeguards to prevent unauthorized or accidental destruction.
 
-Following the creation of an account, the controller transitions to impersonating the accountadmin role exclusively for that specific tenant. By stepping down from organization-level privileges to account-level access, the platform effectively minimizes the potential blast radius of any security incident to just that individual account. Every guarantee below is enforced outside the controller's own logic, and the implementation must adhere to the following definitions.
+Following the creation of an account, the controller transitions to impersonating the accountadmin role exclusively for that specific tenant. By stepping down from organization-level privileges to account-level access, the platform effectively minimizes the potential blast radius of any security incident to just that individual account. The guarantees below are built so that the final enforcement always sits outside the controller — in AWS IAM, in Snowflake, or in the Kubernetes API server. The controller decides what to ask for; a bug in its logic yields a denied request rather than cross-tenant access.
 
 #### 3.10.1. Tenant Isolation via Secret Paths
 
@@ -566,7 +566,7 @@ GRANT ROLE "<group-name-from-grants.ACCOUNTADMIN>" TO USER PLATFORM_OIDC;
 
 **Fallback:** The secret-based `platform` credential in ASM remains fully functional and is not deprecated by enabling OIDC. `CREATE ACCOUNT` always requires the RSA key pair, so the secret path and its isolation guarantees stay exactly as documented. OIDC is consulted first for routine reconciliation once established; the controller falls back to the ASM-stored key if OIDC is unavailable.
 
-**TODO:** Define the precise fallback trigger (automatic detection vs. explicit CRD flag), and the Kubernetes RBAC model that lets the controller mint `TokenRequest` tokens for ServiceAccounts across every tenant namespace (a cluster-scoped capability that itself deserves the same "why can this not be abused cross-tenant" scrutiny given to the ASM IAM role below).
+**TODO:** Define the precise fallback trigger (automatic detection vs. explicit CRD flag), and the Kubernetes RBAC model that lets the controller mint `TokenRequest` tokens for ServiceAccounts across every tenant namespace (a cluster-scoped capability that itself deserves the same "why can this not be abused cross-tenant" scrutiny given to the ASM IAM role above).
 
 
 #### 3.10.3. Immutable Identity Binding
