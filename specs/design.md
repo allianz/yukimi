@@ -370,6 +370,8 @@ backplane:
 
 When the controller observes a `SnowflakeAccount` that does not yet exist in Snowflake, it runs the following script, drawing on two inputs: the `SnowflakeAccount` CRD itself, and the Backplane Config entry for `spec.region` — the controller looks up that region's entry under `backplane.regions` by the CRD's `region` field before it can resolve any of the values below.
 
+**Note:** The SQL below, like every SQL block in this document, is illustrative rather than complete — it conveys which statements run, in what order, and from which inputs their values are drawn, not the exact or exhaustive syntax the controller emits.
+
 ```sql
 -- 1. Instantiation: create the account.
 CREATE ACCOUNT '<name-from-crd>' ADMIN_NAME='platform' ADMIN_RSA_PUBLIC_KEY = '<generated-by-controller>' ADMIN_USER_TYPE='SERVICE' EDITION='ENTERPRISE' REGION='<region-from-crd>' COMMENT='<description-from-crd>';
