@@ -124,7 +124,7 @@ spec:
     exceptions:
       - user: alice.smith
         rsaKeyAllowed: true
-        reason: "Automation without SSO support"
+        reason: "Legacy desktop tool without SSO support"
 ```
 
 
@@ -213,18 +213,19 @@ Guardrails act as a gatekeeper that validates and modifies a tenant's input befo
 
 **Scope:** Guardrails apply exclusively to `SnowflakeAccount` resources; other resource types handle their own separate validation.
 
-Each guardrail defines three core components:
+Each guardrail defines up to three components — `target` plus at least one of `constraints` or `preset`:
 
   * **`target`:** Defines which accounts the guardrail applies to. An omitted field or a `"*"` wildcard means the rule matches all accounts.
   * **`constraints`:** The strict rules the user's input must pass, such as correct naming conventions, maximum credit quotas, and network rules. If a submitted CRD violates these rules, the system immediately rejects it with a validation error.
-  * **`preset`:** Automatically populates default values (like timezones or base credit quotas) if the user omits them in their request.
+  * **`preset`:** Sets defaults. For CRD fields the user omitted (like `creditQuota`) the value is filled in and then enforced as usual. For account settings with no CRD field at all (like `timeZone`) it is only an initial value — unlike `constraints`, it is not enforced, and the tenant's account admin may change it afterwards in Snowflake.
 
-**Connection Constraints:** Guardrails strictly control how tenants can configure network access. These constraints are categorized by scope (either `users` or `account`, mirroring the CRD's `networkPolicy` keys) and then by connection name, applying one of four rules:
+**Connection Constraints:** Guardrails strictly control how tenants can configure network access. These constraints are categorized by scope (either `users` or `account`, mirroring the CRD's `networkPolicy` keys) and then by connection name, applying one of three rules:
 
   * **Max Width (`"/NN"`):** The user is required to provide an IP range (CIDR), but it is capped at the specified maximum width.
   * **Inherit Full Range (`"full"`):** The user may not specify an IP range; they simply inherit the connection's full predefined range from the Backplane Config.
   * **Forbidden (`"off"`):** The user is completely blocked from using this connection.
-  * **Fallback:** Any connection a user attempts to reference that isn't explicitly listed in a scope will fall back to that scope's wildcard (`"*"`) rule.
+
+Any connection a user references that isn't explicitly listed in a scope falls back to that scope's wildcard (`"*"`) entry, which carries one of the three rules above.
 
 **Matching Strategy (Top-Down):** Guardrails merge top-down, applying broad global baselines first, followed by narrower, environment-specific overrides.
 
@@ -259,7 +260,8 @@ guardrails:
           dbt-cloud: "full"     # VPCE-only: no CIDR to narrow
           "*": "off"            # no account-wide whitelisting by default
 
-    # preset: Applied if user omits these fields in their CRD.
+    # preset: Defaults. creditQuota fills an omitted CRD field; timeZone has no CRD
+    # field and is only an initial value the account admin may later change.
     preset:
       timeZone: "UTC"
       creditQuota: 100                      # modest default rather than zero-credit
@@ -710,7 +712,7 @@ Every `SnowflakeAccount` CRD in this platform surfaces three standard condition 
 
 ```yaml
 status:
-  accountName: "sf_analytics_prod"
+  accountName: "analytics-team-eu"
   accountUrl: "https://xyz.snowflakecomputing.com"
   conditions:
     - type: Ready
@@ -720,6 +722,9 @@ status:
     - type: Synced
       status: "True"
       reason: "ReconcileSuccess"
+    - type: Compliance
+      status: "True"
+      reason: "PolicyBound"
 ```
 
 
@@ -763,9 +768,9 @@ Parameters in use today: `PREVENT_UNLOAD_TO_INLINE_URL`, `REQUIRE_STORAGE_INTEGR
 | ID | Requirement | Today | Ref |
 | :--- | :--- | :--- | :--- |
 | **A1** | Mandatory SSO, org-enforced | `ALTER ACCOUNT SET AUTHENTICATION_POLICY` | 3.1, 3.2 |
-| **A2** | Key-pair and PAT exceptions grantable only at org level | `ALTER USER … SET AUTHENTICATION_POLICY` | 3.4 |
+| **A2** | Key-pair and PAT exceptions grantable only at org level | `ALTER USER … SET AUTHENTICATION_POLICY` | 3.1 |
 
-Both bind an authentication policy created with `AUTHENTICATION_METHODS` restricted to `SAML`/`OAUTH`, with `KEYPAIR` or `PROGRAMMATIC_ACCESS_TOKEN` added only for approved exceptions. The account admin can unset either binding, or alter the policy to re-admit a method. No SQL for this is written in 3.1/3.4 yet — the `authPolicy` field is specified without an implementing statement.
+Both bind an authentication policy created with `AUTHENTICATION_METHODS` restricted to `SAML`/`OAUTH`, with `KEYPAIR` or `PROGRAMMATIC_ACCESS_TOKEN` added only for approved exceptions. The account admin can unset either binding, or alter the policy to re-admit a method. No SQL for this is written yet — the CRD's `authPolicy.exceptions` field (3.1) is specified without an implementing statement.
 
 ### B.5 Platform Access
 
