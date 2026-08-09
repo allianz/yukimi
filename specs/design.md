@@ -109,7 +109,7 @@ spec:
     users:                       # one entry per technical user, deny-by-default (3.8)
       tu_airflow:
         - connection: agn        # from the region's inventory in the Backplane Config
-          allowedIPs: ["10.23.45.0/24"]
+          allowedIPs: ["172.16.45.0/24"]
         - connection: dbt-cloud  # VPCE-only: nothing to narrow
     account:                     # opened for every user in the account
       - connection: dbt-cloud
@@ -595,7 +595,7 @@ spec:
 
 ### 4.2 Data Residency
 
-Data replication across regions is strictly governed by the platform's existing guardrails (3.3), ensuring data only moves between legally permitted region pairs.
+`SnowflakeReplication` performs no region-pair validation of its own. Each account it links was already restricted to a legally permitted region by the Guardrails' `allowedRegions` constraint (3.3) at the time it was created — e.g. an `Allianz_DE` account can only ever be created in `aws-eu-central-1` or `aws-eu-west-3` (3.3). Since replication only connects existing `SnowflakeAccount` resources, an illegal region pair (e.g. a link to a Brazil region) can never arise: it would require one of the linked accounts to exist in a region the Guardrails would have already rejected at creation.
 
 ### 4.3 Infrastructure vs. Data Replication
 
@@ -721,7 +721,7 @@ status:
 
 ## Appendix A: Open TODOs
 
-Items flagged inline throughout this document, collected here for tracking. 
+Items flagged inline throughout this document (3.7, 3.9, 3.10.2, 6.1).
 
 
 
@@ -758,7 +758,7 @@ Parameters in use today: `PREVENT_UNLOAD_TO_INLINE_URL`, `REQUIRE_STORAGE_INTEGR
 
 | ID | Requirement | Today | Ref |
 | :--- | :--- | :--- | :--- |
-| **A1** | Mandatory SSO, org-enforced | `ALTER ACCOUNT SET AUTHENTICATION_POLICY` | 3.1, 3.7 |
+| **A1** | Mandatory SSO, org-enforced | `ALTER ACCOUNT SET AUTHENTICATION_POLICY` | 3.1, 3.2 |
 | **A2** | Key-pair and PAT exceptions grantable only at org level | `ALTER USER … SET AUTHENTICATION_POLICY` | 3.4 |
 
 Both bind an authentication policy created with `AUTHENTICATION_METHODS` restricted to `SAML`/`OAUTH`, with `KEYPAIR` or `PROGRAMMATIC_ACCESS_TOKEN` added only for approved exceptions. The account admin can unset either binding, or alter the policy to re-admit a method. No SQL for this is written in 3.1/3.4 yet — the `authPolicy` field is specified without an implementing statement.
