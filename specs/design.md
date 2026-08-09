@@ -174,7 +174,7 @@ flowchart LR
 
 * **SnowflakeAccount CRD (3.1):** The customer commits a `SnowflakeAccount` CRD describing the account they want, kicking off the reconciliation flow.
 * **Guardrails (3.3):** OEs (Operating Entities) define the rules that gate and preset the customer's CRD input before it is ever applied to Snowflake.
-* **Approved Exceptions (3.4):** ISO approves one-off exceptions to what the guardrails would otherwise reject — e.g. whitelisting a public-internet IP.
+* **Approved Exceptions (3.4):** ISO approves one-off exceptions to what the guardrails would otherwise reject — e.g. whitelisting a public-internet IP. ISO grants the approval only; Ops records it in the file.
 * **Backplane Config (3.5):** Once Ops has provisioned a region's network via Terraform and closed out the follow-up setup tickets, they record the resulting IDs and IP ranges in the Backplane Config for the controller to use.
 
 #### 3.2.2 Controller Execution Flow
@@ -310,7 +310,7 @@ exceptions:
       users:
         tu_airflow:
           - connection: public
-            allowedIPs: ["203.0.113.50/32"] # wider than the guardrails normally allow
+            allowedIPs: ["198.51.100.0/24"] # /24 — the baseline caps `public` at /32 (3.3)
     reason: "ISO-4821: temporary vendor integration, approved by ISO via email 2026-06-01"
 ```
 
@@ -320,9 +320,9 @@ exceptions:
 
 The Backplane Config is a platform-owned artifact that catalogs the pre-provisioned regional networking infrastructure (such as VPC endpoints) established via Terraform. The controller uses this active backplane to instantly network-bind new accounts without manual setup. Additionally, it enforces the organization-wide security posture through global parameters and strict network ingress ceilings.
 
-Bringing a region online is a one-time manual job for platform ops: run the Terraform project that provisions the region's backplane, close out the follow-up tickets that finalize it (DNS, Snowflake accepting the VPC endpoint), test it end-to-end, then add the region's entry from the Terraform outputs with `active: true`. From then on the controller can provision accounts into it, looking the region up by the CRD's `region` field.
+Bringing a region online is a one-time manual job for platform ops: run the Terraform project that provisions the region's backplane, close out the follow-up tickets that finalize it (DNS, Snowflake accepting the VPC endpoint), test it end-to-end, then add the region's entry from the Terraform outputs with `available: true`. From then on the controller can provision accounts into it, looking the region up by the CRD's `region` field. `available` is a controller-side gate with no counterpart in Snowflake: it lets ops stage a region and reject CRDs naming it until it is officially offered.
 
-Beyond the `regions` map itself and each region's `active` flag, the configuration is organized around three main components:
+Beyond the `regions` map itself and each region's `available` flag, the configuration is organized around three main components:
 
   * **`inventory`:** A catalog of all physical ingress paths (connections) in a region. It defines the maximum allowed IP range (`maxCidrs`) for each connection, but does not grant access itself.
   * **`globalParameters` / `regionalParameters`:** Snowflake account parameters applied during bootstrapping — `globalParameters` holds the org-wide security baseline, `regionalParameters` the region-specific settings.
@@ -340,7 +340,7 @@ backplane:
   regions:
 
     aws-eu-central-1:
-      active: true
+      available: true
 
       # Every ingress path that exists in this region. Listing one here only makes its
       # handle referenceable and caps how wide it may ever be opened; it opens nothing
@@ -373,9 +373,8 @@ backplane:
         - connection: public
           allowedIPs: ["203.0.113.0/24"]        # narrowed: platform office egress only
 
-    # A region can be staged ahead of time and switched on once its backplane is confirmed.
     aws-eu-west-3:
-      active: false
+      available: true
       inventory:
         - connection: agn
           type: "AWSVPCEID"
@@ -386,6 +385,11 @@ backplane:
         S3_STAGE_VPCE_DNS_NAME: "*.vpce-9f8g7h6j5k.s3.eu-west-3.vpce.amazonaws.com"
       regionalAllowlist:
         - connection: agn                       # inherit full 10.0.0.0/8
+
+    # Staged ahead of time: entry complete, but not yet orderable by tenants.
+    azure-westeurope:
+      available: false
+      # ... inventory, regionalParameters, regionalAllowlist as above
 ```
 
 
@@ -460,8 +464,8 @@ Custom whitelisting is a critical step in the account provisioning process. Addi
 
 **Core Principles & Behavior:**
 
-  * **Deny-by-Default:** A technical user with no explicit whitelisting entry receives an empty network policy, completely blocking them from logging in. Access is only granted through narrow, explicitly defined entries.
-  * **Strict Containment:** Every requested IP range (`allowedIPs`) must fall entirely within the security ceiling (`maxCidrs`) defined for that connection in the region's Backplane Config. Any entry broader than or outside this limit is rejected, and the account is not provisioned.
+  * **Deny-by-Default:** A technical user with no explicit whitelisting entry receives an empty network policy, completely blocking them from logging in. Access is only granted through narrow, explicitly defined entries. Enforced once the feature is available (Appendix B, N3).
+  * **Strict Containment:** Every requested IP range (`allowedIPs`) must fall entirely within the security ceiling (`maxCidrs`) defined for that connection in the region's Backplane Config. Any entry broader than or outside this limit is rejected. Because whitelisting runs after bootstrapping (3.2.2), the account itself already exists at this point; it keeps the baseline policy from 3.6, the offending rule is not created, and the failure is reported on `Synced` (6.1) until the tenant corrects the CRD.
   * **User-Scoped Policies:** Snowflake network policies fully override the account-level default when applied to a specific user. Therefore, the system generates a dedicated, custom network policy for each technical user under `networkPolicy.users`, built exclusively from the connections they are explicitly granted. A user's list may name several connections; because a user can only have one active `NETWORK_POLICY` at a time, all of them collapse into that single policy.
   * **Account-Scoped Policies:** Entries under `networkPolicy.account` are applied account-wide. These rules are appended to the baseline platform account policy created during the initial bootstrapping phase.
   * **No Duplicate Connections:** A connection may appear at most once in a given user's list, and at most once under `account`. A repeated connection within the same scope is a validation error rather than a silent merge of its IP ranges.
@@ -536,26 +540,27 @@ Every account is always created with the secret-based `platform` user described 
 
 **Principal:** Unlike the account-birth credential, which belongs to a single `platform` service user, the OIDC principal is scoped to the **tenant's Kubernetes namespace** — the same trust anchor used for secret-path isolation above. The controller creates a dedicated Kubernetes `ServiceAccount` in the tenant's namespace alongside the `SnowflakeAccount` resource (e.g. `sa-<account-name>-oidc`). This ServiceAccount never runs a pod — it exists purely as an identity primitive. When the controller needs to connect to that account, it uses the Kubernetes `TokenRequest` API to mint a short-lived, narrowly-audienced JWT for that ServiceAccount, uses it once, and discards it. The token's `sub` claim — `system:serviceaccount:<namespace>:sa-<account-name>-oidc` — encodes both the tenant namespace and the account name, mirroring the granularity of the ASM secret path.
 
-**Global setup (one-time, like the network/identity backplane in 3.2):** The Kubernetes cluster's OIDC issuer and JWKS endpoint are registered once, platform-wide, as a trusted external identity provider in the Backplane Config. This is an ops/bootstrap concern, not a per-account step.
+**Global setup (one-time, like the network/identity backplane in 3.2):** The Kubernetes cluster's OIDC issuer and JWKS endpoint are recorded once, platform-wide, as a new org-level entry in the Backplane Config — not yet part of its schema (3.5), since OIDC is still a TODO. This is an ops/bootstrap concern, not a per-account step.
 
 **Per-account setup (added to account bootstrapping, 3.6):**
 
 ```sql
--- 3. OIDC Integration: trust the cluster's OIDC issuer for this account, and map
--- this account's namespace-and-account-scoped ServiceAccount subject to one of
--- the CRD's already-imported groups (3.7) — no new identity or role is created.
+-- 3. OIDC Integration: trust the cluster's OIDC issuer for this account, taking the
+-- issuer and JWKS URL from the org-level Backplane Config entry described above.
 CREATE SECURITY INTEGRATION PLATFORM_OIDC
   TYPE = EXTERNAL_OAUTH OAUTH_TYPE = CUSTOM
-  OAUTH_ISSUER = '<k8s-oidc-issuer-url-from-platform-config>'
-  OAUTH_JWS_KEYS_URL = '<k8s-oidc-jwks-url-from-platform-config>'
+  OAUTH_ISSUER = '<issuer-url-from-backplane-config>'
+  OAUTH_JWS_KEYS_URL = '<jwks-url-from-backplane-config>'
   OAUTH_AUDIENCE_LIST = ('snowflake')
   EXTERNAL_OAUTH_TOKEN_USER_MAPPING_CLAIM = 'sub';
 
--- The mapped Snowflake user's LOGIN_NAME is derived deterministically from the
--- expected `sub` claim value, and is granted the group role named by
--- grants.ACCOUNTADMIN (3.7) — always present, so this mapping is always available.
--- OIDC authenticates as an *existing* role, it does not introduce a new one.
-ALTER USER '<group-name-from-grants.ACCOUNTADMIN>' SET LOGIN_NAME = '<sub-claim-derived-from-namespace-and-account>';
+-- Create the service user the token maps to. Its LOGIN_NAME is the expected `sub`
+-- claim, so only a token minted for this namespace and account matches it. No new
+-- privileges are introduced: it is granted the *existing* role created by importing
+-- the group named in grants.ACCOUNTADMIN (3.7), which is always present.
+CREATE USER PLATFORM_OIDC TYPE = SERVICE
+  LOGIN_NAME = '<sub-claim-derived-from-namespace-and-account>';
+GRANT ROLE "<group-name-from-grants.ACCOUNTADMIN>" TO USER PLATFORM_OIDC;
 ```
 
 **Isolation:** Cross-tenant access is rejected by Snowflake itself, not merely by client-side path construction. Each tenant account's `PLATFORM_OIDC` integration only maps its own namespace-and-account-derived `sub` to a valid user; a token minted for namespace B's ServiceAccount, presented to namespace A's account, matches no mapped user there and is rejected during Snowflake's own signature-and-claims verification — before any SQL executes. This is a stronger guarantee than the ASM path check above, which relies on the calling code correctly constructing a path string: here the Kubernetes API server cryptographically signs the `sub` claim, and Snowflake independently verifies it.
