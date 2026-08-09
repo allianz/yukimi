@@ -245,8 +245,7 @@ guardrails:
     constraints:
       accountName: "^[a-z][a-z0-9-]{2,62}$" # Lowercase, no special chars, RFC1123
       groupNames: "^[A-Z0-9_]+$"            # Name pattern for group names
-      maxCreditQuota: 1000                  # ceiling per account (3.9); the namespace
-                                            #   allowance still caps the sum
+      maxCreditQuota: 1000                  # ceiling for a single account's creditQuota
 
       allowedRegions:
         - "*"
@@ -594,14 +593,11 @@ spec:
   primaryAccount: analytics-team-eu
   objectTypes:
     - DATABASES
-    - ROLES
-    - USERS
     - WAREHOUSES
   databases:
     - SALES
     - "PROD_*"
   schedule: "10 MINUTE"
-  failoverEnabled: true
 ```
 
 ### 4.2 Data Residency
