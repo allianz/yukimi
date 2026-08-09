@@ -2,12 +2,12 @@
 
 ## Table of Contents
 
-1. [Introduction](#1-introduction)
-2. [Tenant Onboarding](#2-tenant-onboarding)
-3. [SnowflakeAccount Resource](#3-snowflakeaccount-resource)
-4. [SnowflakeReplication Resource](#4-snowflakereplication-resource)
-5. [SnowflakeDeletionRequest Resource](#5-snowflakedeletionrequest-resource)
-6. [Global Error Handling & Observability](#6-global-error-handling--observability)
+- [1. Introduction](#1-introduction)
+- [2. Tenant Onboarding](#2-tenant-onboarding)
+- [3. SnowflakeAccount Resource](#3-snowflakeaccount-resource)
+- [4. SnowflakeReplication Resource](#4-snowflakereplication-resource)
+- [5. SnowflakeDeletionRequest Resource](#5-snowflakedeletionrequest-resource)
+- [6. Global Error Handling & Observability](#6-global-error-handling--observability)
 - [Appendix A: Open TODOs](#appendix-a-open-todos)
 - [Appendix B: Organization Policy Requirements](#appendix-b-organization-policy-requirements)
 
@@ -47,27 +47,33 @@ The onboarding process begins when a team requests access to the self-service pl
 The following is a simple bash script to illustrate the required steps. (will be replaced by Terraform):
 
 ```bash
- #!/usr/bin/env bash  
- TENANT="$1" # profile name, also repo + namespace name  
- AD_GROUP="$2" # AD group for Argo CD access  
- COST_CENTER="$3" # provided by customer  
- DEPARTMENT="$4" # provided by customer; used by Guardrails (3.3)  
- CREDIT_QUOTA="$5" # set by platform PO  
- 
- gh repo create "yukimi/$TENANT" --template yukimi/get-started
- kubectl create namespace "$TENANT"  
- kubectl label namespace "$TENANT" \  
-    cost-center="$COST_CENTER" \  
-    department="$DEPARTMENT" \  
-    credit-quota="$CREDIT_QUOTA" \  --overwrite  
+#!/usr/bin/env bash
+TENANT="$1"        # profile name, also repo + namespace name
+AD_GROUP="$2"      # GIAM group granted access in Argo CD
+COST_CENTER="$3"   # provided by customer
+DEPARTMENT="$4"    # provided by customer; used by Guardrails (3.3)
+CREDIT_QUOTA="$5"  # set by platform PO
 
-argocd app create "$TENANT" \  
-    --repo "git@github.com:yukimi/$TENANT.git" \  
-    --path "." \  --dest-namespace "$TENANT" \  
-    --dest-server https://kubernetes.default.svc \  
-    --project "snowflake-accounts" \  
-    --sync-policy automated 
- ```
+gh repo create "yukimi/$TENANT" --template yukimi/get-started
+
+kubectl create namespace "$TENANT"
+kubectl label namespace "$TENANT" \
+    cost-center="$COST_CENTER" \
+    department="$DEPARTMENT" \
+    credit-quota="$CREDIT_QUOTA" \
+    --overwrite
+
+argocd app create "$TENANT" \
+    --repo "git@github.com:yukimi/$TENANT.git" \
+    --path "." \
+    --dest-namespace "$TENANT" \
+    --dest-server https://kubernetes.default.svc \
+    --project "snowflake-accounts" \
+    --sync-policy automated
+
+# let the team's GIAM group see and sync their own app
+argocd proj role add-group "snowflake-accounts" "$TENANT" "$AD_GROUP"
+```
 
 
 
@@ -213,7 +219,7 @@ Each guardrail defines three core components:
   * **`constraints`:** The strict rules the user's input must pass, such as correct naming conventions, maximum credit quotas, and network rules. If a submitted CRD violates these rules, the system immediately rejects it with a validation error.
   * **`preset`:** Automatically populates default values (like timezones or base credit quotas) if the user omits them in their request.
 
-**Connection Constraints:** Guardrails strictly control how tenants can configure network access. These constraints are categorized by scope (either `users` or `account`, mirroring the CRD's whitelisting keys) and then by connection name, applying one of four rules:
+**Connection Constraints:** Guardrails strictly control how tenants can configure network access. These constraints are categorized by scope (either `users` or `account`, mirroring the CRD's `networkPolicy` keys) and then by connection name, applying one of four rules:
 
   * **Max Width (`"/NN"`):** The user is required to provide an IP range (CIDR), but it is capped at the specified maximum width.
   * **Inherit Full Range (`"full"`):** The user may not specify an IP range; they simply inherit the connection's full predefined range from the Backplane Config.
@@ -250,7 +256,7 @@ guardrails:
           dbt-cloud: "full"     # VPCE-only: no CIDR to narrow
           "*": "off"            # unlisted connection → rejected
         account:
-          dbt-cloud: "full"     # VPCE-only: nothing to widen
+          dbt-cloud: "full"     # VPCE-only: no CIDR to narrow
           "*": "off"            # no account-wide whitelisting by default
 
     # preset: Applied if user omits these fields in their CRD.
@@ -337,7 +343,7 @@ backplane:
       # Every ingress path that exists in this region. Listing one here only makes its
       # handle referenceable and caps how wide it may ever be opened; it opens nothing
       # on its own. Access is granted by `regionalAllowlist` below (account-wide) or by a tenant's
-      # per-user `whitelisting` (3.8).
+      # per-user `networkPolicy.users` (3.8).
       inventory:
         - connection: agn                       # Allianz Global Network (corp VPN)
           type: "AWSVPCEID"
@@ -594,7 +600,7 @@ spec:
 
 ### 4.2 Data Residency
 
-`SnowflakeReplication` performs no region-pair validation of its own. Each account it links was already restricted to a legally permitted region by the Guardrails' `allowedRegions` constraint (3.3) at the time it was created — e.g. an `Allianz_DE` account can only ever be created in `aws-eu-central-1` or `aws-eu-west-3` (3.3). Since replication only connects existing `SnowflakeAccount` resources, an illegal region pair (e.g. a link to a Brazil region) can never arise: it would require one of the linked accounts to exist in a region the Guardrails would have already rejected at creation.
+`SnowflakeReplication` performs no region-pair validation of its own. Each account it links was already restricted to a legally permitted region by the Guardrails' `allowedRegions` constraint (3.3) at the time it was created — e.g. an `Allianz_DE` account can only ever be created in `aws-eu-central-1` or `aws-eu-west-3`. Since replication only connects existing `SnowflakeAccount` resources, an illegal region pair (e.g. a link to a Brazil region) can never arise: it would require one of the linked accounts to exist in a region the Guardrails would have already rejected at creation.
 
 ### 4.3 Infrastructure vs. Data Replication
 
@@ -698,9 +704,9 @@ Every `SnowflakeAccount` CRD in this platform surfaces three standard condition 
 | **`Synced`** | **State Consistency** | Indicates whether the live state matches the desired state. <br>**During Creation:** Set to **True** once the CRD is accepted and processing begins. <br>**After Creation:** Remains **True** when no changes are pending. <br>**During Updates:** Set to **False** while changes are being applied. Update errors are reported here. Returns to **True** once synchronized. |
 | **`Compliance`** | **Governance** | **True:** The account is bound by the platform's Organization Policies and adheres to the baseline. <br>**Reason `PolicyBound`:** The server-side Organization Policies are in effect for this account. <br>**TODO:** Organization Policies are not yet released by Snowflake (3.6, Appendix B); until then, this condition reflects the equivalent account-level enforcement (3.6, 3.8) instead. |
 
-### 6.2 Status Examples
+### 6.2 Status Example
 
-**Example A: A Healthy Resource**
+**A Healthy Resource**
 
 ```yaml
 status:
