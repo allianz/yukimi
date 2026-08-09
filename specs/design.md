@@ -213,7 +213,7 @@ Each guardrail defines three core components:
   * **`constraints`:** The strict rules the user's input must pass, such as correct naming conventions, maximum credit quotas, and network rules. If a submitted CRD violates these rules, the system immediately rejects it with a validation error.
   * **`preset`:** Automatically populates default values (like timezones or base credit quotas) if the user omits them in their request.
 
-**Connection Constraints:** Guardrails strictly control how tenants can configure network access. These constraints are categorized by scope (either `users` or `account`, mirroring the CRD's whitelisting keys) and then by connection name, applying one of three rules:
+**Connection Constraints:** Guardrails strictly control how tenants can configure network access. These constraints are categorized by scope (either `users` or `account`, mirroring the CRD's whitelisting keys) and then by connection name, applying one of four rules:
 
   * **Max Width (`"/NN"`):** The user is required to provide an IP range (CIDR), but it is capped at the specified maximum width.
   * **Inherit Full Range (`"full"`):** The user may not specify an IP range; they simply inherit the connection's full predefined range from the Backplane Config.
@@ -314,7 +314,7 @@ The Backplane Config is a platform-owned artifact that catalogs the pre-provisio
 
 Bringing a region online is a one-time manual job for platform ops: run the Terraform project that provisions the region's backplane, close out the follow-up tickets that finalize it (DNS, Snowflake accepting the VPC endpoint), test it end-to-end, then add the region's entry from the Terraform outputs with `active: true`. From then on the controller can provision accounts into it, looking the region up by the CRD's `region` field.
 
-The configuration consists of three core components:
+Beyond the `regions` map itself and each region's `active` flag, the configuration is organized around three main components:
 
   * **`inventory`:** A catalog of all physical ingress paths (connections) in a region. It defines the maximum allowed IP range (`maxCidrs`) for each connection, but does not grant access itself.
   * **`globalParameters` / `regionalParameters`:** Snowflake account parameters applied during bootstrapping — `globalParameters` holds the org-wide security baseline, `regionalParameters` the region-specific settings.
@@ -419,7 +419,7 @@ ALTER ACCOUNT SET NETWORK_POLICY = 'PLATFORM_ACCOUNT_POLICY';
 
 ### 3.7 Identity Integration
 
-Identity, like networking, is integrated globally rather than per account. An Azure AD SCIM sync continuously feeds enterprise users and GIAM groups into a single Organization User Group backplane in Snowflake, independent of any `SnowflakeAccount` CRD. This sync makes groups available org-wide, but a group must still be explicitly imported into an account before it can be used there.
+Identity, like networking, is integrated globally rather than per account. An Azure Entra ID Enterprise App SCIM sync continuously feeds enterprise users and GIAM groups into a single Organization User Group backplane in Snowflake, independent of any `SnowflakeAccount` CRD. This sync makes groups available org-wide, but a group must still be explicitly imported into an account before it can be used there.
 
 That import is what the CRD's `groups` field drives, and it splits the two questions that were previously conflated: which groups exist in the account, and which of them carry a system role.
 
@@ -442,7 +442,7 @@ GRANT ROLE <role-name-from-grants-key> TO ROLE "<group-name-from-grants-value>";
 -- ... repeated for each entry in groups.grants
 ```
 
-**TODO:** Either all users and groups are synced with SCIM or the controller must trigger to add all groups in the CRD to the Azure Entra ID Enterprise App.
+**TODO:** Either all users and groups are synced by the Azure Entra ID Enterprise App SCIM sync, or the controller must trigger the addition of all groups in the CRD to that Enterprise App.
 
 
 
@@ -574,7 +574,6 @@ apiVersion: base.snowflake.yukimi.io/v1alpha1
 kind: SnowflakeReplication
 metadata:
   name: analytics-team-dr
-  namespace: analytics-team-eu
 spec:
   description: "Cross-region standby for EU analytics"
   accounts:
@@ -626,7 +625,6 @@ apiVersion: base.snowflake.yukimi.io/v1alpha1
 kind: SnowflakeDeletionRequest
 metadata:
   name: decommission-analytics-prod
-  namespace: analytics-team-eu
 spec:
   targetRef:
     kind: SnowflakeAccount
@@ -729,7 +727,7 @@ Items flagged inline throughout this document (3.7, 3.9, 3.10.2, 6.1).
 
 This appendix is addressed to Snowflake as input while Organization Policies are being designed.
 
-### A.1 Network
+### B.1 Network
 
 | ID | Requirement | Today | Ref |
 | :--- | :--- | :--- | :--- |
@@ -739,7 +737,7 @@ This appendix is addressed to Snowflake as input while Organization Policies are
 
 On N3: a newly created service user should be born with an empty, deny-all network policy already attached, rather than inheriting the account policy or having no policy at all. Service users hold long-lived credentials and are the platform's highest-risk login path (3.8), so the safe default is that a new one cannot log in from anywhere until an ingress path is explicitly granted. This closes the window between `CREATE USER` and the platform attaching a policy, and it makes forgetting to attach one fail closed instead of silently leaving the user reachable from the whole account range.
 
-### A.2 Account Parameters
+### B.2 Account Parameters
 
 | ID | Requirement | Today | Ref |
 | :--- | :--- | :--- | :--- |
@@ -747,14 +745,14 @@ On N3: a newly created service user should be born with an empty, deny-all netwo
 
 Parameters in use today: `PREVENT_UNLOAD_TO_INLINE_URL`, `REQUIRE_STORAGE_INTEGRATION_FOR_STAGE_CREATION`, `ENABLE_INTERNAL_STAGES_PRIVATELINK`, `S3_STAGE_VPCE_DNS_NAME`. This set is open-ended and operator-owned (3.5), so C1 should not be limited to a fixed allowlist of parameter names.
 
-### A.3 Spend
+### B.3 Spend
 
 | ID | Requirement | Today | Ref |
 | :--- | :--- | :--- | :--- |
 | **S1** | Org-level credit limit the account admin cannot raise or detach | `ALTER ACCOUNT SET RESOURCE_MONITOR` | 3.9 |
 | **S2** | Limits covering serverless and AI consumption, enforcing not just notifying | budgets — notify-only, cannot suspend | 3.9 |
 
-### A.4 Authentication
+### B.4 Authentication
 
 | ID | Requirement | Today | Ref |
 | :--- | :--- | :--- | :--- |
@@ -763,7 +761,7 @@ Parameters in use today: `PREVENT_UNLOAD_TO_INLINE_URL`, `REQUIRE_STORAGE_INTEGR
 
 Both bind an authentication policy created with `AUTHENTICATION_METHODS` restricted to `SAML`/`OAUTH`, with `KEYPAIR` or `PROGRAMMATIC_ACCESS_TOKEN` added only for approved exceptions. The account admin can unset either binding, or alter the policy to re-admit a method. No SQL for this is written in 3.1/3.4 yet — the `authPolicy` field is specified without an implementing statement.
 
-### A.5 Platform Access
+### B.5 Platform Access
 
 Both rows concern the platform's own access paths into a tenant account; each is an ordinary in-account object owned by a role the tenant holds.
 
