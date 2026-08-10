@@ -88,7 +88,7 @@ The SnowflakeAccount resource enables teams to define, provision, and manage a f
 apiVersion: base.snowflake.yukimi.io/v1alpha1
 kind: SnowflakeAccount
 metadata:
-  name: analytics-team-eu
+  name: analytics-team-eu      # created in Snowflake as analytics_team_eu_5k3wf (3.11)
 spec:
   # --- General metadata ---
   description: "Analytics team Snowflake environment for EU operations"
@@ -189,7 +189,7 @@ Guardrails act as a gatekeeper that validates and modifies a tenant's input befo
 
 Each guardrail defines up to three components — `target` plus at least one of `constraints` or `preset`:
 
-  * **`target`:** Defines which accounts the guardrail applies to. An omitted field or a `"*"` wildcard means the rule matches all accounts. Each key is read from a fixed source: `environment` and `region` from the CRD's spec fields (3.1), `account` from `metadata.name`, and `department` from the namespace label set by ops during onboarding (2). Since `department` is ops-owned, tenants cannot move themselves out of their department's rules; `environment`, by contrast, the tenant declares themselves.
+  * **`target`:** Defines which accounts the guardrail applies to. An omitted field or a `"*"` wildcard means the rule matches all accounts. Each key is read from a fixed source: `environment` and `region` from the CRD's spec fields (3.1), `account` from `metadata.name` as the tenant wrote it (not the resolved Snowflake name — guardrails run before the account exists; see 3.11), and `department` from the namespace label set by ops during onboarding (2). Since `department` is ops-owned, tenants cannot move themselves out of their department's rules; `environment`, by contrast, the tenant declares themselves.
   * **`constraints`:** The strict rules the user's input must pass, such as correct naming conventions, maximum credit quotas, and network rules. If a submitted CRD violates these rules, the system immediately rejects it with a validation error.
   * **`preset`:** Sets defaults. For CRD fields the user omitted (like `creditQuota`) the value is filled in and then enforced as usual. For account settings with no CRD field at all (like `timeZone`) it is only an initial value — unlike `constraints`, it is not enforced, and the tenant's account admin may change it afterwards in Snowflake.
 
@@ -219,7 +219,7 @@ guardrails:
 
     # constraints: Gates user input.
     constraints:
-      accountName: "^[a-z][a-z0-9-]{2,62}$" # Lowercase, no special chars, RFC1123
+      accountName: "^[a-z][a-z0-9-]{2,56}$"
       groupNames: "^[A-Z0-9_]+$"            # Name pattern for group names
       maxCreditQuota: 1000                  # ceiling for a single account's creditQuota
 
@@ -281,7 +281,8 @@ This exists for cases where a customer has a legitimate, one-off need that the s
 # on a case-by-case basis, once ISO has approved them by email; matched against a
 # CRD only after its guardrails (3.3) reject it.
 exceptions:
-  - account: "analytics-team-eu"        # exact account name — no wildcards
+  - account: "analytics-team-eu"        # CRD metadata.name (3.11), not the resolved
+                                        # Snowflake name — exact match, no wildcards
     networkPolicy:                        # the full entry being approved, verbatim
       users:
         tu_airflow:
@@ -376,8 +377,9 @@ When the controller observes a `SnowflakeAccount` that does not yet exist in Sno
 **Note:** The SQL below, like every SQL block in this document, is illustrative rather than complete — it conveys which statements run, in what order, and from which inputs their values are drawn, not the exact or exhaustive syntax the controller emits.
 
 ```sql
--- 1. Instantiation: create the account.
-CREATE ACCOUNT '<name-from-crd>' ADMIN_NAME='platform' ADMIN_RSA_PUBLIC_KEY = '<generated-by-controller>' ADMIN_USER_TYPE='SERVICE' EDITION='ENTERPRISE' REGION='<region-from-crd>' COMMENT='<description-from-crd>';
+-- 1. Instantiation: create the account under its resolved name (3.11) — the CRD's
+-- metadata.name with '-' translated to '_', suffixed with the namespace hash.
+CREATE ACCOUNT '<resolved-account-name>' ADMIN_NAME='platform' ADMIN_RSA_PUBLIC_KEY = '<generated-by-controller>' ADMIN_USER_TYPE='SERVICE' EDITION='ENTERPRISE' REGION='<region-from-crd>' COMMENT='<description-from-crd>';
 
 -- 2. Backplane Integration: bind the new account to the regional infrastructure
 -- held in the region's Backplane Config entry.
@@ -510,12 +512,13 @@ Isolation is enforced physically by the storage path of the credentials in AWS S
 * **Path Construction:** The controller must construct the ASM Secret ID using the following strict pattern:
     `snowflake/tenant/<snowflake-org-name>/<kubernetes-ns>/<snowflake-account-name>/platform-credentials`
 * **The Constraint:** When the controller attempts to access an existing account, it must derive the lookup path using the CRD's namespace. This ensures that any attempt to manage an account outside the team's namespace will fail at the AWS IAM level due to an incorrect secret path, thereby preventing cross-tenant access.
+* **Which name:** `<snowflake-account-name>` in the path above is the CRD's `metadata.name`, not the resolved Snowflake name (3.11). The path is deliberately built only from Kubernetes identifiers, keeping the trust anchor above intact — every segment is derived from the runtime environment rather than from a namespace label that is written by hand.
 
 #### 3.10.2. OIDC Authentication (Optional) TODO
 
 Every account is always created with the secret-based `platform` user described above and in 3.6 — that mechanism is not replaced. OIDC is an additional, optional authentication path layered on top of the same account, established immediately after creation, that lets the controller reach a tenant's account without reading its RSA private key from AWS Secrets Manager (ASM) on every connection.
 
-**Principal:** Unlike the account-birth credential, which belongs to a single `platform` service user, the OIDC principal is scoped to the tenant's Kubernetes namespace — the same trust anchor used for secret-path isolation above. The controller creates a dedicated Kubernetes `ServiceAccount` in the tenant's namespace alongside the `SnowflakeAccount` resource (e.g. `sa-<account-name>-oidc`). This ServiceAccount never runs a pod — it exists purely as an identity primitive. When the controller needs to connect to that account, it uses the Kubernetes `TokenRequest` API to mint a short-lived, narrowly-audienced JWT for that ServiceAccount, uses it once, and discards it. The token's `sub` claim — `system:serviceaccount:<namespace>:sa-<account-name>-oidc` — encodes both the tenant namespace and the account name, mirroring the granularity of the ASM secret path.
+**Principal:** Unlike the account-birth credential, which belongs to a single `platform` service user, the OIDC principal is scoped to the tenant's Kubernetes namespace — the same trust anchor used for secret-path isolation above. The controller creates a dedicated Kubernetes `ServiceAccount` in the tenant's namespace alongside the `SnowflakeAccount` resource (e.g. `sa-<account-name>-oidc`). This ServiceAccount never runs a pod — it exists purely as an identity primitive. When the controller needs to connect to that account, it uses the Kubernetes `TokenRequest` API to mint a short-lived, narrowly-audienced JWT for that ServiceAccount, uses it once, and discards it. The token's `sub` claim — `system:serviceaccount:<namespace>:sa-<account-name>-oidc` — encodes both the tenant namespace and the account name, mirroring the granularity of the ASM secret path. Here `<account-name>` is the CRD's `metadata.name`, not the resolved Snowflake name (3.11): a `ServiceAccount` is a Kubernetes object and must satisfy RFC1123, which forbids the underscores the resolved name contains. The mapping below must use exactly the string the API server signs.
 
 **Global setup (one-time, like the network/identity backplane in 3.2):** The Kubernetes cluster's OIDC issuer and JWKS endpoint are recorded once, platform-wide, as a new org-level entry in the Backplane Config — not yet part of its schema (3.5), since OIDC is still a TODO. This is an ops/bootstrap concern, not a per-account step.
 
@@ -553,6 +556,27 @@ The **`region`**, **`name`** and **`environment`** of a `SnowflakeAccount` are I
 
 `environment` is immutable for a different reason: it selects which guardrails apply (3.3), so a mutable field would let an account be created under the `prod` baseline and then flipped to `dev` to pick up its looser network posture — no CIDR required for `agn`, and `agn` openable account-wide. Changing an account's environment therefore requires creating a new account.
 
+Because the account's Snowflake name is resolved from `name` plus a hash of the namespace (3.11), and neither can change for the life of the resource, the resolved name is stable too — it never has to be stored to stay correct.
+
+
+
+### 3.11 Account Naming
+
+Tenants name their accounts freely and cannot see other namespaces, but Snowflake account names must be unique org-wide — two teams both naming an account `dev` is the expected case. The controller therefore suffixes the name with a hash of the tenant's namespace: `metadata.name` with every `-` translated to `_`, then `_` and the first 5 characters of the base32-encoded SHA-256 of `metadata.namespace`.
+
+```
+metadata.name:  analytics-team-eu
+namespace:      finance               (sha256 → base32, first 5: 5k3wf)
+                ↓
+Snowflake:      analytics_team_eu_5k3wf
+```
+
+The translation is needed because Snowflake account names allow only letters, digits and `_`, while Kubernetes names disallow `_`. Snowflake accepts either spelling in account URLs, so tenants keep using the hyphenated form when logging in.
+
+Deriving the suffix from the namespace needs no stored state: namespaces cannot be renamed, so the name is recomputable on every reconcile and stable for the account's lifetime. Accounts in one namespace share a suffix, and the tenant's own name stays first so they recognize it in the Snowflake UI.
+
+Only Snowflake-facing values use the suffixed name — SQL (3.6, 3.8) and status (6.2). Everything else refers to accounts by CRD name, as noted at each site.
+
 
 
 ## 4. SnowflakeReplication Resource
@@ -568,9 +592,10 @@ metadata:
   name: analytics-team-dr
 spec:
   description: "Cross-region standby for EU analytics"
-  accounts:                # all must share one environment (4.2)
-    - analytics-team-eu # aws-eu-central-1, prod
-    - analytics-team-eu-dr # aws-eu-west-3, prod
+  accounts:                # SnowflakeAccount CRD names (3.11), not resolved Snowflake
+                           # names; all must share one environment (4.2)
+    - analytics-team-eu    # aws-eu-central-1, prod
+    - analytics-team-eu-dr # aws-eu-west-3, prod — same namespace, so same suffix
   primaryAccount: analytics-team-eu
   objectTypes:
     - DATABASES
@@ -619,7 +644,7 @@ metadata:
 spec:
   targetRef:
     kind: SnowflakeAccount
-    name: analytics-team-eu
+    name: analytics-team-eu   # CRD name (3.11), not the resolved Snowflake name
   duration: 4h  # Maintenance window duration (Max: 8h)
   reason: "Ticket OPS-1234: Project sunsetting, data archived."
 ```
@@ -695,10 +720,12 @@ Individual resource types may surface further conditions specific to their own c
 
 **A Healthy Resource**
 
+`accountName` is the resolved Snowflake name (3.11), not the CRD name, so a tenant can find the account in Snowflake.
+
 ```yaml
 status:
-  accountName: "analytics-team-eu"
-  accountUrl: "https://xyz.snowflakecomputing.com"
+  accountName: "analytics_team_eu_5k3wf"
+  accountUrl: "https://acme-analytics_team_eu_5k3wf.snowflakecomputing.com"
   conditions:
     - type: Ready
       status: "True"
