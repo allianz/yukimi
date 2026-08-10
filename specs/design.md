@@ -89,8 +89,6 @@ apiVersion: base.snowflake.yukimi.io/v1alpha1
 kind: SnowflakeAccount
 metadata:
   name: analytics-team-eu
-  labels:
-    environment: prod
 spec:
   # --- General metadata ---
   description: "Analytics team Snowflake environment for EU operations"
@@ -99,6 +97,7 @@ spec:
     - team-analytics@company.com
   # --- Snowflake account configuration ---
   region: aws-eu-central-1
+  environment: prod            # dev | prod — required, immutable (3.10.3); a Guardrails target key (3.3)
   # --- Share of the namespace's monthly credit allowance (3.9) ---
   creditQuota: 500
   # --- GIAM roles to import and assign ---
@@ -190,9 +189,11 @@ Guardrails act as a gatekeeper that validates and modifies a tenant's input befo
 
 Each guardrail defines up to three components — `target` plus at least one of `constraints` or `preset`:
 
-  * **`target`:** Defines which accounts the guardrail applies to. An omitted field or a `"*"` wildcard means the rule matches all accounts.
+  * **`target`:** Defines which accounts the guardrail applies to. An omitted field or a `"*"` wildcard means the rule matches all accounts. Each key is read from a fixed source: `environment` and `region` from the CRD's spec fields (3.1), `account` from `metadata.name`, and `department` from the namespace label set by ops during onboarding (2). Since `department` is ops-owned, tenants cannot move themselves out of their department's rules; `environment`, by contrast, the tenant declares themselves.
   * **`constraints`:** The strict rules the user's input must pass, such as correct naming conventions, maximum credit quotas, and network rules. If a submitted CRD violates these rules, the system immediately rejects it with a validation error.
   * **`preset`:** Sets defaults. For CRD fields the user omitted (like `creditQuota`) the value is filled in and then enforced as usual. For account settings with no CRD field at all (like `timeZone`) it is only an initial value — unlike `constraints`, it is not enforced, and the tenant's account admin may change it afterwards in Snowflake.
+
+**On self-declared `environment`:** Because the tenant sets `environment` in their own CRD, they can choose `dev` and receive its looser constraints. The platform does not verify that a `dev` account is actually used for development — a team running production workloads in an account they declared as `dev` carries that risk themselves.
 
 **Connection Constraints:** Guardrails strictly control how tenants can configure network access. These constraints are categorized by scope (either `users` or `global`, mirroring the CRD's `networkPolicy` keys) and then by connection name, applying one of three rules:
 
@@ -548,7 +549,9 @@ GRANT ROLE "<group-name-from-assign.ACCOUNTADMIN>" TO USER PLATFORM_OIDC;
 
 #### 3.10.3. Immutable Identity Binding
 
-The **`region`** and **`name`** of a `SnowflakeAccount` are Immutable after creation. This prevents identity spoofing where a user creates an account, lets the secret generate, and then attempts to switch the CRD to point to a different target resource while retaining the original credentials.
+The **`region`**, **`name`** and **`environment`** of a `SnowflakeAccount` are Immutable after creation. For `region` and `name` this prevents identity spoofing where a user creates an account, lets the secret generate, and then attempts to switch the CRD to point to a different target resource while retaining the original credentials.
+
+`environment` is immutable for a different reason: it selects which guardrails apply (3.3), so a mutable field would let an account be created under the `prod` baseline and then flipped to `dev` to pick up its looser network posture — no CIDR required for `agn`, and `agn` openable account-wide. Changing an account's environment therefore requires creating a new account.
 
 
 
@@ -565,9 +568,9 @@ metadata:
   name: analytics-team-dr
 spec:
   description: "Cross-region standby for EU analytics"
-  accounts:
-    - analytics-team-eu # aws-eu-central-1
-    - analytics-team-eu-dr # aws-eu-west-3
+  accounts:                # all must share one environment (4.2)
+    - analytics-team-eu # aws-eu-central-1, prod
+    - analytics-team-eu-dr # aws-eu-west-3, prod
   primaryAccount: analytics-team-eu
   objectTypes:
     - DATABASES
@@ -581,6 +584,8 @@ spec:
 ### 4.2 Data Residency
 
 `SnowflakeReplication` performs no region-pair validation of its own. Each account it links was already restricted to a legally permitted region by the Guardrails' `allowedRegions` constraint (3.3) at the time it was created — e.g. an `Allianz_DE` account can only ever be created in `aws-eu-central-1` or `aws-eu-west-3`. Since replication only connects existing `SnowflakeAccount` resources, an illegal region pair (e.g. a link to a Brazil region) can never arise: it would require one of the linked accounts to exist in a region the Guardrails would have already rejected at creation.
+
+It does, however, validate that every account under `accounts` declares the same `environment` (3.1); a mismatch is rejected. Environment selects which guardrails an account was created under (3.3), so linking a `prod` account to a `dev` one would replicate production data into an account held to the looser `dev` network posture. Because `environment` is immutable (3.10.3), a group that validates at setup cannot later drift into a mixed state.
 
 ### 4.3 Infrastructure vs. Data Replication
 
