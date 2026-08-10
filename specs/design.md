@@ -107,9 +107,9 @@ spec:
       - XYZ_DATA_ENGINEERS
       - XYZ_DEVELOPERS
       - XYZ_ANALYSTS
-    grants:                          # system role → imported group; ACCOUNTADMIN required
+    assign:                          # system role → group it is assigned to; ACCOUNTADMIN required
       ACCOUNTADMIN: XYZ_DATA_ENGINEERS
-      SYSADMIN: XYZ_DEVELOPERS       # any Snowflake system role may be granted   
+      SYSADMIN: XYZ_DEVELOPERS       # any Snowflake system role may be assigned
   # --- Allow custom network policies ---
   networkPolicy:
     users:                       # one entry per technical user, deny-by-default (3.8)
@@ -410,22 +410,22 @@ Identity, like networking, is integrated globally rather than per account. An Az
 That import is what the CRD's `groups` field drives, and it splits the two questions that were previously conflated: which groups exist in the account, and which of them carry a system role.
 
   * **`import`:** The complete list of organization groups to bring into the account. Each must already exist in the backplane. Importing a group creates a matching role in the account, and its members are granted that role automatically.
-  * **`grants`:** Binds Snowflake system roles to imported groups — each key is a literal system role name, each value the group that receives it. The set of keys is open: `USERADMIN`, `SECURITYADMIN` or any other system role may be granted without a change to this spec. Three rules apply:
+  * **`assign`:** Binds Snowflake system roles to imported groups — each key is a literal system role name, each value the group that receives it. The set of keys is open: `USERADMIN`, `SECURITYADMIN` or any other system role may be assigned without a change to this spec. Three rules apply:
       * **`ACCOUNTADMIN` is required.** Without it nobody could log in to the freshly created account and administer it, since the `platform` service user is the only other principal that exists (3.6) and it is not a human login path. A CRD omitting it is rejected.
-      * **Every value must also appear in `import`.** A `grants` entry naming a group that is not being imported is a validation error, since there would be no role in the account to grant to.
+      * **Every value must also appear in `import`.** An `assign` entry naming a group that is not being imported is a validation error, since there would be no role in the account to grant to.
       * **One group per role.** A given system role is granted to exactly one group; listing the same role key twice is a validation error. Other groups needing the same privileges receive them through the role hierarchy inside the account, which is the tenant's own concern.
 
 ```sql
 -- 1. Import every group in groups.import, in the order listed. This is the only
--- statement that creates roles in the account; grants below only bind to them.
+-- statement that creates roles in the account; the `assign` entries below only bind to them.
 ALTER ACCOUNT ADD ORGANIZATION USER GROUP '<group-name-from-groups.import>';
 -- ... repeated for each entry in groups.import
 
--- 2. Grant the system roles named in groups.grants — one statement per entry, the
+-- 2. Grant the system roles named in groups.assign — one statement per entry, the
 -- key used verbatim as the system role — so members of the referenced group inherit
 -- it through the role hierarchy. ACCOUNTADMIN is always among these (see above).
-GRANT ROLE <role-name-from-grants-key> TO ROLE "<group-name-from-grants-value>";
--- ... repeated for each entry in groups.grants
+GRANT ROLE <role-name-from-assign-key> TO ROLE "<group-name-from-assign-value>";
+-- ... repeated for each entry in groups.assign
 ```
 
 **TODO:** Either all users and groups are synced by the Azure Entra ID Enterprise App SCIM sync, or the controller must trigger the addition of all groups in the CRD to that Enterprise App.
@@ -531,10 +531,10 @@ CREATE SECURITY INTEGRATION PLATFORM_OIDC
 -- Create the service user the token maps to. Its LOGIN_NAME is the expected `sub`
 -- claim, so only a token minted for this namespace and account matches it. No new
 -- privileges are introduced: it is granted the *existing* role created by importing
--- the group named in grants.ACCOUNTADMIN (3.7), which is always present.
+-- the group named in assign.ACCOUNTADMIN (3.7), which is always present.
 CREATE USER PLATFORM_OIDC TYPE = SERVICE
   LOGIN_NAME = '<sub-claim-derived-from-namespace-and-account>';
-GRANT ROLE "<group-name-from-grants.ACCOUNTADMIN>" TO USER PLATFORM_OIDC;
+GRANT ROLE "<group-name-from-assign.ACCOUNTADMIN>" TO USER PLATFORM_OIDC;
 ```
 
 **Isolation:** Cross-tenant access is rejected by Snowflake itself, not merely by client-side path construction. Each tenant account's `PLATFORM_OIDC` integration only maps its own namespace-and-account-derived `sub` to a valid user; a token minted for namespace B's ServiceAccount, presented to namespace A's account, matches no mapped user there and is rejected during Snowflake's own signature-and-claims verification — before any SQL executes. This is a stronger guarantee than the ASM path check above, which relies on the calling code correctly constructing a path string: here the Kubernetes API server cryptographically signs the `sub` claim, and Snowflake independently verifies it.
