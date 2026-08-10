@@ -110,7 +110,7 @@ spec:
     grants:                          # system role → imported group; ACCOUNTADMIN required
       ACCOUNTADMIN: XYZ_DATA_ENGINEERS
       SYSADMIN: XYZ_DEVELOPERS       # any Snowflake system role may be granted   
-  # --- Allow custom whitelisting ---
+  # --- Allow custom network policies ---
   networkPolicy:
     users:                       # one entry per technical user, deny-by-default (3.8)
       tu_airflow:
@@ -163,27 +163,27 @@ flowchart LR
     subgraph createFlowGroup [" "]
         direction TB
         CreateFlow["Account Bootstrapping (3.6)"] --> IdentityIntegration["Identity Integration (3.7)"]
-        IdentityIntegration --> Whitelisting["Custom Whitelisting (3.8)"]
-        Whitelisting --> CreditQuota["Credit Quota (3.9)"]
+        IdentityIntegration --> NetworkPolicies["Custom Network Policies (3.8)"]
+        NetworkPolicies --> CreditQuota["Credit Quota (3.9)"]
     end
 
     style createFlowGroup fill:transparent
 ```
 
 * **SnowflakeAccount CRD (3.1):** The customer commits a `SnowflakeAccount` CRD describing the account they want, kicking off the reconciliation flow.
-* **Guardrails (3.3):** OEs (Operating Entities) define the rules that gate and preset the customer's CRD input before it is ever applied to Snowflake.
-* **Approved Exceptions (3.4):** ISO approves one-off exceptions to what the guardrails would otherwise reject — e.g. whitelisting a public-internet IP.
+* **Guardrails (3.3):** OEs (Operating Entities) define the rules that gate and preset the customer's SnowflakeAccount CRD input before it is ever applied to Snowflake.
+* **Approved Exceptions (3.4):** ISO approves one-off exceptions to what the guardrails would otherwise reject — e.g. opening a public-internet IP range.
 * **Backplane Config (3.5):** Once Ops has provisioned a region's network via Terraform and closed out the follow-up setup tickets, they record the resulting IDs and IP ranges in the Backplane Config for the controller to use.
 * **Account Bootstrapping (3.6):** The controller creates the Snowflake account and binds it to the regional backplane infrastructure from the Backplane Config.
-* **Identity Integration (3.7):** The controller imports the CRD's referenced company groups into the new account, so their members can log in via SSO with their existing company roles carried over.
-* **Custom Whitelisting (3.8):** The controller turns the CRD's whitelisting entries into network policies — a dedicated, deny-by-default one per technical user named, and account-wide additions where an entry names none.
-* **Credit Quota (3.9):** The controller checks the share of credits the CRD claims against the namespace allowance set at onboarding (2), then pushes that share into Snowflake as a resource monitor and a budget so consumption stops when it is used up.
+* **Identity Integration (3.7):** The controller imports the SnowflakeAccount CRD's referenced company groups into the new account, so their members can log in via SSO with their existing company roles carried over.
+* **Custom Network Policies (3.8):** The controller turns the SnowflakeAccount CRD's `networkPolicy` entries into Snowflake network policies — a dedicated, deny-by-default one per technical user under `users`, and account-wide additions for each entry under `account`.
+* **Credit Quota (3.9):** The controller checks the share of credits the SnowflakeAccount CRD claims against the namespace allowance set at onboarding (2), then pushes that share into Snowflake as a resource monitor and a budget so consumption stops when it is used up.
 
 
 
 ### 3.3 Guardrails
 
-Guardrails act as a gatekeeper that validates and modifies a tenant's input before it is ever applied to Snowflake. They enforce compliance, govern input logic (such as whitelisting), and ensure no unsafe configurations are provisioned.
+Guardrails act as a gatekeeper that validates and modifies a tenant's input before it is ever applied to Snowflake. They enforce compliance, govern input logic (such as network policies), and ensure no unsafe configurations are provisioned.
 
 **Scope:** Guardrails apply exclusively to `SnowflakeAccount` resources; other resource types handle their own separate validation.
 
@@ -231,7 +231,7 @@ guardrails:
           "*": "off"            # unlisted connection → rejected
         account:
           dbt-cloud: "full"     # VPCE-only: no CIDR to narrow
-          "*": "off"            # no account-wide whitelisting by default
+          "*": "off"            # no account-wide network policy additions by default
 
     # preset: Defaults. creditQuota fills an omitted CRD field; timeZone has no CRD
     # field and is only an initial value the account admin may later change.
@@ -269,7 +269,7 @@ guardrails:
 
 When a `SnowflakeAccount` CRD fails its guardrails (3.3), the controller does not reject it outright. Before returning a validation error, it checks a separate exceptions file for a matching approved exception. If one exists, the otherwise-failing input is allowed through; if not, the resource is rejected as usual.
 
-This exists for cases where a customer has a legitimate, one-off need that the standing guardrail baseline would otherwise block — for example, whitelisting the `public` connection with a wider CIDR than the guardrails normally permit. Getting one added is a manual, email-driven process, not a self-service one: the customer emails ISO (Information Security Office) to request approval for their specific use case; ISO reviews it and, if approved, forwards the request to platform ops; ops then adds the corresponding entry to the exceptions file. Only after that entry exists does the customer's CRD pass validation.
+This exists for cases where a customer has a legitimate, one-off need that the standing guardrail baseline would otherwise block — for example, opening the `public` connection with a wider CIDR than the guardrails normally permit. Getting one added is a manual, email-driven process, not a self-service one: the customer emails ISO (Information Security Office) to request approval for their specific use case; ISO reviews it and, if approved, forwards the request to platform ops; ops then adds the corresponding entry to the exceptions file. Only after that entry exists does the customer's CRD pass validation.
 
 **Ownership:** The exceptions file is owned and maintained by platform ops, not ISO — ISO grants the security approval, but ops is the one who edits the file that the controller reads. The approval itself happens outside the platform, over email; the file is just the durable record of what was approved.
 
@@ -299,7 +299,7 @@ Beyond the `regions` map itself and each region's `available` flag, the configur
 
   * **`inventory`:** A catalog of all physical ingress paths (connections) in a region. It defines the maximum allowed IP range (`maxCidrs`) for each connection, but does not grant access itself.
   * **`globalParameters` / `regionalParameters`:** Snowflake account parameters applied during bootstrapping — `globalParameters` holds the org-wide security baseline, `regionalParameters` the region-specific settings.
-  * **`regionalAllowlist`:** The mandatory baseline whitelisting applied to every account in the region. This guarantees basic reachability (e.g., for browser logins) before any custom, user-specific rules are added.
+  * **`regionalAllowlist`:** The mandatory baseline network access applied to every account in the region. This guarantees basic reachability (e.g., for browser logins) before any custom, user-specific rules are added.
 
 ```yaml
 backplane:
@@ -392,7 +392,7 @@ CREATE NETWORK RULE <connection-name-from-regionalAllowlist> TYPE = <type-from-r
 -- ... repeated for every entry in the region's regionalAllowlist
 
 -- 2c. Attach those rules to the account via the platform's fixed network policy.
--- Further account-level rules are added to this policy in Custom Whitelisting (3.8).
+-- Further account-level rules are added to this policy in Custom Network Policies (3.8).
 CREATE NETWORK POLICY PLATFORM_ACCOUNT_POLICY
   ALLOWED_NETWORK_RULE_LIST = (<all-connection-names-from-regionalAllowlist>);
 ALTER ACCOUNT SET NETWORK_POLICY = 'PLATFORM_ACCOUNT_POLICY';
@@ -432,14 +432,14 @@ GRANT ROLE <role-name-from-grants-key> TO ROLE "<group-name-from-grants-value>";
 
 
 
-### 3.8 Custom Whitelisting
+### 3.8 Custom Network Policies
 
-Custom whitelisting is a critical step in the account provisioning process. Additional network access defined in the `SnowflakeAccount` CRD is provisioned here for both the overall account and specific technical users. Securing technical users (e.g., service accounts like `tu_airflow`) is the most important aspect of this process, as their long-lived credentials pose the highest security risk to the platform. This mechanism forces customers to define tight, explicit ingress paths rather than reusing the broad access ranges meant for human users.
+Custom network policies are a critical step in the account provisioning process. Additional network access defined in the `SnowflakeAccount` CRD is provisioned here for both the overall account and specific technical users. Securing technical users (e.g., service accounts like `tu_airflow`) is the most important aspect of this process, as their long-lived credentials pose the highest security risk to the platform. This mechanism forces customers to define tight, explicit ingress paths rather than reusing the broad access ranges meant for human users.
 
 **Core Principles & Behavior:**
 
-  * **Deny-by-Default:** A technical user with no explicit whitelisting entry receives an empty network policy, completely blocking them from logging in. Access is only granted through narrow, explicitly defined entries. Enforced once the feature is available (Appendix B, N3).
-  * **Strict Containment:** Every requested IP range (`allowedIPs`) must fall entirely within the security ceiling (`maxCidrs`) defined for that connection in the region's Backplane Config. Any entry broader than or outside this limit is rejected. Because whitelisting runs after bootstrapping (3.6), the account itself already exists at this point; it keeps the baseline policy from 3.6, the offending rule is not created, and the failure is reported on `Synced` (6.1) until the tenant corrects the CRD.
+  * **Deny-by-Default:** A technical user with no explicit `networkPolicy.users` entry receives an empty network policy, completely blocking them from logging in. Access is only granted through narrow, explicitly defined entries. Enforced once the feature is available (Appendix B, N3).
+  * **Strict Containment:** Every requested IP range (`allowedIPs`) must fall entirely within the security ceiling (`maxCidrs`) defined for that connection in the region's Backplane Config. Any entry broader than or outside this limit is rejected. Because custom network policies run after bootstrapping (3.6), the account itself already exists at this point; it keeps the baseline policy from 3.6, the offending rule is not created, and the failure is reported on `Synced` (6.1) until the tenant corrects the CRD.
   * **User-Scoped Policies:** Snowflake network policies fully override the account-level default when applied to a specific user. Therefore, the system generates a dedicated, custom network policy for each technical user under `networkPolicy.users`, built exclusively from the connections they are explicitly granted. A user's list may name several connections; because a user can only have one active `NETWORK_POLICY` at a time, all of them collapse into that single policy.
   * **Account-Scoped Policies:** Entries under `networkPolicy.account` are applied account-wide. These rules are appended to the baseline platform account policy created during the initial bootstrapping phase.
   * **No Duplicate Connections:** A connection may appear at most once in a given user's list, and at most once under `account`. A repeated connection within the same scope is a validation error rather than a silent merge of its IP ranges.
