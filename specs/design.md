@@ -117,8 +117,9 @@ spec:
         - connection: agn        # from the region's inventory in the Backplane Config
           allowedIPs: ["172.16.45.0/24"]
         - connection: dbt-cloud  # VPCE-only: nothing to narrow
-    global:                      # added to the account policy (3.6); users listed
-      - connection: dbt-cloud    # above have their own policy and ignore it (3.8)
+    global:                      # added to the account policy (3.6); the users above
+      - connection: public       # have their own policy and ignore this (3.8)
+        allowedIPs: ["192.0.2.14/32", "192.0.2.15/32"]  # /32 only — see 3.3
   # --- Allow human users to bypass SSO ---
   authPolicy:
     exceptions:
@@ -230,8 +231,9 @@ guardrails:
           dbt-cloud: "full"     # VPCE-only: no CIDR to narrow
           "*": "off"            # unlisted connection → rejected
         global:
+          public: "/32"         # account-wide, but single IPs only
           dbt-cloud: "full"     # VPCE-only: no CIDR to narrow
-          "*": "off"            # no account-wide network policy additions by default
+          "*": "off"            # any other connection → no account-wide additions
 
     # preset: Defaults. creditQuota fills an omitted CRD field; timeZone has no CRD
     # field and is only an initial value the account admin may later change.
