@@ -44,7 +44,7 @@ Error types and constructors, imported by business logic (validators, policy eng
 // NewUserError creates a user error with an actionable message.
 //
 // Message Guidelines:
-//   - Include field path: spec.region, spec.network.allowedIPs[0]
+//   - Include field path: spec.region, spec.networkPolicy.users.tu_airflow[0].allowedIPs[0]
 //   - Show invalid value: Region 'invalid'
 //   - Explain expected format: (expected: aws-eu-central-1)
 //   - Be specific and actionable
@@ -157,7 +157,7 @@ internal/logger/
 
 **User Errors** (use `errors.NewUserError()`):
 - Invalid region format: `Region 'invalid' does not match allowed format (expected: aws-eu-central-1)`
-- Malformed CIDR: `Invalid CIDR '10.0.0.256/24' in spec.network.allowedIPs[0]: not a valid IP range`
+- Malformed CIDR: `Invalid CIDR '10.0.0.256/24' in spec.networkPolicy.users.tu_airflow[0].allowedIPs[0]: not a valid IP range`
 - Missing required field: `At least one contact email is required in spec.contacts`
 - Value outside allowed range: `Edition 'premium' is not supported (expected: standard, enterprise)`
 
@@ -245,13 +245,16 @@ func ValidateRegion(region string) error {
     return nil
 }
 
-// Validate CIDR blocks
-func ValidateNetworkPolicy(policy *NetworkPolicy) error {
-    for i, cidr := range policy.AllowedIPs {
-        if _, _, err := net.ParseCIDR(cidr); err != nil {
-            return errors.NewUserError(fmt.Sprintf(
-                "Invalid CIDR '%s' in spec.network.allowedIPs[%d]: not a valid IP range",
-                cidr, i))
+// Validate CIDR blocks. Each technical user under networkPolicy.users holds a list
+// of connection entries, so the field path carries both the user and the entry index.
+func ValidateUserConnections(user string, entries []ConnectionEntry) error {
+    for i, entry := range entries {
+        for j, cidr := range entry.AllowedIPs {
+            if _, _, err := net.ParseCIDR(cidr); err != nil {
+                return errors.NewUserError(fmt.Sprintf(
+                    "Invalid CIDR '%s' in spec.networkPolicy.users.%s[%d].allowedIPs[%d]: not a valid IP range",
+                    cidr, user, i, j))
+            }
         }
     }
     return nil

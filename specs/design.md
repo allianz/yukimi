@@ -117,8 +117,8 @@ spec:
         - connection: agn        # from the region's inventory in the Backplane Config
           allowedIPs: ["172.16.45.0/24"]
         - connection: dbt-cloud  # VPCE-only: nothing to narrow
-    account:                     # opened for every user in the account
-      - connection: dbt-cloud
+    global:                      # added to the account policy (3.6); users listed
+      - connection: dbt-cloud    # above have their own policy and ignore it (3.8)
   # --- Allow human users to bypass SSO ---
   authPolicy:
     exceptions:
@@ -176,7 +176,7 @@ flowchart LR
 * **Backplane Config (3.5):** Once Ops has provisioned a region's network via Terraform and closed out the follow-up setup tickets, they record the resulting IDs and IP ranges in the Backplane Config for the controller to use.
 * **Account Bootstrapping (3.6):** The controller creates the Snowflake account and binds it to the regional backplane infrastructure from the Backplane Config.
 * **Identity Integration (3.7):** The controller imports the SnowflakeAccount CRD's referenced company groups into the new account, so their members can log in via SSO with their existing company roles carried over.
-* **Custom Network Policies (3.8):** The controller turns the SnowflakeAccount CRD's `networkPolicy` entries into Snowflake network policies — a dedicated, deny-by-default one per technical user under `users`, and account-wide additions for each entry under `account`.
+* **Custom Network Policies (3.8):** The controller turns the SnowflakeAccount CRD's `networkPolicy` entries into Snowflake network policies — a dedicated, deny-by-default one per technical user under `users`, and account-wide additions for each entry under `global`.
 * **Credit Quota (3.9):** The controller checks the share of credits the SnowflakeAccount CRD claims against the namespace allowance set at onboarding (2), then pushes that share into Snowflake as a resource monitor and a budget so consumption stops when it is used up.
 
 
@@ -193,7 +193,7 @@ Each guardrail defines up to three components — `target` plus at least one of 
   * **`constraints`:** The strict rules the user's input must pass, such as correct naming conventions, maximum credit quotas, and network rules. If a submitted CRD violates these rules, the system immediately rejects it with a validation error.
   * **`preset`:** Sets defaults. For CRD fields the user omitted (like `creditQuota`) the value is filled in and then enforced as usual. For account settings with no CRD field at all (like `timeZone`) it is only an initial value — unlike `constraints`, it is not enforced, and the tenant's account admin may change it afterwards in Snowflake.
 
-**Connection Constraints:** Guardrails strictly control how tenants can configure network access. These constraints are categorized by scope (either `users` or `account`, mirroring the CRD's `networkPolicy` keys) and then by connection name, applying one of three rules:
+**Connection Constraints:** Guardrails strictly control how tenants can configure network access. These constraints are categorized by scope (either `users` or `global`, mirroring the CRD's `networkPolicy` keys) and then by connection name, applying one of three rules:
 
   * **Max Width (`"/NN"`):** The user is required to provide an IP range (CIDR), but it is capped at the specified maximum width.
   * **Inherit Full Range (`"full"`):** The user may not specify an IP range; they simply inherit the connection's full predefined range from the Backplane Config.
@@ -208,7 +208,7 @@ Any connection a user references that isn't explicitly listed in a scope falls b
 # Example guardrails (governs user-committed SnowflakeAccount YAML).
 # Evaluated top-down: broad baseline first, narrower guardrails override.
 guardrails:
-  # 1️⃣ Global Baseline (Applies to everyone unless overridden)
+  # 1️⃣ Org-Wide Baseline (Applies to everyone unless overridden)
   - target:
       environment: "*"
       region: "*"
@@ -229,7 +229,7 @@ guardrails:
           public: "/32"         # public: single IPs only
           dbt-cloud: "full"     # VPCE-only: no CIDR to narrow
           "*": "off"            # unlisted connection → rejected
-        account:
+        global:
           dbt-cloud: "full"     # VPCE-only: no CIDR to narrow
           "*": "off"            # no account-wide network policy additions by default
 
@@ -247,7 +247,7 @@ guardrails:
       connections:
         users:
           agn: "full"           # just `connection: agn`, no allowedIPs
-        account:
+        global:
           agn: "/16"            # dev may open agn account-wide
 
   # 3️⃣ Allianz DE Overrides
@@ -441,8 +441,8 @@ Custom network policies are a critical step in the account provisioning process.
   * **Deny-by-Default:** A technical user with no explicit `networkPolicy.users` entry receives an empty network policy, completely blocking them from logging in. Access is only granted through narrow, explicitly defined entries. Enforced once the feature is available (Appendix B, N3).
   * **Strict Containment:** Every requested IP range (`allowedIPs`) must fall entirely within the security ceiling (`maxCidrs`) defined for that connection in the region's Backplane Config. Any entry broader than or outside this limit is rejected. Because custom network policies run after bootstrapping (3.6), the account itself already exists at this point; it keeps the baseline policy from 3.6, the offending rule is not created, and the failure is reported on `Synced` (6.1) until the tenant corrects the CRD.
   * **User-Scoped Policies:** Snowflake network policies fully override the account-level default when applied to a specific user. Therefore, the system generates a dedicated, custom network policy for each technical user under `networkPolicy.users`, built exclusively from the connections they are explicitly granted. A user's list may name several connections; because a user can only have one active `NETWORK_POLICY` at a time, all of them collapse into that single policy.
-  * **Account-Scoped Policies:** Entries under `networkPolicy.account` are applied account-wide. These rules are appended to the baseline platform account policy created during the initial bootstrapping phase.
-  * **No Duplicate Connections:** A connection may appear at most once in a given user's list, and at most once under `account`. A repeated connection within the same scope is a validation error rather than a silent merge of its IP ranges.
+  * **Account-Wide (`global`) Policies:** Entries under `networkPolicy.global` are applied account-wide. These rules are appended to the baseline platform account policy created during the initial bootstrapping phase.
+  * **No Duplicate Connections:** A connection may appear at most once in a given user's list, and at most once under `global`. A repeated connection within the same scope is a validation error rather than a silent merge of its IP ranges.
 
 ```sql
 -- For each user key in networkPolicy.users, create one network rule per
@@ -461,12 +461,12 @@ CREATE NETWORK POLICY <technical-user-derived-policy-name>
 ALTER USER '<technical-user-from-crd>' SET NETWORK_POLICY = '<technical-user-derived-policy-name>'; -- technical users only, never human users
 -- ... repeated for every user key in networkPolicy.users
 
--- Entries under networkPolicy.account are account-scoped: they add their
+-- Entries under networkPolicy.global are account-scoped: they add their
 -- rules to the account policy created during bootstrapping (3.6) instead of getting a
 -- policy of their own. Same containment validation applies.
 CREATE NETWORK RULE CUSTOM_<connection-name> TYPE = <type-from-region-config> MODE = INGRESS
   VALUE_LIST = (<vpceId-and/or-validated-allowedIPs>);
--- ... repeated for every entry under networkPolicy.account
+-- ... repeated for every entry under networkPolicy.global
 
 -- Attach them to the account policy. The CUSTOM_ prefix keeps these separate from the
 -- region's regionalAllowlist rules (3.6), which are named by the bare connection.
