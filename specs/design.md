@@ -5,9 +5,10 @@
 - [1. Introduction](#1-introduction)
 - [2. Tenant Onboarding](#2-tenant-onboarding)
 - [3. SnowflakeAccount Resource](#3-snowflakeaccount-resource)
-- [4. SnowflakeReplication Resource](#4-snowflakereplication-resource)
-- [5. SnowflakeDeletionRequest Resource](#5-snowflakedeletionrequest-resource)
-- [6. Global Error Handling & Observability](#6-global-error-handling--observability)
+- [4. IdentitySyncRequest Resource](#4-identitysyncrequest-resource)
+- [5. SnowflakeReplication Resource](#5-snowflakereplication-resource)
+- [6. SnowflakeDeletionRequest Resource](#6-snowflakedeletionrequest-resource)
+- [7. Global Error Handling & Observability](#7-global-error-handling--observability)
 - [Appendix A: Open TODOs](#appendix-a-open-todos)
 - [Appendix B: Organization Policy Requirements](#appendix-b-organization-policy-requirements)
 
@@ -176,7 +177,7 @@ flowchart LR
 * **Approved Exceptions (3.4):** ISO approves one-off exceptions to what the guardrails would otherwise reject — e.g. opening a public-internet IP range.
 * **Backplane Config (3.5):** Once Ops has provisioned a region's network via Terraform and closed out the follow-up setup tickets, they record the resulting IDs and IP ranges in the Backplane Config for the controller to use.
 * **Account Bootstrapping (3.6):** The controller creates the Snowflake account and binds it to the regional backplane infrastructure from the Backplane Config.
-* **Identity Integration (3.7):** The controller imports the SnowflakeAccount CRD's referenced company groups into the new account, so their members can log in via SSO with their existing company roles carried over.
+* **Identity Integration (3.7):** The controller imports the SnowflakeAccount CRD's referenced company groups into the new account, so their members can log in via SSO with their existing company roles carried over. Those groups must first exist in the central organization account; where the enterprise does not sync them there by default, the controller requests them via an `IdentitySyncRequest` (4).
 * **Custom Network Rules (3.8):** The controller turns the SnowflakeAccount CRD's `customNetworkRules` entries into Snowflake network rules and policies — a dedicated, deny-by-default policy per service user under `serviceUsers`, and account-wide additions for each entry under `accountWide`.
 * **Credit Quota (3.9):** The controller checks the share of credits the SnowflakeAccount CRD claims against the namespace allowance set at onboarding (2), then pushes that share into Snowflake as a resource monitor and a budget so consumption stops when it is used up.
 
@@ -300,11 +301,12 @@ The Backplane Config is a platform-owned artifact that catalogs the pre-provisio
 
 Bringing a region online is a one-time manual job for platform ops: run the Terraform project that provisions the region's backplane, close out the follow-up tickets that finalize it (DNS, Snowflake accepting the VPC endpoint), test it end-to-end, then add the region's entry from the Terraform outputs with `available: true`. From then on the controller can provision accounts into it, looking the region up by the CRD's `region` field. `available` is a controller-side gate with no counterpart in Snowflake: it lets ops stage a region and reject CRDs naming it until it is officially offered.
 
-Beyond the `regions` map itself and each region's `available` flag, the configuration is organized around three main components:
+Beyond the `regions` map itself and each region's `available` flag, the configuration is organized around four main components:
 
   * **`inventory`:** A catalog of all physical ingress paths (connections) in a region. It defines the maximum allowed IP range (`maxCidrs`) for each connection, but does not grant access itself.
   * **`globalParameters` / `regionalParameters`:** Snowflake account parameters applied during bootstrapping — `globalParameters` holds the org-wide security baseline, `regionalParameters` the region-specific settings.
   * **`regionalAllowlist`:** The mandatory baseline network access applied to every account in the region. This guarantees basic reachability (e.g., for browser logins) before any custom, user-specific rules are added.
+  * **`identitySync`:** Whether the controller must request corporate groups into the organization account before importing them (4). Org-level rather than per-region, since identity is integrated globally (3.7).
 
 ```yaml
 backplane:
@@ -313,6 +315,12 @@ backplane:
   globalParameters:
     PREVENT_UNLOAD_TO_INLINE_URL: "true"        # block data exfiltration to arbitrary URLs
     REQUIRE_STORAGE_INTEGRATION_FOR_STAGE_CREATION: "true"
+
+  # --- IDENTITY SYNC: whether groups must be requested into the org account (4) ---
+  identitySync:
+    enabled: true       # false when the enterprise already syncs every group org-wide
+    timeout: 1h         # grace period before an unfulfilled request is reported as failed;
+                        # never shorter than the slowest provider (Entra ID ≈ 45 min)
 
   # --- REGIONS: one entry per cloud region, filled in from the Terraform outputs ---
   regions:
@@ -411,33 +419,25 @@ ALTER ACCOUNT SET NETWORK_POLICY = 'PLATFORM_ACCOUNT_POLICY';
 
 ### 3.7 Identity Integration
 
-Identity, like networking, is integrated globally rather than per account. An identity integration continuously feeds enterprise users and groups into a single Organization User Group backplane in Snowflake, independent of any `SnowflakeAccount` CRD — today that is one integration, an Azure Entra ID Enterprise App SCIM sync carrying GIAM groups. Further integrations feed the same backplane; an integration determines where a group comes from, not where it lands. A sync makes its groups available org-wide, but a group must still be explicitly imported into an account before it can be used there.
+Every newly provisioned Snowflake account requires identity integration to allow users to authenticate via Single Sign-On (SSO).
 
-That import is what the CRD's `identityIntegration` field drives, and it splits the two questions that were previously conflated: which groups exist in the account, and which of them carry a system role.
+To define which users get access to the local account, the `SnowflakeAccount` CRD uses the `identityIntegration` configuration:
 
-  * **`groups`:** The groups to bring into the account, listed per identity integration. Each key names an integration and is free-form, not schema — `giam` is the only one configured today. Every group listed must already exist in the backplane. Importing a group creates a matching role in the account, and its members are granted that role automatically.
-  * **`roleBindings`:** Binds Snowflake system roles to imported groups — each key is a literal system role name, each value the group that receives it. The set of keys is open: `USERADMIN`, `SECURITYADMIN` or any other system role may be bound without a change to this spec. Three rules apply:
-      * **`ACCOUNTADMIN` is required.** Without it nobody could log in to the freshly created account and administer it, since the `platform` service user is the only other principal that exists (3.6) and it is not a human login path. A CRD omitting it is rejected.
-      * **Every value must appear somewhere under `groups`.** A `roleBindings` entry naming a group that is not being imported by any integration is a validation error, since there would be no role in the account to grant to.
-      * **One group per role.** A given system role is granted to exactly one group; listing the same role key twice is a validation error. Other groups needing the same privileges receive them through the role hierarchy inside the account, which is the tenant's own concern.
+  * **`groups`:** Lists the specific corporate groups to pull into the local account, one list per identity integration. Each key names an integration and is free-form, not schema — `giam` is the only one configured today.
+  * **`roleBindings`:** Maps Snowflake system roles to those imported groups. Binding the `ACCOUNTADMIN` role is strictly required so the account can be managed after creation.
+
+The controller enforces this access by importing the necessary corporate groups directly from the central Snowflake organization account into the local account. For details on how these groups get into the central organization account in the first place, refer to Chapter 4.
+
+**Execution Sequence**
+
+The controller executes standard SQL to pull the groups from the organization account and grant them the appropriate system roles:
 
 ```sql
--- 1. Import every group under identityIntegration.groups: every group of every
--- integration's list. Iterate deterministically — integration keys in sorted order, each
--- list in the order written — so repeated reconciles emit the same statements in the same
--- sequence. This is the only statement that creates roles in the account; the
--- `roleBindings` entries below only bind to them.
 ALTER ACCOUNT ADD ORGANIZATION USER GROUP '<group-name-from-identityIntegration.groups>';
--- ... repeated for every group under identityIntegration.groups, across all integrations
-
--- 2. Grant the system roles named in identityIntegration.roleBindings — one statement per
--- entry, the key used verbatim as the system role — so members of the referenced group
--- inherit it through the role hierarchy. ACCOUNTADMIN is always among these (see above).
 GRANT ROLE <role-name-from-roleBindings-key> TO ROLE "<group-name-from-roleBindings-value>";
--- ... repeated for each entry in identityIntegration.roleBindings
 ```
 
-**TODO:** Either all users and groups are synced by the Azure Entra ID Enterprise App SCIM sync, or the controller must trigger the addition of all groups in the CRD to that Enterprise App.
+These statements only succeed once the groups exist in the organization account. Where that is not guaranteed, the account waits in `IdentitySynced=False` while the sync completes (4.3) rather than failing.
 
 
 
@@ -448,7 +448,7 @@ Custom network rules are a critical step in the account provisioning process. Ad
 **Core Principles & Behavior:**
 
   * **Deny-by-Default:** A service user with no explicit `customNetworkRules.serviceUsers` entry receives an empty network policy, completely blocking them from logging in. Access is only granted through narrow, explicitly defined entries. Enforced once the feature is available (Appendix B, N3).
-  * **Strict Containment:** Every requested IP range (`allowedIPs`) must fall entirely within the security ceiling (`maxCidrs`) defined for that connection in the region's Backplane Config. Any entry broader than or outside this limit is rejected. Because custom network rules run after bootstrapping (3.6), the account itself already exists at this point; it keeps the baseline policy from 3.6, the offending rule is not created, and the failure is reported on `Synced` (6.1) until the tenant corrects the CRD.
+  * **Strict Containment:** Every requested IP range (`allowedIPs`) must fall entirely within the security ceiling (`maxCidrs`) defined for that connection in the region's Backplane Config. Any entry broader than or outside this limit is rejected. Because custom network rules run after bootstrapping (3.6), the account itself already exists at this point; it keeps the baseline policy from 3.6, the offending rule is not created, and the failure is reported on `Synced` (7.1) until the tenant corrects the CRD.
   * **User-Scoped Policies:** Snowflake network policies fully override the account-level default when applied to a specific user. Therefore, the system generates a dedicated, custom network policy for each service user under `customNetworkRules.serviceUsers`, built exclusively from the connections they are explicitly granted. A user's list may name several connections; because a user can only have one active `NETWORK_POLICY` at a time, all of them collapse into that single policy.
   * **Account-Wide Rules:** Entries under `customNetworkRules.accountWide` are applied account-wide. These rules are appended to the baseline platform account policy created during the initial bootstrapping phase.
   * **No Duplicate Connections:** A connection may appear at most once in a given user's list, and at most once under `accountWide`. A repeated connection within the same scope is a validation error rather than a silent merge of its IP ranges.
@@ -496,7 +496,7 @@ A tenant's overall monthly credit allowance is defined during onboarding and sec
 * **Admission (Validation):** During every account creation or update, the controller loads all `SnowflakeAccount` resources within the namespace to calculate the total claimed quota. If the request exceeds the namespace allowance, it is rejected with a validation error.
   * **Quota Reductions:** Capacity is evaluated on a first-come, first-served basis. If platform operations decreases the overall namespace allowance, existing accounts are never retroactively suspended. However, future creations or updates are blocked until the tenant lowers their CRD claims to fit within the newly reduced limit.
 * **Enforcement:** The approved quota is pushed directly into Snowflake as an account-level Resource Monitor and budget limit. This Resource Monitor strictly suspends compute warehouses when the quota is exhausted, physically stopping the majority of spend in real time.
-* **Exhaustion State:** The controller surfaces a `QuotaAvailable` condition on the `SnowflakeAccount` — this resource's own condition, additional to the platform-wide `Ready` and `Synced` (6.1). It is **True** while credits remain and warehouses run normally. When an account exceeds its allocated share, the controller sets it to **False** with reason `QuotaExhausted` and emits a matching warning event. This is not a provisioning failure — the resource monitor has suspended warehouses but the account remains fully intact and `Ready` stays **True**. The condition clears automatically at the start of the next monthly billing cycle.
+* **Exhaustion State:** The controller surfaces a `QuotaAvailable` condition on the `SnowflakeAccount` — this resource's own condition, additional to the platform-wide `Ready` and `Synced` (7.1). It is **True** while credits remain and warehouses run normally. When an account exceeds its allocated share, the controller sets it to **False** with reason `QuotaExhausted` and emits a matching warning event. This is not a provisioning failure — the resource monitor has suspended warehouses but the account remains fully intact and `Ready` stays **True**. The condition clears automatically at the start of the next monthly billing cycle.
 
 **TODO (The Serverless & AI Gap):** Resource monitors currently only cover warehouse compute. Serverless features and AI functions cannot be physically suspended this way; budgets for these are notify-only. The platform must decide how to cap these costs before implementation. Options include waiting for Snowflake to release native Organization-level spending limits, strictly gating access to serverless/AI features, or attempting custom privilege-revocation logic.
 
@@ -580,15 +580,78 @@ The translation is needed because Snowflake account names allow only letters, di
 
 Deriving the suffix from the namespace needs no stored state: namespaces cannot be renamed, so the name is recomputable on every reconcile and stable for the account's lifetime. Accounts in one namespace share a suffix, and the tenant's own name stays first so they recognize it in the Snowflake UI.
 
-Only Snowflake-facing values use the suffixed name — SQL (3.6, 3.8) and status (6.2). Everything else refers to accounts by CRD name, as noted at each site.
+Only Snowflake-facing values use the suffixed name — SQL (3.6, 3.8) and status (7.2). Everything else refers to accounts by CRD name, as noted at each site.
 
 
 
-## 4. SnowflakeReplication Resource
+## 4. IdentitySyncRequest Resource
+
+Before the controller can import groups into a local account (3.7), those groups must already exist in the central Snowflake organization account.
+
+If your enterprise architecture does not automatically sync all corporate groups to the organization account by default, an explicit integration is required. To facilitate this, the platform emits an `IdentitySyncRequest` to request the needed groups.
+
+### 4.1 Example
+
+```yaml
+# Emitted by the OSS SnowflakeAccount Controller
+apiVersion: base.identity.yukimi.io/v1alpha1
+kind: IdentitySyncRequest
+metadata:
+  name: analytics-team-eu-giam-identities
+  namespace: finance
+spec:
+  provider: "giam"                 # the integration key from identityIntegration.groups (3.7)
+  groups:
+    - XYZ_ANALYSTS
+    - XYZ_DATA_ENGINEERS
+```
+
+This resource lives in its own API group, `base.identity.yukimi.io`, rather than alongside the other CRDs under `base.snowflake.yukimi.io`. That separation is deliberate: it is an integration boundary fulfilled by third-party controllers, not a Snowflake resource this platform manages.
+
+### 4.2 Domain Concepts
+
+**Custom Company Implementations**
+
+This emitted resource acts as a decoupled, standardized interface. Because every company has different identity management systems and security protocols, each organization can implement their own custom Kubernetes controller to handle these requests.
+
+This custom controller simply watches for `IdentitySyncRequest` objects and executes the company-specific logic required to fetch groups from internal tools (like GIAM, Okta, or Active Directory) and sync them into the central Snowflake organization backplane. Once synced, the primary Snowflake account controller can seamlessly complete the local account setup. This platform ships no fulfilling controller of its own — only the emitting side and the contract below.
+
+**Asynchronous by nature**
+
+Fulfilment is a long-running, out-of-band process: an Azure Entra ID sync takes roughly 45 minutes, and other providers will differ. The interface is therefore designed around eventual completion. The emitting controller is a passive observer — it never waits for a request inside a reconcile, and a request still outstanding is the expected case rather than a fault.
+
+### 4.3 Controller Behavior
+
+**Emitting side (this platform's SnowflakeAccount controller)**
+
+  * **Gated on config.** Requests are only emitted when `backplane.identitySync.enabled` is true (3.5). When it is false the controller skips emission entirely and imports directly, assuming every referenced group is already present org-wide.
+  * **One request per integration.** Each key under `identityIntegration.groups` (3.7) yields its own request: `spec.provider` is the key, `spec.groups` its list. A CRD naming both `giam` and `okta` therefore emits two requests, each picked up by whichever controller handles that provider.
+  * **Naming.** `<crd-name>-<provider>-identities`, in the account's own namespace. The name derives from the CRD's `metadata.name`, not the resolved Snowflake name (3.11) — a Kubernetes object name must satisfy RFC1123, which forbids the underscores the resolved name contains, the same constraint that applies to the OIDC ServiceAccount in 3.10.2.
+  * **Emitted early.** Requests go out on first observation of the `SnowflakeAccount`, alongside account bootstrapping (3.6) rather than after it, so a sync measured in tens of minutes overlaps account creation instead of being appended to it.
+  * **Emission never blocks.** The controller creates the requests and returns from the reconcile immediately. Progress is picked up on later reconciles, driven by a watch on `IdentitySyncRequest` mapped back through the owner reference — so a status change or a deletion wakes the account reconcile at once — with a periodic requeue as a backstop.
+  * **Existence is desired state.** An owner reference on each request has it garbage-collected with the `SnowflakeAccount`, but that only covers account deletion. If a request is deleted while the account still needs its groups, the controller recreates it on the next reconcile. On a CRD spec change the group lists are updated in place; removing an integration key deletes its request deliberately, and that one is not recreated.
+
+**Fulfilling side (the company's own controller)**
+
+  * Watches the resource, syncs the listed groups into the organization account, and reports back through the standard condition model (7.1): `Ready` is **True** once every group under `spec.groups` is present in the organization account, and **False** with a message otherwise. This condition is the only signal the account controller consumes.
+
+**Waiting without failing**
+
+  * **Incremental import.** As each request reports `Ready=True`, that provider's groups are imported (3.7) and every `roleBindings` entry whose group is now present is granted. A slow provider does not hold back a fast one.
+  * **Aggregate condition.** The `SnowflakeAccount` surfaces an `IdentitySynced` condition — this resource's own condition, like `QuotaAvailable` (3.9), additional to `Ready` and `Synced` (7.1). It is **True** once every emitted request is fulfilled and every group imported, **False** while any is outstanding.
+  * **Grace period.** While outstanding and still within `backplane.identitySync.timeout` (default **1h**, 3.5), the reason is `SyncPending`: an expected provisioning state, not an error — no warning event and no failure, since a normal Entra ID sync legitimately occupies most of that hour. Only once the timeout elapses does the reason become `SyncTimeout`, with a matching warning event so the stalled sync becomes visible to ops.
+  * **One clock per account.** The timer starts when the first request for the account is emitted and is recorded in the account's status. Recreating a deleted request does not reset it — otherwise repeatedly deleting a request would hold the account in a provisioning state indefinitely.
+  * **Recoverable.** `SyncTimeout` is a reporting state, not a stop. The controller keeps reconciling and returns to `IdentitySynced=True` on its own if the sync eventually lands, with no user action required.
+  * **Relation to `Ready`.** The account is bootstrapped (3.6) and technically exists, but until the group bound to `ACCOUNTADMIN` is imported nobody can administer it. `Ready` therefore stays **False** for as long as `IdentitySynced` is False, carrying the reason above so a long benign wait is told apart from a genuine provisioning failure — a distinction 7.1's table does not otherwise anticipate.
+
+
+
+
+## 5. SnowflakeReplication Resource
 
 The `SnowflakeReplication` resource links multiple existing `SnowflakeAccount` resources into a single replication group, with exactly one account acting as the primary.
 
-### 4.1 Example
+### 5.1 Example
 
 ```yaml
 apiVersion: base.snowflake.yukimi.io/v1alpha1
@@ -598,7 +661,7 @@ metadata:
 spec:
   description: "Cross-region standby for EU analytics"
   accounts:                # SnowflakeAccount CRD names (3.11), not resolved Snowflake
-                           # names; all must share one environment (4.2)
+                           # names; all must share one environment (5.2)
     - analytics-team-eu    # aws-eu-central-1, prod
     - analytics-team-eu-dr # aws-eu-west-3, prod — same namespace, so same suffix
   primaryAccount: analytics-team-eu
@@ -611,13 +674,13 @@ spec:
   schedule: "10 MINUTE"
 ```
 
-### 4.2 Data Residency
+### 5.2 Data Residency
 
 `SnowflakeReplication` performs no region-pair validation of its own. Each account it links was already restricted to a legally permitted region by the Guardrails' `allowedRegions` constraint (3.3) at the time it was created — e.g. an `Allianz_DE` account can only ever be created in `aws-eu-central-1` or `aws-eu-west-3`. Since replication only connects existing `SnowflakeAccount` resources, an illegal region pair (e.g. a link to a Brazil region) can never arise: it would require one of the linked accounts to exist in a region the Guardrails would have already rejected at creation.
 
 It does, however, validate that every account under `accounts` declares the same `environment` (3.1); a mismatch is rejected. Environment selects which guardrails an account was created under (3.3), so linking a `prod` account to a `dev` one would replicate production data into an account held to the looser `dev` network posture. Because `environment` is immutable (3.10.3), a group that validates at setup cannot later drift into a mixed state.
 
-### 4.3 Infrastructure vs. Data Replication
+### 5.3 Infrastructure vs. Data Replication
 
 Replication is strictly limited to customer data and logical objects (such as databases and warehouses). Platform-level infrastructure, like network rules and endpoints, is never replicated to avoid breaking regional connectivity.
 
@@ -628,7 +691,7 @@ The Kubernetes controller does not actively manage the ongoing replication sync.
 * **Stored Procedure & Timer:** During setup, the controller provisions a stored procedure and a scheduled timer (task) directly inside the primary Snowflake account.
 * **Autonomous Operation:** This native Snowflake setup runs on the defined schedule to evaluate configurations (such as resolving database wildcard patterns) and automatically updates the active replication group as the environment changes.
 
-### 4.4 Controller Lifecycle and Failover
+### 5.4 Controller Lifecycle and Failover
 
 * **Bootstrapping:** The controller validates the accounts, establishes the initial replication setup, provisions the stored procedure and timer, and then hands over ongoing execution entirely to Snowflake.
 * **Auto-Repair:** Because tenants have access to their Snowflake environment, they could inadvertently modify or break the replication code. If the controller detects replication errors or configuration drift during reconciliation, it automatically repairs the setup by completely removing and recreating the stored procedure and timer.
@@ -637,9 +700,9 @@ The Kubernetes controller does not actively manage the ongoing replication sync.
 
 
 
-## 5. SnowflakeDeletionRequest Resource
+## 6. SnowflakeDeletionRequest Resource
 
-### 5.1 Example
+### 6.1 Example
 
 ```yaml
 apiVersion: base.snowflake.yukimi.io/v1alpha1
@@ -655,7 +718,7 @@ spec:
 ```
 
 
-### 5.2 Domain Concepts
+### 6.2 Domain Concepts
 
 #### Positive Control (The "Two-Key" System)
 
@@ -672,7 +735,7 @@ Deletion permissions are ephemeral. By defining a `duration` (max 8 hours), the 
 
 While the target resource disappears after deletion, the `SnowflakeDeletionRequest` (or its logs) remains. This creates a permanent audit trail linking the destruction of infrastructure to a specific reason (e.g., a ticket number) and a specific timeframe, satisfying compliance requirements for data destruction.
 
-### 5.3 Controller Behavior
+### 6.3 Controller Behavior
 
 The controller logic focuses on the interaction between the target `SnowflakeAccount` and the `SnowflakeDeletionRequest`.
 
@@ -704,24 +767,24 @@ When a user deletes a `SnowflakeAccount` (sets `deletionTimestamp`):
 
 
 
-## 6. Global Error Handling & Observability
+## 7. Global Error Handling & Observability
 
-Reliable and transparent error handling is essential for a self-service platform. To ensure a consistent user experience, the platform enforces a standardized status schema across all CRDs (`SnowflakeAccount`).
+Reliable and transparent error handling is essential for a self-service platform. To ensure a consistent user experience, the platform enforces a standardized status schema across all CRDs (`SnowflakeAccount`, `IdentitySyncRequest`).
 
 Users must be able to instantly determine whether a resource is healthy, still reconciling, or requires manual intervention. The controller exposes this information via Kubernetes-compliant `status.conditions`.
 
-### 6.1 Condition Model
+### 7.1 Condition Model
 
-Every `SnowflakeAccount` CRD in this platform surfaces two standard condition types. These conditions provide a high-level summary of the resource's lifecycle state.
+Every CRD in this platform surfaces two standard condition types. These conditions provide a high-level summary of the resource's lifecycle state. `IdentitySyncRequest` is fulfilled by a company's own controller (4.3), so this model is the contract that controller reports through rather than something this platform implements for it.
 
 | Condition Type | Scope | Description |
 | :--- | :--- | :--- |
 | **`Ready`** | **Availability** | Indicates whether the resource is provisioned and usable. <br>**During Creation:** Set to **False** until the resource is successfully created. Creation errors are reported here. <br>**After Creation:** Set to **True** once the resource is fully operational. <br>**During Updates:** Remains **True** (updates are non-disruptive). |
 | **`Synced`** | **State Consistency** | Indicates whether the live state matches the desired state. <br>**During Creation:** Set to **True** once the CRD is accepted and processing begins. <br>**After Creation:** Remains **True** when no changes are pending. <br>**During Updates:** Set to **False** while changes are being applied. Update errors are reported here. Returns to **True** once synchronized. |
 
-Individual resource types may surface further conditions specific to their own concerns; `SnowflakeAccount` adds `QuotaAvailable` for credit exhaustion (3.9).
+Individual resource types may surface further conditions specific to their own concerns; `SnowflakeAccount` adds `QuotaAvailable` for credit exhaustion (3.9) and `IdentitySynced` for pending group syncs (4.3).
 
-### 6.2 Status Example
+### 7.2 Status Example
 
 **A Healthy Resource**
 
@@ -744,7 +807,7 @@ status:
 
 ## Appendix A: Open TODOs
 
-Items flagged inline throughout this document (3.7, 3.9, 3.10.2).
+Items flagged inline throughout this document (3.9, 3.10.2).
 
 
 
