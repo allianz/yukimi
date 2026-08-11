@@ -31,13 +31,14 @@ Only what exists today is shown above. Planned package locations for not-yet-imp
 
 Each `internal/` package has a corresponding numbered spec in `specs/`. The spec is the authoritative source for that package — before implementing or modifying code in a package, always read its spec first.
 
-Specs are written and implemented one at a time in ascending order, so **a spec may depend only on specs numbered strictly below it** — the code for higher-numbered specs does not exist yet. See `specs/roadmap.md` for the detailed planned scope of each spec not yet written, plus the ordering rationale and the decisions behind it.
+Specs are written and implemented one at a time in ascending order, so **a spec may depend only on specs numbered strictly below it** — the code for higher-numbered specs does not exist yet. See `specs/roadmap.md` for the detailed planned scope of each spec not yet written, plus the ordering rationale and the decisions behind it. A letter suffix (`003-a`) marks a pluggable backend implementing an interface owned by its parent number; it sorts between `003` and `004`, and only `cmd/provider/main.go` may depend on one.
 
 | Spec | Package | Description |
 |------|---------|-------------|
 | `001-error-and-logging.md` | `internal/errors/` + `internal/logger/` | User vs system errors, incident IDs, operation-scoped logging |
 | `002-provider-config.md` | `internal/config/` | Provider-wide settings loaded from a mounted ConfigMap |
-| `003-secrets-handling.md` | `internal/secrets/` | AWS Secrets Manager paths, RSA keypairs, caching |
+| `003-secrets-handling.md` | `internal/secrets/` | Backend interface, secret paths, RSA keypairs, TTL cache |
+| `003-a-aws-secrets-backend.md` | `internal/secrets/aws/` | AWS Secrets Manager implementation of the 003 backend interface |
 | `004-connection-pooling.md` | `internal/snowflake/pool/` | Pooled JWT keypair connections, org-admin vs per-account scopes |
 | `005-statement-execution.md` | `internal/snowflake/statement/` | SQL execution with position-aware errors and idempotency |
 | `006-snowflake-account-crd.md` | `apis/base/v1alpha1/` + `internal/tenant/` | SnowflakeAccount schema, account naming, namespace labels |

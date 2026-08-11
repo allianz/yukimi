@@ -541,6 +541,8 @@ Following the creation of an account, the controller transitions to impersonatin
 
 Isolation is enforced physically by the storage path of the credentials in AWS Secrets Manager (ASM).
 
+AWS Secrets Manager is the reference implementation, not a requirement: the controller reaches its secret store through a backend interface, so an operator may substitute another store — HashiCorp Vault, for instance — without touching anything else in this document. What must survive the substitution is the model below: the namespace as the sole trust anchor, this exact path grammar, and enforcement of that grammar by the store's own authorization layer rather than by the controller. Read "ASM" and "AWS IAM" below as "the configured secret store" and "its authorization layer".
+
 * **The Trust Anchor:** The Kubernetes Namespace (`metadata.namespace`) is the sole source of truth for tenancy. It is derived directly from the runtime environment (not user input) and is used to cryptographically bind the account to the team's sandbox.
 * **Path Construction:** The controller must construct the ASM Secret ID using the following strict pattern:
     `snowflake/tenant/<snowflake-org-name>/<kubernetes-ns>/<snowflake-account-name>/platform-credentials`

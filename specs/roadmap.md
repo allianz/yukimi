@@ -20,20 +20,28 @@ code for every spec above N does not yet exist, so a dependency on a higher numb
 unbuildable. The numbering below is therefore a topological sort of the real Go import graph — there
 are no forward references. Any renumbering must preserve this property.
 
+One refinement to the numbering, not to the rule: a number may carry a letter suffix — `003-a` —
+marking a pluggable implementation of an interface owned by the bare number. A letter sorts after its
+parent and strictly before the next whole number (`003` < `003-a` < `003-b` < `004`), so "strictly
+below" reads unchanged and no exception is needed. Decision 7 defines what may and may not carry a
+suffix.
+
 Two consequences worth stating explicitly:
 
 - Where a package would naturally reach "upward", the dependency is inverted by injection (an
   interface parameter) or deferred to a higher-numbered caller. Several such deferrals are recorded
   in the per-spec entries as explicit out-of-scope notes.
-- Two packages carry a hard **prohibition** on importing another package even though it sits below
+- Three packages carry a hard **prohibition** on importing another package even though it sits below
   them, because the natural import would create a cycle. See "Why the ordering is acyclic".
 
 ## Decisions taken
 
 1. **Ignore the `origin/secrets-handling` branch.** That unmerged branch holds a drafted
-   `002-secrets-handling.md` plus a `002-a-aws-secrets-backend.md` sub-spec and a full
-   `internal/secrets/` implementation. It is treated as abandoned. Secrets is written fresh as a
-   single spec, and there is no `NNN-a` sub-spec convention in this numbering.
+   `002-secrets-handling.md`, a `002-a-aws-secrets-backend.md` sub-spec and a full
+   `internal/secrets/` implementation. It is treated as abandoned — nothing in it is inherited and its
+   numbering does not survive; secrets is 003 here and is written fresh. That the branch also split
+   its backend into a sub-spec is convergence, not provenance: the `NNN-a` convention used here is
+   defined independently, and deliberately, in decision 7.
 
 2. **Provider settings come from a mounted ConfigMap, not a ProviderConfig CRD.** Spec 002 is a
    plain loader — no CRD, no controller, no reconciler, no singleton wiring.
@@ -59,15 +67,51 @@ Two consequences worth stating explicitly:
    ConfigMap read by `internal/config/` (spec 002) — no CRD, no controller, no reconciler — so the
    ProviderConfig path would never have been revisited. No spec depends on it.
 
+7. **`NNN-a` sub-specs exist, but only for a pluggable backend behind an interface owned by `NNN`.**
+   Yukimi is open source, and the secret store is the one dependency an adopter is most likely to be
+   unable to keep: an operator outside AWS must be able to take the whole platform and replace only
+   the place credentials are written. Spec 003 therefore owns `internal/secrets/` — the `Backend`
+   interface, the path grammar, the credential types, keypair generation, the cache and the
+   error-classification policy — and names no product anywhere; spec 003-a owns
+   `internal/secrets/aws/` and is the only place an AWS SDK enters `go.mod`. A Vault backend would be
+   003-b in `internal/secrets/vault/`, and is out of scope now.
+
+   A letter means one thing only: an implementation of an interface defined by the number it hangs
+   off. It sorts immediately after its parent and strictly before the next whole number, so the
+   ordering rule needs no exception; it may depend on its parent and on anything below it, never on a
+   sibling letter or a higher number; and it uses the same `000-template.md` skeleton, named
+   `NNN-a-<slug>.md`. Two consequences matter more than the naming. First, **no numbered spec may
+   depend on a letter spec** — 004 and 010 depend on 003's interface, so the pool and the account
+   module never learn which store is behind it. Second, the concrete backend is selected exactly once,
+   in `cmd/provider/main.go`, which no numbered spec owns: it reads `secretsBackend` from 002,
+   constructs the named backend, and injects it. That is what keeps the swap a one-file change.
+
+   A letter is not a device for splitting a spec that grew long. A spec that is merely large stays one
+   spec; a spec that is genuinely two concerns takes two numbers.
+
 ## Why the ordering is acyclic
 
 - **002 is a leaf.** As a ConfigMap loader it imports only `internal/errors` — it constructs no
-  backends and runs no controller. Secrets (003) needs its AWS region and the pool (004) needs its
-  Snowflake org name, so it must sit below both.
+  backends and runs no controller. Secrets (003) needs the organization name for its paths, the AWS
+  backend (003-a) needs the region, and the pool (004) needs the org name too, so it must sit below
+  all three. It also carries `secretsBackend`, the name of the store to build; 002 only *reports* that
+  string, and the switch on it lives in `cmd/provider/main.go`.
 
 - **003 never imports the pool.** Pushing a rotated public key
   (`ALTER USER … SET RSA_PUBLIC_KEY`) is explicitly out of scope for 003 — the caller does it. The
   pool imports secrets, never the reverse.
+
+- **003 defines the backend interface, 003-a implements it, and `internal/secrets` must never import
+  `internal/secrets/aws`.** The child imports the parent for the interface and the sentinel errors, so
+  the reverse import is not merely a layering violation — it is a compile error, and the obvious
+  workaround (a registry inside `internal/secrets` that knows its own backends) is the cycle wearing a
+  hat. Selection happens once, in `cmd/provider/main.go`, which no numbered spec owns. Same shape as
+  the 009 rule below, for the same reason.
+
+- **Nothing above 003 depends on 003-a.** 004 and 010 take 003's interface, so the pool and the
+  account module stay unit-testable against the in-memory fake 003 ships — no AWS account, no SDK, no
+  network. An import of `internal/secrets/aws` anywhere outside `cmd/provider/` is a bug, and it is
+  the single grep that proves the store is still pluggable.
 
 - **004 must not import 005.** The pool performs session setup (`USE ROLE`) and health probes using
   the **raw driver** (`db.ExecContext` / `PingContext`). Without this rule an implementer naturally
@@ -94,7 +138,8 @@ Two consequences worth stating explicitly:
   warrant and writes its `Consumed` status, so it imports `internal/deletion`. The dependency is
   one-way; no injected interface is needed.
 
-Verified: every "Depends on" entry below is strictly lower-numbered.
+Verified: every "Depends on" entry below is strictly lower-numbered, reading `003-a` as sorting after
+`003` and before `004`, and no entry names a letter spec.
 
 ---
 
@@ -118,40 +163,168 @@ Verified: every "Depends on" entry below is strictly lower-numbered.
   - Load provider-wide settings from a **mounted ConfigMap** at startup and expose them as an
     immutable struct.
   - Fields (from `.env.example`): `SNOWFLAKE_ORG` (the organization name, used in account
-    identifiers, ASM secret paths and `accountUrl`), `SNOWFLAKE_ORG_ADMIN_ACCOUNT` (the account used
-    for org-level operations), `AWS_REGION` (where AWS Secrets Manager stores credentials), and
-    `SNOWFLAKE_USE_PRIVATELINK` (affects the connection host).
+    identifiers, secret paths and `accountUrl`), `SNOWFLAKE_ORG_ADMIN_ACCOUNT` (the account used for
+    org-level operations), `SNOWFLAKE_USE_PRIVATELINK` (affects the connection host), and
+    `secretsBackend` — the name of the secret store to construct, `aws` today (decision 7). The last
+    has no `.env.example` counterpart: it is the first field that exists because of the architecture
+    rather than because of the integration-test environment.
+  - **Backend-specific settings are carried, not interpreted.** `AWS_REGION` stays in the schema but
+    is consumed by 003-a, not by 003 and not by 002's own logic: 002 exposes it verbatim and does
+    *not* conditionally require it, because a loader that validates per backend name has started to
+    know what backends are. 003-a's constructor rejects an empty region as a user error instead, and
+    since `cmd/provider/main.go` builds the backend during startup, that is still fail-fast — nothing
+    reaches a reconcile. A future `secretsBackend: vault` (003-b) adds its fields the same way.
+    `main.go` rejects an unrecognized `secretsBackend` with a fatal user error listing the names
+    compiled in.
   - References to the other three ConfigMaps (backplane, guardrails, exceptions) so that specs 007
     and 008 know what to read.
   - Validation of required fields, raising `errors.NewUserError` for missing or malformed values.
     Fail fast at startup rather than once per reconcile.
 - Out of scope: no CRD, no controller, no reconciler, no Kubernetes watch. This is not a Crossplane
   ProviderConfig; the inherited ProviderConfig boilerplate has been removed (decision 6).
-- Why it sits here: it is a leaf, and both 003 and 004 need values from it.
+- Why it sits here: it is a leaf, and 003, 003-a and 004 all need values from it.
+- Open question for this spec: the ConfigMap's key style. `.env.example` uses `SHOUTY_SNAKE`, while the
+  other three ConfigMaps (007, 008) use camelCase. `secretsBackend` is the first key with no
+  `.env.example` ancestor, so it forces a choice rather than inheriting one. Pick one convention and
+  state it; field names in this entry are written in whichever style their origin used and should be
+  normalized when the spec is written.
 
 ## Spec 003 — `003-secrets-handling.md`
 
 - Package: `internal/secrets/`. Covers design 3.11.1, the 3.6 keypair, and Appendix B X1.
   Depends on: 001, 002.
+- **Backend-agnostic by construction.** This package names no secret store. It defines the `Backend`
+  interface a store implements and writes everything above it — paths, credentials, keys, cache,
+  classification — against that interface. AWS Secrets Manager is the reference implementation (003-a)
+  because it is what the platform runs on; design 3.11.1's path-based isolation is a requirement any
+  backend must satisfy, not an AWS feature.
 - Scope:
+  - **The `Backend` interface**, deliberately narrow — an opaque byte-blob keystore and nothing more:
+    `Get(ctx, path) ([]byte, error)`; `Create(ctx, path, value) error`, which must fail if something is
+    already there; `Update(ctx, path, value) error`, which must fail if nothing is there; and
+    `Delete(ctx, path) error`. A backend sees paths and bytes. It never parses a credential, never
+    caches, never builds a path, and never logs — it returns errors and lets 001 do the reporting.
+    `Create` and `Update` are separate rather than one upsert on purpose: 010 must store a keypair
+    *before* `CREATE ACCOUNT`, and "create, failing if occupied" has to be atomic in the store, or a
+    re-run against a live account silently overwrites the key the platform authenticates with — a
+    read-then-write precondition in this package would be a race with no owner. There is deliberately
+    **no** `HealthCheck` method: the startup reachability check is "read the org-admin credentials",
+    which exercises credentials, region, network and authorization on a path that must work anyway.
+  - **Sentinel errors**, the whole vocabulary in which a backend reports failure, so this package can
+    classify without knowing a single vendor code. Each is returned wrapped and matched with
+    `errors.Is`: `ErrNotFound` (nothing live at that path); `ErrAlreadyExists` (`Create` found
+    something there); `ErrPendingDeletion` (something is at that path but inside a deletion recovery
+    window — neither readable as live nor recreatable until restored or purged; backends without soft
+    delete never return it, and it is separate from `ErrAlreadyExists` because the operator action
+    differs: restore or wait, versus investigate a stale credential); `ErrDenied` (not authorized for
+    that path — it must **never** be collapsed into `ErrNotFound`, since under 3.11.1 a denial is the
+    expected signal for a wrong-tenant path, and folding the two would turn both a misconfigured IAM
+    policy and a genuine cross-tenant attempt into a bland "no credentials for this account"); and
+    `ErrUnavailable` (transient — throttling, timeout, 5xx, dropped connection). Anything else a
+    backend returns is treated as a permanent, unclassified store fault.
   - **Tenant secret path** (3.11.1), constructed strictly as
     `snowflake/tenant/<snowflake-org-name>/<kubernetes-namespace>/<snowflake-account-name>/platform-credentials`.
     Critical detail: `<snowflake-account-name>` is the CRD's `metadata.name`, **not** the resolved
     Snowflake name from 3.12. Every path segment must derive from Kubernetes identifiers so that the
-    namespace remains the trust anchor; cross-tenant access then fails at the AWS IAM level on an
-    incorrect path.
+    namespace remains the trust anchor; cross-tenant access then fails in the store's own
+    authorization layer on an incorrect path.
   - **Org-admin secret path**: `snowflake/org/<org>/<org-admin-account>/org-admin-credentials`.
+  - **Path validation before any backend call**: reject empty segments, `/`, `.`, `..` and anything
+    outside the RFC1123 character set the Kubernetes identifiers already guarantee. This belongs here,
+    not in a backend, because a store with a flat key space would otherwise let a crafted identifier
+    traverse into another tenant's path — the isolation guarantee has to hold for the weakest possible
+    backend, not just for the one with hierarchical IAM.
   - **RSA keypair generation** for the `platform` service user created by `CREATE ACCOUNT`:
     `crypto/rand`, minimum 2048-bit, PKCS#8 encoding for private keys and PKIX for public keys.
-  - Get / store / rotate credential operations against AWS Secrets Manager; an in-memory TTL cache;
-    credential types for platform and org-admin credentials.
-  - Error mapping: a missing secret or a malformed path is a user error; ASM timeouts and throttling
-    are system errors with incident IDs.
-- Out of scope: pushing a rotated public key to Snowflake (`ALTER USER … SET RSA_PUBLIC_KEY`) — that
-  needs the pool, which does not exist yet. The caller does it once 004 lands.
+  - **Credential types** for platform and org-admin credentials, and their stored JSON encoding: the
+    public key single-line base64 without PEM delimiters so it drops straight into `CREATE ACCOUNT`
+    and `ALTER USER`, the private key PKCS#8 PEM so it goes straight into the Snowflake driver. Both
+    shapes are dictated by Snowflake, not by the store, which is why they sit here.
+  - **Get / store / rotate operations** over the interface, plus an **in-memory TTL cache** in front
+    of every backend with lazy eviction, keyed by path, invalidated on every write and rotation. The
+    cache is core rather than per-backend so no backend can forget it and every backend inherits the
+    same freshness semantics; without it a store round-trip lands on every reconcile of every account.
+  - **Error classification, stated entirely in terms of the sentinels.** `ErrNotFound` on a read and a
+    path that cannot be legally constructed are **user errors** — a CRD naming an account whose
+    credentials do not exist, or identifiers that cannot form a path, are both fixed by editing the
+    CRD. `ErrDenied`, `ErrUnavailable`, `ErrPendingDeletion`, `ErrAlreadyExists` and any unclassified
+    store fault are **system errors** carrying 001's incident IDs, because no CRD edit reaches them.
+    Which vendor response produces which sentinel is 003-a's problem; this spec never sees a vendor
+    code.
+  - **An in-repo in-memory `Backend` for tests**, exported from `internal/secrets` — not hidden in a
+    `_test.go` file, because 004, 009 and 010 must import it and a fake in a test file is invisible
+    outside its own package. A map plus per-method injectable failures so a caller can force every
+    sentinel above. This is what keeps the rest of the tree buildable and testable with no AWS account
+    and no SDK.
+- Out of scope: any concrete store and any vendor SDK — `go.mod` gains no AWS dependency in this spec;
+  constructing or selecting a backend (`cmd/provider/main.go`, per decision 7); and pushing a rotated
+  public key to Snowflake (`ALTER USER … SET RSA_PUBLIC_KEY`), which needs the pool that does not
+  exist yet — the caller does it once 004 lands.
 - Appendix B X1 note: once a tenant holds `ACCOUNTADMIN` they can drop or re-key the `platform`
   user, locking the platform out of the account. Record this as a known gap pending Snowflake
   Organization Policies.
+
+## Spec 003-a — `003-a-aws-secrets-backend.md`
+
+- Package: `internal/secrets/aws/`. Implements 003's `Backend` against AWS Secrets Manager — the
+  reference backend for design 3.11.1. Depends on: 001, 002, 003. Nothing depends on it.
+- Why a letter and not 004: it introduces no platform concept and no new consumer. It is one
+  implementation of an interface that already exists, and per decision 7 it must be replaceable
+  without renumbering anything downstream. It is written and implemented immediately after 003 — the
+  split is about replaceability, not about deferring work, since 003's fake keeps tests green but no
+  provider can actually reach Snowflake until this lands.
+- Scope:
+  - **SDK client construction**: `aws-sdk-go-v2` plus `service/secretsmanager`. This is the only spec
+    in the tree that adds an AWS dependency to `go.mod`. Region comes from 002's `AWS_REGION` and an
+    empty region is a user error from the constructor, so a mis-set ConfigMap fails at startup rather
+    than on the first reconcile. Credentials come from the SDK's default chain and nowhere else, so
+    IRSA in-cluster and `AWS_PROFILE` locally are the same code path. The constructor makes no API
+    call.
+  - **Create-vs-update semantics**, mapped onto AWS's two distinct APIs: `Create` is `CreateSecret`
+    and never `PutSecretValue`, so a collision is reported by AWS atomically rather than silently
+    overwriting a live tenant's key; `Update` is `PutSecretValue` on an existing secret, which adds a
+    version and leaves the previous one reachable as `AWSPREVIOUS` — the property that makes a botched
+    rotation survivable.
+  - **Soft delete and the recovery window**: `DeleteSecret` is always called *without*
+    `ForceDeleteWithoutRecovery`, leaving the default 30-day window. This backend never calls
+    `RestoreSecret` automatically — resurrecting a credential the platform deliberately retired is an
+    operator's decision, not a reconcile's. `ErrPendingDeletion` is detected via `DescribeSecret`'s
+    non-nil `DeletedDate`, which is what makes "a `Create` onto a path whose predecessor is still in
+    its window" legible instead of looking like a random conflict.
+  - **Error-code mapping — the only place vendor codes appear in the repository**:
+    `ResourceNotFoundException` → `ErrNotFound`; `ResourceExistsException` → `ErrAlreadyExists`;
+    `DescribeSecret` with a `DeletedDate` → `ErrPendingDeletion`; `AccessDeniedException`,
+    `InvalidClientTokenId`, `ExpiredToken`, `UnrecognizedClientException` → `ErrDenied`;
+    `ThrottlingException`, `InternalServiceErrorException`, request timeouts and connection failures →
+    `ErrUnavailable`; anything else is returned as-is for 003 to treat as a permanent fault. This spec
+    makes **no** user/system classification decision of its own — it emits sentinels and 003
+    classifies them.
+  - **IAM policy expectations for 3.11.1**, documented rather than shipped: the resource ARN patterns
+    the controller's role must be granted per path prefix
+    (`arn:aws:secretsmanager:<region>:<account>:secret:snowflake/tenant/<org>/*`, with the org-admin
+    path separately so org credentials can be granted more narrowly than tenant ones). Two facts the
+    spec must state because both are easy to get wrong and neither fails loudly: ASM appends a random
+    six-character suffix to every secret ARN, so a policy resource must end in `-??????` or `*` or it
+    matches nothing; and the controller's role is **not** per-tenant scoped — one controller serves
+    every namespace — so path-based isolation here defends against the controller constructing a wrong
+    path, not against a compromised controller. 3.11.2's OIDC path exists precisely because that
+    second guarantee is the weaker one.
+  - **Integration-test requirements**: these tests are the only place an AWS account is needed, they
+    run under `make test-integration` only (skipped by `-short`), and they are driven by `.env`
+    (`AWS_REGION`, `AWS_PROFILE`, `SNOWFLAKE_TEST_TENANT`, `SNOWFLAKE_TEST_ACCOUNT`). They must create
+    and clean up under a dedicated test path prefix, and they must account for the recovery window: a
+    test that deletes and immediately recreates the same path hits `ErrPendingDeletion`, so either
+    every run uses a unique path or cleanup — and only cleanup — uses `ForceDeleteWithoutRecovery`. The
+    error-mapping tests need no AWS account; they run against a fake of the `secretsmanager` API
+    surface, which is what keeps the mapping table covered in CI.
+- Out of scope: path construction, credential encoding, caching, keypair generation and the
+  user/system classification policy (all 003); any other backend; backend selection
+  (`cmd/provider/main.go`); and the IAM policy as a deployable artifact — ops owns that, this spec
+  documents the grants it requires.
+- Open question for this spec: whether `CreateSecret` should pass a customer-managed `KmsKeyId` and
+  ops-defined tags. AWS-managed encryption and no tags are adequate for v1alpha1, but if ops needs
+  either for key rotation or cost attribution, this is where it lands — and `KmsKeyId` would become
+  another 002 field carried but not interpreted.
 
 ## Spec 004 — `004-connection-pooling.md`
 
@@ -159,19 +332,22 @@ Verified: every "Depends on" entry below is strictly lower-numbered.
   Depends on: 001, 002, 003.
 - Scope:
   - Pooled `*sql.DB` connections to Snowflake using **JWT keypair authentication**, with the private
-    key read through 003.
+    key read through 003's interface — never through a backend package, so the pool's tests run
+    against 003's in-memory fake.
   - **Two connection scopes, enforcing the privilege step-down of 3.11**: an org-admin connection
     used only for org-level operations (`CREATE ACCOUNT`, `DROP ACCOUNT`), and a
     per-tenant-account connection acting as that account's `platform` user for everything else. The
     point is to minimize blast radius — org credentials are restricted almost entirely to account
     creation and deletion.
-  - Pool keyed by `(org, namespace, account)` — the same tuple as the ASM secret path.
+  - Pool keyed by `(org, namespace, account)` — the same tuple as 003's tenant secret path.
   - Host construction honoring the PrivateLink flag from 002.
   - Session setup on checkout (`USE ROLE` and similar) plus a health probe, both using the raw
     driver.
   - Connection lifecycle: idle eviction, maximum lifetime, concurrency-safe checkout.
-- **Hard rule to write into the spec**: this package must not import
-  `internal/snowflake/statement`, otherwise 004 → 005 → 004.
+- **Hard rules to write into the spec**: this package must not import
+  `internal/snowflake/statement`, otherwise 004 → 005 → 004; and it must not import
+  `internal/secrets/aws`, or any other backend package — it takes 003's interface as a constructor
+  parameter, which is what keeps a pool test from needing an AWS account.
 - Out of scope: statement semantics and error decoration (005).
 
 ## Spec 005 — `005-statement-execution.md`
@@ -345,8 +521,11 @@ Verified: every "Depends on" entry below is strictly lower-numbered.
 - Package: `internal/account/modules/account/`. Covers design 3.6 step 1.
   Depends on: 003, 004, 005, 006, 009.
 - Scope:
-  - Generate the RSA keypair and **store it in ASM before** issuing `CREATE ACCOUNT`, so that a
-    failure cannot orphan an account whose credentials were never persisted.
+  - Generate the RSA keypair and **store it through 003 before** issuing `CREATE ACCOUNT`, so that a
+    failure cannot orphan an account whose credentials were never persisted. Use 003's create
+    operation, not its update operation: a re-run that finds credentials already at the path must fail
+    loudly rather than replace the key a live account authenticates with. Which store is behind 003 is
+    not this module's business — 003-a today.
   - `CREATE ACCOUNT '<resolved-name>' ADMIN_NAME='platform'
     ADMIN_RSA_PUBLIC_KEY='<generated>' ADMIN_USER_TYPE='SERVICE' EDITION='ENTERPRISE'
     REGION='<region-from-crd>' COMMENT='<description-from-crd>'`, issued over the **org-admin**
@@ -565,6 +744,9 @@ Verified: every "Depends on" entry below is strictly lower-numbered.
     quota (016). Note that 3.2's diagram shows identity before network; identity requests are emitted
     early and are non-blocking, so the import step's position is flexible while request emission
     happens alongside bootstrapping per 4.3.
+  - Not here: the secret backend. It is constructed in `cmd/provider/main.go` from 002's
+    `secretsBackend` before any controller is set up, and injected (decision 7). This spec wires
+    modules, not infrastructure.
   - **The validation phase**, in order: guardrails (008) → approved exceptions on rejection (008) →
     the region's `available` gate (007) → quota admission (016) → immutability, which is mostly
     enforced by CEL in 006.
@@ -618,13 +800,19 @@ Verified: every "Depends on" entry below is strictly lower-numbered.
 
 - **3.11.2 OIDC** (a design TODO). An optional additional authentication path: a per-namespace
   Kubernetes ServiceAccount whose `TokenRequest` JWT maps to a `PLATFORM_OIDC` Snowflake user via the
-  `sub` claim, avoiding an ASM read per connection, with the ASM keypair remaining as a fallback. It
-  is blocked on two unresolved questions: the precise fallback trigger, and the cluster-scoped RBAC
-  model that would let the controller mint tokens across every tenant namespace. It would also add an
-  org-level issuer/JWKS entry to 007's schema and a ServiceAccount lifecycle.
+  `sub` claim, avoiding a secret-store read per connection, with the keypair stored through 003
+  remaining as a fallback. It is blocked on two unresolved questions: the precise fallback trigger, and
+  the cluster-scoped RBAC model that would let the controller mint tokens across every tenant
+  namespace. It would also add an org-level issuer/JWKS entry to 007's schema and a ServiceAccount
+  lifecycle.
 - **3.10's serverless and AI spend cap** (a design TODO) — see spec 016.
 - Both take the next free number when their TODO closes, rather than reserving a forward reference
   now.
+- **A second secret backend** is deliberately not planned. Decision 7 reserves its shape — `003-b`, in
+  `internal/secrets/vault/` — but not the work. Nothing in the tree needs it, and specifying a backend
+  nobody runs would fix 003's interface against an imagined store instead of a real one. The interface
+  earns its keep by staying small enough that adding one later is a self-contained job behind four
+  methods.
 - **Chapter 2 (Tenant Onboarding)** is out of scope entirely: it is ops tooling (bash today,
   Terraform later) that creates the namespace, labels, repository and ArgoCD application. The
   platform only *reads* the labels it produces (006).
