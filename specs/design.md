@@ -100,10 +100,10 @@ spec:
   environment: prod            # dev | prod — required, immutable (3.10.3); a Guardrails target key (3.3)
   # --- Share of the namespace's monthly credit allowance (3.9) ---
   creditQuota: 500
-  # --- GIAM groups to sync and bind to system roles ---
-  groups:
-    sync:                            # one group list per identity integration (3.7)
-      giam:                          # every group to import; must exist in the backplane
+  # --- GIAM groups to import and bind to system roles ---
+  identityIntegration:
+    groups:                          # one group list per identity integration (3.7)
+      giam:                          # every group to import; key is free-form, not part of the schema
         - XYZ_DATA_ENGINEERS
         - XYZ_DEVELOPERS
         - XYZ_ANALYSTS
@@ -221,7 +221,7 @@ guardrails:
     # constraints: Gates user input.
     constraints:
       accountName: "^[a-z][a-z0-9-]{2,56}$"
-      groupNames: "^[A-Z0-9_]+$"            # every group name under groups (3.7)
+      groupNames: "^[A-Z0-9_]+$"            # every group name under identityIntegration.groups (3.7)
       maxCreditQuota: 1000                  # ceiling for a single account's creditQuota
 
       allowedRegions:
@@ -413,28 +413,28 @@ ALTER ACCOUNT SET NETWORK_POLICY = 'PLATFORM_ACCOUNT_POLICY';
 
 Identity, like networking, is integrated globally rather than per account. An identity integration continuously feeds enterprise users and groups into a single Organization User Group backplane in Snowflake, independent of any `SnowflakeAccount` CRD — today that is one integration, an Azure Entra ID Enterprise App SCIM sync carrying GIAM groups. Further integrations feed the same backplane; an integration determines where a group comes from, not where it lands. A sync makes its groups available org-wide, but a group must still be explicitly imported into an account before it can be used there.
 
-That import is what the CRD's `groups` field drives, and it splits the two questions that were previously conflated: which groups exist in the account, and which of them carry a system role.
+That import is what the CRD's `identityIntegration` field drives, and it splits the two questions that were previously conflated: which groups exist in the account, and which of them carry a system role.
 
-  * **`sync`:** The groups to bring into the account, listed per identity integration. Each key names an integration and is free-form, not schema — `giam` is the only one configured today. Every group listed must already exist in the backplane. Importing a group creates a matching role in the account, and its members are granted that role automatically.
+  * **`groups`:** The groups to bring into the account, listed per identity integration. Each key names an integration and is free-form, not schema — `giam` is the only one configured today. Every group listed must already exist in the backplane. Importing a group creates a matching role in the account, and its members are granted that role automatically.
   * **`roleBindings`:** Binds Snowflake system roles to imported groups — each key is a literal system role name, each value the group that receives it. The set of keys is open: `USERADMIN`, `SECURITYADMIN` or any other system role may be bound without a change to this spec. Three rules apply:
       * **`ACCOUNTADMIN` is required.** Without it nobody could log in to the freshly created account and administer it, since the `platform` service user is the only other principal that exists (3.6) and it is not a human login path. A CRD omitting it is rejected.
-      * **Every value must appear somewhere under `sync`.** A `roleBindings` entry naming a group that is not being imported by any integration is a validation error, since there would be no role in the account to grant to.
+      * **Every value must appear somewhere under `groups`.** A `roleBindings` entry naming a group that is not being imported by any integration is a validation error, since there would be no role in the account to grant to.
       * **One group per role.** A given system role is granted to exactly one group; listing the same role key twice is a validation error. Other groups needing the same privileges receive them through the role hierarchy inside the account, which is the tenant's own concern.
 
 ```sql
--- 1. Import every group under groups.sync: every group of every integration's list.
--- Iterate deterministically — integration keys in sorted order, each list in the order
--- written — so repeated reconciles emit the same statements in the same sequence. This is
--- the only statement that creates roles in the account; the `roleBindings` entries below
--- only bind to them.
-ALTER ACCOUNT ADD ORGANIZATION USER GROUP '<group-name-from-groups.sync>';
--- ... repeated for every group under groups.sync, across all integrations
+-- 1. Import every group under identityIntegration.groups: every group of every
+-- integration's list. Iterate deterministically — integration keys in sorted order, each
+-- list in the order written — so repeated reconciles emit the same statements in the same
+-- sequence. This is the only statement that creates roles in the account; the
+-- `roleBindings` entries below only bind to them.
+ALTER ACCOUNT ADD ORGANIZATION USER GROUP '<group-name-from-identityIntegration.groups>';
+-- ... repeated for every group under identityIntegration.groups, across all integrations
 
--- 2. Grant the system roles named in groups.roleBindings — one statement per entry, the
--- key used verbatim as the system role — so members of the referenced group inherit
--- it through the role hierarchy. ACCOUNTADMIN is always among these (see above).
+-- 2. Grant the system roles named in identityIntegration.roleBindings — one statement per
+-- entry, the key used verbatim as the system role — so members of the referenced group
+-- inherit it through the role hierarchy. ACCOUNTADMIN is always among these (see above).
 GRANT ROLE <role-name-from-roleBindings-key> TO ROLE "<group-name-from-roleBindings-value>";
--- ... repeated for each entry in groups.roleBindings
+-- ... repeated for each entry in identityIntegration.roleBindings
 ```
 
 **TODO:** Either all users and groups are synced by the Azure Entra ID Enterprise App SCIM sync, or the controller must trigger the addition of all groups in the CRD to that Enterprise App.
@@ -540,11 +540,12 @@ CREATE SECURITY INTEGRATION PLATFORM_OIDC
 
 -- Create the service user the token maps to. Its LOGIN_NAME is the expected `sub`
 -- claim, so only a token minted for this namespace and account matches it. No new
--- privileges are introduced: it is granted the *existing* role created by importing
--- the group named in roleBindings.ACCOUNTADMIN (3.7), which is always present.
+-- privileges are introduced: it is granted the *existing* role created by importing the
+-- group named in identityIntegration.roleBindings.ACCOUNTADMIN (3.7), which is always
+-- present.
 CREATE USER PLATFORM_OIDC TYPE = SERVICE
   LOGIN_NAME = '<sub-claim-derived-from-namespace-and-account>';
-GRANT ROLE "<group-name-from-roleBindings.ACCOUNTADMIN>" TO USER PLATFORM_OIDC;
+GRANT ROLE "<group-name-from-identityIntegration.roleBindings.ACCOUNTADMIN>" TO USER PLATFORM_OIDC;
 ```
 
 **Isolation:** Cross-tenant access is rejected by Snowflake itself, not merely by client-side path construction. Each tenant account's `PLATFORM_OIDC` integration only maps its own namespace-and-account-derived `sub` to a valid user; a token minted for namespace B's ServiceAccount, presented to namespace A's account, matches no mapped user there and is rejected during Snowflake's own signature-and-claims verification — before any SQL executes. This is a stronger guarantee than the ASM path check above, which relies on the calling code correctly constructing a path string: here the Kubernetes API server cryptographically signs the `sub` claim, and Snowflake independently verifies it.
