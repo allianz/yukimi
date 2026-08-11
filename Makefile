@@ -31,7 +31,7 @@ GOLANGCILINT_VERSION = 2.1.2
 # ====================================================================================
 # Setup Images
 
-IMAGES = provider-snowflake
+IMAGES = yukimi
 -include build/makelib/imagelight.mk
 
 # Set Docker registry for local development
@@ -44,12 +44,12 @@ XPKG_REG_ORGS ?= xpkg.upbound.io/crossplane
 # NOTE(hasheddan): skip promoting on xpkg.upbound.io as channel tags are
 # inferred.
 XPKG_REG_ORGS_NO_PROMOTE ?= xpkg.upbound.io/crossplane
-XPKGS = provider-snowflake
+XPKGS = yukimi
 -include build/makelib/xpkg.mk
 
 # NOTE(hasheddan): we force image building to happen prior to xpkg build so that
 # we ensure image is present in daemon.
-xpkg.build.provider-snowflake: do.build.images
+xpkg.build.yukimi: do.build.images
 
 fallthrough: submodules
 	@echo Initial setup complete. Running make again . . .

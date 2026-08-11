@@ -10,32 +10,22 @@ This is a Crossplane provider for Snowflake that enables self-service provisioni
 
 ### Directory Structure
 ```
-apis/                     # Kubernetes API types
-├── v1alpha1/            # Provider config & usage types
-├── infra/v1alpha1/      # Infrastructure resource types (e.g., SnowflakeAccount)
-└── snowflake.go         # API registration
+apis/
+├── v1alpha1/            # Provider config & usage types (currently registers no API types)
+└── yukimi.go            # API group registration
 
 internal/
-├── controller/          # Controller implementations
-│   ├── snowflakeaccount/ # SnowflakeAccount controller
-│   ├── snowflakeexecution/ # SnowflakeExecution controller
-│   └── snowflaketemplate/ # SnowflakeTemplate controller
-├── snowflake/
-│   ├── pool/           # Connection pool management with JWT auth
-│   └── statement/      # SQL execution with position-aware errors
-├── secrets/            # AWS Secrets Manager with in-memory caching
-├── template/           # Template validation (naming, version chain, SQL)
-├── execution/          # SQL execution orchestration (inline & template modes)
-├── errors/             # User error types (NewUserError, IsUserError)
-├── logger/             # Operation-scoped logging and error handling (Handle, incident IDs)
-├── features/           # Feature flags
-└── version/            # Version information
+├── controller/          # Controller registration (per-resource controllers are added here as specs land)
+├── errors/              # User error types (NewUserError, IsUserError)
+├── logger/              # Operation-scoped logging and error handling (Handle, incident IDs)
+└── version/             # Version information
 
-cmd/provider/           # Main provider binary
-package/               # Crossplane package manifests & CRDs
-examples/              # Example resource manifests
-hack/helpers/          # Code generation templates
+cmd/provider/            # Main provider binary
+package/                 # Crossplane package manifests & CRDs
+hack/helpers/            # Code generation templates
 ```
+
+Only what exists today is shown above. Planned package locations for not-yet-implemented specs are listed in the table below.
 
 ### Specification Documents
 
@@ -127,7 +117,7 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
     if err != nil {
         retryErr := log.Handle(err)
         cr.SetConditions(xpv1.Unavailable().WithMessage(retryErr.Error()))
-        return managed.ExternalObservation{}, retryErr
+        return managed.ExternalObservation{}, nil // nil avoids retry flood; the condition already reports the failure
     }
     // ... success path
 }
@@ -135,11 +125,11 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
 
 ### Error Classification
 
-- **User Errors** (TypeUser): Configuration mistakes users can fix by editing their CRD
+- **User Errors**: Configuration mistakes users can fix by editing their CRD
   - Logged at Debug level (only visible with --debug flag)
   - Examples: invalid region format, malformed CIDR, missing required field
 
-- **System Errors** (TypeSystem): Infrastructure failures requiring operator intervention
+- **System Errors**: Infrastructure failures requiring operator intervention
   - Logged at Info level (always visible to operators)
   - Include unique 8-character incident IDs for correlation
   - Examples: Snowflake API unreachable, AWS Secrets Manager timeout

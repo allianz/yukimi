@@ -293,10 +293,10 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
 
     result, err := e.provisioner.Observe(ctx, cr)
     if err != nil {
-        // Single call: classifies, logs, and returns sanitized retry error
+        // Single call: classifies, logs, and returns the sanitized message for the condition
         retryErr := log.Handle(err)
         cr.SetConditions(xpv1.Unavailable().WithMessage(retryErr.Error()))
-        return managed.ExternalObservation{}, retryErr
+        return managed.ExternalObservation{}, nil // nil avoids retry flood; the condition already reports the failure
     }
 
     log.Debug("observed current state")
