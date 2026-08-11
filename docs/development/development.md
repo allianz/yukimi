@@ -66,36 +66,41 @@ These tools are downloaded to `.cache/tools/`.
 Add a new managed type using the scaffolding system:
 
 ```bash
-export type=MyType            # CamelCase (e.g., Database, User, Role)
-make provider.addtype provider=Snowflake group=infra kind=${type}
+export type=SnowflakeAccount   # CamelCase kind, per specs/design.md (e.g. SnowflakeAccount, SnowflakeReplication)
+make provider.addtype provider=Snowflake group=base kind=${type}
 ```
+
+Per `specs/design.md`, resource kinds fall into two API groups, not a single `infra` group:
+- `base.snowflake.yukimi.io` — the platform's own managed resources: `SnowflakeAccount`, `SnowflakeReplication`, `SnowflakeDeletionRequest` (use `group=base` as above)
+- `base.identity.yukimi.io` — `IdentitySyncRequest` only. This one is *emitted* by this platform's controller but *fulfilled* by a company-specific controller outside this repo, so scaffold it as its own group (`group=identity`) and expect no reconciler logic for the fulfilling side.
 
 ### Post-Scaffolding Tasks
 
 After running the scaffolding command:
 
 1. **Update API registration**:
-   - Only once for every api group. Most likely can be skipped. 
-   - Edit `apis/snowflake.go` to register the new API group. 
-   - Add imports for all api-groups, e.g. `import(...infrav1alpha1 "github.com/crossplane/provider-snowflake/apis/infra/v1alpha1")`
-   - Add all api-groups to init() function, e.g. `append(...infrav1alpha1.SchemeBuilder.AddToScheme)
+   - Only once for every api group. Most likely can be skipped.
+   - Edit `apis/yukimi.go` to register the new API group.
+   - Add imports for all api-groups, e.g. `import(...basev1alpha1 "github.com/allianz/yukimi/apis/base/v1alpha1")`
+   - Add all api-groups to init() function, e.g. `append(...basev1alpha1.SchemeBuilder.AddToScheme)`
+   - Today only `apis/v1alpha1/` exists, holding `ProviderConfig`/`ClusterProviderConfig` under the `snowflake.yukimi.io` group; a new resource's types land in a new versioned directory named for its group, e.g. `apis/base/v1alpha1/` for `base.snowflake.yukimi.io`.
 
 2. **Update controller registration**:
    - Run `make generate`
-   - Edit `internal/controller/snowflake.go` to register the new controller
-   - Add import for controller, e.g. `import(..."github.com/crossplane/provider-snowflake/internal/controller/snowflakeaccount")`
-   - Add controller setup to setup function, e.g. 
+   - Edit `internal/controller/yukimi.go` to register the new controller
+   - Add import for controller, e.g. `import(..."github.com/allianz/yukimi/internal/controller/snowflakeaccount")`
+   - Add controller setup to the `SetupGated` function, e.g.
       ```go
-      func Setup(mgr ctrl.Manager, o controller.Options) error {
+      func SetupGated(mgr ctrl.Manager, o controller.Options) error {
       for _, setup := range []func(ctrl.Manager, controller.Options) error{
          config.Setup,
          snowflakeaccount.Setup,
-      } 
+      } {
       ```
    - Run `go fmt ./...`
 
 3. **Implement controller logic**:
-   - Review generated files in `apis/infra/v1alpha1/`
+   - Review generated files in the new API group's directory (e.g. `apis/base/v1alpha1/`)
    - Implement business logic in `internal/controller/{newtype}/`
    - Replace sample implementations with actual Snowflake API calls
 
@@ -116,20 +121,7 @@ The following files are auto-generated and should never be manually edited:
 
 ## Project Structure
 
-```
-├── apis/                    # Kubernetes API types
-│   ├── v1alpha1/           # Provider config & usage types
-│   ├── infra/v1alpha1/     # Infrastructure resource types
-│   └── snowflake.go        # API registration
-├── internal/
-│   ├── controller/         # Controller implementations
-│   ├── features/          # Feature flags
-│   └── version/           # Version information
-├── cmd/provider/          # Main provider binary
-├── package/              # Crossplane package manifests & CRDs
-├── examples/             # Example resource manifests
-└── hack/helpers/         # Code generation templates
-```
+See CLAUDE.md's "Directory Structure" section for the canonical, up-to-date project layout.
 
 ## Local Development Workflow
 

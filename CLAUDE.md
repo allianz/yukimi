@@ -43,46 +43,42 @@ hack/helpers/          # Code generation templates
 
 Each `internal/` package has a corresponding numbered spec in `specs/`. The spec is the authoritative source for that package — before implementing or modifying code in a package, always read its spec first.
 
+Specs are written and implemented one at a time in ascending order, so **a spec may depend only on specs numbered strictly below it** — the code for higher-numbered specs does not exist yet. See `specs/roadmap.md` for the detailed planned scope of each spec not yet written, plus the ordering rationale and the decisions behind it.
+
 | Spec | Package | Description |
 |------|---------|-------------|
-| `001-error-and-logging.md` | `internal/errors/` + `internal/logger/` | Error handling system (user vs system errors, incident IDs) and operation-scoped logging |
-| `002-secrets-handling.md` | `internal/secrets/` | AWS Secrets Manager integration with caching |
-| `003-connection-pooling.md` | `internal/snowflake/pool/` | Connection pool management with JWT auth |
-| `004-statement-execution.md` | `internal/snowflake/statement/` | SQL execution with position-aware errors |
-| `005-provider-config.md` | `internal/controller/providerconfig/` + `internal/connection/` | ProviderConfig singleton initialization |
-| `006-provider-governance.md` | `internal/governance/` | ProviderGovernance validation |
-| `007-snowflake-account.md` | `internal/account/` + `internal/controller/snowflakeaccount/` | SnowflakeAccount provisioning orchestration |
-| `008-account-module.md` | `internal/account/modules/account/` | Account creation module |
-| `009-backplane-module.md` | `internal/account/modules/backplane/` | Backplane integration module |
-| `010-parameter-module.md` | `internal/account/modules/parameter/` | Parameter enforcement module |
-| `011-network-module.md` | `internal/account/modules/network/` | Network policy module |
-| `012-identity-module.md` | `internal/account/modules/identity/` | Identity and SCIM module |
-| `013-snowflake-template.md` | `internal/template/` + `internal/controller/snowflaketemplate/` | Template validation |
-| `014-snowflake-execution-foundation.md` | `internal/execution/` + `internal/controller/snowflakeexecution/` | SnowflakeExecution controller and orchestration |
-| `015-snowflake-inline-execution.md` | `internal/execution/` | Inline SQL execution mode |
-| `016-snowflake-template-execution.md` | `internal/execution/` | Template-based execution mode |
+| `001-error-and-logging.md` | `internal/errors/` + `internal/logger/` | User vs system errors, incident IDs, operation-scoped logging |
+| `002-provider-config.md` | `internal/config/` | Provider-wide settings loaded from a mounted ConfigMap |
+| `003-secrets-handling.md` | `internal/secrets/` | AWS Secrets Manager paths, RSA keypairs, caching |
+| `004-connection-pooling.md` | `internal/snowflake/pool/` | Pooled JWT keypair connections, org-admin vs per-account scopes |
+| `005-statement-execution.md` | `internal/snowflake/statement/` | SQL execution with position-aware errors and idempotency |
+| `006-snowflake-account-crd.md` | `apis/base/v1alpha1/` + `internal/tenant/` | SnowflakeAccount schema, account naming, namespace labels |
+| `007-backplane-config.md` | `internal/backplane/` | Per-region backplane inventory, parameters, allowlist |
+| `008-guardrails.md` | `internal/guardrails/` | Tenant input constraints, presets, approved exceptions |
+| `009-account-pipeline.md` | `internal/account/` | Module interface, outcomes, condition aggregation |
+| `010-account-module.md` | `internal/account/modules/account/` | `CREATE ACCOUNT` and platform user bootstrapping |
+| `011-parameter-module.md` | `internal/account/modules/parameter/` | Global and regional account parameter enforcement |
+| `012-network-module.md` | `internal/account/modules/network/` | Network rules and policies, baseline plus custom |
+| `013-auth-module.md` | `internal/account/modules/auth/` | SSO-only baseline and per-user auth exceptions |
+| `014-identity-sync-request.md` | `apis/identity/v1alpha1/` + `internal/identitysync/` | IdentitySyncRequest contract and emitter |
+| `015-identity-module.md` | `internal/account/modules/identity/` | Group import and system role bindings |
+| `016-quota.md` | `internal/quota/` | Credit quota admission, resource monitors, exhaustion |
+| `017-deletion-request.md` | `apis/base/v1alpha1/` + `internal/deletion/` | Deletion warrants (positive control) |
+| `018-snowflakeaccount-controller.md` | `internal/controller/snowflakeaccount/` | Module wiring, validation phase, deletion gate, reporting |
+| `019-replication.md` | `apis/base/v1alpha1/` + `internal/replication/` | SnowflakeReplication setup, auto-repair, manual failover |
+
 
 ## Crossplane Controller Types
 
 This provider uses the standard Crossplane managed resource reconciler (`crossplane-runtime`). Each resource type has its own controller in `internal/controller/`, registered in `internal/controller/snowflake.go`. There are three distinct controller patterns that differ in how they handle external state.
 
-### Validation-Only Controllers (e.g., SnowflakeTemplate)
+### Validation-Only Controllers
 
 - No external resource to manage — all logic lives in Observe
 - Create, Update, and Delete are no-ops
 - Observe always returns `ResourceExists: true` and `ResourceUpToDate: true` so the reconciler never calls Create or Update
 - Only run validation when the spec has changed (`ObservedGeneration != Generation`); skip validation and return early otherwise to save CPU cycles
 - In Observe, detect deletion by checking `GetDeletionTimestamp()` and return `ResourceExists: false` to release the finalizer
-
-### Execute-Once Controllers Without Drift Detection (e.g., SnowflakeExecution)
-
-- External state is created but never queried — no drift detection
-- Observe tracks existence via status fields (e.g., `LastExecutionTime != nil`) rather than querying an external system
-- Up-to-date check uses generation tracking: resource is up-to-date when `ObservedGeneration == Generation`
-- **Critical**: Create must explicitly persist status with `kube.Status().Update()` to prevent re-execution loops — without this, the next Observe would see no status and trigger Create again
-- Deletion uses a `DeletionCompleted` status flag to prevent re-execution of cleanup SQL
-- Custom finalizer ensures cleanup SQL runs before the resource is removed
-- Errors in Create and Delete return `retryErr` so the framework handles conditions
 
 ### Standard Controllers with External State (e.g., SnowflakeAccount)
 
@@ -98,31 +94,7 @@ This provider uses the standard Crossplane managed resource reconciler (`crosspl
 - **Error handling in Observe**: create a `Logger` at method start, call `log.Handle(err)` to get `retryErr`, set `xpv1.Unavailable().WithMessage(retryErr.Error())`, and return nil. Returning nil prevents exponential backoff retry loops for user-fixable errors.
 - **Error handling in Create/Update/Delete**: call `log.Handle(err)` and return the result. The framework automatically sets conditions when these methods return an error, so the controller should not set conditions itself.
 
-## Accessing Snowflake Connections
 
-The provider uses singleton managers for secrets and connection pooling. Access them in your business logic and controllers:
-
-**Getting Connections in Resource Controllers**:
-```go
-// Get the pool manager instance
-poolMgr, err := pool.GetInstance()  // Returns error if not initialized
-if err != nil {
-    return err
-}
-
-// Get appropriate connection for your operation
-orgDB, _ := poolMgr.OrgAdminPool(ctx)      // Org-level operations
-tenantDB, _ := poolMgr.TenantPool(ctx, accountName, namespace)  // Tenant operations
-
-// Optional: Access secrets manager directly
-secretsMgr, err := secrets.GetInstance()  // Returns error if not initialized
-```
-
-**Initialization**: The ProviderConfig controller initializes these singletons at startup:
-1. `secrets.Initialize(creds, cacheTTL, logger)` - AWS Secrets Manager client with in-memory cache
-2. `pool.Initialize(secretRetriever, providerConfig, logger)` - Connection pool manager
-
-Once initialized, all controllers can safely call `GetInstance()` to access these shared resources.
 ## Error Handling
 
 The project uses a standardized error handling system split across two packages: `internal/errors` provides user error types (imported by business logic), and `internal/logger` provides operation-scoped logging plus the `Handle` entry point (imported by controllers). `internal/logger` depends on `internal/errors`; never the reverse.
@@ -130,7 +102,7 @@ The project uses a standardized error handling system split across two packages:
 ### Usage in Business Logic
 
 ```go
-import "github.com/crossplane/provider-snowflake/internal/errors"
+import "github.com/allianz/yukimi/internal/errors"
 
 // User error - configuration mistake
 if !regionPattern.MatchString(region) {
@@ -148,7 +120,7 @@ if err := snowflakeClient.Execute(sql); err != nil {
 ### Usage in Controllers
 
 ```go
-import "github.com/crossplane/provider-snowflake/internal/logger"
+import "github.com/allianz/yukimi/internal/logger"
 
 func (e *external) Observe(ctx context.Context, mg resource.Managed) (managed.ExternalObservation, error) {
     log := logger.New(e.logger, cr.Namespace, "SnowflakeAccount", cr.Name, logger.OpObserve)
@@ -233,19 +205,20 @@ make dev-clean          # Clean up local development cluster
 
 ### Adding New Resource Types
 - Uses `.yukimi.io` domain
-- API groups: `snowflake.yukimi.io` (core) and `infra.snowflake.yukimi.io` (infrastructure resources)
+- API groups (per specs/design.md): `base.snowflake.yukimi.io` (SnowflakeAccount, SnowflakeReplication, SnowflakeDeletionRequest) and `base.identity.yukimi.io` (IdentitySyncRequest — emitted by this platform's controller, fulfilled by a company-specific controller outside this repo)
+- Today's code has not yet migrated: the only group currently registered is `snowflake.yukimi.io`, holding `ProviderConfig`/`ClusterProviderConfig` in `apis/v1alpha1/`
 - All APIs currently at v1alpha1 version
 
 Use the scaffolding system instead of manual creation:
 ```bash
-export type=MyType      # CamelCase (e.g., Database, User, Role)
-make provider.addtype provider=Snowflake group=infra kind=${type}
+export type=SnowflakeAccount   # CamelCase kind, per specs/design.md
+make provider.addtype provider=Snowflake group=base kind=${type}
 make reviewable         # Regenerate and validate
 ```
 
 After scaffolding:
-1. Update `apis/snowflake.go` to register the new API group
-2. Update `internal/controller/snowflake.go` to register the new controller
+1. Update `apis/yukimi.go` to register the new API group
+2. Update `internal/controller/yukimi.go` to register the new controller
 3. Implement the actual controller logic in the generated files
 
 #### Generated Files (Never Edit)
@@ -261,64 +234,6 @@ All files matching `zz_generated.*` are auto-generated:
 - Controller scaffolding uses templates in `hack/helpers/controller/`
 - Templates support environment variables: `PROVIDER`, `GROUP`, `KIND`, `APIVERSION`
 
-## Testing Strategy
-
-### Mock Tests (Unit)
-Mock tests run without external dependencies using sqlmock:
-```go
-func TestMyFeature_Unit(t *testing.T) {
-    // 1. Create mock database
-    mockDB, mock, _ := sqlmock.New()
-    defer mockDB.Close()
-
-    // 2. Set SQL expectations
-    mock.ExpectExec("CREATE WAREHOUSE").WillReturnResult(sqlmock.NewResult(0, 1))
-
-    // 3. Initialize pool manager singleton with mock
-    pool.InitializeForMockTesting(mockDB)
-    defer pool.ResetForTesting()
-
-    // 4. Test business logic
-    executor := execution.NewInlineExecutor(logging.NewNopLogger())
-    result, err := executor.Apply(ctx, cr)
-
-    // 5. Verify expectations
-    if err := mock.ExpectationsWereMet(); err != nil {
-        t.Errorf("unfulfilled expectations: %s", err)
-    }
-}
-```
-
-### Integration Tests
-Integration tests run against real AWS Secrets Manager and Snowflake without Kubernetes.
-
-**Requirements:**
-- Test function names MUST contain "Integration" (e.g., `TestMyFeature_Integration`, `TestIntegration_FullLifecycle`)
-- All integration tests MUST include the `testing.Short()` guard at the start to skip when running unit tests
-
-```go
-func TestMyFeature_Integration(t *testing.T) {
-    if testing.Short() {
-        t.Skip("Skipping integration test in short mode")
-    }
-
-    _ = godotenv.Load("../../.env")
-
-    // 1. Initialize secrets manager (reads AWS_REGION, AWS_PROFILE from env)
-    secrets.InitializeForIntegrationTesting()
-
-    // 2. Initialize pool manager (reads SNOWFLAKE_ORG, SNOWFLAKE_USE_PRIVATELINK from env)
-    pool.InitializeForIntegrationTesting()
-
-    // 3. Access Snowflake (org-level or tenant-level)
-    poolMgr, _ := pool.GetInstance()
-    tenantDB, _ := poolMgr.TenantPool(ctx,
-        os.Getenv("SNOWFLAKE_TEST_ACCOUNT"),
-        os.Getenv("SNOWFLAKE_TEST_TENANT"))
-
-    // Test logic validates against real AWS and Snowflake
-}
-```
 
 ### E2E Tests
 ```bash
@@ -330,10 +245,8 @@ make e2e.manual     # Against running 'make dev' in another terminal
 
 ### Example Manifests
 Reference manifests:
-- `examples/infra/snowflake-account.yaml` - SnowflakeAccount example
-- `cluster/manifests/provider-config.yaml` - ProviderConfig template for production
 - `cluster/local/development-config.yaml` - ProviderConfig for local development
 
 ### General Reference Specs
-- `specs/product_design.md` - Product requirements, resource schemas, and behavior specifications
+- `specs/design.md` - Product requirements, resource schemas, and behavior specifications
 
