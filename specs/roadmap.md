@@ -53,10 +53,11 @@ Two consequences worth stating explicitly:
    from 4.3) is SnowflakeAccount-specific. Aggregation rules therefore live in spec 009 and
    reporting in spec 018.
 
-6. **Leave the inherited ProviderConfig boilerplate alone.** `apis/v1alpha1/types.go`,
+6. **Remove the inherited ProviderConfig boilerplate outright.** `apis/v1alpha1/types.go`,
    `internal/controller/config/` and the four `package/crds/` files that came from the Crossplane
-   provider template stay as they are; no spec touches them. Revisit only when a managed-resource
-   controller actually needs to resolve a config reference.
+   provider template have been deleted. Decision 2 already commits provider settings to a mounted
+   ConfigMap read by `internal/config/` (spec 002) — no CRD, no controller, no reconciler — so the
+   ProviderConfig path would never have been revisited. No spec depends on it.
 
 ## Why the ordering is acyclic
 
@@ -125,7 +126,7 @@ Verified: every "Depends on" entry below is strictly lower-numbered.
   - Validation of required fields, raising `errors.NewUserError` for missing or malformed values.
     Fail fast at startup rather than once per reconcile.
 - Out of scope: no CRD, no controller, no reconciler, no Kubernetes watch. This is not a Crossplane
-  ProviderConfig; the inherited ProviderConfig boilerplate is untouched (decision 6).
+  ProviderConfig; the inherited ProviderConfig boilerplate has been removed (decision 6).
 - Why it sits here: it is a leaf, and both 003 and 004 need values from it.
 
 ## Spec 003 — `003-secrets-handling.md`
@@ -229,10 +230,10 @@ Verified: every "Depends on" entry below is strictly lower-numbered.
     `department` (consumed by guardrail targeting in 008), `credit-quota` (consumed by 016), and
     `cost-center`. These are ops-owned and deliberately not CRD fields, so tenants cannot alter them.
   - `url.go`: `accountUrl` is `https://<org>-<resolved-name>.snowflakecomputing.com`.
-- **Blocker to fix first**: `hack/helpers/apis/GROUP_LOWER/APIVERSION/groupversion_info.go.tmpl`
-  hardcodes `.allianz.io` in both the `+groupName` marker and the `Group` constant, so
-  `make provider.addtype provider=Snowflake group=base` would emit `base.snowflake.allianz.io`
-  instead of `base.snowflake.yukimi.io`.
+- **Blocker resolved**: `hack/helpers/apis/GROUP_LOWER/APIVERSION/groupversion_info.go.tmpl` used
+  to hardcode `.allianz.io` in both the `+groupName` marker and the `Group` constant; it now emits
+  `.yukimi.io`, so `make provider.addtype provider=Snowflake group=base` correctly produces
+  `base.snowflake.yukimi.io`.
 - Open question for this spec: `cost-center` is read by nothing in design.md. Confirm with ops
   whether it belongs in the account `COMMENT` or as a Snowflake tag; otherwise document it as
   ops-only metadata.

@@ -17,11 +17,9 @@ apis/                     # Kubernetes API types
 
 internal/
 ├── controller/          # Controller implementations
-│   ├── providerconfig/  # ProviderConfig controller
 │   ├── snowflakeaccount/ # SnowflakeAccount controller
 │   ├── snowflakeexecution/ # SnowflakeExecution controller
 │   └── snowflaketemplate/ # SnowflakeTemplate controller
-├── connection/          # ProviderConfig business logic (validation, init, health)
 ├── snowflake/
 │   ├── pool/           # Connection pool management with JWT auth
 │   └── statement/      # SQL execution with position-aware errors
@@ -206,7 +204,7 @@ make dev-clean          # Clean up local development cluster
 ### Adding New Resource Types
 - Uses `.yukimi.io` domain
 - API groups (per specs/design.md): `base.snowflake.yukimi.io` (SnowflakeAccount, SnowflakeReplication, SnowflakeDeletionRequest) and `base.identity.yukimi.io` (IdentitySyncRequest — emitted by this platform's controller, fulfilled by a company-specific controller outside this repo)
-- Today's code has not yet migrated: the only group currently registered is `snowflake.yukimi.io`, holding `ProviderConfig`/`ClusterProviderConfig` in `apis/v1alpha1/`
+- Today's code has not yet migrated: `apis/v1alpha1/` (group `snowflake.yukimi.io`) currently registers no API types
 - All APIs currently at v1alpha1 version
 
 Use the scaffolding system instead of manual creation:
@@ -226,8 +224,6 @@ All files matching `zz_generated.*` are auto-generated:
 - `**/zz_generated.deepcopy.go` - Deep copy methods
 - `**/zz_generated.managed.go` - Managed resource interfaces
 - `**/zz_generated.managedlist.go` - Managed resource list types
-- `**/zz_generated.pc.go` - ProviderConfig interfaces
-- `**/zz_generated.pcu.go` - ProviderConfigUsage interfaces
 
 #### Templates
 - API scaffolding uses templates in `hack/helpers/apis/` with gomplate substitution
@@ -242,10 +238,6 @@ make e2e.manual     # Against running 'make dev' in another terminal
 ```
 
 ## Resources & References
-
-### Example Manifests
-Reference manifests:
-- `cluster/local/development-config.yaml` - ProviderConfig for local development
 
 ### General Reference Specs
 - `specs/design.md` - Product requirements, resource schemas, and behavior specifications

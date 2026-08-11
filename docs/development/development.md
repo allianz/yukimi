@@ -83,7 +83,7 @@ After running the scaffolding command:
    - Edit `apis/yukimi.go` to register the new API group.
    - Add imports for all api-groups, e.g. `import(...basev1alpha1 "github.com/allianz/yukimi/apis/base/v1alpha1")`
    - Add all api-groups to init() function, e.g. `append(...basev1alpha1.SchemeBuilder.AddToScheme)`
-   - Today only `apis/v1alpha1/` exists, holding `ProviderConfig`/`ClusterProviderConfig` under the `snowflake.yukimi.io` group; a new resource's types land in a new versioned directory named for its group, e.g. `apis/base/v1alpha1/` for `base.snowflake.yukimi.io`.
+   - Today only `apis/v1alpha1/` exists, under the `snowflake.yukimi.io` group, and it currently registers no API types; a new resource's types land in a new versioned directory named for its group, e.g. `apis/base/v1alpha1/` for `base.snowflake.yukimi.io`.
 
 2. **Update controller registration**:
    - Run `make generate`
@@ -93,7 +93,6 @@ After running the scaffolding command:
       ```go
       func SetupGated(mgr ctrl.Manager, o controller.Options) error {
       for _, setup := range []func(ctrl.Manager, controller.Options) error{
-         config.Setup,
          snowflakeaccount.Setup,
       } {
       ```
@@ -116,8 +115,6 @@ The following files are auto-generated and should never be manually edited:
 - `**/zz_generated.deepcopy.go` - Deep copy methods
 - `**/zz_generated.managed.go` - Managed resource interfaces
 - `**/zz_generated.managedlist.go` - Managed resource list types
-- `**/zz_generated.pc.go` - ProviderConfig interfaces
-- `**/zz_generated.pcu.go` - ProviderConfigUsage interfaces
 
 ## Project Structure
 
