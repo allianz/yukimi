@@ -25,15 +25,7 @@ Focus on WHAT, not HOW. Explain domain-specific concepts, data formats, or behav
 {Explanation of key concept}
 
 **Important**: {Critical requirement or constraint}
-
-## Technical Context
-
-**Language/Version**: {e.g., Go 1.23.0}
-**Primary Dependencies**: {e.g., Crossplane runtime v0.19+, AWS SDK for Go v2, Snowflake Go driver v1.18.1}
-**Storage**: {e.g., Kubernetes etcd (status persistence), AWS Secrets Manager (credentials), in-memory cache}
-**Testing**: {e.g., Go testing, sqlmock, integration tests with .env config}
-**Performance Goals**: {e.g., <100μs operation latency, zero allocations on happy path}
-**Constraints**: {e.g., thread-safe, idempotent operations, Crossplane reconciliation compatible}
+ 
 
 ## Public API
 
@@ -134,7 +126,7 @@ Format: **Question?** - Answer
 - **{Name}**: `{path}` - {Description}
 - **{Name}**: {URL} - {Description}
 
-
+<br/><br/><br/><br/>
 
 ================
 
