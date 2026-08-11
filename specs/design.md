@@ -653,25 +653,22 @@ Fulfilment is a long-running, out-of-band process: an Azure Entra ID sync takes 
 
 **Emitting side (this platform's SnowflakeAccount controller)**
 
-  * **Gated on config.** Requests are only emitted when `backplane.identitySync.enabled` is true (3.5). When it is false the controller skips emission entirely and imports directly, assuming every referenced group is already present org-wide.
-  * **One request per integration.** Each key under `identityIntegration.groups` (3.7) yields its own request: `spec.provider` is the key, `spec.groups` its list. A CRD naming both `giam` and `okta` therefore emits two requests, each picked up by whichever controller handles that provider.
-  * **Naming.** `<crd-name>-<provider>-identities`, in the account's own namespace. The name derives from the CRD's `metadata.name`, not the resolved Snowflake name (3.12) — a Kubernetes object name must satisfy RFC1123, which forbids the underscores the resolved name contains, the same constraint that applies to the OIDC ServiceAccount in 3.11.2.
-  * **Emitted early.** Requests go out on first observation of the `SnowflakeAccount`, alongside account bootstrapping (3.6) rather than after it, so a sync measured in tens of minutes overlaps account creation instead of being appended to it.
-  * **Emission never blocks.** The controller creates the requests and returns from the reconcile immediately. Progress is picked up on later reconciles, driven by a watch on `IdentitySyncRequest` mapped back through the owner reference — so a status change or a deletion wakes the account reconcile at once — with a periodic requeue as a backstop.
-  * **Existence is desired state.** An owner reference on each request has it garbage-collected with the `SnowflakeAccount`, but that only covers account deletion. If a request is deleted while the account still needs its groups, the controller recreates it on the next reconcile. On a CRD spec change the group lists are updated in place; removing an integration key deletes its request deliberately, and that one is not recreated.
+  * **Gated on config.** Requests are only emitted when `backplane.identitySync.enabled` is true (3.5). When false, the controller imports directly and assumes every referenced group is already present org-wide.
+  * **One request per integration.** Each key under `identityIntegration.groups` (3.7) yields its own request: `spec.provider` is the key, `spec.groups` its list. Named `<crd-name>-<provider>-identities` in the account's own namespace, from the CRD's `metadata.name` rather than the resolved Snowflake name (3.12), which contains underscores RFC1123 forbids.
+  * **Emitted early, never blocking.** Requests go out on first observation of the `SnowflakeAccount`, alongside bootstrapping (3.6) rather than after it, so a sync measured in tens of minutes overlaps account creation. The controller returns immediately and picks up progress on later reconciles.
+  * **Existence is desired state.** Each request carries an owner reference so it is garbage-collected with the account. A request deleted while its groups are still needed is recreated; removing an integration key from the CRD deletes its request for good.
 
 **Fulfilling side (the company's own controller)**
 
-  * Watches the resource, syncs the listed groups into the organization account, and reports back through the standard condition model (7.1): `Ready` is **True** once every group under `spec.groups` is present in the organization account, and **False** with a message otherwise. This condition is the only signal the account controller consumes.
+  * Watches the resource, syncs the listed groups into the organization account, and reports `Ready=True` once every group under `spec.groups` is present (7.1). This condition is the only signal the account controller consumes.
 
 **Waiting without failing**
 
   * **Incremental import.** As each request reports `Ready=True`, that provider's groups are imported (3.7) and every `roleBindings` entry whose group is now present is granted. A slow provider does not hold back a fast one.
-  * **Aggregate condition.** The `SnowflakeAccount` surfaces an `IdentitySynced` condition — this resource's own condition, like `QuotaAvailable` (3.10), additional to `Ready` and `Synced` (7.1). It is **True** once every emitted request is fulfilled and every group imported, **False** while any is outstanding.
-  * **Grace period.** While outstanding and still within `backplane.identitySync.timeout` (default **1h**, 3.5), the reason is `SyncPending`: an expected provisioning state, not an error — no warning event and no failure, since a normal Entra ID sync legitimately occupies most of that hour. Only once the timeout elapses does the reason become `SyncTimeout`, with a matching warning event so the stalled sync becomes visible to ops.
-  * **One clock per account.** The timer starts when the first request for the account is emitted and is recorded in the account's status. Recreating a deleted request does not reset it — otherwise repeatedly deleting a request would hold the account in a provisioning state indefinitely.
-  * **Recoverable.** `SyncTimeout` is a reporting state, not a stop. The controller keeps reconciling and returns to `IdentitySynced=True` on its own if the sync eventually lands, with no user action required.
-  * **Relation to `Ready`.** The account is bootstrapped (3.6) and technically exists, but until the group bound to `ACCOUNTADMIN` is imported nobody can administer it. `Ready` therefore stays **False** for as long as `IdentitySynced` is False, carrying the reason above so a long benign wait is told apart from a genuine provisioning failure — a distinction 7.1's table does not otherwise anticipate.
+  * **Aggregate condition.** The `SnowflakeAccount` surfaces an `IdentitySynced` condition — its own, like `QuotaAvailable` (3.10), additional to `Ready` and `Synced` (7.1) — **True** once every request is fulfilled and every group imported.
+  * **Grace period.** While outstanding and within `backplane.identitySync.timeout` (default **1h**, 3.5), the reason is `SyncPending`: an expected provisioning state, with no warning event. Past the timeout it becomes `SyncTimeout` with a warning event so ops can see the stall. The clock starts when the account's first request is emitted and is recorded in its status.
+  * **Recoverable.** `SyncTimeout` is a reporting state, not a stop: the controller keeps reconciling and returns to `IdentitySynced=True` on its own if the sync lands.
+  * **Relation to `Ready`.** Until the group bound to `ACCOUNTADMIN` is imported nobody can administer the account, so `Ready` stays **False** while `IdentitySynced` is False, carrying the reason above to distinguish a benign wait from a provisioning failure.
 
 
 
