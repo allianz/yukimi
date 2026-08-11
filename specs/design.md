@@ -41,7 +41,7 @@ This platform is not built using traditional, manual software development method
 
 The onboarding process begins when a team requests access to the self-service platform and provides four pieces of information: the tenant name (called profile at FCP), the GIAM group that should be granted access in Argo CD, the team’s cost center, and the team’s department (e.g. `Allianz_DE`) — used by Guardrails (3.3) to scope department-specific rules. The platform product owner defines the credit quota based on expected consumption. Once this information is available, the operations team performs a standardized onboarding workflow:
 
-* A Kubernetes namespace with the same name is created and labeled with the cost center, department, and credit quota. Like the credit quota (3.9), the department label is set by ops during onboarding and is not exposed as a CRD field, so tenants cannot alter it themselves.
+* A Kubernetes namespace with the same name is created and labeled with the cost center, department, and credit quota. Like the credit quota (3.10), the department label is set by ops during onboarding and is not exposed as a CRD field, so tenants cannot alter it themselves.
 * A new GitHub repository is created under the shared organization using the tenant name.
 * Argo CD is then configured to automatically sync the team’s repo into this namespace so that any SnowflakeAccount resources are reconciled immediately.
 
@@ -89,7 +89,7 @@ The SnowflakeAccount resource enables teams to define, provision, and manage a f
 apiVersion: base.snowflake.yukimi.io/v1alpha1
 kind: SnowflakeAccount
 metadata:
-  name: analytics-team-eu      # created in Snowflake as analytics_team_eu_5k3wf (3.11)
+  name: analytics-team-eu      # created in Snowflake as analytics_team_eu_5k3wf (3.12)
 spec:
   # --- General metadata ---
   description: "Analytics team Snowflake environment for EU operations"
@@ -98,8 +98,8 @@ spec:
     - team-analytics@company.com
   # --- Snowflake account configuration ---
   region: aws-eu-central-1
-  environment: prod            # dev | prod — required, immutable (3.10.3); a Guardrails target key (3.3)
-  # --- Share of the namespace's monthly credit allowance (3.9) ---
+  environment: prod            # dev | prod — required, immutable (3.11.3); a Guardrails target key (3.3)
+  # --- Share of the namespace's monthly credit allowance (3.10) ---
   creditQuota: 500
   # --- GIAM groups to import and bind to system roles ---
   identityIntegration:
@@ -121,11 +121,12 @@ spec:
     accountWide:                 # added to the account policy (3.6); service users
       - connection: public       # have their own policy and ignore this (3.8)
         allowedIPs: ["192.0.2.14/32", "192.0.2.15/32"]  # /32 only — see 3.3
-  # --- Allow human users to bypass SSO ---
+  # --- Allow human users to bypass SSO (3.9) ---
   customAuthRules:
     exceptions:
       - user: alice.smith
         rsaKeyAllowed: true
+        patAllowed: false
         reason: "Legacy desktop tool without SSO support"
 ```
 
@@ -166,7 +167,8 @@ flowchart LR
         direction TB
         CreateFlow["Account Bootstrapping (3.6)"] --> IdentityIntegration["Identity Integration (3.7)"]
         IdentityIntegration --> NetworkRules["Custom Network Rules (3.8)"]
-        NetworkRules --> CreditQuota["Credit Quota (3.9)"]
+        NetworkRules --> AuthRules["Custom Auth Rules (3.9)"]
+        AuthRules --> CreditQuota["Credit Quota (3.10)"]
     end
 
     style createFlowGroup fill:transparent
@@ -179,7 +181,8 @@ flowchart LR
 * **Account Bootstrapping (3.6):** The controller creates the Snowflake account and binds it to the regional backplane infrastructure from the Backplane Config.
 * **Identity Integration (3.7):** The controller imports the SnowflakeAccount CRD's referenced company groups into the new account, so their members can log in via SSO with their existing company roles carried over. Those groups must first exist in the central organization account; where the enterprise does not sync them there by default, the controller requests them via an `IdentitySyncRequest` (4).
 * **Custom Network Rules (3.8):** The controller turns the SnowflakeAccount CRD's `customNetworkRules` entries into Snowflake network rules and policies — a dedicated, deny-by-default policy per service user under `serviceUsers`, and account-wide additions for each entry under `accountWide`.
-* **Credit Quota (3.9):** The controller checks the share of credits the SnowflakeAccount CRD claims against the namespace allowance set at onboarding (2), then pushes that share into Snowflake as a resource monitor and a budget so consumption stops when it is used up.
+* **Custom Auth Rules (3.9):** The controller turns the SnowflakeAccount CRD's `customAuthRules.exceptions` entries into per-user authentication policies, letting the named human users bypass the account's SSO-only baseline.
+* **Credit Quota (3.10):** The controller checks the share of credits the SnowflakeAccount CRD claims against the namespace allowance set at onboarding (2), then pushes that share into Snowflake as a resource monitor and a budget so consumption stops when it is used up.
 
 
 
@@ -191,7 +194,7 @@ Guardrails act as a gatekeeper that validates and modifies a tenant's input befo
 
 Each guardrail defines up to three components — `target` plus at least one of `constraints` or `preset`:
 
-  * **`target`:** Defines which accounts the guardrail applies to. An omitted field or a `"*"` wildcard means the rule matches all accounts. Each key is read from a fixed source: `environment` and `region` from the CRD's spec fields (3.1), `account` from `metadata.name` as the tenant wrote it (not the resolved Snowflake name — guardrails run before the account exists; see 3.11), and `department` from the namespace label set by ops during onboarding (2). Since `department` is ops-owned, tenants cannot move themselves out of their department's rules; `environment`, by contrast, the tenant declares themselves.
+  * **`target`:** Defines which accounts the guardrail applies to. An omitted field or a `"*"` wildcard means the rule matches all accounts. Each key is read from a fixed source: `environment` and `region` from the CRD's spec fields (3.1), `account` from `metadata.name` as the tenant wrote it (not the resolved Snowflake name — guardrails run before the account exists; see 3.12), and `department` from the namespace label set by ops during onboarding (2). Since `department` is ops-owned, tenants cannot move themselves out of their department's rules; `environment`, by contrast, the tenant declares themselves.
   * **`constraints`:** The strict rules the user's input must pass, such as correct naming conventions, maximum credit quotas, and network rules. If a submitted CRD violates these rules, the system immediately rejects it with a validation error.
   * **`preset`:** Sets defaults. For CRD fields the user omitted (like `creditQuota`) the value is filled in and then enforced as usual. For account settings with no CRD field at all (like `timeZone`) it is only an initial value — unlike `constraints`, it is not enforced, and the tenant's account admin may change it afterwards in Snowflake.
 
@@ -283,7 +286,7 @@ This exists for cases where a customer has a legitimate, one-off need that the s
 # on a case-by-case basis, once ISO has approved them by email; matched against a
 # CRD only after its guardrails (3.3) reject it.
 exceptions:
-  - account: "analytics-team-eu"        # CRD metadata.name (3.11), not the resolved
+  - account: "analytics-team-eu"        # CRD metadata.name (3.12), not the resolved
                                         # Snowflake name — exact match, no wildcards
     customNetworkRules:                 # the full entry being approved, verbatim
       serviceUsers:
@@ -386,7 +389,7 @@ When the controller observes a `SnowflakeAccount` that does not yet exist in Sno
 **Note:** The SQL below, like every SQL block in this document, is illustrative rather than complete — it conveys which statements run, in what order, and from which inputs their values are drawn, not the exact or exhaustive syntax the controller emits.
 
 ```sql
--- 1. Instantiation: create the account under its resolved name (3.11) — the CRD's
+-- 1. Instantiation: create the account under its resolved name (3.12) — the CRD's
 -- metadata.name with '-' translated to '_', suffixed with the namespace hash.
 CREATE ACCOUNT '<resolved-account-name>' ADMIN_NAME='platform' ADMIN_RSA_PUBLIC_KEY = '<generated-by-controller>' ADMIN_USER_TYPE='SERVICE' EDITION='ENTERPRISE' REGION='<region-from-crd>' COMMENT='<description-from-crd>';
 
@@ -487,9 +490,35 @@ ALTER NETWORK POLICY PLATFORM_ACCOUNT_POLICY
 
 
 
-### 3.9 Credit Quota
+### 3.9 Custom Auth Rules
 
-A tenant's overall monthly credit allowance is defined during onboarding and securely bound to their Kubernetes namespace via the `credit-quota` label. Because this limit is managed outside the tenant's Git repository, it acts as a strict trust anchor that teams cannot bypass or increase on their own — the same trust-anchor argument that makes the namespace the tenancy boundary in 3.10.1. Individual accounts claim a portion of this overall allowance via the mutable `creditQuota` field in their `SnowflakeAccount` CRD.
+SSO is the only login method for human users; it is integrated globally (3.2) and enforced by an SSO-only authentication policy bound to the account during bootstrapping (3.6). This chapter covers the exceptions to it: `customAuthRules.exceptions` in the `SnowflakeAccount` CRD (3.1) names the individual human users allowed to bypass that baseline, one entry per user:
+
+  * **`user`:** The human user the exception applies to. Service users are out of scope here; they are governed by their own network policies (3.8).
+  * **`rsaKeyAllowed`:** Permits key-pair authentication for that user.
+  * **`patAllowed`:** Permits authentication with a Programmatic Access Token (PAT).
+  * **`reason`:** Why the bypass is needed. Recorded in the CRD for audit; not carried into Snowflake.
+
+Exceptions are narrow by construction: an entry re-admits only the methods it names, for exactly one user, and every user not listed stays SSO-only. An entry naming neither method is a validation error. Like the network rules in 3.8, auth rules are applied after bootstrapping (3.6), so a rejected entry leaves the account on the SSO-only baseline, and the failure is reported on `Synced` (7.1) until the tenant corrects the CRD.
+
+The two flags yield three method combinations, so three fixed policies cover every exception. They are created during bootstrapping (3.6) alongside the SSO-only baseline; this step only binds users to them. A user can hold just one `AUTHENTICATION_POLICY` at a time, so the both-methods case needs its own policy rather than two bindings.
+
+```sql
+-- Bind each entry under customAuthRules.exceptions to whichever fixed policy matches the
+-- methods it re-admits, overriding the account-level baseline for that user.
+ALTER USER '<user-from-crd>' SET AUTHENTICATION_POLICY = PLATFORM_AUTH_KEYPAIR;      -- rsaKeyAllowed
+ALTER USER '<user-from-crd>' SET AUTHENTICATION_POLICY = PLATFORM_AUTH_PAT;          -- patAllowed
+ALTER USER '<user-from-crd>' SET AUTHENTICATION_POLICY = PLATFORM_AUTH_KEYPAIR_PAT;  -- both
+-- ... one statement per entry under customAuthRules.exceptions
+```
+
+**Note:** As with the network policies in 3.6 and 3.8, this implementation will be replaced by Snowflake's Organization Policies once available (Appendix B, A1/A2). The granted exceptions stay the same, but the baseline and the per-user overrides become org-owned, so tenants can no longer alter or unset either themselves — today an account admin can do exactly that.
+
+
+
+### 3.10 Credit Quota
+
+A tenant's overall monthly credit allowance is defined during onboarding and securely bound to their Kubernetes namespace via the `credit-quota` label. Because this limit is managed outside the tenant's Git repository, it acts as a strict trust anchor that teams cannot bypass or increase on their own — the same trust-anchor argument that makes the namespace the tenancy boundary in 3.11.1. Individual accounts claim a portion of this overall allowance via the mutable `creditQuota` field in their `SnowflakeAccount` CRD.
 
 **Quota Lifecycle:**
 
@@ -502,13 +531,13 @@ A tenant's overall monthly credit allowance is defined during onboarding and sec
 
 
 
-### 3.10 Security Constraints
+### 3.11 Security Constraints
 
 The platform's security and protection mechanisms are designed to remain resilient even in the event of system bugs or breaches. This resilience is achieved not merely through validation logic, but by strictly avoiding the routine use of highly privileged credentials, such as organization admin accounts. Organization-level credentials are restricted almost entirely to the initial account creation phase. While account deletion also requires organization admin access, it is protected by additional structural safeguards to prevent unauthorized or accidental destruction.
 
 Following the creation of an account, the controller transitions to impersonating the accountadmin role exclusively for that specific tenant. By stepping down from organization-level privileges to account-level access, the platform effectively minimizes the potential blast radius of any security incident to just that individual account. The guarantees below are built so that the final enforcement always sits outside the controller — in AWS IAM, in Snowflake, or in the Kubernetes API server. The controller decides what to ask for; a bug in its logic yields a denied request rather than cross-tenant access.
 
-#### 3.10.1. Tenant Isolation via Secret Paths
+#### 3.11.1. Tenant Isolation via Secret Paths
 
 Isolation is enforced physically by the storage path of the credentials in AWS Secrets Manager (ASM).
 
@@ -516,13 +545,13 @@ Isolation is enforced physically by the storage path of the credentials in AWS S
 * **Path Construction:** The controller must construct the ASM Secret ID using the following strict pattern:
     `snowflake/tenant/<snowflake-org-name>/<kubernetes-ns>/<snowflake-account-name>/platform-credentials`
 * **The Constraint:** When the controller attempts to access an existing account, it must derive the lookup path using the CRD's namespace. This ensures that any attempt to manage an account outside the team's namespace will fail at the AWS IAM level due to an incorrect secret path, thereby preventing cross-tenant access.
-* **Which name:** `<snowflake-account-name>` in the path above is the CRD's `metadata.name`, not the resolved Snowflake name (3.11). The path is deliberately built only from Kubernetes identifiers, keeping the trust anchor above intact — every segment is derived from the runtime environment rather than from a namespace label that is written by hand.
+* **Which name:** `<snowflake-account-name>` in the path above is the CRD's `metadata.name`, not the resolved Snowflake name (3.12). The path is deliberately built only from Kubernetes identifiers, keeping the trust anchor above intact — every segment is derived from the runtime environment rather than from a namespace label that is written by hand.
 
-#### 3.10.2. OIDC Authentication (Optional) TODO
+#### 3.11.2. OIDC Authentication (Optional) TODO
 
 Every account is always created with the secret-based `platform` user described above and in 3.6 — that mechanism is not replaced. OIDC is an additional, optional authentication path layered on top of the same account, established immediately after creation, that lets the controller reach a tenant's account without reading its RSA private key from AWS Secrets Manager (ASM) on every connection.
 
-**Principal:** Unlike the account-birth credential, which belongs to a single `platform` service user, the OIDC principal is scoped to the tenant's Kubernetes namespace — the same trust anchor used for secret-path isolation above. The controller creates a dedicated Kubernetes `ServiceAccount` in the tenant's namespace alongside the `SnowflakeAccount` resource (e.g. `sa-<account-name>-oidc`). This ServiceAccount never runs a pod — it exists purely as an identity primitive. When the controller needs to connect to that account, it uses the Kubernetes `TokenRequest` API to mint a short-lived, narrowly-audienced JWT for that ServiceAccount, uses it once, and discards it. The token's `sub` claim — `system:serviceaccount:<namespace>:sa-<account-name>-oidc` — encodes both the tenant namespace and the account name, mirroring the granularity of the ASM secret path. Here `<account-name>` is the CRD's `metadata.name`, not the resolved Snowflake name (3.11): a `ServiceAccount` is a Kubernetes object and must satisfy RFC1123, which forbids the underscores the resolved name contains. The mapping below must use exactly the string the API server signs.
+**Principal:** Unlike the account-birth credential, which belongs to a single `platform` service user, the OIDC principal is scoped to the tenant's Kubernetes namespace — the same trust anchor used for secret-path isolation above. The controller creates a dedicated Kubernetes `ServiceAccount` in the tenant's namespace alongside the `SnowflakeAccount` resource (e.g. `sa-<account-name>-oidc`). This ServiceAccount never runs a pod — it exists purely as an identity primitive. When the controller needs to connect to that account, it uses the Kubernetes `TokenRequest` API to mint a short-lived, narrowly-audienced JWT for that ServiceAccount, uses it once, and discards it. The token's `sub` claim — `system:serviceaccount:<namespace>:sa-<account-name>-oidc` — encodes both the tenant namespace and the account name, mirroring the granularity of the ASM secret path. Here `<account-name>` is the CRD's `metadata.name`, not the resolved Snowflake name (3.12): a `ServiceAccount` is a Kubernetes object and must satisfy RFC1123, which forbids the underscores the resolved name contains. The mapping below must use exactly the string the API server signs.
 
 **Global setup (one-time, like the network/identity backplane in 3.2):** The Kubernetes cluster's OIDC issuer and JWKS endpoint are recorded once, platform-wide, as a new org-level entry in the Backplane Config — not yet part of its schema (3.5), since OIDC is still a TODO. This is an ops/bootstrap concern, not a per-account step.
 
@@ -555,17 +584,17 @@ GRANT ROLE "<group-name-from-identityIntegration.roleBindings.ACCOUNTADMIN>" TO 
 **TODO:** Define the precise fallback trigger (automatic detection vs. explicit CRD flag), and the Kubernetes RBAC model that lets the controller mint `TokenRequest` tokens for ServiceAccounts across every tenant namespace (a cluster-scoped capability that itself deserves the same "why can this not be abused cross-tenant" scrutiny given to the ASM IAM role above).
 
 
-#### 3.10.3. Immutable Identity Binding
+#### 3.11.3. Immutable Identity Binding
 
 The **`region`**, **`name`** and **`environment`** of a `SnowflakeAccount` are Immutable after creation. For `region` and `name` this prevents identity spoofing where a user creates an account, lets the secret generate, and then attempts to switch the CRD to point to a different target resource while retaining the original credentials.
 
 `environment` is immutable for a different reason: it selects which guardrails apply (3.3), so a mutable field would let an account be created under the `prod` baseline and then flipped to `dev` to pick up its looser network posture — no CIDR required for `agn`, and `agn` openable account-wide. Changing an account's environment therefore requires creating a new account.
 
-Because the account's Snowflake name is resolved from `name` plus a hash of the namespace (3.11), and neither can change for the life of the resource, the resolved name is stable too — it never has to be stored to stay correct.
+Because the account's Snowflake name is resolved from `name` plus a hash of the namespace (3.12), and neither can change for the life of the resource, the resolved name is stable too — it never has to be stored to stay correct.
 
 
 
-### 3.11 Account Naming
+### 3.12 Account Naming
 
 Tenants name their accounts freely and cannot see other namespaces, but Snowflake account names must be unique org-wide — two teams both naming an account `dev` is the expected case. The controller therefore suffixes the name with a hash of the tenant's namespace: `metadata.name` with every `-` translated to `_`, then `_` and the first 5 characters of the base32-encoded SHA-256 of `metadata.namespace`.
 
@@ -626,7 +655,7 @@ Fulfilment is a long-running, out-of-band process: an Azure Entra ID sync takes 
 
   * **Gated on config.** Requests are only emitted when `backplane.identitySync.enabled` is true (3.5). When it is false the controller skips emission entirely and imports directly, assuming every referenced group is already present org-wide.
   * **One request per integration.** Each key under `identityIntegration.groups` (3.7) yields its own request: `spec.provider` is the key, `spec.groups` its list. A CRD naming both `giam` and `okta` therefore emits two requests, each picked up by whichever controller handles that provider.
-  * **Naming.** `<crd-name>-<provider>-identities`, in the account's own namespace. The name derives from the CRD's `metadata.name`, not the resolved Snowflake name (3.11) — a Kubernetes object name must satisfy RFC1123, which forbids the underscores the resolved name contains, the same constraint that applies to the OIDC ServiceAccount in 3.10.2.
+  * **Naming.** `<crd-name>-<provider>-identities`, in the account's own namespace. The name derives from the CRD's `metadata.name`, not the resolved Snowflake name (3.12) — a Kubernetes object name must satisfy RFC1123, which forbids the underscores the resolved name contains, the same constraint that applies to the OIDC ServiceAccount in 3.11.2.
   * **Emitted early.** Requests go out on first observation of the `SnowflakeAccount`, alongside account bootstrapping (3.6) rather than after it, so a sync measured in tens of minutes overlaps account creation instead of being appended to it.
   * **Emission never blocks.** The controller creates the requests and returns from the reconcile immediately. Progress is picked up on later reconciles, driven by a watch on `IdentitySyncRequest` mapped back through the owner reference — so a status change or a deletion wakes the account reconcile at once — with a periodic requeue as a backstop.
   * **Existence is desired state.** An owner reference on each request has it garbage-collected with the `SnowflakeAccount`, but that only covers account deletion. If a request is deleted while the account still needs its groups, the controller recreates it on the next reconcile. On a CRD spec change the group lists are updated in place; removing an integration key deletes its request deliberately, and that one is not recreated.
@@ -638,7 +667,7 @@ Fulfilment is a long-running, out-of-band process: an Azure Entra ID sync takes 
 **Waiting without failing**
 
   * **Incremental import.** As each request reports `Ready=True`, that provider's groups are imported (3.7) and every `roleBindings` entry whose group is now present is granted. A slow provider does not hold back a fast one.
-  * **Aggregate condition.** The `SnowflakeAccount` surfaces an `IdentitySynced` condition — this resource's own condition, like `QuotaAvailable` (3.9), additional to `Ready` and `Synced` (7.1). It is **True** once every emitted request is fulfilled and every group imported, **False** while any is outstanding.
+  * **Aggregate condition.** The `SnowflakeAccount` surfaces an `IdentitySynced` condition — this resource's own condition, like `QuotaAvailable` (3.10), additional to `Ready` and `Synced` (7.1). It is **True** once every emitted request is fulfilled and every group imported, **False** while any is outstanding.
   * **Grace period.** While outstanding and still within `backplane.identitySync.timeout` (default **1h**, 3.5), the reason is `SyncPending`: an expected provisioning state, not an error — no warning event and no failure, since a normal Entra ID sync legitimately occupies most of that hour. Only once the timeout elapses does the reason become `SyncTimeout`, with a matching warning event so the stalled sync becomes visible to ops.
   * **One clock per account.** The timer starts when the first request for the account is emitted and is recorded in the account's status. Recreating a deleted request does not reset it — otherwise repeatedly deleting a request would hold the account in a provisioning state indefinitely.
   * **Recoverable.** `SyncTimeout` is a reporting state, not a stop. The controller keeps reconciling and returns to `IdentitySynced=True` on its own if the sync eventually lands, with no user action required.
@@ -660,7 +689,7 @@ metadata:
   name: analytics-team-dr
 spec:
   description: "Cross-region standby for EU analytics"
-  accounts:                # SnowflakeAccount CRD names (3.11), not resolved Snowflake
+  accounts:                # SnowflakeAccount CRD names (3.12), not resolved Snowflake
                            # names; all must share one environment (5.2)
     - analytics-team-eu    # aws-eu-central-1, prod
     - analytics-team-eu-dr # aws-eu-west-3, prod — same namespace, so same suffix
@@ -678,7 +707,7 @@ spec:
 
 `SnowflakeReplication` performs no region-pair validation of its own. Each account it links was already restricted to a legally permitted region by the Guardrails' `allowedRegions` constraint (3.3) at the time it was created — e.g. an `Allianz_DE` account can only ever be created in `aws-eu-central-1` or `aws-eu-west-3`. Since replication only connects existing `SnowflakeAccount` resources, an illegal region pair (e.g. a link to a Brazil region) can never arise: it would require one of the linked accounts to exist in a region the Guardrails would have already rejected at creation.
 
-It does, however, validate that every account under `accounts` declares the same `environment` (3.1); a mismatch is rejected. Environment selects which guardrails an account was created under (3.3), so linking a `prod` account to a `dev` one would replicate production data into an account held to the looser `dev` network posture. Because `environment` is immutable (3.10.3), a group that validates at setup cannot later drift into a mixed state.
+It does, however, validate that every account under `accounts` declares the same `environment` (3.1); a mismatch is rejected. Environment selects which guardrails an account was created under (3.3), so linking a `prod` account to a `dev` one would replicate production data into an account held to the looser `dev` network posture. Because `environment` is immutable (3.11.3), a group that validates at setup cannot later drift into a mixed state.
 
 ### 5.3 Infrastructure vs. Data Replication
 
@@ -712,7 +741,7 @@ metadata:
 spec:
   targetRef:
     kind: SnowflakeAccount
-    name: analytics-team-eu   # CRD name (3.11), not the resolved Snowflake name
+    name: analytics-team-eu   # CRD name (3.12), not the resolved Snowflake name
   duration: 4h  # Maintenance window duration (Max: 8h)
   reason: "Ticket OPS-1234: Project sunsetting, data archived."
 ```
@@ -782,13 +811,13 @@ Every CRD in this platform surfaces two standard condition types. These conditio
 | **`Ready`** | **Availability** | Indicates whether the resource is provisioned and usable. <br>**During Creation:** Set to **False** until the resource is successfully created. Creation errors are reported here. <br>**After Creation:** Set to **True** once the resource is fully operational. <br>**During Updates:** Remains **True** (updates are non-disruptive). |
 | **`Synced`** | **State Consistency** | Indicates whether the live state matches the desired state. <br>**During Creation:** Set to **True** once the CRD is accepted and processing begins. <br>**After Creation:** Remains **True** when no changes are pending. <br>**During Updates:** Set to **False** while changes are being applied. Update errors are reported here. Returns to **True** once synchronized. |
 
-Individual resource types may surface further conditions specific to their own concerns; `SnowflakeAccount` adds `QuotaAvailable` for credit exhaustion (3.9) and `IdentitySynced` for pending group syncs (4.3).
+Individual resource types may surface further conditions specific to their own concerns; `SnowflakeAccount` adds `QuotaAvailable` for credit exhaustion (3.10) and `IdentitySynced` for pending group syncs (4.3).
 
 ### 7.2 Status Example
 
 **A Healthy Resource**
 
-`accountName` is the resolved Snowflake name (3.11), not the CRD name, so a tenant can find the account in Snowflake.
+`accountName` is the resolved Snowflake name (3.12), not the CRD name, so a tenant can find the account in Snowflake.
 
 ```yaml
 status:
@@ -807,7 +836,7 @@ status:
 
 ## Appendix A: Open TODOs
 
-Items flagged inline throughout this document (3.9, 3.10.2).
+Items flagged inline throughout this document (3.10, 3.11.2).
 
 
 
@@ -837,17 +866,17 @@ Parameters in use today: `PREVENT_UNLOAD_TO_INLINE_URL`, `REQUIRE_STORAGE_INTEGR
 
 | ID | Requirement | Today | Ref |
 | :--- | :--- | :--- | :--- |
-| **S1** | Org-level credit limit the account admin cannot raise or detach | `ALTER ACCOUNT SET RESOURCE_MONITOR` | 3.9 |
-| **S2** | Limits covering serverless and AI consumption, enforcing not just notifying | budgets — notify-only, cannot suspend | 3.9 |
+| **S1** | Org-level credit limit the account admin cannot raise or detach | `ALTER ACCOUNT SET RESOURCE_MONITOR` | 3.10 |
+| **S2** | Limits covering serverless and AI consumption, enforcing not just notifying | budgets — notify-only, cannot suspend | 3.10 |
 
 ### B.4 Authentication
 
 | ID | Requirement | Today | Ref |
 | :--- | :--- | :--- | :--- |
-| **A1** | Mandatory SSO, org-enforced | `ALTER ACCOUNT SET AUTHENTICATION_POLICY` | 3.1, 3.2 |
-| **A2** | Key-pair and PAT exceptions grantable only at org level | `ALTER USER … SET AUTHENTICATION_POLICY` | 3.1 |
+| **A1** | Mandatory SSO, org-enforced | `ALTER ACCOUNT SET AUTHENTICATION_POLICY` | 3.2, 3.9 |
+| **A2** | Key-pair and PAT exceptions grantable only at org level | `ALTER USER … SET AUTHENTICATION_POLICY` | 3.9 |
 
-Both bind an authentication policy created with `AUTHENTICATION_METHODS` restricted to `SAML`/`OAUTH`, with `KEYPAIR` or `PROGRAMMATIC_ACCESS_TOKEN` added only for approved exceptions. The account admin can unset either binding, or alter the policy to re-admit a method. No SQL for this is written yet — the CRD's `customAuthRules.exceptions` field (3.1) is specified without an implementing statement.
+Both bind an authentication policy created with `AUTHENTICATION_METHODS` restricted to `SAML`/`OAUTH`, with `KEYPAIR` or `PROGRAMMATIC_ACCESS_TOKEN` added only for approved exceptions (3.9). The account admin can unset either binding, or alter the policy to re-admit a method.
 
 ### B.5 Platform Access
 
@@ -855,10 +884,10 @@ Both rows concern the platform's own access paths into a tenant account; each is
 
 | ID | Requirement | Today | Ref |
 | :--- | :--- | :--- | :--- |
-| **X1** | Org-owned break-glass service user, not droppable or alterable by the tenant | `CREATE ACCOUNT … ADMIN_NAME='platform'` | 3.6, 3.10.1 |
-| **X2** | Security integration immutable — issuer and JWKS URL not repointable | `CREATE SECURITY INTEGRATION PLATFORM_OIDC` | 3.10.2 |
+| **X1** | Org-owned break-glass service user, not droppable or alterable by the tenant | `CREATE ACCOUNT … ADMIN_NAME='platform'` | 3.6, 3.11.1 |
+| **X2** | Security integration immutable — issuer and JWKS URL not repointable | `CREATE SECURITY INTEGRATION PLATFORM_OIDC` | 3.11.2 |
 
-X1 concerns the `platform` user, created by the `CREATE ACCOUNT` statement itself via `ADMIN_NAME` (3.6). It is a service user with an RSA key pair the platform generates and stores externally (3.10.1), and it is how the platform reaches the account for every subsequent operation — applying parameters, network rules, group imports, and the quota. Once the tenant holds `ACCOUNTADMIN` it becomes an ordinary user they can drop or re-key, locking the platform out of an account it is responsible for managing.
+X1 concerns the `platform` user, created by the `CREATE ACCOUNT` statement itself via `ADMIN_NAME` (3.6). It is a service user with an RSA key pair the platform generates and stores externally (3.11.1), and it is how the platform reaches the account for every subsequent operation — applying parameters, network rules, group imports, and the quota. Once the tenant holds `ACCOUNTADMIN` it becomes an ordinary user they can drop or re-key, locking the platform out of an account it is responsible for managing.
 
 
 
