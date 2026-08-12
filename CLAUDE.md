@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a Crossplane provider for Snowflake that enables self-service provisioning of Snowflake accounts and related data platform resources. Built using the standard Crossplane provider pattern with Go and Kubernetes APIs.
+This project builds a self-service platform for provisioning and managing Snowflake accounts and related data platform resources (see `specs/design.md`). It is scaffolded from the Crossplane provider template and reuses its code layout, Go tooling, and Kubernetes CRD/controller conventions — but the goal is not to build a standard Crossplane provider for the wider Crossplane ecosystem. There is no intent to publish this as a general-purpose, community-facing provider; the CRDs, controllers, and specs are shaped around this platform's own tenant-onboarding and Snowflake-provisioning model, not around Crossplane ecosystem conventions or compatibility.
 
 ## Key Architecture
 
