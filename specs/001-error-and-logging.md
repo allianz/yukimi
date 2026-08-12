@@ -22,7 +22,7 @@ This specification defines the error handling system that:
 
 ## Key Concept: Error Classification
 
-The error handling system categorizes errors into two types: **user errors** and **system errors**. User errors represent configuration mistakes that users can fix by editing their CRD (e.g., invalid region format, malformed CIDR). These are logged at Debug level and include specific field paths and expected formats to enable self-service resolution. System errors represent infrastructure failures that users cannot fix (e.g., Snowflake API unreachable, AWS Secrets Manager timeout). These are logged at Error level with unique incident IDs for correlation between user status messages and operator logs.
+The error handling system categorizes errors into two types: **user errors** and **system errors**. User errors represent configuration mistakes that users can fix by editing their CRD (e.g., invalid region format, malformed CIDR). These are logged at Debug level and include specific field paths and expected formats to enable self-service resolution. System errors represent infrastructure failures that users cannot fix (e.g., Snowflake API unreachable, AWS Secrets Manager timeout). These are logged at Info level with unique incident IDs for correlation between user status messages and operator logs.
 
 **Important**: User errors must be created explicitly using `errors.NewUserError()`, while system errors are implicit (any raw error). The logging level distinction is critical: Debug-level logging for user errors prevents noise in production logs, while Error-level logging for system errors ensures operator visibility for infrastructure failures.
 
@@ -293,10 +293,10 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
 
     result, err := e.provisioner.Observe(ctx, cr)
     if err != nil {
-        // Single call: classifies, logs, and returns sanitized retry error
+        // Single call: classifies, logs, and returns the sanitized message for the condition
         retryErr := log.Handle(err)
         cr.SetConditions(xpv1.Unavailable().WithMessage(retryErr.Error()))
-        return managed.ExternalObservation{}, retryErr
+        return managed.ExternalObservation{}, nil // nil avoids retry flood; the condition already reports the failure
     }
 
     log.Debug("observed current state")

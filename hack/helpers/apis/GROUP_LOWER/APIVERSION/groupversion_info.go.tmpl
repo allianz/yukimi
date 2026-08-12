@@ -17,7 +17,7 @@ limitations under the License.
 
 // Package v1alpha1 contains the v1alpha1 group Sample resources of the {{ .Env.PROVIDER }} provider.
 // +kubebuilder:object:generate=true
-// +groupName={{ .Env.GROUP | strings.ToLower }}.{{ .Env.PROVIDER | strings.ToLower }}.allianz.io
+// +groupName={{ .Env.GROUP | strings.ToLower }}.{{ .Env.PROVIDER | strings.ToLower }}.yukimi.io
 // +versionName={{ .Env.APIVERSION | strings.ToLower }}
 package {{ .Env.APIVERSION | strings.ToLower }}
 
@@ -28,7 +28,7 @@ import (
 
 // Package type metadata.
 const (
-	Group   = "{{ .Env.GROUP | strings.ToLower }}.{{ .Env.PROVIDER | strings.ToLower }}.allianz.io"
+	Group   = "{{ .Env.GROUP | strings.ToLower }}.{{ .Env.PROVIDER | strings.ToLower }}.yukimi.io"
 	Version = "{{ .Env.APIVERSION | strings.ToLower }}"
 )
 

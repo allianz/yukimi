@@ -31,7 +31,7 @@ GOLANGCILINT_VERSION = 2.1.2
 # ====================================================================================
 # Setup Images
 
-IMAGES = provider-snowflake
+IMAGES = yukimi
 -include build/makelib/imagelight.mk
 
 # Set Docker registry for local development
@@ -44,12 +44,12 @@ XPKG_REG_ORGS ?= xpkg.upbound.io/crossplane
 # NOTE(hasheddan): skip promoting on xpkg.upbound.io as channel tags are
 # inferred.
 XPKG_REG_ORGS_NO_PROMOTE ?= xpkg.upbound.io/crossplane
-XPKGS = provider-snowflake
+XPKGS = yukimi
 -include build/makelib/xpkg.mk
 
 # NOTE(hasheddan): we force image building to happen prior to xpkg build so that
 # we ensure image is present in daemon.
-xpkg.build.provider-snowflake: do.build.images
+xpkg.build.yukimi: do.build.images
 
 fallthrough: submodules
 	@echo Initial setup complete. Running make again . . .
@@ -97,15 +97,9 @@ dev: $(KIND) $(KUBECTL)
 	@KUBECTL=$(KUBECTL) $(ROOT_DIR)/cluster/local/sync-aws-credentials.sh
 	@$(INFO) Labeling tenant namespace for testing
 	@set -a && source .env && set +a && $(KUBECTL) create namespace $${SNOWFLAKE_TEST_TENANT} --dry-run=client -o yaml | $(KUBECTL) apply -f - && $(KUBECTL) label namespace $${SNOWFLAKE_TEST_TENANT} department="az_tech" costcenter="121212" --overwrite
-	@$(INFO) Creating platform-templates namespace
-	@$(KUBECTL) create namespace platform-templates --dry-run=client -o yaml | $(KUBECTL) apply -f -
-#	@$(INFO) Installing/updating Provider Snowflake CRDs
-#	@$(KUBECTL) apply -R -f package/crds
-#	@$(INFO) Applying ProviderConfig
-#	@set -a && source .env && set +a && envsubst < cluster/local/development-config.yaml | $(KUBECTL) apply -f -
 	@$(INFO) Switching kubectl default namespace to tenant namespace
 	@set -a && source .env && set +a && $(KUBECTL) config set-context --current --namespace=$${SNOWFLAKE_TEST_TENANT}
-	@$(INFO) Starting Provider Snowflake controllers
+	@$(INFO) Starting Yukimi controllers
 	@$(GO) run cmd/provider/main.go --debug
 
 dev-clean: $(KIND) $(KUBECTL)
