@@ -405,7 +405,14 @@ Verified: every "Depends on" entry below is strictly lower-numbered, reading `00
   - `labels.go`: read the ops-set namespace labels applied during onboarding (chapter 2) —
     `department` (consumed by guardrail targeting in 008), `credit-quota` (consumed by 016), and
     `cost-center`. These are ops-owned and deliberately not CRD fields, so tenants cannot alter them.
-  - `url.go`: `accountUrl` is `https://<org>-<resolved-name>.snowflakecomputing.com`.
+  - `url.go`: `accountUrl` is built from the account locator Snowflake assigns at `CREATE ACCOUNT`
+    (010), not the resolved name — `https://<locator>.<region>.privatelink.snowflakecomputing.com`
+    when the region's backplane config has PrivateLink enabled (for example
+    `https://xc19114.eu-central-1.privatelink.snowflakecomputing.com`), or
+    `https://<locator>.<region>.snowflakecomputing.com` otherwise. The locator is opaque and has no
+    relationship to the resolved name or the CRD, so `url.go` takes it as an input parameter rather
+    than deriving it — 010 captures it from `CREATE ACCOUNT`'s result and passes it in, which keeps
+    this package free of any Snowflake dependency.
 - **Blocker resolved**: `hack/helpers/apis/GROUP_LOWER/APIVERSION/groupversion_info.go.tmpl` used
   to hardcode `.allianz.io` in both the `+groupName` marker and the `Group` constant; it now emits
   `.yukimi.io`, so `make provider.addtype provider=Snowflake group=base` correctly produces
@@ -530,7 +537,8 @@ Verified: every "Depends on" entry below is strictly lower-numbered, reading `00
     ADMIN_RSA_PUBLIC_KEY='<generated>' ADMIN_USER_TYPE='SERVICE' EDITION='ENTERPRISE'
     REGION='<region-from-crd>' COMMENT='<description-from-crd>'`, issued over the **org-admin**
     connection. This is the only module that needs org-level privileges.
-  - Write `status.accountName` (the resolved name) and `status.accountUrl`.
+  - Capture the account locator `CREATE ACCOUNT` returns and pass it to 006's `url.go`. Write
+    `status.accountName` (the resolved name) and `status.accountUrl` (built from the locator).
   - Drift / `Observe`: does the account exist under its resolved name.
 - Note: the `platform` user created here is how the platform reaches the account for every subsequent
   operation. Appendix B X1 records that a tenant holding `ACCOUNTADMIN` can drop or re-key it.

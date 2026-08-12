@@ -416,6 +416,8 @@ ALTER ACCOUNT SET NETWORK_POLICY = 'PLATFORM_ACCOUNT_POLICY';
 
 ```
 
+`CREATE ACCOUNT` returns the account locator Snowflake assigns (for example `xc19114`); the controller captures it here for `status.accountUrl` (7.2). The locator is used regardless of whether the region's backplane config has PrivateLink enabled — PrivateLink changes only the domain suffix, not whether the locator is used.
+
 **Note:** Snowflake is expected to release a new feature/syntax called Organization Policies, which will let this same network policy be enforced centrally on the account rather than via the `ALTER ACCOUNT` commands above. Once that syntax is available, this implementation will be swapped to use it — the enforced policy stays the same, but tenants will no longer be able to modify or unset it themselves. Not yet released as of this writing.
 
 
@@ -607,7 +609,7 @@ namespace:      finance               (sha256 → base32, first 5: 5k3wf)
 Snowflake:      analytics_team_eu_5k3wf
 ```
 
-The translation is needed because Snowflake account names allow only letters, digits and `_`, while Kubernetes names disallow `_`. Snowflake accepts either spelling in account URLs, so tenants keep using the hyphenated form when logging in.
+The translation is needed because Snowflake account names allow only letters, digits and `_`, while Kubernetes names disallow `_`.
 
 Deriving the suffix from the namespace needs no stored state: namespaces cannot be renamed, so the name is recomputable on every reconcile and stable for the account's lifetime. Accounts in one namespace share a suffix, and the tenant's own name stays first so they recognize it in the Snowflake UI.
 
@@ -821,7 +823,7 @@ Individual resource types may surface further conditions specific to their own c
 ```yaml
 status:
   accountName: "analytics_team_eu_5k3wf"
-  accountUrl: "https://acme-analytics_team_eu_5k3wf.snowflakecomputing.com"
+  accountUrl: "https://xc19114.eu-central-1.privatelink.snowflakecomputing.com"
   conditions:
     - type: Ready
       status: "True"
