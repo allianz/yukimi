@@ -47,6 +47,53 @@ type {ConfigType} struct {
 }
 ```
 
+## Schema Specification
+
+<!--
+OPTIONAL: Include only if this feature defines or consumes YAML — a CRD (`spec`/`status`)
+or a config file. Delete the whole section (including this comment) for pure-Go packages
+with no YAML surface.
+
+Rules:
+- One table per YAML document or root block, and name the heading after what it
+  describes. A CRD gets `Fields (spec)` plus `Fields (status)`. A config file gets one
+  table named after the file — e.g. `Fields (backplane.yaml)` — and no status table.
+- Field paths are relative to the heading's root and written as they appear in YAML
+  (`groups.accountAdmin`), with `[]` for list elements
+  (`networkPolicy.whitelisting[].user`). Do not repeat the `spec.` prefix in every row.
+- `Required` is relative to its parent object: mark a field **Yes** when the parent is
+  present. Note mutual exclusivity and conditional requirements in the constraints column.
+- `Mutability` is about the field's own lifecycle, not the file's: **Immutable** fields
+  need an enforcing validation rule — say which one. Drop the column entirely for
+  documents where every field is freely editable and reloaded wholesale (most config
+  files); say so in a sentence above the table instead.
+- Put defaults in the constraints column (`Default: UTC`); leave it blank only if the
+  field has no constraint beyond its type.
+-->
+
+### Fields (`{spec | filename.yaml}`)
+
+| Field Path | Type | Required | Mutability | Validation / Constraints |
+| ---------- | ---- | -------- | ---------- | ------------------------ |
+| `{field}` | string | **Yes** | **Immutable** | {Format or enum, e.g. must match `aws-eu-central-1`. Enforced by {CEL rule / controller check}.} |
+| `{field}` | string | No | Mutable | {Constraint and default, e.g. valid IANA time zone. Default: `UTC`.} |
+| `{parent}.{child}` | []object | No | Mutable | {What the block configures.} |
+| `{parent}.{child}[].{leaf}` | []string | No\* | Mutable | {Semantics.} <br>*Mutually exclusive with `{otherField}`.* |
+
+<!-- OPTIONAL: CRDs only — remove this heading and its table for config files. -->
+
+### Fields (`status`)
+
+| Field Path | Type | Description |
+| ---------- | ---- | ----------- |
+| `{field}` | string | {What it reports and which component writes it.} |
+
+<!--
+Back every table above with an illustrative YAML document, added as the LAST example in
+the Appendix.
+-->
+
+
 ## Project Structure
 
 ### Source Code
@@ -126,15 +173,17 @@ Format: **Question?** - Answer
 - **{Name}**: `{path}` - {Description}
 - **{Name}**: {URL} - {Description}
 
-<br/><br/><br/><br/>
+<br/><br/><br/><br/><br/>
 
 ================
 
 ## Appendix: Usage Examples
 
 <!--
-Show 2-4 concrete examples of how to use this feature's API in real controller/integration code.
+Show 2-5 concrete examples of how to use this feature's API in real controller/integration code.
 Examples should be copy-pasteable and show common scenarios.
+If this spec has a Schema Specification section, the LAST example is an illustrative YAML
+document for it — one per table in that section.
 Always keep this section at the bottom of the spec.
 -->
 
@@ -149,4 +198,12 @@ Always keep this section at the bottom of the spec.
 
 ```go
 // Show configuration updates, edge cases, or integration with other components
+```
+
+### Example 3: {Document Name} YAML
+
+<!-- OPTIONAL: only for specs with a Schema Specification section; keep it last. -->
+
+```yaml
+# A valid document exercising every required field and at least one optional block
 ```
