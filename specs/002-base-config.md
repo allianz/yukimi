@@ -1,4 +1,4 @@
-# Specification: Provider Config (002)
+# Specification: Base Config (002)
 
 ## Overview
 
@@ -51,11 +51,17 @@ Because both cases go through the same SDK-internal chain, the switch between wo
 ```go
 // BaseConfig is the immutable, validated provider-wide configuration loaded at startup.
 type BaseConfig struct {
-    SnowflakeOrg             string      // organization name; used in account identifiers, secret paths, and accountUrl
-    SnowflakeOrgAdminAccount string      // account used for org-level operations
-    SnowflakeUsePrivatelink  bool        // affects the connection host (004); defaults to true when omitted
-    CloudProvider            string      // "aws" today; "azure" and "gcp" are reserved values with no backend yet
-    AWS                      AWSSettings // carried verbatim; consumed by 003-a, never interpreted here
+    Snowflake     SnowflakeSettings // organization identity plus connection-affecting settings
+    CloudProvider string            // "aws" today; "azure" and "gcp" are reserved values with no backend yet
+    AWS           AWSSettings       // carried verbatim; consumed by 003-a, never interpreted here
+}
+
+// SnowflakeSettings holds the Snowflake organization-level settings used across
+// account identifiers, secret paths, and connection host construction.
+type SnowflakeSettings struct {
+    Org             string // organization name; used in account identifiers, secret paths, and accountUrl
+    OrgAdminAccount string // account used for org-level operations
+    UsePrivateLink  bool   // affects the connection host (004); defaults to true when omitted
 }
 
 // AWSSettings holds AWS-specific settings, carried by 002 but consumed only by 003-a.
@@ -72,15 +78,30 @@ type AWSSettings struct {
 // Returns:
 //   - *BaseConfig: the validated configuration; never nil on a nil error
 //   - User error if the file is missing, unreadable, not valid YAML, or a required
-//     field (SnowflakeOrg, SnowflakeOrgAdminAccount, CloudProvider) is empty
+//     field (Snowflake.Org, Snowflake.OrgAdminAccount, CloudProvider) is empty
 func Load(configDir string) (*BaseConfig, error)
 ```
+
+## Schema Specification
+
+Every field in `baseConfig.yaml` is freely editable and the whole file is reloaded wholesale on the next pod restart — there is no per-field mutability rule to enforce, so the table below omits a Mutability column.
+
+### Fields (`baseConfig.yaml`)
+
+| Field Path | Type | Required | Validation / Constraints |
+| ---------- | ---- | -------- | ------------------------ |
+| `cloudProvider` | string | **Yes** | Non-empty string. Not validated against a known set of providers — see "Key Concept: One Selector, Not Two". Unrecognized values are rejected by `cmd/provider/main.go`, not here. |
+| `snowflake.org` | string | **Yes** | Non-empty string. Used in account identifiers, secret paths, and `accountUrl` (design.md 3.11.1, 3.12, 7.2). |
+| `snowflake.orgAdminAccount` | string | **Yes** | Non-empty string. Used in the org-admin secret path (design.md 3.11.1). |
+| `snowflake.usePrivateLink` | bool | No | Affects the Snowflake connection host (design.md 3.6). Default: `true` when omitted. |
+| `aws` | object | No | Optional block, carried verbatim. Never validated by this package, even when `cloudProvider: aws`. |
+| `aws.region` | string | No | Carried verbatim; not required to be non-empty here. Validated by spec 003-a's AWS backend constructor at its own construction time. |
 
 ## Project Structure
 
 ```text
 internal/config/
-├── config.go        # BaseConfig, AWSSettings, Load()
+├── config.go        # BaseConfig, SnowflakeSettings, AWSSettings, Load()
 └── config_test.go   # Unit tests
 ```
 
@@ -89,15 +110,15 @@ internal/config/
 **User Errors** (use `errors.NewUserError()`):
 - Missing file: `baseConfig.yaml not found in <configDir>`
 - Malformed YAML: `failed to parse baseConfig.yaml: <parse error>`
-- Missing required field: `snowflakeOrg is required in baseConfig.yaml`
-- Missing required field: `snowflakeOrgAdminAccount is required in baseConfig.yaml`
+- Missing required field: `snowflake.org is required in baseConfig.yaml`
+- Missing required field: `snowflake.orgAdminAccount is required in baseConfig.yaml`
 - Missing required field: `cloudProvider is required in baseConfig.yaml`
 
 **System Errors**: this package makes no network calls and has no retryable infrastructure dependency, so it classifies no scenario as a system error on its own. An unexpected filesystem error (e.g. a permissions problem on the mounted volume) surfaces as a raw wrapped error (`fmt.Errorf("reading baseConfig.yaml: %w", err)`); the caller's error handling (001) treats it as a system error by default, since `Load` never wraps it in `errors.NewUserError`. This is intentionally minimal — this package does not attempt to distinguish every possible OS-level failure mode.
 
 ## Edge Cases
 
-- **What happens if `snowflakeUsePrivatelink` is omitted?** - Defaults to `true`.
+- **What happens if `snowflake.usePrivateLink` is omitted?** - Defaults to `true`.
 - **What happens with an unrecognized YAML key (e.g. a future `timeout`)?** - Ignored by the decoder, not an error. The schema is expected to grow over time (timeouts, pool sizes, and similar settings may be added later as the codebase needs them), and unknown keys must not break `Load` on a rolling deployment.
 - **What if the `aws:` block is present but `cloudProvider` is not `"aws"`?** - `Load` does not cross-validate the two. `AWS` is carried verbatim regardless of `CloudProvider`'s value; it is simply unused if the AWS backend isn't the one constructed.
 - **What if `cloudProvider` names a cloud with no backend compiled in (e.g. `"azure"` today)?** - `Load` does not reject it — this package has no notion of which backends exist. `cmd/provider/main.go` is the one that fails fast, listing the cloud providers actually compiled in.
@@ -111,7 +132,7 @@ internal/config/
 
 - **`cmd/provider/main.go`** - Owns the `--configDir` flag and resolves it to a directory path. Calls `config.Load(configDir)` once at startup, then switches on `BaseConfig.CloudProvider` to construct the matching secrets backend, fatally rejecting an unrecognized value by listing the cloud providers compiled in - Key functions: `config.Load()`.
 - **`internal/secrets/aws` (003-a)** - Consumes `BaseConfig.AWS.Region` when constructed by `main.go`; rejects an empty region as a user error itself, since 002 does not validate it - Notes: credentials come from the AWS SDK's default chain, never from `BaseConfig`.
-- **`internal/snowflake/pool` (004)** - Consumes `BaseConfig.SnowflakeOrg` and `BaseConfig.SnowflakeUsePrivatelink` for connection host construction.
+- **`internal/snowflake/pool` (004)** - Consumes `BaseConfig.Snowflake.Org` and `BaseConfig.Snowflake.UsePrivateLink` for connection host construction.
 - **`internal/backplane` (007)** / **guardrails loader (008)** - Read their own sibling files (`backplane.yaml`, a guardrails/exceptions file) from the same `--configDir`, with independently implemented loading and validation logic — no code shared with `internal/config`.
 
 ## Success Criteria
@@ -119,10 +140,10 @@ internal/config/
 - **SC-001**: `Load` returns a populated `*BaseConfig` for a well-formed `baseConfig.yaml`.
 - **SC-002**: `Load` returns a user error when `<configDir>/baseConfig.yaml` does not exist.
 - **SC-003**: `Load` returns a user error when the file is not valid YAML.
-- **SC-004**: `Load` returns a user error when `snowflakeOrg` is empty or absent.
-- **SC-005**: `Load` returns a user error when `snowflakeOrgAdminAccount` is empty or absent.
+- **SC-004**: `Load` returns a user error when `snowflake.org` is empty or absent.
+- **SC-005**: `Load` returns a user error when `snowflake.orgAdminAccount` is empty or absent.
 - **SC-006**: `Load` returns a user error when `cloudProvider` is empty or absent.
-- **SC-007**: `Load` defaults `SnowflakeUsePrivatelink` to `true` when the key is omitted.
+- **SC-007**: `Load` defaults `Snowflake.UsePrivateLink` to `true` when the key is omitted.
 - **SC-008**: `Load` does not error on an unrecognized `cloudProvider` value (e.g. `"azure"`) — that rejection is `main.go`'s responsibility, not 002's.
 - **SC-009**: `Load` does not error when `cloudProvider` and the presence/absence of the `aws:` block are inconsistent (e.g. `cloudProvider: azure` with an `aws:` block present).
 - **SC-010**: `Load` preserves `AWS.Region` verbatim without validating its format or presence.
@@ -133,11 +154,11 @@ internal/config/
 
 ## References
 
-- **Config Package**: `internal/config/config.go` - `BaseConfig`, `AWSSettings`, `Load`
-- **Design Doc**: `specs/design.md`, §3.11.1 - the AWS Secrets Manager path grammar that consumes `SnowflakeOrg`
+- **Config Package**: `internal/config/config.go` - `BaseConfig`, `SnowflakeSettings`, `AWSSettings`, `Load`
+- **Design Doc**: `specs/design.md`, §3.11.1 - the AWS Secrets Manager path grammar that consumes `Snowflake.Org`
 - **Roadmap**: `specs/roadmap.md` - ordering rationale; note that its current 002 summary and decision-7 text still describe an earlier `secretsBackend`/flat-`AWS_REGION` draft this spec supersedes.
 
-<br/><br/><br/><br/>
+<br/><br/><br/><br/><br/>
 
 ================
 
@@ -183,10 +204,13 @@ func main() {
 ### Example 2: A `baseConfig.yaml` Fixture
 
 ```yaml
-snowflakeOrg: my_org_name
-snowflakeOrgAdminAccount: my_org_admin_account_name
-snowflakeUsePrivatelink: true
 cloudProvider: aws
+
+snowflake:
+  org: my_org_name
+  orgAdminAccount: my_org_admin_account_name
+  usePrivateLink: true
+
 aws:
   region: eu-central-1
 ```
