@@ -31,7 +31,7 @@ Only what exists today is shown above. Planned package locations for not-yet-imp
 
 Each `internal/` package has a corresponding numbered spec in `specs/`. The spec is the authoritative source for that package — before implementing or modifying code in a package, always read its spec first.
 
-Specs are written and implemented one at a time in ascending order, so **a spec may depend only on specs numbered strictly below it** — the code for higher-numbered specs does not exist yet. See `specs/roadmap.md` for the detailed planned scope of each spec not yet written, plus the ordering rationale and the decisions behind it. A letter suffix (`003-a`) marks a pluggable backend implementing an interface owned by its parent number; it sorts between `003` and `004`, and only `cmd/provider/main.go` may depend on one.
+Specs are written and implemented one at a time in ascending order, so **a spec may depend only on specs numbered strictly below it** — the code for higher-numbered specs does not exist yet. For a spec not yet written, `specs/scope-NNN-<slug>.md` (if present) gives a starting-point idea of its intended scope — see that file's own header for how much weight to give it; `specs/design.md` is always the authoritative source. A letter suffix (`003-a`) marks a pluggable backend implementing an interface owned by its parent number; it sorts between `003` and `004`, and only `cmd/provider/main.go` may depend on one.
 
 | Spec | Package | Description |
 |------|---------|-------------|
