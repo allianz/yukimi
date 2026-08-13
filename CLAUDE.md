@@ -36,7 +36,7 @@ Specs are written and implemented one at a time in ascending order, so **a spec 
 | Spec | Package | Description |
 |------|---------|-------------|
 | `001-error-and-logging.md` | `internal/errors/` + `internal/logger/` | User vs system errors, incident IDs, operation-scoped logging |
-| `002-provider-config.md` | `internal/config/` | Provider-wide settings loaded from a mounted ConfigMap |
+| `002-base-config.md` | `internal/config/` | Provider-wide settings loaded from a mounted ConfigMap |
 | `003-secrets-handling.md` | `internal/secrets/` | Backend interface, secret paths, RSA keypairs, TTL cache |
 | `003-a-aws-secrets-backend.md` | `internal/secrets/aws/` | AWS Secrets Manager implementation of the 003 backend interface |
 | `004-connection-pooling.md` | `internal/snowflake/pool/` | Pooled JWT keypair connections, org-admin vs per-account scopes |
