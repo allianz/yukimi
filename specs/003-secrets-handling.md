@@ -397,9 +397,13 @@ func (m *Module) provisionCredentials(ctx context.Context, backend secrets.Backe
     }
     if existed {
         if accountAlreadyExistsInSnowflake {
-            // A live secret at this path with no CREATE ACCOUNT yet to follow
-            // is a bug, not a recoverable state — 010 never overwrites it.
-            return nil, fmt.Errorf("tenant secret already stored at %s but account %s is not yet created", path, accountName)
+            // The caller is trying to create this account and its secret again,
+            // even though the account already exists. CreateOrRecover does not
+            // fail on that by itself — it just reports existed=true — so it is
+            // this caller's job to notice the account is already live and abort.
+            // Should not happen in normal operation; the realistic trigger is two
+            // reconciles racing on the same object (e.g. a leader-election handover).
+            return nil, fmt.Errorf("tenant secret already stored at %s but account %s already exists in Snowflake", path, accountName)
         }
         // Interrupted-retry case: reuse the credential from the prior attempt.
     }
