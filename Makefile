@@ -96,9 +96,9 @@ dev: $(KIND) $(KUBECTL)
 	@$(INFO) Setting up AWS credentials from local profile
 	@KUBECTL=$(KUBECTL) $(ROOT_DIR)/cluster/local/sync-aws-credentials.sh
 	@$(INFO) Labeling tenant namespace for testing
-	@set -a && source .env && set +a && $(KUBECTL) create namespace $${SNOWFLAKE_TEST_TENANT} --dry-run=client -o yaml | $(KUBECTL) apply -f - && $(KUBECTL) label namespace $${SNOWFLAKE_TEST_TENANT} department="az_tech" costcenter="121212" --overwrite
+	@set -a && source .env && set +a && $(KUBECTL) create namespace $${SAMPLE_CUSTOMER_NAMESPACE} --dry-run=client -o yaml | $(KUBECTL) apply -f - && $(KUBECTL) label namespace $${SAMPLE_CUSTOMER_NAMESPACE} department="az_tech" costcenter="121212" --overwrite
 	@$(INFO) Switching kubectl default namespace to tenant namespace
-	@set -a && source .env && set +a && $(KUBECTL) config set-context --current --namespace=$${SNOWFLAKE_TEST_TENANT}
+	@set -a && source .env && set +a && $(KUBECTL) config set-context --current --namespace=$${SAMPLE_CUSTOMER_NAMESPACE}
 	@$(INFO) Starting Yukimi controllers
 	@$(GO) run cmd/provider/main.go --debug
 

@@ -40,8 +40,8 @@ AWS_REGION="${AWS_REGION:-eu-central-1}"
 AWS_PROFILE="${AWS_PROFILE:-}"
 SNOWFLAKE_ORG="${SNOWFLAKE_ORG:-}"
 SNOWFLAKE_ORG_ADMIN_ACCOUNT="${SNOWFLAKE_ORG_ADMIN_ACCOUNT:-orgadmin}"
-SNOWFLAKE_TEST_ACCOUNT="${SNOWFLAKE_TEST_ACCOUNT:-platform_dev_internal}"
-SNOWFLAKE_TEST_TENANT="${SNOWFLAKE_TEST_TENANT:-default}"
+SAMPLE_CUSTOMER_ACCOUNT="${SAMPLE_CUSTOMER_ACCOUNT:-platform_dev_internal}"
+SAMPLE_CUSTOMER_NAMESPACE="${SAMPLE_CUSTOMER_NAMESPACE:-default}"
 
 # Fixed username for all secrets
 USERNAME="platform"
@@ -94,8 +94,8 @@ Environment Variables (from .env or environment):
   SNOWFLAKE_ORG_ADMIN_ACCOUNT         Org admin account name (default: orgadmin)
 
   The following are only required with --generate-test-keys:
-  SNOWFLAKE_TEST_TENANT               Test tenant namespace (default: default)
-  SNOWFLAKE_TEST_ACCOUNT              Test tenant account name (default: platform_dev_internal)
+  SAMPLE_CUSTOMER_NAMESPACE            Simulated customer's namespace (default: default)
+  SAMPLE_CUSTOMER_ACCOUNT              Simulated customer's account name (default: platform_dev_internal)
 
 Generated Secrets:
   Always:
@@ -170,8 +170,8 @@ echo "  AWS Profile:         ${AWS_PROFILE:-<default>}"
 echo "  Snowflake Org:       ${SNOWFLAKE_ORG}"
 echo "  Org Admin Account:   ${SNOWFLAKE_ORG_ADMIN_ACCOUNT}"
 if [[ "${GENERATE_TEST_KEYS}" == "true" ]]; then
-    echo "  Test Tenant:         ${SNOWFLAKE_TEST_TENANT}"
-    echo "  Test Account:        ${SNOWFLAKE_TEST_ACCOUNT}"
+    echo "  Customer Namespace:  ${SAMPLE_CUSTOMER_NAMESPACE}"
+    echo "  Customer Account:    ${SAMPLE_CUSTOMER_ACCOUNT}"
 fi
 echo "  Mode:                $([ "${GENERATE_TEST_KEYS}" == "true" ] && echo "Development (with test keys)" || echo "Production (org admin only)")"
 echo "  Dry run:             ${DRY_RUN}"
@@ -185,7 +185,7 @@ echo "Secrets to create:"
 echo "  - ${ORG_ADMIN_SECRET_PATH} (username: ${USERNAME})"
 
 if [[ "${GENERATE_TEST_KEYS}" == "true" ]]; then
-    TENANT_SECRET_PATH="snowflake/tenant/${SNOWFLAKE_ORG}/${SNOWFLAKE_TEST_TENANT}/${SNOWFLAKE_TEST_ACCOUNT}/platform-credentials"
+    TENANT_SECRET_PATH="snowflake/tenant/${SNOWFLAKE_ORG}/${SAMPLE_CUSTOMER_NAMESPACE}/${SAMPLE_CUSTOMER_ACCOUNT}/platform-credentials"
     echo "  - ${TENANT_SECRET_PATH} (username: ${USERNAME})"
 fi
 echo ""
@@ -221,22 +221,29 @@ if [[ "${GENERATE_TEST_KEYS}" == "true" ]]; then
 fi
 echo ""
 
-# Check if any secrets would be overwritten
+# Without --overwrite, an existing secret is reused (not regenerated) — its
+# stored public key is still printed below so Snowflake can be configured.
+WILL_GENERATE=false
 if [[ "${OVERWRITE}" == "false" ]]; then
     if [[ "${ORG_ADMIN_EXISTS}" == "true" ]]; then
-        echo -e "${RED}Error: Secret ${ORG_ADMIN_SECRET_PATH} already exists${NC}"
-        echo "Use --overwrite to replace existing secrets"
-        exit 1
+        echo -e "${YELLOW}Note: ${ORG_ADMIN_SECRET_PATH} already exists — reusing it (use --overwrite to replace)${NC}"
+    else
+        WILL_GENERATE=true
     fi
-    if [[ "${GENERATE_TEST_KEYS}" == "true" && "${TENANT_EXISTS}" == "true" ]]; then
-        echo -e "${RED}Error: Secret ${TENANT_SECRET_PATH} already exists${NC}"
-        echo "Use --overwrite to replace existing secrets"
-        exit 1
+    if [[ "${GENERATE_TEST_KEYS}" == "true" ]]; then
+        if [[ "${TENANT_EXISTS}" == "true" ]]; then
+            echo -e "${YELLOW}Note: ${TENANT_SECRET_PATH} already exists — reusing it (use --overwrite to replace)${NC}"
+        else
+            WILL_GENERATE=true
+        fi
     fi
+    echo ""
+else
+    WILL_GENERATE=true
 fi
 
-# Confirmation prompt
-if [[ "${SKIP_CONFIRMATION}" == "false" && "${DRY_RUN}" == "false" ]]; then
+# Confirmation prompt - only needed when something will actually be written
+if [[ "${WILL_GENERATE}" == "true" && "${SKIP_CONFIRMATION}" == "false" && "${DRY_RUN}" == "false" ]]; then
     echo -e "${YELLOW}This will generate new RSA key pairs and store them in AWS Secrets Manager.${NC}"
     if [[ "${OVERWRITE}" == "true" ]]; then
         echo -e "${RED}Existing secrets will be OVERWRITTEN.${NC}"
@@ -246,6 +253,9 @@ if [[ "${SKIP_CONFIRMATION}" == "false" && "${DRY_RUN}" == "false" ]]; then
         echo "Aborted."
         exit 0
     fi
+    echo ""
+elif [[ "${WILL_GENERATE}" == "false" ]]; then
+    echo -e "${YELLOW}All secrets already exist. No new RSA key pairs will be generated — the Snowflake commands below will use the already-stored public keys.${NC}"
     echo ""
 fi
 
@@ -277,83 +287,99 @@ generate_rsa_keypair() {
     rm -rf "${temp_dir}"
 }
 
-# Function to create account-specific secret (with account field)
+# Function to fetch the public key already stored at a secret path
+get_existing_public_key() {
+    local secret_path="$1"
+    ${AWS_CMD} secretsmanager get-secret-value \
+        --secret-id "${secret_path}" \
+        --query 'SecretString' \
+        --output text | jq -r '.public_key'
+}
+
+# Function to create an account-specific secret
 create_account_secret() {
     local secret_path="$1"
     local username="$2"
     local account="$3"
     local exists="$4"
-
-    echo -e "${BLUE}Creating secret: ${secret_path}${NC}"
+    local role="${5:-}"
 
     local public_key
-    local private_key
 
-    generate_rsa_keypair "${username}"
-    public_key="${GENERATED_PUBLIC_KEY}"
-    private_key="${GENERATED_PRIVATE_KEY}"
+    if [[ "${exists}" == "true" && "${OVERWRITE}" == "false" ]]; then
+        echo -e "${BLUE}Secret already exists: ${secret_path}${NC}"
+        echo -e "${YELLOW}  Skipping generation — reusing stored public key (use --overwrite to replace)${NC}"
+        public_key=$(get_existing_public_key "${secret_path}")
+    else
+        echo -e "${BLUE}Creating secret: ${secret_path}${NC}"
 
-    # Build secret JSON with account field
-    local secret_json
-    secret_json=$(jq -n \
-        --arg account "${account}" \
-        --arg username "${username}" \
-        --arg public_key "${public_key}" \
-        --arg private_key "${private_key}" \
-        '{
-            account: $account,
-            username: $username,
-            public_key: $public_key,
-            private_key: $private_key
-        }')
+        local private_key
+        generate_rsa_keypair "${username}"
+        public_key="${GENERATED_PUBLIC_KEY}"
+        private_key="${GENERATED_PRIVATE_KEY}"
 
-    # Create or update secret
-    if [[ "${DRY_RUN}" == "true" ]]; then
-        if [[ "${exists}" == "true" ]]; then
-            echo -e "${BLUE}  [DRY RUN] Would update existing secret${NC}"
-        else
-            echo -e "${BLUE}  [DRY RUN] Would create new secret${NC}"
-        fi
-
-        # Create display version with truncated private key
-        # Get first two lines of private key (delimiter + first line of key data)
-        local truncated_private_key
-        truncated_private_key=$(echo "${private_key}" | head -n 2)
-        truncated_private_key="${truncated_private_key}"$'\n'"...[truncated]"
-
-        local secret_json_display
-        secret_json_display=$(jq -n \
-            --arg account "${account}" \
+        # Build secret JSON
+        local secret_json
+        secret_json=$(jq -n \
             --arg username "${username}" \
             --arg public_key "${public_key}" \
-            --arg private_key "${truncated_private_key}" \
+            --arg private_key "${private_key}" \
             '{
-                account: $account,
                 username: $username,
                 public_key: $public_key,
                 private_key: $private_key
             }')
 
-        echo -e "${BLUE}  [DRY RUN] Secret JSON:${NC}"
-        echo "${secret_json_display}" | sed 's/^/    /'
-    else
-        if [[ "${exists}" == "true" ]]; then
-            ${AWS_CMD} secretsmanager put-secret-value \
-                --secret-id "${secret_path}" \
-                --secret-string "${secret_json}" \
-                > /dev/null
-            echo -e "${GREEN}  ✓ Updated existing secret${NC}"
+        # Create or update secret
+        if [[ "${DRY_RUN}" == "true" ]]; then
+            if [[ "${exists}" == "true" ]]; then
+                echo -e "${BLUE}  [DRY RUN] Would update existing secret${NC}"
+            else
+                echo -e "${BLUE}  [DRY RUN] Would create new secret${NC}"
+            fi
+
+            # Create display version with truncated private key
+            # Get first two lines of private key (delimiter + first line of key data)
+            local truncated_private_key
+            truncated_private_key=$(echo "${private_key}" | head -n 2)
+            truncated_private_key="${truncated_private_key}"$'\n'"...[truncated]"
+
+            local secret_json_display
+            secret_json_display=$(jq -n \
+                --arg username "${username}" \
+                --arg public_key "${public_key}" \
+                --arg private_key "${truncated_private_key}" \
+                '{
+                    username: $username,
+                    public_key: $public_key,
+                    private_key: $private_key
+                }')
+
+            echo -e "${BLUE}  [DRY RUN] Secret JSON:${NC}"
+            echo "${secret_json_display}" | sed 's/^/    /'
         else
-            ${AWS_CMD} secretsmanager create-secret \
-                --name "${secret_path}" \
-                --secret-string "${secret_json}" \
-                > /dev/null
-            echo -e "${GREEN}  ✓ Created new secret${NC}"
+            if [[ "${exists}" == "true" ]]; then
+                ${AWS_CMD} secretsmanager put-secret-value \
+                    --secret-id "${secret_path}" \
+                    --secret-string "${secret_json}" \
+                    > /dev/null
+                echo -e "${GREEN}  ✓ Updated existing secret${NC}"
+            else
+                ${AWS_CMD} secretsmanager create-secret \
+                    --name "${secret_path}" \
+                    --secret-string "${secret_json}" \
+                    > /dev/null
+                echo -e "${GREEN}  ✓ Created new secret${NC}"
+            fi
         fi
     fi
 
     # Display instructions for Snowflake
     echo -e "${YELLOW}  → Run in Snowflake (account: ${account}):${NC}"
+    if [[ -n "${role}" ]]; then
+        echo "     CREATE USER IF NOT EXISTS ${username} TYPE = SERVICE DEFAULT_ROLE = ${role} COMMENT = 'Yukimi platform service user';"
+        echo "     GRANT ROLE ${role} TO USER ${username};"
+    fi
     echo "     ALTER USER ${username} SET RSA_PUBLIC_KEY='${public_key}';"
     echo ""
 }
@@ -362,20 +388,22 @@ create_account_secret() {
 echo -e "${BLUE}=== Creating Secrets ===${NC}"
 echo ""
 
-# 1. Org admin credentials (with account field)
+# 1. Org admin credentials
 create_account_secret \
     "${ORG_ADMIN_SECRET_PATH}" \
     "${USERNAME}" \
     "${SNOWFLAKE_ORG_ADMIN_ACCOUNT}" \
-    "${ORG_ADMIN_EXISTS}"
+    "${ORG_ADMIN_EXISTS}" \
+    "GLOBALORGADMIN"
 
-# 2. Tenant platform credentials (with account field) - only if --generate-test-keys
+# 2. Tenant platform credentials - only if --generate-test-keys
 if [[ "${GENERATE_TEST_KEYS}" == "true" ]]; then
     create_account_secret \
         "${TENANT_SECRET_PATH}" \
         "${USERNAME}" \
-        "${SNOWFLAKE_TEST_ACCOUNT}" \
-        "${TENANT_EXISTS}"
+        "${SAMPLE_CUSTOMER_ACCOUNT}" \
+        "${TENANT_EXISTS}" \
+        "ACCOUNTADMIN"
 fi
 
 if [[ "${DRY_RUN}" == "true" ]]; then
@@ -393,7 +421,7 @@ else
     echo -e "${GREEN}=== Setup Complete ===${NC}"
     echo ""
     echo "Next steps:"
-    echo "1. Run the ALTER USER commands shown above in Snowflake"
+    echo "1. Run the Snowflake commands shown above"
     echo "2. Verify connectivity using the integration tests"
 fi
 echo ""

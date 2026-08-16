@@ -63,7 +63,7 @@ implementation of the `Backend` interface owned by spec `003`.
     second guarantee is the weaker one.
   - **Integration-test requirements**: these tests are the only place an AWS account is needed, they
     run under `make test-integration` only (skipped by `-short`), and they are driven by `.env`
-    (`AWS_REGION`, `AWS_PROFILE`, `SNOWFLAKE_TEST_TENANT`, `SNOWFLAKE_TEST_ACCOUNT`). They must create
+    (`AWS_REGION`, `AWS_PROFILE`, `SAMPLE_CUSTOMER_NAMESPACE`, `SAMPLE_CUSTOMER_ACCOUNT`). They must create
     and clean up under a dedicated test path prefix, and they must account for the recovery window: a
     test that deletes and immediately recreates the same path hits `ErrPendingDeletion`, so either
     every run uses a unique path or cleanup — and only cleanup — uses `ForceDeleteWithoutRecovery`. The
