@@ -37,6 +37,18 @@ var (
 	// awsRegionPattern matches AWS region names such as "eu-central-1".
 	awsRegionPattern = regexp.MustCompile(`^[a-z]{2}(-[a-z]+)+-[0-9]$`)
 
+	// accountLocatorPattern matches the loose shape of a Snowflake account locator
+	// (e.g. "xc19114", design.md 3.6). Snowflake publishes no strict grammar, so this
+	// only rejects whitespace/punctuation, never judges realness.
+	accountLocatorPattern = regexp.MustCompile(`^[A-Za-z0-9]+$`)
+
+	// orgAdminRegionPattern matches the literal region-id used in a Snowflake account's
+	// connection hostname (e.g. "eu-central-1", "westeurope") — not the "aws-"-prefixed
+	// Backplane Config region key (design.md 3.5). Looser than awsRegionPattern because a
+	// Snowflake org's account may live on any cloud, independent of the controller's own
+	// AWS-hosted Secrets Manager backend.
+	orgAdminRegionPattern = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
+
 	cloudSectionKeys = map[string]bool{"aws": true, "azure": true, "gcp": true}
 )
 
@@ -59,9 +71,11 @@ func (c *BaseConfig) CloudProvider() string {
 // SnowflakeSettings holds the Snowflake organization-level settings used across
 // account identifiers, secret paths, and connection host construction.
 type SnowflakeSettings struct {
-	Org             string // organization name; used in account identifiers, secret paths, and accountUrl
-	OrgAdminAccount string // account used for org-level operations
-	UsePrivateLink  bool   // affects the connection host (004); defaults to true when omitted
+	Org                    string // organization name; used in account identifiers, secret paths, and accountUrl
+	OrgAdminAccount        string // account used for org-level operations
+	OrgAdminAccountLocator string // Snowflake account locator for OrgAdminAccount (e.g. "xc19114"); static config because, unlike a tenant account, the controller never runs CREATE ACCOUNT for it (design.md 3.6)
+	OrgAdminAccountRegion  string // Snowflake region OrgAdminAccount lives in (hostname region-id, e.g. "eu-central-1" or "westeurope"); paired with OrgAdminAccountLocator to build the org-admin connection host (004)
+	UsePrivateLink         bool   // affects the connection host (004); defaults to true when omitted
 }
 
 // AWSSettings holds AWS-specific settings, consumed only by 003-a.
@@ -77,9 +91,11 @@ type rawConfig struct {
 }
 
 type rawSnowflake struct {
-	Org             string `yaml:"org"`
-	OrgAdminAccount string `yaml:"orgAdminAccount"`
-	UsePrivateLink  *bool  `yaml:"usePrivateLink"`
+	Org                    string `yaml:"org"`
+	OrgAdminAccount        string `yaml:"orgAdminAccount"`
+	OrgAdminAccountLocator string `yaml:"orgAdminAccountLocator"`
+	OrgAdminAccountRegion  string `yaml:"orgAdminAccountRegion"`
+	UsePrivateLink         *bool  `yaml:"usePrivateLink"`
 }
 
 type rawAWS struct {
@@ -95,7 +111,8 @@ type rawAWS struct {
 // Returns:
 //   - *BaseConfig: the validated configuration; never nil on a nil error
 //   - User error if the file is missing, unreadable, not valid YAML, a required field
-//     (Snowflake.Org, Snowflake.OrgAdminAccount) is empty, the file does not carry exactly
+//     (Snowflake.Org, Snowflake.OrgAdminAccount, Snowflake.OrgAdminAccountLocator,
+//     Snowflake.OrgAdminAccountRegion) is empty, the file does not carry exactly
 //     one cloud section, or a field's value does not match its documented format
 //
 // Load walks the parsed YAML's top-level keys to find the cloud sections, so a section with
@@ -151,6 +168,24 @@ func Load(configDir string) (*BaseConfig, error) {
 			raw.Snowflake.OrgAdminAccount))
 	}
 
+	if raw.Snowflake.OrgAdminAccountLocator == "" {
+		return nil, errors.NewUserError("snowflake.orgAdminAccountLocator is required in baseConfig.yaml")
+	}
+	if !accountLocatorPattern.MatchString(raw.Snowflake.OrgAdminAccountLocator) {
+		return nil, errors.NewUserError(fmt.Sprintf(
+			"snowflake.orgAdminAccountLocator '%s' does not match the expected format (expected: xc19114)",
+			raw.Snowflake.OrgAdminAccountLocator))
+	}
+
+	if raw.Snowflake.OrgAdminAccountRegion == "" {
+		return nil, errors.NewUserError("snowflake.orgAdminAccountRegion is required in baseConfig.yaml")
+	}
+	if !orgAdminRegionPattern.MatchString(raw.Snowflake.OrgAdminAccountRegion) {
+		return nil, errors.NewUserError(fmt.Sprintf(
+			"snowflake.orgAdminAccountRegion '%s' does not match the expected format (expected: eu-central-1 or westeurope)",
+			raw.Snowflake.OrgAdminAccountRegion))
+	}
+
 	if raw.AWS.Region != "" && !awsRegionPattern.MatchString(raw.AWS.Region) {
 		return nil, errors.NewUserError(fmt.Sprintf(
 			"aws.region '%s' does not match the expected format (expected: eu-central-1)", raw.AWS.Region))
@@ -163,9 +198,11 @@ func Load(configDir string) (*BaseConfig, error) {
 
 	return &BaseConfig{
 		Snowflake: SnowflakeSettings{
-			Org:             raw.Snowflake.Org,
-			OrgAdminAccount: raw.Snowflake.OrgAdminAccount,
-			UsePrivateLink:  usePrivateLink,
+			Org:                    raw.Snowflake.Org,
+			OrgAdminAccount:        raw.Snowflake.OrgAdminAccount,
+			OrgAdminAccountLocator: raw.Snowflake.OrgAdminAccountLocator,
+			OrgAdminAccountRegion:  raw.Snowflake.OrgAdminAccountRegion,
+			UsePrivateLink:         usePrivateLink,
 		},
 		AWS: AWSSettings{
 			Region: raw.AWS.Region,

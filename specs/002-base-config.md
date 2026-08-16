@@ -59,9 +59,11 @@ func (c *BaseConfig) CloudProvider() string
 // SnowflakeSettings holds the Snowflake organization-level settings used across
 // account identifiers, secret paths, and connection host construction.
 type SnowflakeSettings struct {
-    Org             string // organization name; used in account identifiers, secret paths, and accountUrl
-    OrgAdminAccount string // account used for org-level operations
-    UsePrivateLink  bool   // affects the connection host (004); defaults to true when omitted
+    Org                    string // organization name; used in account identifiers, secret paths, and accountUrl
+    OrgAdminAccount        string // account used for org-level operations
+    OrgAdminAccountLocator string // Snowflake account locator for OrgAdminAccount (e.g. "xc19114"); static config because, unlike a tenant account, the controller never runs CREATE ACCOUNT for it (design.md 3.6)
+    OrgAdminAccountRegion  string // Snowflake region OrgAdminAccount lives in (hostname region-id, e.g. "eu-central-1" or "westeurope"); paired with OrgAdminAccountLocator to build the org-admin connection host (004)
+    UsePrivateLink         bool   // affects the connection host (004); defaults to true when omitted
 }
 
 // AWSSettings holds AWS-specific settings, consumed only by 003-a.
@@ -78,7 +80,8 @@ type AWSSettings struct {
 // Returns:
 //   - *BaseConfig: the validated configuration; never nil on a nil error
 //   - User error if the file is missing, unreadable, not valid YAML, a required field
-//     (Snowflake.Org, Snowflake.OrgAdminAccount) is empty, the file does not carry exactly
+//     (Snowflake.Org, Snowflake.OrgAdminAccount, Snowflake.OrgAdminAccountLocator,
+//     Snowflake.OrgAdminAccountRegion) is empty, the file does not carry exactly
 //     one cloud section, or a field's value does not match its documented format
 //
 // Load walks the parsed YAML's top-level keys to find the cloud sections, so a section with
@@ -96,6 +99,8 @@ Every field in `baseConfig.yaml` is freely editable and the whole file is reload
 | ---------- | ---- | -------- | ------------------------ |
 | `snowflake.org` | string | **Yes** | Non-empty; matches `^[A-Za-z][A-Za-z0-9_]*$` (Snowflake identifier form, design.md 3.12). Used in account identifiers, secret paths, and `accountUrl` (design.md 3.11.1, 3.12, 7.2). |
 | `snowflake.orgAdminAccount` | string | **Yes** | Non-empty; matches `^[A-Za-z][A-Za-z0-9_]*$`. Used in the org-admin secret path (design.md 3.11.1). |
+| `snowflake.orgAdminAccountLocator` | string | **Yes** | Non-empty; matches `^[A-Za-z0-9]+$` (Snowflake account locator form, e.g. `xc19114`). Static because, unlike a tenant account, there is no `CREATE ACCOUNT` response to capture it from (design.md 3.6). Paired with `orgAdminAccountRegion` to build the org-admin connection host (004). |
+| `snowflake.orgAdminAccountRegion` | string | **Yes** | Non-empty; matches `^[a-z][a-z0-9-]*$` — the literal region-id used in a Snowflake account's connection hostname (e.g. `eu-central-1`, `westeurope`), not the `aws-`-prefixed Backplane Config region key (design.md 3.5). |
 | `snowflake.usePrivateLink` | bool | No | Affects the Snowflake connection host (design.md 3.6). Default: `true` when omitted. |
 | `aws` | object | **Yes**, or another cloud section | The cloud section for AWS. Its presence is what makes `CloudProvider()` return `"aws"`. Exactly one of `aws` / `azure` / `gcp` must be present — none or several is a user error. |
 | `aws.region` | string | No | Not required here; if non-empty, matches `^[a-z]{2}(-[a-z]+)+-[0-9]$`. Whether the region exists and whether it is required at all is decided by 003-a's constructor. |
@@ -115,6 +120,10 @@ internal/config/
 - Malformed YAML: `failed to parse baseConfig.yaml: <parse error>`
 - Missing required field: `snowflake.org is required in baseConfig.yaml`
 - Missing required field: `snowflake.orgAdminAccount is required in baseConfig.yaml`
+- Missing required field: `snowflake.orgAdminAccountLocator is required in baseConfig.yaml`
+- Missing required field: `snowflake.orgAdminAccountRegion is required in baseConfig.yaml`
+- Malformed value: `snowflake.orgAdminAccountLocator 'xc-19114!' does not match the expected format (expected: xc19114)`
+- Malformed value: `snowflake.orgAdminAccountRegion 'Frankfurt!' does not match the expected format (expected: eu-central-1 or westeurope)`
 - Malformed value: `aws.region 'Frankfurt!' does not match the expected format (expected: eu-central-1)` — and likewise for any other field with a documented regex
 - No cloud section: `baseConfig.yaml must contain one cloud section (one of: aws, azure, gcp)`
 - Several cloud sections: `baseConfig.yaml contains several cloud sections (aws, azure); exactly one is allowed`
@@ -129,6 +138,7 @@ internal/config/
 - **What if the cloud section has no backend compiled in (e.g. `azure:` today)?** - `Load` accepts it and `CloudProvider()` returns `"azure"` — this package has no notion of which backends exist. `cmd/provider/main.go` is the one that fails fast, listing the cloud providers actually compiled in.
 - **What if `aws.region` is absent while `aws:` is present?** - `Load` accepts it; requiring a region is 003-a's call, and its constructor rejects the empty value as a user error.
 - **What if a field's value is well-formed but wrong (e.g. `aws.region: xx-nowhere-9`)?** - `Load` accepts it. Shape is all this package can judge; the owning component fails on first use.
+- **What if `orgAdminAccountLocator`/`orgAdminAccountRegion` is well-formed but not real (e.g. a locator that doesn't exist, or a region Snowflake doesn't offer)?** - `Load` accepts it. Shape is all this package can judge; realness can only be discovered on 004's first connection attempt.
 - **What differs when the controller runs outside the cluster (local development)?** - Nothing in this package. `Load` reads and validates `baseConfig.yaml` identically either way; only the AWS SDK's underlying credential resolution differs beneath 003-a (see Key Concept above), and that difference is invisible to `internal/config`.
 
 ## Dependencies
@@ -139,7 +149,7 @@ internal/config/
 
 - **`cmd/provider/main.go`** - Owns the `--configDir` flag and resolves it to a directory path. Calls `config.Load(configDir)` once at startup, then switches on `BaseConfig.CloudProvider()` to construct the matching secrets backend, fatally rejecting an unrecognized value by listing the cloud providers compiled in - Key functions: `config.Load()`, `BaseConfig.CloudProvider()`.
 - **`internal/secrets/aws` (003-a)** - Consumes `BaseConfig.AWS.Region` when constructed by `main.go`; rejects an empty region as a user error itself, since 002 does not validate it - Notes: credentials come from the AWS SDK's default chain, never from `BaseConfig`.
-- **`internal/snowflake/pool` (004)** - Consumes `BaseConfig.Snowflake.Org` and `BaseConfig.Snowflake.UsePrivateLink` for connection host construction.
+- **`internal/snowflake/pool` (004)** - Consumes `BaseConfig.Snowflake.Org`, `OrgAdminAccount`, `OrgAdminAccountLocator`, `OrgAdminAccountRegion`, and `UsePrivateLink` for org-admin connection host construction (design.md 3.6, 3.11).
 - **`internal/backplane` (007)** / **guardrails loader (008)** - Read their own sibling files (`backplane.yaml`, a guardrails/exceptions file) from the same `--configDir`, with independently implemented loading and validation logic — no code shared with `internal/config`.
 
 ## Success Criteria
@@ -159,6 +169,9 @@ internal/config/
 - **SC-012**: The returned `*BaseConfig` is safe for concurrent read-only use by multiple goroutines after `Load` returns.
 - **SC-013**: `internal/config` imports only `internal/errors` among this repository's packages.
 - **SC-014**: Unit test coverage exceeds 95%.
+- **SC-015**: `Load` returns a user error when `snowflake.orgAdminAccountLocator` is empty or absent.
+- **SC-016**: `Load` returns a user error when `snowflake.orgAdminAccountRegion` is empty or absent.
+- **SC-017**: `Load` returns a user error when `snowflake.orgAdminAccountLocator` or `snowflake.orgAdminAccountRegion` contains characters outside their documented shape, and accepts a well-formed non-AWS-style region (e.g. `westeurope`).
 
 ## References
 
@@ -214,6 +227,8 @@ func main() {
 snowflake:
   org: my_org_name
   orgAdminAccount: my_org_admin_account_name
+  orgAdminAccountLocator: xc19114
+  orgAdminAccountRegion: eu-central-1
   usePrivateLink: true
 
 aws:
