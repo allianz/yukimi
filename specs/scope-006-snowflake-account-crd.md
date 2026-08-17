@@ -32,7 +32,15 @@ parent and strictly before the next whole number (`003` < `003-a` < `003-b` < `0
   - `customNetworkRules.serviceUsers{<user>: [{connection, allowedIPs[]}]}` and
     `customNetworkRules.accountWide[{connection, allowedIPs[]}]`.
   - `customAuthRules.exceptions[{user, rsaKeyAllowed, patAllowed, reason}]`.
-  - Status (7.2): `accountName` (the **resolved** Snowflake name), `accountUrl`, `conditions`.
+  - Status (7.2): `accountName` (the **resolved** Snowflake name), `accountUrl`, `conditions`, and
+    `identitySyncStartedAt`. The last one is not in the 7.2 example but 4.3 requires it: the
+    identity-sync grace period is measured from the moment the account's *first*
+    `IdentitySyncRequest` is emitted, and that instant must survive a controller restart, so it is
+    stored rather than recomputed. Written on the emitting path (014), read by 015 to tell
+    `SyncPending` from `SyncTimeout`. 4.3's wording — *the account's first request* — implies it is
+    not reset when an individual request is later recreated. `conditions` needs no companion
+    fields: it carries the two custom types 009 defines (`QuotaAvailable` from 3.10,
+    `IdentitySynced` from 4.3) alongside `Ready` and `Synced`.
   - **CEL `x-kubernetes-validations` for the 3.11.3 immutability** of `region`, `name` and
     `environment`. `region` and `name` immutability prevents identity spoofing: create an account,
     let the secret generate, then repoint the CRD at a different target while keeping the
@@ -67,6 +75,10 @@ parent and strictly before the next whole number (`003` < `003-a` < `003-b` < `0
 - Open question for this spec: `cost-center` is read by nothing in design.md. Confirm with ops
   whether it belongs in the account `COMMENT` or as a Snowflake tag; otherwise document it as
   ops-only metadata.
+- Open question for this spec: whether the account locator deserves a status field of its own. 3.6
+  captures it from `CREATE ACCOUNT` and `url.go` consumes it, but 7.2 stores only the derived
+  `accountUrl`, so a later reconcile can recover the locator only by parsing that URL — and the
+  suffix it must parse past differs depending on whether the region has PrivateLink enabled.
 
 ## Cross-cutting context from the roadmap
 

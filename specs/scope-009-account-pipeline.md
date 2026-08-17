@@ -94,9 +94,6 @@ parent and strictly before the next whole number (`003` < `003-a` < `003-b` < `0
 - **Why 009 sits below the modules (010–013, 015), and `internal/account` must never import
   `internal/account/modules/…`.** Module registration and ordering live in 018. Pipeline tests use
   fake modules. This is the one place in the tree where an import cycle is easy to introduce.
-- **Needed from 006, which is written first.** 4.3 requires the identity-sync clock to be recorded
-  in status, so `apis/base/v1alpha1` needs a field for it. The 7.2 status example shows only
-  `accountName`, `accountUrl` and `conditions`.
 
 ## References
 
