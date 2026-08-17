@@ -30,10 +30,6 @@ What this package checks is therefore limited to structure: **existence** (prese
 
 Each of those packages reads its own well-known filename from that shared directory independently. `internal/config` defines no shared "multi-file config loader" interface, no common YAML-decoding helper, and no validation framework for the others to build on. Each loader's "open file → parse → validate" logic is fully duplicated across 002, 007, and 008. This is deliberate: the loaders are small, and their validation rules differ enough — different required fields, different failure modes — that a shared abstraction would cost more to maintain than the duplication it would remove.
 
-## Key Concept: A KMS Key Reference Is Not a Credential
-
-`AWSSettings.KmsKeyId` (Public API, below) is a reference the customer may optionally supply — a KMS key ID, alias, or ARN — pointing to a customer-managed key that AWS Secrets Manager should use to encrypt and decrypt secrets, in place of its AWS-managed default. This does not conflict with the "no credential fields" rule (Scope, Out of Scope): the field never carries key material, only an identifier that AWS itself resolves. Encryption and decryption happen entirely inside AWS Secrets Manager; this package, and 003-a after it, never see key bytes. Like `aws.region`, `Load` only checks that the identifier has one of the documented shapes — whether the key exists, is usable, or grants the caller permission is 003-a's concern at first use, never this package's.
-
 ## Key Concept: Credentials Are Never a `BaseConfig` Field
 
 `Load` behaves identically regardless of where the controller runs — nothing in this package branches on environment. What differs between production and local development is how the cloud SDK resolves credentials underneath the secrets backend (003-a), entirely outside `BaseConfig`'s schema:
