@@ -153,6 +153,9 @@ Format: **Question?** - Answer
 - **SC-004**: {Measurable criterion}
 - **SC-005**: {Measurable criterion}
 <!-- Add 10-20 criteria total -->
+- **SC-XXX**: Unit test coverage exceeds 95%.
+<!-- OPTIONAL: only if this package integrates with an external system (AWS, Snowflake, etc.) and has its own integration test suite -->
+- **SC-XXX**: Integration test coverage {covers all external-system call paths / exceeds N%}.
 
 ## Security Considerations
 
