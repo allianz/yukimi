@@ -183,13 +183,11 @@ internal/config/
 - **SC-012**: The returned `*BaseConfig` is safe for concurrent read-only use by multiple goroutines after `Load` returns.
 - **SC-013**: `internal/config` imports only `internal/errors` among this repository's packages.
 - **SC-014**: Unit test coverage exceeds 95%.
-<<<<<<< HEAD
-- **SC-015**: `Load` returns a user error when `snowflake.orgAdminAccountLocator` is empty or absent.
-- **SC-016**: `Load` returns a user error when `snowflake.orgAdminAccountRegion` is empty or absent.
-- **SC-017**: `Load` returns a user error when `snowflake.orgAdminAccountLocator` or `snowflake.orgAdminAccountRegion` contains characters outside their documented shape, and accepts a well-formed non-AWS-style region (e.g. `westeurope`).
-=======
 - **SC-015**: `Load` accepts an absent `aws.kmsKeyId`, accepts each well-formed KMS identifier form (bare key ID, `alias/<name>`, key ARN, alias ARN), and returns a user error for a malformed one.
->>>>>>> origin
+- **SC-016**: `Load` returns a user error when `snowflake.orgAdminAccountLocator` is empty or absent.
+- **SC-017**: `Load` returns a user error when `snowflake.orgAdminAccountRegion` is empty or absent.
+- **SC-018**: `Load` returns a user error when `snowflake.orgAdminAccountLocator` or `snowflake.orgAdminAccountRegion` contains characters outside their documented shape, and accepts a well-formed non-AWS-style region (e.g. `westeurope`).
+
 
 ## References
 
