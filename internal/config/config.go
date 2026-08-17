@@ -37,7 +37,10 @@ var (
 	// awsRegionPattern matches AWS region names such as "eu-central-1".
 	awsRegionPattern = regexp.MustCompile(`^[a-z]{2}(-[a-z]+)+-[0-9]$`)
 
-<<<<<<< HEAD
+	// kmsKeyIDPattern matches the AWS KMS key identifier forms accepted for
+	// aws.kmsKeyId: a bare key ID (UUID), a key alias, a key ARN, or an alias ARN.
+	kmsKeyIDPattern = regexp.MustCompile(`^(arn:aws:kms:[a-z0-9-]+:\d{12}:(key|alias)/[A-Za-z0-9/_-]+|alias/[A-Za-z0-9/_-]+|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$`)
+
 	// accountLocatorPattern matches the loose shape of a Snowflake account locator
 	// (e.g. "xc19114", design.md 3.6). Snowflake publishes no strict grammar, so this
 	// only rejects whitespace/punctuation, never judges realness.
@@ -49,11 +52,6 @@ var (
 	// Snowflake org's account may live on any cloud, independent of the controller's own
 	// AWS-hosted Secrets Manager backend.
 	orgAdminRegionPattern = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
-=======
-	// kmsKeyIDPattern matches the AWS KMS key identifier forms accepted for
-	// aws.kmsKeyId: a bare key ID (UUID), a key alias, a key ARN, or an alias ARN.
-	kmsKeyIDPattern = regexp.MustCompile(`^(arn:aws:kms:[a-z0-9-]+:\d{12}:(key|alias)/[A-Za-z0-9/_-]+|alias/[A-Za-z0-9/_-]+|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$`)
->>>>>>> origin
 
 	cloudSectionKeys = map[string]bool{"aws": true, "azure": true, "gcp": true}
 )
