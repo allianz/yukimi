@@ -510,6 +510,70 @@ aws:
 	}
 }
 
+// SC-015: an absent aws.kmsKeyId is accepted.
+func TestLoad_AWSKmsKeyIdAbsent(t *testing.T) {
+	cfg, err := Load(newConfigDir(t, wellFormedFixture))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.AWS.KmsKeyId != "" {
+		t.Errorf("AWS.KmsKeyId = %q, want empty", cfg.AWS.KmsKeyId)
+	}
+}
+
+// SC-015: every documented KMS key identifier form is accepted.
+func TestLoad_AWSKmsKeyIdWellFormed(t *testing.T) {
+	cases := []struct {
+		name     string
+		kmsKeyId string
+	}{
+		{name: "bare_key_id", kmsKeyId: "1234abcd-12ab-34cd-56ef-1234567890ab"},
+		{name: "alias", kmsKeyId: "alias/yukimi-secrets"},
+		{name: "key_arn", kmsKeyId: "arn:aws:kms:eu-central-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"},
+		{name: "alias_arn", kmsKeyId: "arn:aws:kms:eu-central-1:111122223333:alias/yukimi-secrets"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := `
+snowflake:
+  org: my_org_name
+  orgAdminAccount: my_org_admin_account_name
+aws:
+  region: eu-central-1
+  kmsKeyId: ` + tc.kmsKeyId + `
+`
+			cfg, err := Load(newConfigDir(t, fixture))
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if cfg.AWS.KmsKeyId != tc.kmsKeyId {
+				t.Errorf("AWS.KmsKeyId = %q, want %q", cfg.AWS.KmsKeyId, tc.kmsKeyId)
+			}
+		})
+	}
+}
+
+// SC-015: a malformed aws.kmsKeyId is a user error.
+func TestLoad_AWSKmsKeyIdMalformed(t *testing.T) {
+	fixture := `
+snowflake:
+  org: my_org_name
+  orgAdminAccount: my_org_admin_account_name
+aws:
+  region: eu-central-1
+  kmsKeyId: "not a key!"
+`
+	_, err := Load(newConfigDir(t, fixture))
+	want := "aws.kmsKeyId 'not a key!' does not match the expected format (expected: a KMS key ID, alias, or ARN, e.g. alias/my-key)"
+	if err == nil || err.Error() != want {
+		t.Errorf("error = %v, want %q", err, want)
+	}
+	if !errors.IsUserError(err) {
+		t.Errorf("expected user error, got %v", err)
+	}
+}
+
 // SC-011: an unrecognized top-level YAML key does not cause Load to fail.
 func TestLoad_UnrecognizedTopLevelKey(t *testing.T) {
 	fixture := wellFormedFixture + "\ntimeout: 30s\n"
@@ -576,6 +640,7 @@ func TestBaseConfig_ConcurrentReadOnlyUse(t *testing.T) {
 			_ = cfg.Snowflake.OrgAdminAccount
 			_ = cfg.Snowflake.UsePrivateLink
 			_ = cfg.AWS.Region
+			_ = cfg.AWS.KmsKeyId
 		}()
 	}
 	wg.Wait()

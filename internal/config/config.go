@@ -37,6 +37,10 @@ var (
 	// awsRegionPattern matches AWS region names such as "eu-central-1".
 	awsRegionPattern = regexp.MustCompile(`^[a-z]{2}(-[a-z]+)+-[0-9]$`)
 
+	// kmsKeyIDPattern matches the AWS KMS key identifier forms accepted for
+	// aws.kmsKeyId: a bare key ID (UUID), a key alias, a key ARN, or an alias ARN.
+	kmsKeyIDPattern = regexp.MustCompile(`^(arn:aws:kms:[a-z0-9-]+:\d{12}:(key|alias)/[A-Za-z0-9/_-]+|alias/[A-Za-z0-9/_-]+|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$`)
+
 	cloudSectionKeys = map[string]bool{"aws": true, "azure": true, "gcp": true}
 )
 
@@ -67,6 +71,10 @@ type SnowflakeSettings struct {
 // AWSSettings holds AWS-specific settings, consumed only by 003-a.
 type AWSSettings struct {
 	Region string // optional here, shape-checked if set; an empty region is a user error in 003-a, not here
+
+	// KmsKeyId is an optional reference to a customer-managed KMS key for encrypting/decrypting
+	// secrets in AWS Secrets Manager (003-a); shape-checked here only, not interpreted.
+	KmsKeyId string
 }
 
 // rawConfig is the direct YAML decode target. UsePrivateLink is a *bool so an
@@ -83,7 +91,8 @@ type rawSnowflake struct {
 }
 
 type rawAWS struct {
-	Region string `yaml:"region"`
+	Region   string `yaml:"region"`
+	KmsKeyId string `yaml:"kmsKeyId"`
 }
 
 // Load reads, parses, and validates "<configDir>/baseConfig.yaml".
@@ -156,6 +165,12 @@ func Load(configDir string) (*BaseConfig, error) {
 			"aws.region '%s' does not match the expected format (expected: eu-central-1)", raw.AWS.Region))
 	}
 
+	if raw.AWS.KmsKeyId != "" && !kmsKeyIDPattern.MatchString(raw.AWS.KmsKeyId) {
+		return nil, errors.NewUserError(fmt.Sprintf(
+			"aws.kmsKeyId '%s' does not match the expected format (expected: a KMS key ID, alias, or ARN, e.g. alias/my-key)",
+			raw.AWS.KmsKeyId))
+	}
+
 	usePrivateLink := true
 	if raw.Snowflake.UsePrivateLink != nil {
 		usePrivateLink = *raw.Snowflake.UsePrivateLink
@@ -168,7 +183,8 @@ func Load(configDir string) (*BaseConfig, error) {
 			UsePrivateLink:  usePrivateLink,
 		},
 		AWS: AWSSettings{
-			Region: raw.AWS.Region,
+			Region:   raw.AWS.Region,
+			KmsKeyId: raw.AWS.KmsKeyId,
 		},
 		cloudProvider: cloudSections[0],
 	}, nil
