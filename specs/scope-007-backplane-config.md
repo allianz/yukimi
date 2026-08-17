@@ -26,10 +26,6 @@ parent and strictly before the next whole number (`003` < `003-a` < `003-b` < `0
 - Scope — a ConfigMap loader (`loader.go`) plus lookup and validation over this schema:
   - `globalParameters` — the org-wide security baseline applied to every account (for example
     `PREVENT_UNLOAD_TO_INLINE_URL`, `REQUIRE_STORAGE_INTEGRATION_FOR_STAGE_CREATION`).
-  - `identitySync.enabled` (false when the enterprise already syncs every group org-wide) and
-    `identitySync.timeout` (default `1h`, and never shorter than the slowest provider — Entra ID
-    takes roughly 45 minutes). These are org-level rather than per-region because identity is
-    integrated globally.
   - `regions{<region>: …}`, each holding:
     - `available` — a **controller-side gate with no Snowflake counterpart**, letting ops stage a
       region and reject CRDs naming it until it is officially offered.
