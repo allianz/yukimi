@@ -142,12 +142,9 @@ internal/config/
 - **What if the cloud section has no backend compiled in (e.g. `azure:` today)?** - `Load` accepts it and `CloudProvider()` returns `"azure"` — this package has no notion of which backends exist. `cmd/provider/main.go` is the one that fails fast, listing the cloud providers actually compiled in.
 - **What if `aws.region` is absent while `aws:` is present?** - `Load` accepts it; requiring a region is 003-a's call, and its constructor rejects the empty value as a user error.
 - **What if a field's value is well-formed but wrong (e.g. `aws.region: xx-nowhere-9`)?** - `Load` accepts it. Shape is all this package can judge; the owning component fails on first use.
-<<<<<<< HEAD
 - **What if `orgAdminAccountLocator`/`orgAdminAccountRegion` is well-formed but not real (e.g. a locator that doesn't exist, or a region Snowflake doesn't offer)?** - `Load` accepts it. Shape is all this package can judge; realness can only be discovered on 004's first connection attempt.
-=======
 - **What happens if `aws.kmsKeyId` is omitted?** - `Load` accepts it; 003-a passes no `KmsKeyId` to AWS Secrets Manager, which falls back to its AWS-managed default key. The feature is opt-in.
 - **What if `aws.kmsKeyId` is malformed (e.g. `aws.kmsKeyId: "not a key!"`)?** - A user error at `Load`, exactly like a malformed `aws.region`. Whether a well-formed but non-existent or inaccessible key is rejected is 003-a's concern at first use, not this package's.
->>>>>>> origin
 - **What differs when the controller runs outside the cluster (local development)?** - Nothing in this package. `Load` reads and validates `baseConfig.yaml` identically either way; only the AWS SDK's underlying credential resolution differs beneath 003-a (see Key Concept above), and that difference is invisible to `internal/config`.
 
 ## Dependencies
@@ -157,13 +154,8 @@ internal/config/
 ## Integration Points
 
 - **`cmd/provider/main.go`** - Owns the `--configDir` flag and resolves it to a directory path. Calls `config.Load(configDir)` once at startup, then switches on `BaseConfig.CloudProvider()` to construct the matching secrets backend, fatally rejecting an unrecognized value by listing the cloud providers compiled in - Key functions: `config.Load()`, `BaseConfig.CloudProvider()`.
-<<<<<<< HEAD
-- **`internal/secrets/aws` (003-a)** - Consumes `BaseConfig.AWS.Region` when constructed by `main.go`; rejects an empty region as a user error itself, since 002 does not validate it - Notes: credentials come from the AWS SDK's default chain, never from `BaseConfig`.
-- **`internal/snowflake/pool` (004)** - Consumes `BaseConfig.Snowflake.Org`, `OrgAdminAccount`, `OrgAdminAccountLocator`, `OrgAdminAccountRegion`, and `UsePrivateLink` for org-admin connection host construction (design.md 3.6, 3.11).
-=======
 - **`internal/secrets/aws` (003-a)** - Consumes `BaseConfig.AWS.Region` when constructed by `main.go`; rejects an empty region as a user error itself, since 002 does not validate it. Also optionally consumes `BaseConfig.AWS.KmsKeyId`, passing it through to `CreateSecret`'s `KmsKeyId` parameter when non-empty, so Secrets Manager encrypts/decrypts with the customer-managed key instead of its AWS-managed default - Notes: credentials come from the AWS SDK's default chain, never from `BaseConfig`.
-- **`internal/snowflake/pool` (004)** - Consumes `BaseConfig.Snowflake.Org` and `BaseConfig.Snowflake.UsePrivateLink` for connection host construction.
->>>>>>> origin
+- **`internal/snowflake/pool` (004)** - Consumes `BaseConfig.Snowflake.Org`, `OrgAdminAccount`, `OrgAdminAccountLocator`, `OrgAdminAccountRegion`, and `UsePrivateLink` for org-admin connection host construction (design.md 3.6, 3.11).
 - **`internal/backplane` (007)** / **guardrails loader (008)** - Read their own sibling files (`backplane.yaml`, a guardrails/exceptions file) from the same `--configDir`, with independently implemented loading and validation logic — no code shared with `internal/config`.
 
 ## Success Criteria

@@ -706,6 +706,8 @@ func TestLoad_AWSKmsKeyIdWellFormed(t *testing.T) {
 snowflake:
   org: my_org_name
   orgAdminAccount: my_org_admin_account_name
+  orgAdminAccountLocator: xc19114
+  orgAdminAccountRegion: eu-central-1
 aws:
   region: eu-central-1
   kmsKeyId: ` + tc.kmsKeyId + `
@@ -727,6 +729,8 @@ func TestLoad_AWSKmsKeyIdMalformed(t *testing.T) {
 snowflake:
   org: my_org_name
   orgAdminAccount: my_org_admin_account_name
+  orgAdminAccountLocator: xc19114
+  orgAdminAccountRegion: eu-central-1
 aws:
   region: eu-central-1
   kmsKeyId: "not a key!"
