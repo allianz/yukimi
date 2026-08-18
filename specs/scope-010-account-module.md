@@ -10,9 +10,9 @@
 
 Specs are written and implemented one at a time, in ascending numeric order, and **a spec may
 depend only on specs numbered strictly below it** — a dependency on a higher number would be
-unbuildable at the time it's written. A number may carry a letter suffix (`003-a`) marking a
+unbuildable at the time it's written. A number may carry a letter suffix (`003.a`) marking a
 pluggable backend implementing an interface owned by the bare number; a letter sorts after its
-parent and strictly before the next whole number (`003` < `003-a` < `003-b` < `004`), so
+parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `004`), so
 "strictly below" still holds unchanged and no exception is needed.
 
 ## Roadmap's original scope notes
@@ -37,7 +37,7 @@ parent and strictly before the next whole number (`003` < `003-a` < `003-b` < `0
     account is the safe interrupted-retry case (reuse and proceed to `CREATE ACCOUNT`); `existed` with
     a live account is the one case this module itself must fail loudly on, since it means a live
     account's credential is about to be regenerated. Which store is behind 003 is not this module's
-    business — 003-a today.
+    business — 003.a today.
   - `CREATE ACCOUNT '<resolved-name>' ADMIN_NAME='platform'
     ADMIN_RSA_PUBLIC_KEY='<generated>' ADMIN_USER_TYPE='SERVICE' EDITION='ENTERPRISE'
     REGION='<region-from-crd>' COMMENT='<description-from-crd>'`, issued over the **org-admin**

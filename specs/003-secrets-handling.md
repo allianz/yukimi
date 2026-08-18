@@ -16,7 +16,7 @@ This specification defines the `internal/secrets/` package that:
 - Classifies every sentinel into a user or system error per 001's model.
 
 **Out of Scope**:
-- Any concrete store or vendor SDK. `go.mod` gains no AWS dependency from this spec — that is `003-a-aws-secrets-backend.md`.
+- Any concrete store or vendor SDK. `go.mod` gains no AWS dependency from this spec — that is `003.a-aws-secrets-backend.md`.
 - Constructing or selecting a `Backend`. That is `cmd/provider/main.go`'s job, switching on `BaseConfig.CloudProvider()` (002).
 - A singleton, package-level instance, or `Initialize`/`GetInstance`-style access pattern. Every function in this package takes a `Backend` explicitly; whoever wires `main.go` owns the only instance, wrapped once in the cache decorator this spec defines.
 - Pushing a rotated public key into Snowflake (`ALTER USER ... SET RSA_PUBLIC_KEY`). That needs the connection pool (004), which does not exist yet — `Rotate` only replaces what is stored, so a future rotation feature has a primitive to build on rather than a redesign to do.
@@ -27,7 +27,7 @@ This specification defines the `internal/secrets/` package that:
 
 A `Backend` sees paths and bytes, nothing else. It never parses a credential, never caches, and never logs — it returns errors from a fixed vocabulary and lets 001 do the reporting. Four of its five methods are the narrow set any keystore can implement: `Get`, `Create` (fails if something is already there), `Update` (fails if nothing is there), and `Delete`. `Create` and `Update` are deliberately separate rather than one upsert: 010 must store a keypair *before* `CREATE ACCOUNT` runs, and "create, failing if occupied" has to be atomic in the store, or a retried request could silently overwrite the key a live account already authenticates with.
 
-The fifth method, `Purge`, is this spec's own addition — the scope note this spec replaces proposed only the first four. It exists to resolve the delete-then-recreate collision below: `Delete` alone cannot unconditionally clear a path that is sitting in some backend's soft-delete recovery window, because calling `Delete` again on something already scheduled for deletion is not guaranteed to purge it. `Purge` means "remove permanently and immediately, succeeding even if there is nothing to remove." A backend with no soft-delete concept implements it as a plain, idempotent delete; 003-a will map it to AWS Secrets Manager's force-delete-without-recovery.
+The fifth method, `Purge`, is this spec's own addition — the scope note this spec replaces proposed only the first four. It exists to resolve the delete-then-recreate collision below: `Delete` alone cannot unconditionally clear a path that is sitting in some backend's soft-delete recovery window, because calling `Delete` again on something already scheduled for deletion is not guaranteed to purge it. `Purge` means "remove permanently and immediately, succeeding even if there is nothing to remove." A backend with no soft-delete concept implements it as a plain, idempotent delete; 003.a will map it to AWS Secrets Manager's force-delete-without-recovery.
 
 Paths are an opaque type, `Path`, constructible only through `NewTenantPath` and `NewOrgAdminPath`. A `Backend` implementation never receives a raw string, so an unvalidated path can never reach a store:
 
@@ -61,7 +61,7 @@ The caller (010) is the only one who knows whether the Snowflake account behind 
 
 ## Key Concept: The Cache Is a `Backend`, Not a Manager
 
-The in-memory TTL cache is a decorator over any `Backend`, not a separate manager type and not package-level state: `NewCachedBackend(b Backend, ttl time.Duration)` returns a value that itself implements `Backend`. Whichever concrete backend `main.go` constructs gets wrapped exactly once, and every backend — 003-a today, any future 003-b — inherits identical freshness semantics with no cache logic of its own to get wrong or forget.
+The in-memory TTL cache is a decorator over any `Backend`, not a separate manager type and not package-level state: `NewCachedBackend(b Backend, ttl time.Duration)` returns a value that itself implements `Backend`. Whichever concrete backend `main.go` constructs gets wrapped exactly once, and every backend — 003.a today, any future 003.b — inherits identical freshness semantics with no cache logic of its own to get wrong or forget.
 
 `Get` serves a cached value within `ttl` without touching the underlying backend; a miss (including an expired entry — lazy eviction, no background goroutine) fetches from the backend and populates the cache. A failed `Get` (`ErrNotFound` or anything else) is never cached, so a `Create` that lands moments after a failed lookup is never masked by a stale negative result. `Create`, `Update`, `Delete`, and `Purge` write through to the underlying backend and, on success, invalidate that path's cache entry rather than pre-populating it with the new value — the next `Get` simply misses and re-fetches. This is deliberately the cache racing toward "cold," never toward "stale." `Invalidate(path Path)` is also exposed directly, for a future rotation feature that needs a path's cache entry cleared before its write becomes externally visible through the store.
 
@@ -262,7 +262,7 @@ type FakeBackend struct {
 // NewFakeBackend returns an empty FakeBackend. Delete marks an entry
 // pending-deletion rather than removing it, so a subsequent Create or Get
 // against that path returns ErrPendingDeletion until Purge — mirroring the
-// state machine 003-a implements against a real backend's recovery window.
+// state machine 003.a implements against a real backend's recovery window.
 func NewFakeBackend() *FakeBackend
 ```
 
@@ -285,7 +285,7 @@ internal/secrets/
 └── doc.go
 ```
 
-`internal/secrets` must never import `internal/secrets/aws` (003-a) or any other concrete backend package — the parent defining an interface never depends on a child implementing it. The only import outside the standard library is `internal/errors` (001).
+`internal/secrets` must never import `internal/secrets/aws` (003.a) or any other concrete backend package — the parent defining an interface never depends on a child implementing it. The only import outside the standard library is `internal/errors` (001).
 
 ## Error Classification
 
@@ -319,7 +319,7 @@ internal/secrets/
 
 ## Integration Points
 
-- **`internal/secrets/aws` (003-a)** - Implements `Backend` against AWS Secrets Manager; maps AWS API errors to this package's sentinels and `Purge` to force-delete-without-recovery - Key functions: implements `secrets.Backend` - Notes: the only place an AWS SDK enters `go.mod`; never imported by anything above 003.
+- **`internal/secrets/aws` (003.a)** - Implements `Backend` against AWS Secrets Manager; maps AWS API errors to this package's sentinels and `Purge` to force-delete-without-recovery - Key functions: implements `secrets.Backend` - Notes: the only place an AWS SDK enters `go.mod`; never imported by anything above 003.
 - **`cmd/provider/main.go`** - Constructs the concrete `Backend` selected by `BaseConfig.CloudProvider()` (002), wraps it exactly once in `NewCachedBackend`, and passes the wrapped result to every consumer below - Key functions: `secrets.NewCachedBackend()`.
 - **`internal/snowflake/pool` (004)** - Reads org-admin and per-tenant credentials through the `Backend` interface, keyed by the same `(org, namespace, account)` tuple as the tenant path - Key functions: `Backend.Get()`, `UnmarshalCredentials()`, `NewOrgAdminPath()`, `NewTenantPath()` - Notes: unit tests run against `FakeBackend`, never a real store.
 - **`internal/account/modules/account` (010)** - Generates a keypair and calls `CreateOrRecover` before running `CREATE ACCOUNT`, using the returned public key in the SQL statement and never persisting the private key anywhere but the store - Key functions: `NewCredentials()`, `CreateOrRecover()`, `NewTenantPath()`.
@@ -361,7 +361,7 @@ internal/secrets/
 
 - **Product design**: `specs/design.md`, §3.6 (the `platform` user and `ADMIN_RSA_PUBLIC_KEY`), §3.11 (org-admin vs. per-account access), §3.11.1 (tenant secret path, namespace as trust anchor), §3.12 (resolved vs. CRD account name), Appendix B X1 (the `platform` user re-key/drop gap).
 - **Error Handling (001)**: `internal/errors/errors.go` - `NewUserError()`, used to classify path-validation and not-found failures.
-- **Base Config (002)**: `internal/config/config.go` - `SnowflakeSettings.Org`, `SnowflakeSettings.OrgAdminAccount`, `CloudProvider()`; its own Example 1 already anticipates `secrets.Backend` and a `secretsaws.New(region)` constructor this spec's sibling (003-a) provides.
+- **Base Config (002)**: `internal/config/config.go` - `SnowflakeSettings.Org`, `SnowflakeSettings.OrgAdminAccount`, `CloudProvider()`; its own Example 1 already anticipates `secrets.Backend` and a `secretsaws.New(region)` constructor this spec's sibling (003.a) provides.
 
 <br/><br/><br/><br/><br/>
 
@@ -438,7 +438,7 @@ func (p *Pool) orgAdminCredentials(ctx context.Context, cached secrets.Backend, 
 }
 
 // Wired once at startup:
-// backend := secretsaws.New(cfg.AWS.Region)       // 003-a
+// backend := secretsaws.New(cfg.AWS.Region)       // 003.a
 // cached := secrets.NewCachedBackend(backend, 5*time.Minute)
 // pool := pool.New(cached, ...)                    // 004 depends only on secrets.Backend
 ```

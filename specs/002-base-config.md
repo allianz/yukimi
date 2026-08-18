@@ -13,16 +13,16 @@ This specification defines the `internal/config/` package that:
 
 **Out of Scope**:
 - No CRD, no controller, no reconciler, no Kubernetes watch. This is not a Crossplane `ProviderConfig`.
-- No interpretation of any field's meaning. Fields owned by other components are checked for existence and shape only; e.g. whether `aws.region` names a real region is 003-a's concern, never this package's.
+- No interpretation of any field's meaning. Fields owned by other components are checked for existence and shape only; e.g. whether `aws.region` names a real region is 003.a's concern, never this package's.
 - No knowledge of environment variables, `.env`, or how a Makefile might materialize `baseConfig.yaml` for local development. `Load` only ever reads a file from disk.
-- No credential fields of any kind. Workload identity vs. local environment-variable/profile credentials is resolved entirely inside the cloud SDK's own default credential chain (003-a) — never modeled as a `BaseConfig` field or an explicit "auth mode" switch.
+- No credential fields of any kind. Workload identity vs. local environment-variable/profile credentials is resolved entirely inside the cloud SDK's own default credential chain (003.a) — never modeled as a `BaseConfig` field or an explicit "auth mode" switch.
 - No check of `CloudProvider()`'s result against the set of backends actually compiled into the binary. That check — and the fatal rejection of a cloud section with no backend — belongs to `cmd/provider/main.go`, not this package.
 
 ## Key Concept: Shared Settings, Structural Validation Only
 
-Almost every field in `baseConfig.yaml` belongs to another component — `aws.region` to 003-a, the `snowflake` block to 003, 004 and 006 — as will fields added later, say a `snowflake.maxConnectionPoolSize` for 004. One shared file for the whole controller weakens encapsulation deliberately: this package names fields it never reads, and in return a bad value fails once at startup instead of at each package's first reconcile.
+Almost every field in `baseConfig.yaml` belongs to another component — `aws.region` to 003.a, the `snowflake` block to 003, 004 and 006 — as will fields added later, say a `snowflake.maxConnectionPoolSize` for 004. One shared file for the whole controller weakens encapsulation deliberately: this package names fields it never reads, and in return a bad value fails once at startup instead of at each package's first reconcile.
 
-What this package checks is therefore limited to structure: **existence** (present, non-empty) and **shape** (a regex, per the schema table below). Meaning stays with the owner — whether the value names something real, cross-field consistency, anything needing a network call. `Load` rejects `aws.region: "Frankfurt!"` on shape but accepts `aws.region: "xx-nowhere-9"`; only 003-a can reject that.
+What this package checks is therefore limited to structure: **existence** (present, non-empty) and **shape** (a regex, per the schema table below). Meaning stays with the owner — whether the value names something real, cross-field consistency, anything needing a network call. `Load` rejects `aws.region: "Frankfurt!"` on shape but accepts `aws.region: "xx-nowhere-9"`; only 003.a can reject that.
 
 ## Key Concept: Shared `--configDir`, Duplicated Loaders
 
@@ -32,12 +32,12 @@ Each of those packages reads its own well-known filename from that shared direct
 
 ## Key Concept: Credentials Are Never a `BaseConfig` Field
 
-`Load` behaves identically regardless of where the controller runs — nothing in this package branches on environment. What differs between production and local development is how the cloud SDK resolves credentials underneath the secrets backend (003-a), entirely outside `BaseConfig`'s schema:
+`Load` behaves identically regardless of where the controller runs — nothing in this package branches on environment. What differs between production and local development is how the cloud SDK resolves credentials underneath the secrets backend (003.a), entirely outside `BaseConfig`'s schema:
 
 - **In-cluster (production)**: the controller runs as a pod with workload identity (IRSA for AWS). The AWS SDK's default credential provider chain picks up the projected service-account token automatically — no configuration from this package is involved.
 - **Local development**: the controller runs outside the Kubernetes cluster, so no workload identity exists. Credentials instead come from environment variables (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN`) or `AWS_PROFILE`. The *same* default credential chain simply falls through to them, since no IRSA metadata is present outside the cluster. How those environment variables are populated — including a Makefile copying `.env` values into `baseConfig.yaml` or the shell environment for local runs — is tooling, out of scope for this spec.
 
-Because both cases go through the same SDK-internal chain, the switch between workload identity and local credentials is never a setting anyone writes into `baseConfig.yaml`. `BaseConfig.AWS` carries only `Region` and the optional `KmsKeyId` reference described above — never credentials, never an explicit "auth mode" flag. 003-a's constructor calls the SDK's default chain and nothing else, so the identical code path resolves to workload identity or environment-variable credentials purely based on what the process finds at startup. This package's only responsibility is making sure `baseConfig.yaml` loads the same way no matter which environment the binary runs in.
+Because both cases go through the same SDK-internal chain, the switch between workload identity and local credentials is never a setting anyone writes into `baseConfig.yaml`. `BaseConfig.AWS` carries only `Region` and the optional `KmsKeyId` reference described above — never credentials, never an explicit "auth mode" flag. 003.a's constructor calls the SDK's default chain and nothing else, so the identical code path resolves to workload identity or environment-variable credentials purely based on what the process finds at startup. This package's only responsibility is making sure `baseConfig.yaml` loads the same way no matter which environment the binary runs in.
 
 ## Public API
 
@@ -45,7 +45,7 @@ Because both cases go through the same SDK-internal chain, the switch between wo
 // BaseConfig is the immutable, validated provider-wide configuration loaded at startup.
 type BaseConfig struct {
     Snowflake SnowflakeSettings // organization identity plus connection-affecting settings
-    AWS       AWSSettings       // consumed by 003-a; checked here for shape only
+    AWS       AWSSettings       // consumed by 003.a; checked here for shape only
 
     cloudProvider string // resolved by Load from the cloud section present; read via CloudProvider()
 }
@@ -66,11 +66,11 @@ type SnowflakeSettings struct {
     UsePrivateLink         bool   // affects the connection host (004); defaults to true when omitted
 }
 
-// AWSSettings holds AWS-specific settings, consumed only by 003-a.
+// AWSSettings holds AWS-specific settings, consumed only by 003.a.
 type AWSSettings struct {
-    Region   string // optional here, shape-checked if set; an empty region is a user error in 003-a, not here
+    Region   string // optional here, shape-checked if set; an empty region is a user error in 003.a, not here
     KmsKeyId string // optional; reference to a customer-managed KMS key for encrypting/decrypting
-                    // secrets in AWS Secrets Manager (003-a); shape-checked here only, not interpreted
+                    // secrets in AWS Secrets Manager (003.a); shape-checked here only, not interpreted
 }
 
 // Load reads, parses, and validates "<configDir>/baseConfig.yaml".
@@ -105,8 +105,8 @@ Every field in `baseConfig.yaml` is freely editable and the whole file is reload
 | `snowflake.orgAdminAccountRegion` | string | **Yes** | Non-empty; matches `^[a-z][a-z0-9-]*$` — the literal region-id used in a Snowflake account's connection hostname (e.g. `eu-central-1`, `westeurope`), not the `aws-`-prefixed Backplane Config region key (design.md 3.5). |
 | `snowflake.usePrivateLink` | bool | No | Affects the Snowflake connection host (design.md 3.6). Default: `true` when omitted. |
 | `aws` | object | **Yes**, or another cloud section | The cloud section for AWS. Its presence is what makes `CloudProvider()` return `"aws"`. Exactly one of `aws` / `azure` / `gcp` must be present — none or several is a user error. |
-| `aws.region` | string | No | Not required here; if non-empty, matches `^[a-z]{2}(-[a-z]+)+-[0-9]$`. Whether the region exists and whether it is required at all is decided by 003-a's constructor. |
-| `aws.kmsKeyId` | string | No | Optional reference to a customer-managed KMS key (key ID, alias, or ARN) used by 003-a when creating/reading secrets in AWS Secrets Manager, in place of the AWS-managed default. Not required here; if non-empty, must match one of the documented KMS identifier forms (bare key ID, `alias/<name>`, key ARN, or alias ARN). Whether the key exists or is usable is 003-a's concern, never this package's. |
+| `aws.region` | string | No | Not required here; if non-empty, matches `^[a-z]{2}(-[a-z]+)+-[0-9]$`. Whether the region exists and whether it is required at all is decided by 003.a's constructor. |
+| `aws.kmsKeyId` | string | No | Optional reference to a customer-managed KMS key (key ID, alias, or ARN) used by 003.a when creating/reading secrets in AWS Secrets Manager, in place of the AWS-managed default. Not required here; if non-empty, must match one of the documented KMS identifier forms (bare key ID, `alias/<name>`, key ARN, or alias ARN). Whether the key exists or is usable is 003.a's concern, never this package's. |
 
 ## Project Structure
 
@@ -140,12 +140,12 @@ internal/config/
 - **What happens with an unrecognized YAML key (e.g. a future `timeout`)?** - Ignored by the decoder, not an error. The schema is expected to grow over time (timeouts, pool sizes, and similar settings may be added later as the codebase needs them), and unknown keys must not break `Load` on a rolling deployment.
 - **What if no cloud section is present, or more than one?** - Both are user errors from `Load`: exactly one of `aws` / `azure` / `gcp` is required, so `CloudProvider()` is always unambiguous.
 - **What if the cloud section has no backend compiled in (e.g. `azure:` today)?** - `Load` accepts it and `CloudProvider()` returns `"azure"` — this package has no notion of which backends exist. `cmd/provider/main.go` is the one that fails fast, listing the cloud providers actually compiled in.
-- **What if `aws.region` is absent while `aws:` is present?** - `Load` accepts it; requiring a region is 003-a's call, and its constructor rejects the empty value as a user error.
+- **What if `aws.region` is absent while `aws:` is present?** - `Load` accepts it; requiring a region is 003.a's call, and its constructor rejects the empty value as a user error.
 - **What if a field's value is well-formed but wrong (e.g. `aws.region: xx-nowhere-9`)?** - `Load` accepts it. Shape is all this package can judge; the owning component fails on first use.
 - **What if `orgAdminAccountLocator`/`orgAdminAccountRegion` is well-formed but not real (e.g. a locator that doesn't exist, or a region Snowflake doesn't offer)?** - `Load` accepts it. Shape is all this package can judge; realness can only be discovered on 004's first connection attempt.
-- **What happens if `aws.kmsKeyId` is omitted?** - `Load` accepts it; 003-a passes no `KmsKeyId` to AWS Secrets Manager, which falls back to its AWS-managed default key. The feature is opt-in.
-- **What if `aws.kmsKeyId` is malformed (e.g. `aws.kmsKeyId: "not a key!"`)?** - A user error at `Load`, exactly like a malformed `aws.region`. Whether a well-formed but non-existent or inaccessible key is rejected is 003-a's concern at first use, not this package's.
-- **What differs when the controller runs outside the cluster (local development)?** - Nothing in this package. `Load` reads and validates `baseConfig.yaml` identically either way; only the AWS SDK's underlying credential resolution differs beneath 003-a (see Key Concept above), and that difference is invisible to `internal/config`.
+- **What happens if `aws.kmsKeyId` is omitted?** - `Load` accepts it; 003.a passes no `KmsKeyId` to AWS Secrets Manager, which falls back to its AWS-managed default key. The feature is opt-in.
+- **What if `aws.kmsKeyId` is malformed (e.g. `aws.kmsKeyId: "not a key!"`)?** - A user error at `Load`, exactly like a malformed `aws.region`. Whether a well-formed but non-existent or inaccessible key is rejected is 003.a's concern at first use, not this package's.
+- **What differs when the controller runs outside the cluster (local development)?** - Nothing in this package. `Load` reads and validates `baseConfig.yaml` identically either way; only the AWS SDK's underlying credential resolution differs beneath 003.a (see Key Concept above), and that difference is invisible to `internal/config`.
 
 ## Dependencies
 
@@ -154,7 +154,7 @@ internal/config/
 ## Integration Points
 
 - **`cmd/provider/main.go`** - Owns the `--configDir` flag and resolves it to a directory path. Calls `config.Load(configDir)` once at startup, then switches on `BaseConfig.CloudProvider()` to construct the matching secrets backend, fatally rejecting an unrecognized value by listing the cloud providers compiled in - Key functions: `config.Load()`, `BaseConfig.CloudProvider()`.
-- **`internal/secrets/aws` (003-a)** - Consumes `BaseConfig.AWS.Region` when constructed by `main.go`; rejects an empty region as a user error itself, since 002 does not validate it. Also optionally consumes `BaseConfig.AWS.KmsKeyId`, passing it through to `CreateSecret`'s `KmsKeyId` parameter when non-empty, so Secrets Manager encrypts/decrypts with the customer-managed key instead of its AWS-managed default - Notes: credentials come from the AWS SDK's default chain, never from `BaseConfig`.
+- **`internal/secrets/aws` (003.a)** - Consumes `BaseConfig.AWS.Region` when constructed by `main.go`; rejects an empty region as a user error itself, since 002 does not validate it. Also optionally consumes `BaseConfig.AWS.KmsKeyId`, passing it through to `CreateSecret`'s `KmsKeyId` parameter when non-empty, so Secrets Manager encrypts/decrypts with the customer-managed key instead of its AWS-managed default - Notes: credentials come from the AWS SDK's default chain, never from `BaseConfig`.
 - **`internal/snowflake/pool` (004)** - Consumes `BaseConfig.Snowflake.Org`, `OrgAdminAccount`, `OrgAdminAccountLocator`, `OrgAdminAccountRegion`, and `UsePrivateLink` for org-admin connection host construction (design.md 3.6, 3.11).
 - **`internal/backplane` (007)** / **guardrails loader (008)** - Read their own sibling files (`backplane.yaml`, a guardrails/exceptions file) from the same `--configDir`, with independently implemented loading and validation logic — no code shared with `internal/config`.
 

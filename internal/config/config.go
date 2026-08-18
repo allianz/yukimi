@@ -59,7 +59,7 @@ var (
 // BaseConfig is the immutable, validated provider-wide configuration loaded at startup.
 type BaseConfig struct {
 	Snowflake SnowflakeSettings // organization identity plus connection-affecting settings
-	AWS       AWSSettings       // consumed by 003-a; checked here for shape only
+	AWS       AWSSettings       // consumed by 003.a; checked here for shape only
 
 	cloudProvider string // resolved by Load from the cloud section present; read via CloudProvider()
 }
@@ -82,12 +82,12 @@ type SnowflakeSettings struct {
 	UsePrivateLink         bool   // affects the connection host (004); defaults to true when omitted
 }
 
-// AWSSettings holds AWS-specific settings, consumed only by 003-a.
+// AWSSettings holds AWS-specific settings, consumed only by 003.a.
 type AWSSettings struct {
-	Region string // optional here, shape-checked if set; an empty region is a user error in 003-a, not here
+	Region string // optional here, shape-checked if set; an empty region is a user error in 003.a, not here
 
 	// KmsKeyId is an optional reference to a customer-managed KMS key for encrypting/decrypting
-	// secrets in AWS Secrets Manager (003-a); shape-checked here only, not interpreted.
+	// secrets in AWS Secrets Manager (003.a); shape-checked here only, not interpreted.
 	KmsKeyId string
 }
 

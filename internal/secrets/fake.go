@@ -51,7 +51,7 @@ var _ Backend = (*FakeBackend)(nil)
 // NewFakeBackend returns an empty FakeBackend. Delete marks an entry
 // pending-deletion rather than removing it, so a subsequent Create or Get
 // against that path returns ErrPendingDeletion until Purge — mirroring the
-// state machine 003-a implements against a real backend's recovery window.
+// state machine 003.a implements against a real backend's recovery window.
 func NewFakeBackend() *FakeBackend {
 	return &FakeBackend{entries: make(map[Path]fakeEntry)}
 }

@@ -1,19 +1,19 @@
 > **Scope context only — not a specification.** This file was split out of the temporary
 > `roadmap.md` planning document used to work out how `specs/design.md` should be decomposed
-> into numbered specs. It exists only to give a starting-point idea of spec `003-a`'s intended
-> *scope*, not its content. When writing `003-a-aws-secrets-backend.md`, the sole sources of truth
+> into numbered specs. It exists only to give a starting-point idea of spec `003.a`'s intended
+> *scope*, not its content. When writing `003.a-aws-secrets-backend.md`, the sole sources of truth
 > are `specs/design.md` and the prompt given at spec-writing time — rework, restructure, or discard
 > anything below freely. This file does not need to be kept up to date, and should be deleted
-> once `003-a-aws-secrets-backend.md` has been written.
+> once `003.a-aws-secrets-backend.md` has been written.
 
 ## Ordering rule (context for "Depends on" below)
 
 Specs are written and implemented one at a time, in ascending numeric order, and **a spec may
 depend only on specs numbered strictly below it** — a dependency on a higher number would be
-unbuildable at the time it's written. A number may carry a letter suffix (`003-a`) marking a
+unbuildable at the time it's written. A number may carry a letter suffix (`003.a`) marking a
 pluggable backend implementing an interface owned by the bare number; a letter sorts after its
-parent and strictly before the next whole number (`003` < `003-a` < `003-b` < `004`), so
-"strictly below" still holds unchanged and no exception is needed. `003-a` is exactly this: an
+parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `004`), so
+"strictly below" still holds unchanged and no exception is needed. `003.a` is exactly this: an
 implementation of the `Backend` interface owned by spec `003`.
 
 ## Roadmap's original scope notes
@@ -84,16 +84,16 @@ implementation of the `Backend` interface owned by spec `003`.
   `002-secrets-handling.md`, a `002-a-aws-secrets-backend.md` sub-spec and a full `internal/secrets/`
   implementation. It is treated as abandoned — nothing in it is inherited and its numbering does not
   survive.
-- **Decision — `NNN-a` sub-specs exist, but only for a pluggable backend behind an interface owned by
+- **Decision — `NNN.a` sub-specs exist, but only for a pluggable backend behind an interface owned by
   `NNN`.** Spec 003 owns `internal/secrets/` — the `Backend` interface, path grammar, credential
   types, keypair generation, cache and error-classification policy — and names no product anywhere;
-  spec 003-a owns `internal/secrets/aws/` and is the only place an AWS SDK enters `go.mod`. A Vault
-  backend would be 003-b in `internal/secrets/vault/`, and is out of scope now.
+  spec 003.a owns `internal/secrets/aws/` and is the only place an AWS SDK enters `go.mod`. A Vault
+  backend would be 003.b in `internal/secrets/vault/`, and is out of scope now.
 
   A letter means one thing only: an implementation of an interface defined by the number it hangs
   off. It sorts immediately after its parent and strictly before the next whole number; it may depend
   on its parent and on anything below it, never on a sibling letter or a higher number; and it uses
-  the same `000-template.md` skeleton, named `NNN-a-<slug>.md`. **No numbered spec may depend on a
+  the same `000-template.md` skeleton, named `NNN.a-<slug>.md`. **No numbered spec may depend on a
   letter spec** — 004 and 010 depend on 003's interface, so the pool and the account module never
   learn which store is behind it. The concrete backend is selected exactly once, in
   `cmd/provider/main.go`, which no numbered spec owns: it reads `secretsBackend` from 002, constructs
@@ -102,11 +102,11 @@ implementation of the `Backend` interface owned by spec `003`.
   for the interface and the sentinel errors, so the reverse import is a compile error, not merely a
   layering violation — and the obvious workaround (a registry inside `internal/secrets` that knows its
   own backends) is the cycle wearing a hat.
-- **Why nothing above 003 depends on 003-a.** 004 and 010 take 003's interface, so the pool and the
+- **Why nothing above 003 depends on 003.a.** 004 and 010 take 003's interface, so the pool and the
   account module stay unit-testable against the in-memory fake 003 ships — no AWS account, no SDK, no
   network. An import of `internal/secrets/aws` anywhere outside `cmd/provider/` is a bug, and it is
   the single grep that proves the store is still pluggable.
-- **Deliberately unnumbered — a second secret backend.** A Vault-style backend (`003-b`, in
+- **Deliberately unnumbered — a second secret backend.** A Vault-style backend (`003.b`, in
   `internal/secrets/vault/`) is deliberately not planned. This decision reserves its shape but not the
   work: nothing in the tree needs it, and specifying a backend nobody runs would fix 003's interface
   against an imagined store instead of a real one. The interface earns its keep by staying small

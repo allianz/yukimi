@@ -10,9 +10,9 @@
 
 Specs are written and implemented one at a time, in ascending numeric order, and **a spec may
 depend only on specs numbered strictly below it** — a dependency on a higher number would be
-unbuildable at the time it's written. A number may carry a letter suffix (`003-a`) marking a
+unbuildable at the time it's written. A number may carry a letter suffix (`003.a`) marking a
 pluggable backend implementing an interface owned by the bare number; a letter sorts after its
-parent and strictly before the next whole number (`003` < `003-a` < `003-b` < `004`), so
+parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `004`), so
 "strictly below" still holds unchanged and no exception is needed.
 
 ## Scope notes
@@ -86,7 +86,7 @@ parent and strictly before the next whole number (`003` < `003-a` < `003-b` < `0
     This is possible only because 005 takes an injected executor and never opens its own connection.
     It also removes the need for a separate integration test of the scan loop.
     Note this is **not** the situation 003 is in: its `FakeBackend` exists because `Backend` has
-    genuinely swappable implementations and 003 had to be testable before 003-a existed. 005 has one
+    genuinely swappable implementations and 003 had to be testable before 003.a existed. 005 has one
     real implementation, `*sql.DB`, and no unimplemented dependency to stand in for.
     Two things to state plainly in the spec rather than discover in review: sqlmock's driver-level type
     conversions are not gosnowflake's, so a test asserting a read-back value's Go type proves less about
@@ -101,7 +101,7 @@ No Snowflake driver is named anywhere in the repo and `go.mod` has no Snowflake 
 the implied candidate. **004 adds it, not 005.** The ordering rule decides this without a judgement
 call: 004 is written and implemented first, and it needs the driver unconditionally for the DSN and
 `sql.Register`, whereas 005 only consumes the already-registered driver plus its `SnowflakeError` type
-for the decoration above. Pin the version in the same deliberate way `scope-003-a` owns the AWS
+for the decoration above. Pin the version in the same deliberate way `scope-003.a` owns the AWS
 dependency — `notes-snowflake-sql-mechanics.md` records its findings against **v1.18.1**, and an
 upgrade invalidates them.
 
