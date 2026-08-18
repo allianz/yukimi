@@ -38,7 +38,7 @@ func TestCachedBackend_Get_ServesWithinTTL(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	fake.OnGet = func(Path) error { return ErrUnavailable }
+	fake.OnGet = func(Path) error { return errStoreFault }
 	got, err := c.Get(ctx, path)
 	if err != nil {
 		t.Fatalf("expected cached Get to succeed without touching the backend, got %v", err)
@@ -48,9 +48,9 @@ func TestCachedBackend_Get_ServesWithinTTL(t *testing.T) {
 	}
 }
 
-// SC-013: CachedBackend never caches an ErrNotFound result — two misses both
-// reach the backend.
-func TestCachedBackend_Get_NeverCachesNotFound(t *testing.T) {
+// SC-013: CachedBackend never caches a failed Get — two consecutive Gets on a
+// path nothing is stored at both reach the underlying Backend.
+func TestCachedBackend_Get_NeverCachesAFailedGet(t *testing.T) {
 	ctx := t.Context()
 	fake := NewFakeBackend()
 	path := testPath(t)
@@ -59,11 +59,11 @@ func TestCachedBackend_Get_NeverCachesNotFound(t *testing.T) {
 	fake.OnGet = func(Path) error { calls++; return nil }
 
 	c := NewCachedBackend(fake, time.Hour)
-	if _, err := c.Get(ctx, path); !stderrors.Is(err, ErrNotFound) {
-		t.Fatalf("got %v, want ErrNotFound", err)
+	if _, err := c.Get(ctx, path); err == nil {
+		t.Fatal("expected the first Get to fail on a path nothing is stored at")
 	}
-	if _, err := c.Get(ctx, path); !stderrors.Is(err, ErrNotFound) {
-		t.Fatalf("got %v, want ErrNotFound", err)
+	if _, err := c.Get(ctx, path); err == nil {
+		t.Fatal("expected the second Get to fail on a path nothing is stored at")
 	}
 	if calls != 2 {
 		t.Errorf("expected 2 backend calls, got %d", calls)
@@ -83,8 +83,8 @@ func TestCachedBackend_InvalidatesOnWrite(t *testing.T) {
 	t.Run("Create", func(t *testing.T) {
 		ctx := t.Context()
 		c, _, path := newCache(t)
-		if _, err := c.Get(ctx, path); !stderrors.Is(err, ErrNotFound) {
-			t.Fatalf("got %v, want ErrNotFound", err)
+		if _, err := c.Get(ctx, path); err == nil {
+			t.Fatal("expected a Get on a path nothing is stored at to fail")
 		}
 		if err := c.Create(ctx, path, "value"); err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -94,7 +94,7 @@ func TestCachedBackend_InvalidatesOnWrite(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if got != "value" {
-			t.Errorf("got %q, want %q (stale ErrNotFound must not have been served)", got, "value")
+			t.Errorf("got %q, want %q (a stale failed lookup must not have been served)", got, "value")
 		}
 	})
 
@@ -131,8 +131,8 @@ func TestCachedBackend_InvalidatesOnWrite(t *testing.T) {
 		if err := c.Delete(ctx, path); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if _, err := c.Get(ctx, path); !stderrors.Is(err, ErrNotFound) {
-			t.Errorf("got %v, want ErrNotFound (stale cached value must not have been served)", err)
+		if _, err := c.Get(ctx, path); err == nil {
+			t.Error("expected a Get after Delete to fail (stale cached value must not have been served)")
 		}
 	})
 }
@@ -213,7 +213,7 @@ func TestCachedBackend_Get_ServesStaleDuringOutage(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	fake.OnGet = func(Path) error { return ErrUnavailable }
+	fake.OnGet = func(Path) error { return errStoreFault }
 	got, err := c.Get(ctx, path)
 	if err != nil {
 		t.Fatalf("expected cached value to be served during outage, got %v", err)
@@ -231,21 +231,21 @@ func TestCachedBackend_WriteMethods_PropagateBackendError(t *testing.T) {
 	path := testPath(t)
 	c := NewCachedBackend(fake, time.Hour)
 
-	fake.OnCreate = func(Path) error { return ErrUnavailable }
-	if err := c.Create(ctx, path, "v"); !stderrors.Is(err, ErrUnavailable) {
-		t.Errorf("Create: got %v, want ErrUnavailable", err)
+	fake.OnCreate = func(Path) error { return errStoreFault }
+	if err := c.Create(ctx, path, "v"); !stderrors.Is(err, errStoreFault) {
+		t.Errorf("Create: got %v, want errStoreFault", err)
 	}
 	fake.OnCreate = nil
 
-	fake.OnUpdate = func(Path) error { return ErrUnavailable }
-	if err := c.Update(ctx, path, "v"); !stderrors.Is(err, ErrUnavailable) {
-		t.Errorf("Update: got %v, want ErrUnavailable", err)
+	fake.OnUpdate = func(Path) error { return errStoreFault }
+	if err := c.Update(ctx, path, "v"); !stderrors.Is(err, errStoreFault) {
+		t.Errorf("Update: got %v, want errStoreFault", err)
 	}
 	fake.OnUpdate = nil
 
-	fake.OnDelete = func(Path) error { return ErrUnavailable }
-	if err := c.Delete(ctx, path); !stderrors.Is(err, ErrUnavailable) {
-		t.Errorf("Delete: got %v, want ErrUnavailable", err)
+	fake.OnDelete = func(Path) error { return errStoreFault }
+	if err := c.Delete(ctx, path); !stderrors.Is(err, errStoreFault) {
+		t.Errorf("Delete: got %v, want errStoreFault", err)
 	}
 }
 

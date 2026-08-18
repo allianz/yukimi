@@ -57,7 +57,7 @@ func (c *CachedBackend) Get(ctx context.Context, path Path) (string, error) {
 
 	value, err := c.backend.Get(ctx, path)
 	if err != nil {
-		return "", err // never cache a failure, including ErrNotFound
+		return "", err // never cache a failure, not even a missing path
 	}
 
 	c.mu.Lock()

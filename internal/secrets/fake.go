@@ -18,6 +18,7 @@ package secrets
 
 import (
 	"context"
+	"fmt"
 	"sync"
 )
 
@@ -41,7 +42,7 @@ var _ Backend = (*FakeBackend)(nil)
 
 // NewFakeBackend returns an empty FakeBackend. Delete removes the entry
 // outright and is idempotent, so a Create on a deleted path succeeds and a Get
-// on one returns ErrNotFound.
+// on one fails exactly as it would on a path nothing was ever stored at.
 func NewFakeBackend() *FakeBackend {
 	return &FakeBackend{entries: make(map[Path]string)}
 }
@@ -58,7 +59,7 @@ func (f *FakeBackend) Get(_ context.Context, path Path) (string, error) {
 
 	value, ok := f.entries[path]
 	if !ok {
-		return "", ErrNotFound
+		return "", fmt.Errorf("secrets: no secret stored at %s", path)
 	}
 	return value, nil
 }
@@ -74,7 +75,7 @@ func (f *FakeBackend) Create(_ context.Context, path Path, value string) error {
 	defer f.mu.Unlock()
 
 	if _, ok := f.entries[path]; ok {
-		return ErrAlreadyExists
+		return fmt.Errorf("secrets: a secret already exists at %s", path)
 	}
 	f.entries[path] = value
 	return nil
@@ -91,7 +92,7 @@ func (f *FakeBackend) Update(_ context.Context, path Path, value string) error {
 	defer f.mu.Unlock()
 
 	if _, ok := f.entries[path]; !ok {
-		return ErrNotFound
+		return fmt.Errorf("secrets: no secret stored at %s", path)
 	}
 	f.entries[path] = value
 	return nil

@@ -16,54 +16,30 @@ limitations under the License.
 
 package secrets
 
-import (
-	"context"
-	stderrors "errors"
-)
+import "context"
 
 // Backend is a string-valued keystore. It never parses a credential, never
-// caches, and never logs — every method reports failure using the sentinel
-// errors below, wrapped with %w so callers match them with errors.Is. How the
-// value string is persisted is each implementation's own choice.
+// caches, and never logs — every method reports failure as an ordinary error
+// whose message names the path it failed on, and no caller branches on an
+// error's identity. How the value string is persisted is each implementation's
+// own choice.
 type Backend interface {
-	// Get returns the value stored at path.
-	//
-	// Returns:
-	//   - ErrNotFound if nothing is stored at path
-	//   - ErrDenied, ErrUnavailable, or an unclassified store fault otherwise
+	// Get returns the value stored at path. It fails if nothing is stored
+	// there, and it fails if the store cannot be read.
 	Get(ctx context.Context, path Path) (string, error)
 
-	// Create stores value at path. Fails if path is already occupied — this
-	// is the atomicity 010 depends on to never silently overwrite a live
-	// account's credential on a retried request.
-	//
-	// Returns:
-	//   - ErrAlreadyExists if something is already stored at path
-	//   - ErrDenied, ErrUnavailable, or an unclassified store fault otherwise
+	// Create stores value at path. It fails if path is already occupied, and
+	// leaves the occupying value untouched when it does — this is the
+	// atomicity 010 depends on to never silently overwrite a live account's
+	// credential on a retried request.
 	Create(ctx context.Context, path Path, value string) error
 
-	// Update overwrites the value already stored at path. Fails if nothing
-	// is there — Update never creates.
-	//
-	// Returns:
-	//   - ErrNotFound if nothing is stored at path
-	//   - ErrDenied, ErrUnavailable, or an unclassified store fault otherwise
+	// Update overwrites the value already stored at path. It fails if nothing
+	// is stored there — Update never creates.
 	Update(ctx context.Context, path Path, value string) error
 
 	// Delete removes path. Whether the value is gone immediately or sits in a
 	// recovery window first is the implementation's business; nothing in this
 	// package reads a deleted path afterwards.
-	//
-	// Returns:
-	//   - ErrDenied, ErrUnavailable, or an unclassified store fault
 	Delete(ctx context.Context, path Path) error
 }
-
-// Sentinel errors every Backend reports through. Backends wrap the concrete
-// vendor error with %w; callers match with errors.Is.
-var (
-	ErrNotFound      = stderrors.New("secrets: not found")
-	ErrAlreadyExists = stderrors.New("secrets: already exists")
-	ErrDenied        = stderrors.New("secrets: access denied")
-	ErrUnavailable   = stderrors.New("secrets: unavailable")
-)

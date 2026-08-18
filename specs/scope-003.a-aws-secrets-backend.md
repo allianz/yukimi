@@ -42,16 +42,13 @@ implementation of the `Backend` interface owned by spec `003`.
     `ForceDeleteWithoutRecovery`, leaving the default 30-day window. This backend never calls
     `RestoreSecret` automatically — resurrecting a credential the platform deliberately retired is an
     operator's decision, not a reconcile's. A `CreateSecret` onto a path whose predecessor is still
-    inside its window is returned as-is for 003 to treat as an unclassified permanent fault; this
-    backend maps no sentinel of its own onto the recovery window.
-  - **Error-code mapping — the only place vendor codes appear in the repository**:
-    `ResourceNotFoundException` → `ErrNotFound`; `ResourceExistsException` → `ErrAlreadyExists`;
-    `AccessDeniedException`,
-    `InvalidClientTokenId`, `ExpiredToken`, `UnrecognizedClientException` → `ErrDenied`;
-    `ThrottlingException`, `InternalServiceErrorException`, request timeouts and connection failures →
-    `ErrUnavailable`; anything else is returned as-is for 003 to treat as a permanent fault. This spec
-    makes **no** user/system classification decision of its own — it emits sentinels and 003
-    classifies them.
+    inside its window fails and is reported with the path and the vendor's own message — the recovery
+    window gets no special-cased handling of its own.
+  - **Error reporting**: every failing AWS call is returned as an ordinary error wrapped with the
+    operation and the path that produced it, keeping the vendor error in the chain by `%w` so its code
+    still reaches the log through 001's incident ID. The backend translates nothing, matches nothing,
+    and makes **no** user/system classification decision of its own — 003 treats every store fault as
+    a system error.
   - **IAM policy expectations for 3.11.1**, documented rather than shipped: the resource ARN patterns
     the controller's role must be granted per path prefix
     (`arn:aws:secretsmanager:<region>:<account>:secret:snowflake/tenant/<org>/*`, with the org-admin
@@ -68,9 +65,8 @@ implementation of the `Backend` interface owned by spec `003`.
     and clean up under a dedicated test path prefix, and they must account for the recovery window: a
     test that deletes and immediately recreates the same path fails, since AWS still holds the
     soft-deleted secret, so either every run uses a unique path or cleanup — and only cleanup — uses
-    `ForceDeleteWithoutRecovery`. The
-    error-mapping tests need no AWS account; they run against a fake of the `secretsmanager` API
-    surface, which is what keeps the mapping table covered in CI.
+    `ForceDeleteWithoutRecovery`. The tests that cover error reporting need no AWS account; they run
+    against a fake of the `secretsmanager` API surface.
 - Out of scope: path construction, caching, keypair generation, the credential's own encoding (003
   owns the JSON shape of the string it hands down; this backend only decides how that string is
   persisted) and the user/system classification policy (all 003); any other backend; backend selection
@@ -102,7 +98,7 @@ implementation of the `Backend` interface owned by spec `003`.
   `cmd/provider/main.go`, which no numbered spec owns: it reads `secretsBackend` from 002, constructs
   the named backend, and injects it. That is what keeps the swap a one-file change.
 - **Why `internal/secrets` must never import `internal/secrets/aws`.** The child imports the parent
-  for the interface and the sentinel errors, so the reverse import is a compile error, not merely a
+  for the interface and the `Path` type, so the reverse import is a compile error, not merely a
   layering violation — and the obvious workaround (a registry inside `internal/secrets` that knows its
   own backends) is the cycle wearing a hat.
 - **Why nothing above 003 depends on 003.a.** 004 and 010 take 003's interface, so the pool and the

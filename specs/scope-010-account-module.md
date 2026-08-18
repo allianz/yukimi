@@ -31,7 +31,7 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
     failure cannot orphan an account whose credentials were never persisted. Store it with 003's
     `Backend.Create` — create-only, never `Update` — so a retried request can never overwrite the key
     a live account still authenticates with; that atomicity lives in the store, not in this module.
-    A `Create` onto an occupied path returns `ErrAlreadyExists`, which this module surfaces as a
+    A `Create` onto an occupied path fails, and this module surfaces that failure as a
     system error rather than reusing or replacing what it finds: from here the stored credential's
     relationship to any live account is unknowable, and 003 deliberately reconciles nothing on the
     caller's behalf. Which store is behind 003 is not this module's business — 003.a today.

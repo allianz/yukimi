@@ -18,6 +18,7 @@ package secrets
 
 import (
 	stderrors "errors"
+	"strings"
 	"testing"
 
 	"github.com/allianz/yukimi/internal/errors"
@@ -41,10 +42,10 @@ func storeCredentials(t *testing.T, b Backend, path Path) *Credentials {
 	return creds
 }
 
-// SC-010: Create on an occupied path returns ErrAlreadyExists and leaves the
-// stored value unchanged. This also covers the concurrent-replica race: the
-// replica whose Create loses sees ErrAlreadyExists, and nothing is reconciled
-// on its behalf.
+// SC-010: Create on an occupied path returns an error and leaves the stored
+// value byte-for-byte unchanged. This also covers the concurrent-replica race:
+// the replica whose Create loses sees a failure, and nothing is reconciled on
+// its behalf.
 func TestCreate_OccupiedPathRejectedAndValuePreserved(t *testing.T) {
 	ctx := t.Context()
 	b := NewFakeBackend()
@@ -60,8 +61,8 @@ func TestCreate_OccupiedPathRejectedAndValuePreserved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if err := b.Create(ctx, path, other); !stderrors.Is(err, ErrAlreadyExists) {
-		t.Fatalf("got %v, want ErrAlreadyExists", err)
+	if err := b.Create(ctx, path, other); err == nil {
+		t.Fatal("expected the second create to fail on an occupied path")
 	}
 
 	value, err := b.Get(ctx, path)
@@ -90,8 +91,9 @@ func TestRotate_FailsIfNothingStored(t *testing.T) {
 	if errors.IsUserError(err) {
 		t.Error("expected a system error, not a user error")
 	}
-	if !stderrors.Is(err, ErrNotFound) {
-		t.Errorf("expected the wrap to preserve errors.Is(err, ErrNotFound), got %v", err)
+	if !strings.Contains(err.Error(), "failed to rotate secret at") ||
+		!strings.Contains(err.Error(), "no secret stored") {
+		t.Errorf("expected the wrap to name the rotation and the not-stored cause, got %v", err)
 	}
 }
 
@@ -166,7 +168,7 @@ func TestRotate_StoreFailureIsSystemError(t *testing.T) {
 	path := testPath(t)
 
 	storeCredentials(t, b, path)
-	b.OnUpdate = func(Path) error { return ErrUnavailable }
+	b.OnUpdate = func(Path) error { return errStoreFault }
 
 	_, err := Rotate(ctx, b, path, "platform")
 	if err == nil {
@@ -175,7 +177,7 @@ func TestRotate_StoreFailureIsSystemError(t *testing.T) {
 	if errors.IsUserError(err) {
 		t.Error("expected a system error, not a user error")
 	}
-	if !stderrors.Is(err, ErrUnavailable) {
-		t.Errorf("expected the wrap to preserve errors.Is(err, ErrUnavailable), got %v", err)
+	if !stderrors.Is(err, errStoreFault) {
+		t.Errorf("expected the wrap to preserve errors.Is(err, errStoreFault), got %v", err)
 	}
 }

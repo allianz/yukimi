@@ -18,8 +18,15 @@ package secrets
 
 import (
 	stderrors "errors"
+	"strings"
 	"testing"
 )
+
+// errStoreFault is the error every test injects through FakeBackend's hooks. It
+// stands for any store-level fault; the fake propagates a hook's error
+// unchanged, so a test asserts on this value rather than on anything the
+// package exports.
+var errStoreFault = stderrors.New("store fault")
 
 func testPath(t *testing.T) Path {
 	t.Helper()
@@ -35,10 +42,10 @@ func TestFakeBackend_HookShortCircuitsBeforeMutation_Get(t *testing.T) {
 	ctx := t.Context()
 	b := NewFakeBackend()
 	path := testPath(t)
-	b.OnGet = func(Path) error { return ErrUnavailable }
+	b.OnGet = func(Path) error { return errStoreFault }
 
-	if _, err := b.Get(ctx, path); !stderrors.Is(err, ErrUnavailable) {
-		t.Fatalf("got %v, want ErrUnavailable", err)
+	if _, err := b.Get(ctx, path); !stderrors.Is(err, errStoreFault) {
+		t.Fatalf("got %v, want errStoreFault", err)
 	}
 }
 
@@ -48,15 +55,15 @@ func TestFakeBackend_HookShortCircuitsBeforeMutation_Create(t *testing.T) {
 	ctx := t.Context()
 	b := NewFakeBackend()
 	path := testPath(t)
-	b.OnCreate = func(Path) error { return ErrUnavailable }
+	b.OnCreate = func(Path) error { return errStoreFault }
 
-	if err := b.Create(ctx, path, "value"); !stderrors.Is(err, ErrUnavailable) {
-		t.Fatalf("got %v, want ErrUnavailable", err)
+	if err := b.Create(ctx, path, "value"); !stderrors.Is(err, errStoreFault) {
+		t.Fatalf("got %v, want errStoreFault", err)
 	}
 
 	b.OnCreate = nil
-	if _, err := b.Get(ctx, path); !stderrors.Is(err, ErrNotFound) {
-		t.Fatalf("expected nothing stored after hook short-circuit, got %v", err)
+	if _, err := b.Get(ctx, path); err == nil {
+		t.Fatal("expected nothing stored after hook short-circuit, got a value")
 	}
 }
 
@@ -70,9 +77,9 @@ func TestFakeBackend_HookShortCircuitsBeforeMutation_Update(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	b.OnUpdate = func(Path) error { return ErrUnavailable }
-	if err := b.Update(ctx, path, "new"); !stderrors.Is(err, ErrUnavailable) {
-		t.Fatalf("got %v, want ErrUnavailable", err)
+	b.OnUpdate = func(Path) error { return errStoreFault }
+	if err := b.Update(ctx, path, "new"); !stderrors.Is(err, errStoreFault) {
+		t.Fatalf("got %v, want errStoreFault", err)
 	}
 
 	b.OnUpdate = nil
@@ -94,9 +101,9 @@ func TestFakeBackend_HookShortCircuitsBeforeMutation_Delete(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	b.OnDelete = func(Path) error { return ErrUnavailable }
-	if err := b.Delete(ctx, path); !stderrors.Is(err, ErrUnavailable) {
-		t.Fatalf("got %v, want ErrUnavailable", err)
+	b.OnDelete = func(Path) error { return errStoreFault }
+	if err := b.Delete(ctx, path); !stderrors.Is(err, errStoreFault) {
+		t.Fatalf("got %v, want errStoreFault", err)
 	}
 
 	b.OnDelete = nil
@@ -105,8 +112,9 @@ func TestFakeBackend_HookShortCircuitsBeforeMutation_Delete(t *testing.T) {
 	}
 }
 
-// SC-016: Delete removes the entry outright, so a following Get misses and a
-// following Create on the same path succeeds.
+// SC-016: Delete removes the entry outright, so a following Get fails as it
+// would on a path nothing was ever stored at and a following Create on the same
+// path succeeds.
 func TestFakeBackend_DeleteRemovesOutright(t *testing.T) {
 	ctx := t.Context()
 	b := NewFakeBackend()
@@ -119,8 +127,8 @@ func TestFakeBackend_DeleteRemovesOutright(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if _, err := b.Get(ctx, path); !stderrors.Is(err, ErrNotFound) {
-		t.Errorf("Get after Delete: got %v, want ErrNotFound", err)
+	if _, err := b.Get(ctx, path); err == nil || !strings.Contains(err.Error(), "no secret stored") {
+		t.Errorf("Get after Delete: got %v, want an error naming the path as not stored", err)
 	}
 	if err := b.Create(ctx, path, "new"); err != nil {
 		t.Errorf("Create after Delete: got %v, want nil", err)
@@ -139,7 +147,7 @@ func TestFakeBackend_DeleteOnAbsentPathIsNoop(t *testing.T) {
 }
 
 // Update on a deleted path is treated as not-there.
-func TestFakeBackend_UpdateOnDeletedPathReturnsNotFound(t *testing.T) {
+func TestFakeBackend_UpdateOnDeletedPathFails(t *testing.T) {
 	ctx := t.Context()
 	b := NewFakeBackend()
 	path := testPath(t)
@@ -150,18 +158,18 @@ func TestFakeBackend_UpdateOnDeletedPathReturnsNotFound(t *testing.T) {
 	if err := b.Delete(ctx, path); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if err := b.Update(ctx, path, "new"); !stderrors.Is(err, ErrNotFound) {
-		t.Errorf("got %v, want ErrNotFound", err)
+	if err := b.Update(ctx, path, "new"); err == nil || !strings.Contains(err.Error(), "no secret stored") {
+		t.Errorf("got %v, want an error naming the path as not stored", err)
 	}
 }
 
-// Update on a path nothing was ever stored at fails with ErrNotFound.
-func TestFakeBackend_UpdateOnAbsentPathReturnsNotFound(t *testing.T) {
+// Update on a path nothing was ever stored at fails; Update never creates.
+func TestFakeBackend_UpdateOnAbsentPathFails(t *testing.T) {
 	ctx := t.Context()
 	b := NewFakeBackend()
 	path := testPath(t)
 
-	if err := b.Update(ctx, path, "new"); !stderrors.Is(err, ErrNotFound) {
-		t.Errorf("got %v, want ErrNotFound", err)
+	if err := b.Update(ctx, path, "new"); err == nil || !strings.Contains(err.Error(), "no secret stored") {
+		t.Errorf("got %v, want an error naming the path as not stored", err)
 	}
 }
