@@ -32,7 +32,7 @@ parent and strictly before the next whole number (`003` < `003-a` < `003-b` < `0
   - `customNetworkRules.serviceUsers{<user>: [{connection, allowedIPs[]}]}` and
     `customNetworkRules.accountWide[{connection, allowedIPs[]}]`.
   - `customAuthRules.exceptions[{user, rsaKeyAllowed, patAllowed, reason}]`.
-  - Status (7.2): `accountName` (the **resolved** Snowflake name), `accountUrl`, `conditions`.
+  - Status (7.2): `accountName` (the **resolved** Snowflake name),`accountLocator`, `accountUrl`, `conditions`.
   - **CEL `x-kubernetes-validations` for the 3.11.3 immutability** of `region`, `name` and
     `environment`. `region` and `name` immutability prevents identity spoofing: create an account,
     let the secret generate, then repoint the CRD at a different target while keeping the
