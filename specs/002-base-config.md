@@ -197,6 +197,7 @@ internal/config/
 ```go
 // In cmd/provider/main.go
 import (
+    "context"
     "fmt"
     "log"
 
@@ -209,6 +210,8 @@ func main() {
     configDir := flag.String("configDir", "/etc/yukimi/config", "directory containing baseConfig.yaml and sibling config files")
     flag.Parse()
 
+    ctx := context.Background()
+
     cfg, err := config.Load(*configDir)
     if err != nil {
         log.Fatalf("failed to load base config: %v", err)
@@ -217,7 +220,9 @@ func main() {
     var backend secrets.Backend
     switch cfg.CloudProvider() {
     case "aws":
-        backend, err = secretsaws.New(cfg.AWS.Region)
+        // Region is rejected as a user error by 003-a if empty; KmsKeyId is
+        // passed through to CreateSecret only when non-empty.
+        backend, err = secretsaws.New(ctx, cfg.AWS.Region, cfg.AWS.KmsKeyId)
         if err != nil {
             log.Fatalf("failed to construct AWS secrets backend: %v", err)
         }

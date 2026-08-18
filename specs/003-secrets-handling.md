@@ -361,7 +361,7 @@ internal/secrets/
 
 - **Product design**: `specs/design.md`, §3.6 (the `platform` user and `ADMIN_RSA_PUBLIC_KEY`), §3.11 (org-admin vs. per-account access), §3.11.1 (tenant secret path, namespace as trust anchor), §3.12 (resolved vs. CRD account name), Appendix B X1 (the `platform` user re-key/drop gap).
 - **Error Handling (001)**: `internal/errors/errors.go` - `NewUserError()`, used to classify path-validation and not-found failures.
-- **Base Config (002)**: `internal/config/config.go` - `SnowflakeSettings.Org`, `SnowflakeSettings.OrgAdminAccount`, `CloudProvider()`; its own Example 1 already anticipates `secrets.Backend` and a `secretsaws.New(region)` constructor this spec's sibling (003-a) provides.
+- **Base Config (002)**: `internal/config/config.go` - `SnowflakeSettings.Org`, `SnowflakeSettings.OrgAdminAccount`, `CloudProvider()`; its own Example 1 already anticipates `secrets.Backend` and the `secretsaws.New(ctx, region, kmsKeyID)` constructor this spec's sibling (003-a) provides.
 
 <br/><br/><br/><br/><br/>
 
@@ -438,9 +438,9 @@ func (p *Pool) orgAdminCredentials(ctx context.Context, cached secrets.Backend, 
 }
 
 // Wired once at startup:
-// backend := secretsaws.New(cfg.AWS.Region)       // 003-a
+// backend := secretsaws.New(ctx, cfg.AWS.Region, cfg.AWS.KmsKeyId)  // 003-a
 // cached := secrets.NewCachedBackend(backend, 5*time.Minute)
-// pool := pool.New(cached, ...)                    // 004 depends only on secrets.Backend
+// pool := pool.New(cached, ...)                                     // 004 depends only on secrets.Backend
 ```
 
 ### Example 3: Testing Against `FakeBackend`
