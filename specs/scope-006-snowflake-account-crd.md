@@ -32,15 +32,7 @@ parent and strictly before the next whole number (`003` < `003-a` < `003-b` < `0
   - `customNetworkRules.serviceUsers{<user>: [{connection, allowedIPs[]}]}` and
     `customNetworkRules.accountWide[{connection, allowedIPs[]}]`.
   - `customAuthRules.exceptions[{user, rsaKeyAllowed, patAllowed, reason}]`.
-  - Status (7.2): `accountName` (the **resolved** Snowflake name), `accountUrl`, `conditions`, and
-    `identitySyncStartedAt`. The last one is not in the 7.2 example but 4.3 requires it: the
-    identity-sync grace period is measured from the moment the account's *first*
-    `IdentitySyncRequest` is emitted, and that instant must survive a controller restart, so it is
-    stored rather than recomputed. Written on the emitting path (014), read by 015 to tell
-    `SyncPending` from `SyncTimeout`. 4.3's wording — *the account's first request* — implies it is
-    not reset when an individual request is later recreated. `conditions` needs no companion
-    fields: it carries the two custom types 009 defines (`QuotaAvailable` from 3.10,
-    `IdentitySynced` from 4.3) alongside `Ready` and `Synced`.
+  - Status (7.2): `accountName` (the **resolved** Snowflake name), `accountUrl`, `conditions`.
   - **CEL `x-kubernetes-validations` for the 3.11.3 immutability** of `region`, `name` and
     `environment`. `region` and `name` immutability prevents identity spoofing: create an account,
     let the secret generate, then repoint the CRD at a different target while keeping the
