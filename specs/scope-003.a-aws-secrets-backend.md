@@ -36,16 +36,17 @@ implementation of the `Backend` interface owned by spec `003`.
     and never `PutSecretValue`, so a collision is reported by AWS atomically rather than silently
     overwriting a live tenant's key; `Update` is `PutSecretValue` on an existing secret, which adds a
     version and leaves the previous one reachable as `AWSPREVIOUS` — the property that makes a botched
-    rotation survivable.
+    rotation survivable. 003's value is a string, so both write APIs carry it in `SecretString` and
+    never `SecretBinary`, and `Get` is `GetSecretValue` reading that same `SecretString` back.
   - **Soft delete and the recovery window**: `DeleteSecret` is always called *without*
     `ForceDeleteWithoutRecovery`, leaving the default 30-day window. This backend never calls
     `RestoreSecret` automatically — resurrecting a credential the platform deliberately retired is an
-    operator's decision, not a reconcile's. `ErrPendingDeletion` is detected via `DescribeSecret`'s
-    non-nil `DeletedDate`, which is what makes "a `Create` onto a path whose predecessor is still in
-    its window" legible instead of looking like a random conflict.
+    operator's decision, not a reconcile's. A `CreateSecret` onto a path whose predecessor is still
+    inside its window is returned as-is for 003 to treat as an unclassified permanent fault; this
+    backend maps no sentinel of its own onto the recovery window.
   - **Error-code mapping — the only place vendor codes appear in the repository**:
     `ResourceNotFoundException` → `ErrNotFound`; `ResourceExistsException` → `ErrAlreadyExists`;
-    `DescribeSecret` with a `DeletedDate` → `ErrPendingDeletion`; `AccessDeniedException`,
+    `AccessDeniedException`,
     `InvalidClientTokenId`, `ExpiredToken`, `UnrecognizedClientException` → `ErrDenied`;
     `ThrottlingException`, `InternalServiceErrorException`, request timeouts and connection failures →
     `ErrUnavailable`; anything else is returned as-is for 003 to treat as a permanent fault. This spec
@@ -65,12 +66,14 @@ implementation of the `Backend` interface owned by spec `003`.
     run under `make test-integration` only (skipped by `-short`), and they are driven by `.env`
     (`AWS_REGION`, `AWS_PROFILE`, `SAMPLE_CUSTOMER_NAMESPACE`, `SAMPLE_CUSTOMER_ACCOUNT`). They must create
     and clean up under a dedicated test path prefix, and they must account for the recovery window: a
-    test that deletes and immediately recreates the same path hits `ErrPendingDeletion`, so either
-    every run uses a unique path or cleanup — and only cleanup — uses `ForceDeleteWithoutRecovery`. The
+    test that deletes and immediately recreates the same path fails, since AWS still holds the
+    soft-deleted secret, so either every run uses a unique path or cleanup — and only cleanup — uses
+    `ForceDeleteWithoutRecovery`. The
     error-mapping tests need no AWS account; they run against a fake of the `secretsmanager` API
     surface, which is what keeps the mapping table covered in CI.
-- Out of scope: path construction, credential encoding, caching, keypair generation and the
-  user/system classification policy (all 003); any other backend; backend selection
+- Out of scope: path construction, caching, keypair generation, the credential's own encoding (003
+  owns the JSON shape of the string it hands down; this backend only decides how that string is
+  persisted) and the user/system classification policy (all 003); any other backend; backend selection
   (`cmd/provider/main.go`); and the IAM policy as a deployable artifact — ops owns that, this spec
   documents the grants it requires.
 - Open question for this spec: whether `CreateSecret` should pass a customer-managed `KmsKeyId` and

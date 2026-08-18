@@ -16,7 +16,7 @@ limitations under the License.
 
 // Package secrets defines a backend-agnostic interface for storing and
 // retrieving the RSA-keypair credentials the platform uses to authenticate to
-// Snowflake, plus the path grammar, key generation, idempotent provisioning,
-// and TTL-cache helpers layered on top of it. See
+// Snowflake, plus the path grammar, key generation, and TTL-cache helpers
+// layered on top of it. See
 // specs/003-secrets-handling.md for the full specification.
 package secrets

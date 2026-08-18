@@ -23,13 +23,13 @@ import (
 	"time"
 )
 
-// SC-013: Get serves a cached value within ttl without invoking the
+// SC-012: Get serves a cached value within ttl without invoking the
 // underlying Backend.
 func TestCachedBackend_Get_ServesWithinTTL(t *testing.T) {
 	ctx := t.Context()
 	fake := NewFakeBackend()
 	path := testPath(t)
-	if err := fake.Create(ctx, path, []byte("value")); err != nil {
+	if err := fake.Create(ctx, path, "value"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -43,12 +43,12 @@ func TestCachedBackend_Get_ServesWithinTTL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected cached Get to succeed without touching the backend, got %v", err)
 	}
-	if string(got) != "value" {
+	if got != "value" {
 		t.Errorf("got %q, want %q", got, "value")
 	}
 }
 
-// SC-014: CachedBackend never caches an ErrNotFound result — two misses both
+// SC-013: CachedBackend never caches an ErrNotFound result — two misses both
 // reach the backend.
 func TestCachedBackend_Get_NeverCachesNotFound(t *testing.T) {
 	ctx := t.Context()
@@ -70,8 +70,8 @@ func TestCachedBackend_Get_NeverCachesNotFound(t *testing.T) {
 	}
 }
 
-// SC-015: Create/Update/Delete/Purge invalidate a path's cache entry on
-// success, so the next Get re-fetches rather than serving a stale value.
+// SC-014: Create/Update/Delete invalidate a path's cache entry on success, so
+// the next Get re-fetches rather than serving a stale value.
 func TestCachedBackend_InvalidatesOnWrite(t *testing.T) {
 	newCache := func(t *testing.T) (*CachedBackend, *FakeBackend, Path) {
 		t.Helper()
@@ -86,14 +86,14 @@ func TestCachedBackend_InvalidatesOnWrite(t *testing.T) {
 		if _, err := c.Get(ctx, path); !stderrors.Is(err, ErrNotFound) {
 			t.Fatalf("got %v, want ErrNotFound", err)
 		}
-		if err := c.Create(ctx, path, []byte("value")); err != nil {
+		if err := c.Create(ctx, path, "value"); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		got, err := c.Get(ctx, path)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if string(got) != "value" {
+		if got != "value" {
 			t.Errorf("got %q, want %q (stale ErrNotFound must not have been served)", got, "value")
 		}
 	})
@@ -101,20 +101,20 @@ func TestCachedBackend_InvalidatesOnWrite(t *testing.T) {
 	t.Run("Update", func(t *testing.T) {
 		ctx := t.Context()
 		c, _, path := newCache(t)
-		if err := c.Create(ctx, path, []byte("original")); err != nil {
+		if err := c.Create(ctx, path, "original"); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if _, err := c.Get(ctx, path); err != nil { // warm the cache
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if err := c.Update(ctx, path, []byte("updated")); err != nil {
+		if err := c.Update(ctx, path, "updated"); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		got, err := c.Get(ctx, path)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if string(got) != "updated" {
+		if got != "updated" {
 			t.Errorf("got %q, want %q (stale cached value must not have been served)", got, "updated")
 		}
 	})
@@ -122,7 +122,7 @@ func TestCachedBackend_InvalidatesOnWrite(t *testing.T) {
 	t.Run("Delete", func(t *testing.T) {
 		ctx := t.Context()
 		c, _, path := newCache(t)
-		if err := c.Create(ctx, path, []byte("value")); err != nil {
+		if err := c.Create(ctx, path, "value"); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if _, err := c.Get(ctx, path); err != nil { // warm the cache
@@ -131,36 +131,19 @@ func TestCachedBackend_InvalidatesOnWrite(t *testing.T) {
 		if err := c.Delete(ctx, path); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if _, err := c.Get(ctx, path); !stderrors.Is(err, ErrPendingDeletion) {
-			t.Errorf("got %v, want ErrPendingDeletion (stale cached value must not have been served)", err)
-		}
-	})
-
-	t.Run("Purge", func(t *testing.T) {
-		ctx := t.Context()
-		c, _, path := newCache(t)
-		if err := c.Create(ctx, path, []byte("value")); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if _, err := c.Get(ctx, path); err != nil { // warm the cache
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if err := c.Purge(ctx, path); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
 		if _, err := c.Get(ctx, path); !stderrors.Is(err, ErrNotFound) {
 			t.Errorf("got %v, want ErrNotFound (stale cached value must not have been served)", err)
 		}
 	})
 }
 
-// SC-015: Invalidate clears a path's cache entry directly, without touching
+// SC-014: Invalidate clears a path's cache entry directly, without touching
 // the underlying Backend itself — only the next Get does.
 func TestInvalidate_ClearsEntryDirectly(t *testing.T) {
 	ctx := t.Context()
 	fake := NewFakeBackend()
 	path := testPath(t)
-	if err := fake.Create(ctx, path, []byte("original")); err != nil {
+	if err := fake.Create(ctx, path, "original"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -176,14 +159,14 @@ func TestInvalidate_ClearsEntryDirectly(t *testing.T) {
 		t.Errorf("Invalidate itself must not touch the backend, got %d Get calls", getCallsDuringInvalidate)
 	}
 
-	if err := fake.Update(ctx, path, []byte("updated")); err != nil {
+	if err := fake.Update(ctx, path, "updated"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	got, err := c.Get(ctx, path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if string(got) != "updated" {
+	if got != "updated" {
 		t.Errorf("got %q, want %q (Get after Invalidate must re-fetch)", got, "updated")
 	}
 }
@@ -194,7 +177,7 @@ func TestCachedBackend_Get_ExpiredEntryRefetches(t *testing.T) {
 	ctx := t.Context()
 	fake := NewFakeBackend()
 	path := testPath(t)
-	if err := fake.Create(ctx, path, []byte("value")); err != nil {
+	if err := fake.Create(ctx, path, "value"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -221,7 +204,7 @@ func TestCachedBackend_Get_ServesStaleDuringOutage(t *testing.T) {
 	ctx := t.Context()
 	fake := NewFakeBackend()
 	path := testPath(t)
-	if err := fake.Create(ctx, path, []byte("value")); err != nil {
+	if err := fake.Create(ctx, path, "value"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -235,12 +218,12 @@ func TestCachedBackend_Get_ServesStaleDuringOutage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected cached value to be served during outage, got %v", err)
 	}
-	if string(got) != "value" {
+	if got != "value" {
 		t.Errorf("got %q, want %q", got, "value")
 	}
 }
 
-// CachedBackend.Update/Delete/Purge propagate the underlying Backend's error
+// CachedBackend.Create/Update/Delete propagate the underlying Backend's error
 // without invalidating anything.
 func TestCachedBackend_WriteMethods_PropagateBackendError(t *testing.T) {
 	ctx := t.Context()
@@ -248,8 +231,14 @@ func TestCachedBackend_WriteMethods_PropagateBackendError(t *testing.T) {
 	path := testPath(t)
 	c := NewCachedBackend(fake, time.Hour)
 
+	fake.OnCreate = func(Path) error { return ErrUnavailable }
+	if err := c.Create(ctx, path, "v"); !stderrors.Is(err, ErrUnavailable) {
+		t.Errorf("Create: got %v, want ErrUnavailable", err)
+	}
+	fake.OnCreate = nil
+
 	fake.OnUpdate = func(Path) error { return ErrUnavailable }
-	if err := c.Update(ctx, path, []byte("v")); !stderrors.Is(err, ErrUnavailable) {
+	if err := c.Update(ctx, path, "v"); !stderrors.Is(err, ErrUnavailable) {
 		t.Errorf("Update: got %v, want ErrUnavailable", err)
 	}
 	fake.OnUpdate = nil
@@ -257,12 +246,6 @@ func TestCachedBackend_WriteMethods_PropagateBackendError(t *testing.T) {
 	fake.OnDelete = func(Path) error { return ErrUnavailable }
 	if err := c.Delete(ctx, path); !stderrors.Is(err, ErrUnavailable) {
 		t.Errorf("Delete: got %v, want ErrUnavailable", err)
-	}
-	fake.OnDelete = nil
-
-	fake.OnPurge = func(Path) error { return ErrUnavailable }
-	if err := c.Purge(ctx, path); !stderrors.Is(err, ErrUnavailable) {
-		t.Errorf("Purge: got %v, want ErrUnavailable", err)
 	}
 }
 
@@ -288,7 +271,7 @@ func TestCachedBackend_ConcurrentAccess_NoRace(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			p := paths[i%len(paths)]
-			_ = c.Create(ctx, p, []byte("value"))
+			_ = c.Create(ctx, p, "value")
 			_, _ = c.Get(ctx, p)
 			c.Invalidate(p)
 			_, _ = c.Get(ctx, p)

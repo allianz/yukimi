@@ -30,7 +30,7 @@ func testPath(t *testing.T) Path {
 	return p
 }
 
-// SC-016: A failing OnGet hook short-circuits before any state mutation.
+// SC-015: A failing OnGet hook short-circuits before any state mutation.
 func TestFakeBackend_HookShortCircuitsBeforeMutation_Get(t *testing.T) {
 	ctx := t.Context()
 	b := NewFakeBackend()
@@ -42,7 +42,7 @@ func TestFakeBackend_HookShortCircuitsBeforeMutation_Get(t *testing.T) {
 	}
 }
 
-// SC-016: A failing OnCreate hook short-circuits before any state mutation —
+// SC-015: A failing OnCreate hook short-circuits before any state mutation —
 // nothing gets stored, so a subsequent unhooked Get still misses.
 func TestFakeBackend_HookShortCircuitsBeforeMutation_Create(t *testing.T) {
 	ctx := t.Context()
@@ -50,7 +50,7 @@ func TestFakeBackend_HookShortCircuitsBeforeMutation_Create(t *testing.T) {
 	path := testPath(t)
 	b.OnCreate = func(Path) error { return ErrUnavailable }
 
-	if err := b.Create(ctx, path, []byte("value")); !stderrors.Is(err, ErrUnavailable) {
+	if err := b.Create(ctx, path, "value"); !stderrors.Is(err, ErrUnavailable) {
 		t.Fatalf("got %v, want ErrUnavailable", err)
 	}
 
@@ -60,18 +60,18 @@ func TestFakeBackend_HookShortCircuitsBeforeMutation_Create(t *testing.T) {
 	}
 }
 
-// SC-016: A failing OnUpdate hook short-circuits before any state mutation —
+// SC-015: A failing OnUpdate hook short-circuits before any state mutation —
 // the previously stored value survives untouched.
 func TestFakeBackend_HookShortCircuitsBeforeMutation_Update(t *testing.T) {
 	ctx := t.Context()
 	b := NewFakeBackend()
 	path := testPath(t)
-	if err := b.Create(ctx, path, []byte("original")); err != nil {
+	if err := b.Create(ctx, path, "original"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	b.OnUpdate = func(Path) error { return ErrUnavailable }
-	if err := b.Update(ctx, path, []byte("new")); !stderrors.Is(err, ErrUnavailable) {
+	if err := b.Update(ctx, path, "new"); !stderrors.Is(err, ErrUnavailable) {
 		t.Fatalf("got %v, want ErrUnavailable", err)
 	}
 
@@ -80,17 +80,17 @@ func TestFakeBackend_HookShortCircuitsBeforeMutation_Update(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if string(got) != "original" {
+	if got != "original" {
 		t.Errorf("got %q, want %q (update should not have applied)", got, "original")
 	}
 }
 
-// SC-016: A failing OnDelete hook short-circuits before any state mutation.
+// SC-015: A failing OnDelete hook short-circuits before any state mutation.
 func TestFakeBackend_HookShortCircuitsBeforeMutation_Delete(t *testing.T) {
 	ctx := t.Context()
 	b := NewFakeBackend()
 	path := testPath(t)
-	if err := b.Create(ctx, path, []byte("value")); err != nil {
+	if err := b.Create(ctx, path, "value"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -101,60 +101,33 @@ func TestFakeBackend_HookShortCircuitsBeforeMutation_Delete(t *testing.T) {
 
 	b.OnDelete = nil
 	if _, err := b.Get(ctx, path); err != nil {
-		t.Fatalf("expected entry to remain live after hook short-circuit, got %v", err)
-	}
-}
-
-// SC-016: A failing OnPurge hook short-circuits before any state mutation.
-func TestFakeBackend_HookShortCircuitsBeforeMutation_Purge(t *testing.T) {
-	ctx := t.Context()
-	b := NewFakeBackend()
-	path := testPath(t)
-	if err := b.Create(ctx, path, []byte("value")); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	b.OnPurge = func(Path) error { return ErrUnavailable }
-	if err := b.Purge(ctx, path); !stderrors.Is(err, ErrUnavailable) {
-		t.Fatalf("got %v, want ErrUnavailable", err)
-	}
-
-	b.OnPurge = nil
-	if _, err := b.Get(ctx, path); err != nil {
 		t.Fatalf("expected entry to remain after hook short-circuit, got %v", err)
 	}
 }
 
-// SC-017: Delete marks pending-deletion rather than removing; Get and Create
-// both return ErrPendingDeletion until Purge, after which Create succeeds.
-func TestFakeBackend_DeleteMarksPendingDeletion(t *testing.T) {
+// SC-016: Delete removes the entry outright, so a following Get misses and a
+// following Create on the same path succeeds.
+func TestFakeBackend_DeleteRemovesOutright(t *testing.T) {
 	ctx := t.Context()
 	b := NewFakeBackend()
 	path := testPath(t)
 
-	if err := b.Create(ctx, path, []byte("original")); err != nil {
+	if err := b.Create(ctx, path, "original"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if err := b.Delete(ctx, path); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if _, err := b.Get(ctx, path); !stderrors.Is(err, ErrPendingDeletion) {
-		t.Errorf("Get after Delete: got %v, want ErrPendingDeletion", err)
+	if _, err := b.Get(ctx, path); !stderrors.Is(err, ErrNotFound) {
+		t.Errorf("Get after Delete: got %v, want ErrNotFound", err)
 	}
-	if err := b.Create(ctx, path, []byte("new")); !stderrors.Is(err, ErrPendingDeletion) {
-		t.Errorf("Create after Delete: got %v, want ErrPendingDeletion", err)
-	}
-
-	if err := b.Purge(ctx, path); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if err := b.Create(ctx, path, []byte("new")); err != nil {
-		t.Errorf("Create after Purge: got %v, want nil", err)
+	if err := b.Create(ctx, path, "new"); err != nil {
+		t.Errorf("Create after Delete: got %v, want nil", err)
 	}
 }
 
-// Delete on a path nothing was ever stored at is a no-op success.
+// SC-016: Delete on a path nothing was ever stored at is a no-op success.
 func TestFakeBackend_DeleteOnAbsentPathIsNoop(t *testing.T) {
 	ctx := t.Context()
 	b := NewFakeBackend()
@@ -165,30 +138,19 @@ func TestFakeBackend_DeleteOnAbsentPathIsNoop(t *testing.T) {
 	}
 }
 
-// Purge on a path nothing was ever stored at is a no-op success (idempotent).
-func TestFakeBackend_PurgeOnAbsentPathIsNoop(t *testing.T) {
+// Update on a deleted path is treated as not-there.
+func TestFakeBackend_UpdateOnDeletedPathReturnsNotFound(t *testing.T) {
 	ctx := t.Context()
 	b := NewFakeBackend()
 	path := testPath(t)
 
-	if err := b.Purge(ctx, path); err != nil {
-		t.Errorf("got %v, want nil", err)
-	}
-}
-
-// Update on a pending-deletion entry is treated as not-there.
-func TestFakeBackend_UpdateOnPendingDeletionReturnsNotFound(t *testing.T) {
-	ctx := t.Context()
-	b := NewFakeBackend()
-	path := testPath(t)
-
-	if err := b.Create(ctx, path, []byte("original")); err != nil {
+	if err := b.Create(ctx, path, "original"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if err := b.Delete(ctx, path); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if err := b.Update(ctx, path, []byte("new")); !stderrors.Is(err, ErrNotFound) {
+	if err := b.Update(ctx, path, "new"); !stderrors.Is(err, ErrNotFound) {
 		t.Errorf("got %v, want ErrNotFound", err)
 	}
 }
@@ -199,7 +161,7 @@ func TestFakeBackend_UpdateOnAbsentPathReturnsNotFound(t *testing.T) {
 	b := NewFakeBackend()
 	path := testPath(t)
 
-	if err := b.Update(ctx, path, []byte("new")); !stderrors.Is(err, ErrNotFound) {
+	if err := b.Update(ctx, path, "new"); !stderrors.Is(err, ErrNotFound) {
 		t.Errorf("got %v, want ErrNotFound", err)
 	}
 }

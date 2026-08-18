@@ -76,17 +76,18 @@ func NewCredentials(username string) (*Credentials, error) {
 	return &Credentials{Username: username, PublicKey: pub, PrivateKey: priv}, nil
 }
 
-// MarshalCredentials converts c to the JSON bytes a Backend stores.
-func MarshalCredentials(c *Credentials) ([]byte, error) {
-	return json.Marshal(c)
+// MarshalCredentials converts c to the JSON string a Backend stores.
+func MarshalCredentials(c *Credentials) (string, error) {
+	data, err := json.Marshal(c)
+	return string(data), err
 }
 
-// UnmarshalCredentials converts the JSON bytes a Backend stores back into a
+// UnmarshalCredentials converts the JSON string a Backend stores back into a
 // Credentials value. It rejects a value with any of the three fields empty;
 // it does not otherwise validate PublicKey or PrivateKey contents.
-func UnmarshalCredentials(data []byte) (*Credentials, error) {
+func UnmarshalCredentials(data string) (*Credentials, error) {
 	var c Credentials
-	if err := json.Unmarshal(data, &c); err != nil {
+	if err := json.Unmarshal([]byte(data), &c); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal credentials: %w", err)
 	}
 	if c.Username == "" || c.PublicKey == "" || c.PrivateKey == "" {

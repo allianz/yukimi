@@ -28,16 +28,13 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
   this module executes its own.
 - Scope:
   - Generate the RSA keypair and **store it through 003 before** issuing `CREATE ACCOUNT`, so that a
-    failure cannot orphan an account whose credentials were never persisted. Call 003's
-    `CreateOrRecover`, not a bare `Create`/`Update` — it already resolves both non-atomic-retry
-    collisions 003 defines (delete-then-recreate: purge and generate fresh; interrupted retry: reuse
-    what's already stored) and never fails loudly on its own. This module supplies the other half of
-    that contract, per 003's own worked example: combine `CreateOrRecover`'s `existed` flag with
-    `Observe`'s verdict on whether the account already exists in Snowflake. `existed` with no live
-    account is the safe interrupted-retry case (reuse and proceed to `CREATE ACCOUNT`); `existed` with
-    a live account is the one case this module itself must fail loudly on, since it means a live
-    account's credential is about to be regenerated. Which store is behind 003 is not this module's
-    business — 003.a today.
+    failure cannot orphan an account whose credentials were never persisted. Store it with 003's
+    `Backend.Create` — create-only, never `Update` — so a retried request can never overwrite the key
+    a live account still authenticates with; that atomicity lives in the store, not in this module.
+    A `Create` onto an occupied path returns `ErrAlreadyExists`, which this module surfaces as a
+    system error rather than reusing or replacing what it finds: from here the stored credential's
+    relationship to any live account is unknowable, and 003 deliberately reconciles nothing on the
+    caller's behalf. Which store is behind 003 is not this module's business — 003.a today.
   - `CREATE ACCOUNT '<resolved-name>' ADMIN_NAME='platform'
     ADMIN_RSA_PUBLIC_KEY='<generated>' ADMIN_USER_TYPE='SERVICE' EDITION='ENTERPRISE'
     REGION='<region-from-crd>' COMMENT='<description-from-crd>'`, issued over the **org-admin**

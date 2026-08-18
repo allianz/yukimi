@@ -23,7 +23,7 @@ import (
 	"github.com/allianz/yukimi/internal/errors"
 )
 
-// SC-002: NewTenantPath constructs the exact expected path from its four inputs.
+// SC-003: NewTenantPath constructs the exact expected path from its four inputs.
 func TestNewTenantPath_BuildsExpectedPath(t *testing.T) {
 	p, err := NewTenantPath("my_org", "finance", "analytics-team-eu")
 	if err != nil {
@@ -35,7 +35,7 @@ func TestNewTenantPath_BuildsExpectedPath(t *testing.T) {
 	}
 }
 
-// SC-003: NewOrgAdminPath constructs the exact expected path from its two inputs.
+// SC-004: NewOrgAdminPath constructs the exact expected path from its two inputs.
 func TestNewOrgAdminPath_BuildsExpectedPath(t *testing.T) {
 	p, err := NewOrgAdminPath("my_org", "my_org_admin_account")
 	if err != nil {
@@ -47,7 +47,7 @@ func TestNewOrgAdminPath_BuildsExpectedPath(t *testing.T) {
 	}
 }
 
-// SC-004: NewTenantPath rejects an empty, '/'-containing, '.'-containing,
+// SC-005: NewTenantPath rejects an empty, '/'-containing, '.'-containing,
 // '..'-containing, or out-of-class segment in any of its three positions.
 func TestNewTenantPath_RejectsInvalidSegments(t *testing.T) {
 	invalid := []string{"", "team/a", "team.a", "..", "team a", "team@a"}
@@ -64,7 +64,7 @@ func TestNewTenantPath_RejectsInvalidSegments(t *testing.T) {
 	}
 }
 
-// SC-004: NewOrgAdminPath rejects the same invalid forms in both of its positions.
+// SC-005: NewOrgAdminPath rejects the same invalid forms in both of its positions.
 func TestNewOrgAdminPath_RejectsInvalidSegments(t *testing.T) {
 	invalid := []string{"", "org/admin", "org.admin", "..", "org admin", "org@admin"}
 	for _, bad := range invalid {
@@ -77,7 +77,7 @@ func TestNewOrgAdminPath_RejectsInvalidSegments(t *testing.T) {
 	}
 }
 
-// SC-004: A failed construction returns the zero-value Path alongside the error.
+// SC-005: A failed construction returns the zero-value Path alongside the error.
 func TestNewTenantPath_ReturnsZeroValueOnError(t *testing.T) {
 	p, err := NewTenantPath("", "finance", "analytics-team-eu")
 	if err == nil {
