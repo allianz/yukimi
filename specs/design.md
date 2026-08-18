@@ -304,12 +304,11 @@ The Backplane Config is a platform-owned artifact that catalogs the pre-provisio
 
 Bringing a region online is a one-time manual job for platform ops: run the Terraform project that provisions the region's backplane, close out the follow-up tickets that finalize it (DNS, Snowflake accepting the VPC endpoint), test it end-to-end, then add the region's entry from the Terraform outputs with `available: true`. From then on the controller can provision accounts into it, looking the region up by the CRD's `region` field. `available` is a controller-side gate with no counterpart in Snowflake: it lets ops stage a region and reject CRDs naming it until it is officially offered.
 
-Beyond the `regions` map itself and each region's `available` flag, the configuration is organized around four main components:
+Beyond the `regions` map itself and each region's `available` flag, the configuration is organized around three main components:
 
   * **`inventory`:** A catalog of all physical ingress paths (connections) in a region. It defines the maximum allowed IP range (`maxCidrs`) for each connection, but does not grant access itself.
   * **`globalParameters` / `regionalParameters`:** Snowflake account parameters applied during bootstrapping — `globalParameters` holds the org-wide security baseline, `regionalParameters` the region-specific settings.
   * **`regionalAllowlist`:** The mandatory baseline network access applied to every account in the region. This guarantees basic reachability (e.g., for browser logins) before any custom, user-specific rules are added.
-  * **`identitySync`:** Whether the controller must request corporate groups into the organization account before importing them (4). Org-level rather than per-region, since identity is integrated globally (3.7).
 
 ```yaml
 backplane:
@@ -318,12 +317,6 @@ backplane:
   globalParameters:
     PREVENT_UNLOAD_TO_INLINE_URL: "true"        # block data exfiltration to arbitrary URLs
     REQUIRE_STORAGE_INTEGRATION_FOR_STAGE_CREATION: "true"
-
-  # --- IDENTITY SYNC: whether groups must be requested into the org account (4) ---
-  identitySync:
-    enabled: true       # false when the enterprise already syncs every group org-wide
-    timeout: 1h         # grace period before an unfulfilled request is reported as failed;
-                        # never shorter than the slowest provider (Entra ID ≈ 45 min)
 
   # --- REGIONS: one entry per cloud region, filled in from the Terraform outputs ---
   regions:
@@ -623,6 +616,8 @@ Before the controller can import groups into a local account (3.7), those groups
 
 If your enterprise architecture does not automatically sync all corporate groups to the organization account by default, an explicit integration is required. To facilitate this, the platform emits an `IdentitySyncRequest` to request the needed groups.
 
+The two settings that govern this behavior — whether requests are emitted at all, and how long an outstanding request may stay unfulfilled before it is reported as stalled — are org-wide, since identity is integrated globally (3.7). They live in the controller's base configuration (`baseConfig.yaml`).
+
 ### 4.1 Example
 
 ```yaml
@@ -657,7 +652,7 @@ Fulfilment is a long-running, out-of-band process: an Azure Entra ID sync takes 
 
 **Emitting side (this platform's SnowflakeAccount controller)**
 
-  * **Gated on config.** Requests are only emitted when `backplane.identitySync.enabled` is true (3.5). When false, the controller imports directly and assumes every referenced group is already present org-wide.
+  * **Gated on config.** Requests are only emitted when the base config's `identitySync.enabled` is true. When false, the controller imports directly and assumes every referenced group is already present org-wide.
   * **One request per integration.** Each key under `identityIntegration.groups` (3.7) yields its own request: `spec.provider` is the key, `spec.groups` its list. Named `<crd-name>-<provider>-identities` in the account's own namespace, from the CRD's `metadata.name` rather than the resolved Snowflake name (3.12), which contains underscores RFC1123 forbids.
   * **Emitted early, never blocking.** Requests go out on first observation of the `SnowflakeAccount`, alongside bootstrapping (3.6) rather than after it, so a sync measured in tens of minutes overlaps account creation. The controller returns immediately and picks up progress on later reconciles.
   * **Existence is desired state.** Each request carries an owner reference so it is garbage-collected with the account. A request deleted while its groups are still needed is recreated; removing an integration key from the CRD deletes its request for good.
@@ -670,7 +665,7 @@ Fulfilment is a long-running, out-of-band process: an Azure Entra ID sync takes 
 
   * **Incremental import.** As each request reports `Ready=True`, that provider's groups are imported (3.7) and every `roleBindings` entry whose group is now present is granted. A slow provider does not hold back a fast one.
   * **Aggregate condition.** The `SnowflakeAccount` surfaces an `IdentitySynced` condition — its own, like `QuotaAvailable` (3.10), additional to `Ready` and `Synced` (7.1) — **True** once every request is fulfilled and every group imported.
-  * **Grace period.** While outstanding and within `backplane.identitySync.timeout` (default **1h**, 3.5), the reason is `SyncPending`: an expected provisioning state, with no warning event. Past the timeout it becomes `SyncTimeout` with a warning event so ops can see the stall. The clock starts when the account's first request is emitted and is recorded in its status.
+  * **Grace period.** While outstanding and within the base config's `identitySync.timeout` (default **1h**, never shorter than the slowest provider), the reason is `SyncPending`: an expected provisioning state, with no warning event. Past the timeout it becomes `SyncTimeout` with a warning event so ops can see the stall. The clock starts when the account's first request is emitted and is recorded in its status.
   * **Recoverable.** `SyncTimeout` is a reporting state, not a stop: the controller keeps reconciling and returns to `IdentitySynced=True` on its own if the sync lands.
   * **Relation to `Ready`.** Until the group bound to `ACCOUNTADMIN` is imported nobody can administer the account, so `Ready` stays **False** while `IdentitySynced` is False, carrying the reason above to distinguish a benign wait from a provisioning failure.
 

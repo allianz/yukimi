@@ -28,7 +28,7 @@ parent and strictly before the next whole number (`003` < `003-a` < `003-b` < `0
 - Scope — the CRD: `spec.provider` (the integration key from `identityIntegration.groups`) and
   `spec.groups[]`, plus the `Ready` contract through which the fulfilling controller reports.
 - Scope — emitter behavior:
-  - **Gated on config**: requests are emitted only when `backplane.identitySync.enabled` is true.
+  - **Gated on config**: requests are emitted only when the base config's `identitySync.enabled` is true.
     When it is false, groups are assumed to be present org-wide already and are imported directly.
   - **One request per integration key**: each key under `identityIntegration.groups` yields its own
     request, named `<crd-name>-<provider>-identities` in the account's own namespace. It is derived
@@ -41,7 +41,7 @@ parent and strictly before the next whole number (`003` < `003-a` < `003-b` < `0
   - **Existence is desired state**: each request carries an owner reference so that it is
     garbage-collected with the account; a request deleted while its groups are still needed is
     recreated; and removing an integration key from the CRD deletes its request for good.
-  - **Grace period**: while a request is outstanding and within `identitySync.timeout` (default 1h)
+  - **Grace period**: while a request is outstanding and within the base config's `identitySync.timeout` (default 1h)
     the reason is `SyncPending` — an expected provisioning state with **no** warning event. Past the
     timeout it becomes `SyncTimeout` **with** a warning event so that ops can see the stall. The
     clock starts when the account's first request is emitted and is recorded in status. `SyncTimeout`
