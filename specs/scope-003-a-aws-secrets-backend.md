@@ -1,10 +1,10 @@
 > **Scope context only — not a specification.** This file was split out of the temporary
 > `roadmap.md` planning document used to work out how `specs/design.md` should be decomposed
 > into numbered specs. It exists only to give a starting-point idea of spec `003-a`'s intended
-> *scope*, not its content. When writing `003-a-aws-secrets-backend.md`, the sole sources of truth
-> are `specs/design.md` and the prompt given at spec-writing time — rework, restructure, or discard
-> anything below freely. This file does not need to be kept up to date, and should be deleted
-> once `003-a-aws-secrets-backend.md` has been written.
+> *scope*, not its content. When writing `003-a-aws-secrets-backend.md`, the sole sources of
+> truth are `specs/design.md` and the prompt given at spec-writing time — rework, restructure,
+> or discard anything below freely. Please keep this file up to date until
+> `003-a-aws-secrets-backend.md` has been written, then delete it.
 
 ## Ordering rule (context for "Depends on" below)
 
