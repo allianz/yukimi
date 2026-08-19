@@ -10,9 +10,9 @@
 
 Specs are written and implemented one at a time, in ascending numeric order, and **a spec may
 depend only on specs numbered strictly below it** — a dependency on a higher number would be
-unbuildable at the time it's written. A number may carry a letter suffix (`003-a`) marking a
+unbuildable at the time it's written. A number may carry a letter suffix (`003.a`) marking a
 pluggable backend implementing an interface owned by the bare number; a letter sorts after its
-parent and strictly before the next whole number (`003` < `003-a` < `003-b` < `004`), so
+parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `004`), so
 "strictly below" still holds unchanged and no exception is needed.
 
 ## Roadmap's original scope notes

@@ -17,16 +17,39 @@ limitations under the License.
 package secrets
 
 import (
+	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	stderrors "errors"
+	"io"
 	"strings"
 	"testing"
+
+	"github.com/allianz/yukimi/internal/errors"
 )
 
-// SC-006: Credentials marshals to JSON with exactly username/public_key/private_key.
+// errNoEntropy is what withoutEntropy's reader fails with, so a test can assert
+// the failure it injected is the one that surfaced.
+var errNoEntropy = stderrors.New("no entropy")
+
+type failingReader struct{}
+
+func (failingReader) Read([]byte) (int, error) { return 0, errNoEntropy }
+
+// withoutEntropy swaps crypto/rand's reader for one that always fails, so the
+// key-generation failure path — otherwise unreachable — can be exercised. It is
+// restored when the test ends, so no test here may call t.Parallel.
+func withoutEntropy(t *testing.T) {
+	t.Helper()
+	original := rand.Reader
+	t.Cleanup(func() { rand.Reader = original })
+	rand.Reader = io.Reader(failingReader{})
+}
+
+// SC-007: Credentials marshals to JSON with exactly username/public_key/private_key.
 func TestMarshalCredentials_FieldNames(t *testing.T) {
 	c := &Credentials{Username: "platform", PublicKey: "pub", PrivateKey: "priv"}
 	data, err := MarshalCredentials(c)
@@ -35,7 +58,7 @@ func TestMarshalCredentials_FieldNames(t *testing.T) {
 	}
 
 	var m map[string]string
-	if err := json.Unmarshal(data, &m); err != nil {
+	if err := json.Unmarshal([]byte(data), &m); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(m) != 3 {
@@ -49,7 +72,7 @@ func TestMarshalCredentials_FieldNames(t *testing.T) {
 	}
 }
 
-// SC-007: GenerateKeyPair produces a minimum 2048-bit RSA key: PKCS#8/PEM
+// SC-008: GenerateKeyPair produces a minimum 2048-bit RSA key: PKCS#8/PEM
 // private key, PKIX single-line-base64 public key with no PEM delimiters.
 func TestGenerateKeyPair_ProducesValidKey(t *testing.T) {
 	pubB64, privPEM, err := GenerateKeyPair()
@@ -93,7 +116,7 @@ func TestGenerateKeyPair_ProducesValidKey(t *testing.T) {
 	}
 }
 
-// SC-007 (via NewCredentials): username is carried through as given.
+// SC-008 (via NewCredentials): username is carried through as given.
 func TestNewCredentials_SetsUsername(t *testing.T) {
 	c, err := NewCredentials("platform")
 	if err != nil {
@@ -107,7 +130,38 @@ func TestNewCredentials_SetsUsername(t *testing.T) {
 	}
 }
 
-// SC-008: UnmarshalCredentials rejects a value with any of the three fields empty.
+// SC-008: a key-generation failure is a system error, wrapped so the
+// underlying cause stays matchable.
+func TestGenerateKeyPair_FailureIsSystemError(t *testing.T) {
+	withoutEntropy(t)
+
+	_, _, err := GenerateKeyPair()
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if errors.IsUserError(err) {
+		t.Error("expected a system error, not a user error")
+	}
+	if !stderrors.Is(err, errNoEntropy) {
+		t.Errorf("expected the wrap to preserve the underlying cause, got %v", err)
+	}
+}
+
+// NewCredentials propagates GenerateKeyPair's failure rather than returning a
+// half-filled Credentials.
+func TestNewCredentials_PropagatesKeyGenerationFailure(t *testing.T) {
+	withoutEntropy(t)
+
+	c, err := NewCredentials("platform")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if c != nil {
+		t.Error("expected no Credentials alongside the error")
+	}
+}
+
+// SC-009: UnmarshalCredentials rejects a value with any of the three fields empty.
 func TestUnmarshalCredentials_RejectsEmptyField(t *testing.T) {
 	tests := []struct {
 		name string
@@ -118,20 +172,20 @@ func TestUnmarshalCredentials_RejectsEmptyField(t *testing.T) {
 		{"empty private_key", `{"username":"platform","public_key":"pub","private_key":""}`},
 	}
 	for _, tt := range tests {
-		if _, err := UnmarshalCredentials([]byte(tt.json)); err == nil {
+		if _, err := UnmarshalCredentials(tt.json); err == nil {
 			t.Errorf("%s: expected error, got nil", tt.name)
 		}
 	}
 }
 
-// SC-008: UnmarshalCredentials rejects malformed JSON as a system error.
+// SC-009: UnmarshalCredentials rejects malformed JSON as a system error.
 func TestUnmarshalCredentials_RejectsMalformedJSON(t *testing.T) {
-	if _, err := UnmarshalCredentials([]byte("not json")); err == nil {
+	if _, err := UnmarshalCredentials("not json"); err == nil {
 		t.Error("expected error for malformed JSON")
 	}
 }
 
-// SC-008: A well-formed value with all three fields populated round-trips cleanly.
+// SC-009: A well-formed value with all three fields populated round-trips cleanly.
 func TestUnmarshalCredentials_WellFormedRoundTrip(t *testing.T) {
 	c := &Credentials{Username: "platform", PublicKey: "pub", PrivateKey: "priv"}
 	data, err := MarshalCredentials(c)

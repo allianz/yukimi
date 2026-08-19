@@ -636,7 +636,7 @@ aws: {}
 	}
 }
 
-// SC-010: a well-formed but non-existent region is accepted (existence is 003-a's concern).
+// SC-010: a well-formed but non-existent region is accepted (existence is 003.a's concern).
 func TestLoad_AWSRegionWellFormedNonexistent(t *testing.T) {
 	fixture := `
 snowflake:
