@@ -2,9 +2,9 @@
 > `roadmap.md` planning document used to work out how `specs/design.md` should be decomposed
 > into numbered specs. It exists only to give a starting-point idea of spec `013`'s intended
 > *scope*, not its content. When writing `013-auth-module.md`, the sole sources of truth are
-> `specs/design.md` and the prompt given at spec-writing time — rework, restructure, or discard
-> anything below freely. This file does not need to be kept up to date, and should be deleted
-> once `013-auth-module.md` has been written.
+> `specs/design.md` and the prompt given at spec-writing time — rework, restructure, or
+> discard anything below freely. Please keep this file up to date until `013-auth-module.md`
+> has been written, then delete it.
 
 ## Ordering rule (context for "Depends on" below)
 
