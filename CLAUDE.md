@@ -181,6 +181,9 @@ make test-integration   # Run integration tests only (requires AWS and Snowflake
 make reviewable         # Run full validation: generate, lint, test
 ```
 
+### Integration Tests
+`TestIntegration...` tests load `.env` themselves (e.g. via `godotenv.Load`), so they also run directly from an IDE's test runner (single-click "run test"), not just via `make test-integration`. Resources they create use a `test-`/`integration-test-` prefix, with a timestamp suffix where useful to avoid collisions.
+
 ### Code Generation
 ```bash
 make generate           # Regenerate all auto-generated code (run after API changes)
