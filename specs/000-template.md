@@ -2,7 +2,7 @@
 
 ## Overview
 
-{Write 3-4 sentences that answer: (1) What does this subsystem do? (2) What problem does it solve? (3) Why is it needed in the provider? (4) What's the high-level technical approach?}
+{Write 3-5 sentences that answer: (1) What does this subsystem do? (2) What problem does it solve? (3) Why is it needed in the provider? (4) What's the high-level technical approach? One idea per sentence, in plain English a non-native speaker can follow — no jargon, no type names, field names, or cross-references to other specs; that detail belongs in the sections below.}
 
 ## Scope
 
@@ -20,7 +20,14 @@ This specification defines the {subsystem name} that:
 Add 1-2 sections explaining key concepts specific to this feature.
 Examples: "Key Concept: Connection Format", "Key Concept: Secret Path Structure", "Key Concept: Execution Model"
 Focus on WHAT, not HOW. Explain domain-specific concepts, data formats, or behavioral models.
+
+Explain the concept: name the idea, say what it is and why it is
+shaped that way. May be technical and demand real attention from the reader.
+Leave secondary details to Edge Cases.
+Open with one very simple sentence introducing the concept, then go deeper.
 -->
+
+{One simple introductory sentence}
 
 {Explanation of key concept}
 
