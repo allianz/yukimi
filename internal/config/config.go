@@ -46,12 +46,12 @@ var (
 	// only rejects whitespace/punctuation, never judges realness.
 	accountLocatorPattern = regexp.MustCompile(`^[A-Za-z0-9]+$`)
 
-	// orgAdminRegionPattern matches the literal region-id used in a Snowflake account's
-	// connection hostname (e.g. "eu-central-1", "westeurope") — not the "aws-"-prefixed
-	// Backplane Config region key (design.md 3.5). Looser than awsRegionPattern because a
-	// Snowflake org's account may live on any cloud, independent of the controller's own
-	// AWS-hosted Secrets Manager backend.
-	orgAdminRegionPattern = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
+	// orgAdminRegionPattern matches the cloud-region form used by the Backplane Config's
+	// region keys and the SnowflakeAccount CRD's region field (e.g. "aws-eu-central-1",
+	// "azure-westeurope"; design.md 3.1, 3.5). The recognized prefixes must stay in sync
+	// with cloudSectionKeys below — a Snowflake org's account may live on any of the same
+	// three clouds, independent of the controller's own AWS-hosted Secrets Manager backend.
+	orgAdminRegionPattern = regexp.MustCompile(`^(aws|azure|gcp)-[a-z][a-z0-9-]*$`)
 
 	cloudSectionKeys = map[string]bool{"aws": true, "azure": true, "gcp": true}
 )
@@ -78,7 +78,7 @@ type SnowflakeSettings struct {
 	Org                    string // organization name; used in account identifiers, secret paths, and accountUrl
 	OrgAdminAccount        string // account used for org-level operations
 	OrgAdminAccountLocator string // Snowflake account locator for OrgAdminAccount (e.g. "xc19114"); static config because, unlike a tenant account, the controller never runs CREATE ACCOUNT for it (design.md 3.6)
-	OrgAdminAccountRegion  string // Snowflake region OrgAdminAccount lives in (hostname region-id, e.g. "eu-central-1" or "westeurope"); paired with OrgAdminAccountLocator to build the org-admin connection host (004)
+	OrgAdminAccountRegion  string // Snowflake region OrgAdminAccount lives in, cloud-region form (e.g. "aws-eu-central-1" or "azure-westeurope"); paired with OrgAdminAccountLocator to build the org-admin connection host (004)
 	UsePrivateLink         bool   // affects the connection host (004); defaults to true when omitted
 }
 
@@ -191,7 +191,7 @@ func Load(configDir string) (*BaseConfig, error) {
 	}
 	if !orgAdminRegionPattern.MatchString(raw.Snowflake.OrgAdminAccountRegion) {
 		return nil, errors.NewUserError(fmt.Sprintf(
-			"snowflake.orgAdminAccountRegion '%s' does not match the expected format (expected: eu-central-1 or westeurope)",
+			"snowflake.orgAdminAccountRegion '%s' does not match the expected format (expected: aws-eu-central-1 or azure-westeurope)",
 			raw.Snowflake.OrgAdminAccountRegion))
 	}
 

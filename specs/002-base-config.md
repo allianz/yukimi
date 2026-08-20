@@ -62,7 +62,7 @@ type SnowflakeSettings struct {
     Org                    string // organization name; used in account identifiers, secret paths, and accountUrl
     OrgAdminAccount        string // account used for org-level operations
     OrgAdminAccountLocator string // Snowflake account locator for OrgAdminAccount (e.g. "xc19114"); static config because, unlike a tenant account, the controller never runs CREATE ACCOUNT for it (design.md 3.6)
-    OrgAdminAccountRegion  string // Snowflake region OrgAdminAccount lives in (hostname region-id, e.g. "eu-central-1" or "westeurope"); paired with OrgAdminAccountLocator to build the org-admin connection host (004)
+    OrgAdminAccountRegion  string // Snowflake region OrgAdminAccount lives in, cloud-region form (e.g. "aws-eu-central-1" or "azure-westeurope"); paired with OrgAdminAccountLocator to build the org-admin connection host (004)
     UsePrivateLink         bool   // affects the connection host (004); defaults to true when omitted
 }
 
@@ -102,7 +102,7 @@ Every field in `baseConfig.yaml` is freely editable and the whole file is reload
 | `snowflake.org` | string | **Yes** | Non-empty; matches `^[A-Za-z][A-Za-z0-9_]*$` (Snowflake identifier form, design.md 3.12). Used in account identifiers, secret paths, and `accountUrl` (design.md 3.11.1, 3.12, 7.2). |
 | `snowflake.orgAdminAccount` | string | **Yes** | Non-empty; matches `^[A-Za-z][A-Za-z0-9_]*$`. Used in the org-admin secret path (design.md 3.11.1). |
 | `snowflake.orgAdminAccountLocator` | string | **Yes** | Non-empty; matches `^[A-Za-z0-9]+$` (Snowflake account locator form, e.g. `xc19114`). Static because, unlike a tenant account, there is no `CREATE ACCOUNT` response to capture it from (design.md 3.6). Paired with `orgAdminAccountRegion` to build the org-admin connection host (004). |
-| `snowflake.orgAdminAccountRegion` | string | **Yes** | Non-empty; matches `^[a-z][a-z0-9-]*$` — the literal region-id used in a Snowflake account's connection hostname (e.g. `eu-central-1`, `westeurope`), not the `aws-`-prefixed Backplane Config region key (design.md 3.5). |
+| `snowflake.orgAdminAccountRegion` | string | **Yes** | Non-empty; matches `^(aws\|azure\|gcp)-[a-z][a-z0-9-]*$` — the cloud-region form used by the Backplane Config's region keys and the SnowflakeAccount CRD's `region` field (e.g. `aws-eu-central-1`, `azure-westeurope`; design.md 3.1, 3.5). |
 | `snowflake.usePrivateLink` | bool | No | Affects the Snowflake connection host (design.md 3.6). Default: `true` when omitted. |
 | `aws` | object | **Yes**, or another cloud section | The cloud section for AWS. Its presence is what makes `CloudProvider()` return `"aws"`. Exactly one of `aws` / `azure` / `gcp` must be present — none or several is a user error. |
 | `aws.region` | string | No | Not required here; if non-empty, matches `^[a-z]{2}(-[a-z]+)+-[0-9]$`. Whether the region exists and whether it is required at all is decided by 003.a's constructor. |
@@ -126,7 +126,8 @@ internal/config/
 - Missing required field: `snowflake.orgAdminAccountLocator is required in baseConfig.yaml`
 - Missing required field: `snowflake.orgAdminAccountRegion is required in baseConfig.yaml`
 - Malformed value: `snowflake.orgAdminAccountLocator 'xc-19114!' does not match the expected format (expected: xc19114)`
-- Malformed value: `snowflake.orgAdminAccountRegion 'Frankfurt!' does not match the expected format (expected: eu-central-1 or westeurope)`
+- Malformed value: `snowflake.orgAdminAccountRegion 'Frankfurt!' does not match the expected format (expected: aws-eu-central-1 or azure-westeurope)`
+- Malformed value: `snowflake.orgAdminAccountRegion 'eu-central-1' does not match the expected format (expected: aws-eu-central-1 or azure-westeurope)` — a region missing its cloud prefix
 - Malformed value: `aws.region 'Frankfurt!' does not match the expected format (expected: eu-central-1)` — and likewise for any other field with a documented regex
 - Malformed value: `aws.kmsKeyId 'not a key!' does not match the expected format (expected: a KMS key ID, alias, or ARN, e.g. alias/my-key)`
 - No cloud section: `baseConfig.yaml must contain one cloud section (one of: aws, azure, gcp)`
@@ -178,7 +179,7 @@ internal/config/
 - **SC-015**: `Load` accepts an absent `aws.kmsKeyId`, accepts each well-formed KMS identifier form (bare key ID, `alias/<name>`, key ARN, alias ARN), and returns a user error for a malformed one.
 - **SC-016**: `Load` returns a user error when `snowflake.orgAdminAccountLocator` is empty or absent.
 - **SC-017**: `Load` returns a user error when `snowflake.orgAdminAccountRegion` is empty or absent.
-- **SC-018**: `Load` returns a user error when `snowflake.orgAdminAccountLocator` or `snowflake.orgAdminAccountRegion` contains characters outside their documented shape, and accepts a well-formed non-AWS-style region (e.g. `westeurope`).
+- **SC-018**: `Load` returns a user error when `snowflake.orgAdminAccountLocator` or `snowflake.orgAdminAccountRegion` contains characters outside their documented shape, accepts a well-formed region under any of the three recognized cloud prefixes (e.g. `azure-westeurope`), and rejects one missing its cloud prefix (e.g. `eu-central-1`).
 
 
 ## References
@@ -236,7 +237,7 @@ snowflake:
   org: my_org_name
   orgAdminAccount: my_org_admin_account_name
   orgAdminAccountLocator: xc19114
-  orgAdminAccountRegion: eu-central-1
+  orgAdminAccountRegion: aws-eu-central-1
   usePrivateLink: true
 
 aws:

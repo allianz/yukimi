@@ -42,7 +42,7 @@ snowflake:
   org: my_org_name
   orgAdminAccount: my_org_admin_account_name
   orgAdminAccountLocator: xc19114
-  orgAdminAccountRegion: eu-central-1
+  orgAdminAccountRegion: aws-eu-central-1
   usePrivateLink: true
 
 aws:
@@ -67,8 +67,8 @@ func TestLoad_WellFormed(t *testing.T) {
 	if cfg.Snowflake.OrgAdminAccountLocator != "xc19114" {
 		t.Errorf("Snowflake.OrgAdminAccountLocator = %q, want %q", cfg.Snowflake.OrgAdminAccountLocator, "xc19114")
 	}
-	if cfg.Snowflake.OrgAdminAccountRegion != "eu-central-1" {
-		t.Errorf("Snowflake.OrgAdminAccountRegion = %q, want %q", cfg.Snowflake.OrgAdminAccountRegion, "eu-central-1")
+	if cfg.Snowflake.OrgAdminAccountRegion != "aws-eu-central-1" {
+		t.Errorf("Snowflake.OrgAdminAccountRegion = %q, want %q", cfg.Snowflake.OrgAdminAccountRegion, "aws-eu-central-1")
 	}
 	if !cfg.Snowflake.UsePrivateLink {
 		t.Error("Snowflake.UsePrivateLink = false, want true")
@@ -257,7 +257,7 @@ func TestLoad_MissingOrgAdminAccountLocator_Absent(t *testing.T) {
 snowflake:
   org: my_org_name
   orgAdminAccount: my_org_admin_account_name
-  orgAdminAccountRegion: eu-central-1
+  orgAdminAccountRegion: aws-eu-central-1
 aws:
   region: eu-central-1
 `
@@ -278,7 +278,7 @@ snowflake:
   org: my_org_name
   orgAdminAccount: my_org_admin_account_name
   orgAdminAccountLocator: ""
-  orgAdminAccountRegion: eu-central-1
+  orgAdminAccountRegion: aws-eu-central-1
 aws:
   region: eu-central-1
 `
@@ -335,7 +335,7 @@ snowflake:
   org: my_org_name
   orgAdminAccount: my_org_admin_account_name
   orgAdminAccountLocator: "xc-19114!"
-  orgAdminAccountRegion: eu-central-1
+  orgAdminAccountRegion: aws-eu-central-1
 aws:
   region: eu-central-1
 `
@@ -362,7 +362,7 @@ aws:
   region: eu-central-1
 `
 	_, err := Load(newConfigDir(t, fixture))
-	want := "snowflake.orgAdminAccountRegion 'Frankfurt!' does not match the expected format (expected: eu-central-1 or westeurope)"
+	want := "snowflake.orgAdminAccountRegion 'Frankfurt!' does not match the expected format (expected: aws-eu-central-1 or azure-westeurope)"
 	if err == nil || err.Error() != want {
 		t.Errorf("error = %v, want %q", err, want)
 	}
@@ -371,15 +371,15 @@ aws:
 	}
 }
 
-// SC-017: a well-formed, non-AWS-style region (Azure hostname region-id, no numeric
-// suffix or hyphenated segments) is accepted, proving the looser multi-cloud regex works.
+// SC-017: a well-formed region under the azure- prefix is accepted, proving the regex
+// recognizes every documented cloud prefix, not just aws-.
 func TestLoad_OrgAdminAccountRegion_AzureStyleAccepted(t *testing.T) {
 	fixture := `
 snowflake:
   org: my_org_name
   orgAdminAccount: my_org_admin_account_name
   orgAdminAccountLocator: xc19114
-  orgAdminAccountRegion: westeurope
+  orgAdminAccountRegion: azure-westeurope
 aws:
   region: eu-central-1
 `
@@ -387,8 +387,30 @@ aws:
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Snowflake.OrgAdminAccountRegion != "westeurope" {
-		t.Errorf("Snowflake.OrgAdminAccountRegion = %q, want %q", cfg.Snowflake.OrgAdminAccountRegion, "westeurope")
+	if cfg.Snowflake.OrgAdminAccountRegion != "azure-westeurope" {
+		t.Errorf("Snowflake.OrgAdminAccountRegion = %q, want %q", cfg.Snowflake.OrgAdminAccountRegion, "azure-westeurope")
+	}
+}
+
+// SC-017: a region missing its cloud prefix is now malformed, since orgAdminAccountRegion
+// must use the same cloud-region form as the Backplane Config's region keys (design.md 3.5).
+func TestLoad_OrgAdminAccountRegion_MissingCloudPrefix(t *testing.T) {
+	fixture := `
+snowflake:
+  org: my_org_name
+  orgAdminAccount: my_org_admin_account_name
+  orgAdminAccountLocator: xc19114
+  orgAdminAccountRegion: eu-central-1
+aws:
+  region: eu-central-1
+`
+	_, err := Load(newConfigDir(t, fixture))
+	want := "snowflake.orgAdminAccountRegion 'eu-central-1' does not match the expected format (expected: aws-eu-central-1 or azure-westeurope)"
+	if err == nil || err.Error() != want {
+		t.Errorf("error = %v, want %q", err, want)
+	}
+	if !errors.IsUserError(err) {
+		t.Errorf("expected user error, got %v", err)
 	}
 }
 
@@ -474,7 +496,7 @@ snowflake:
   org: my_org_name
   orgAdminAccount: my_org_admin_account_name
   orgAdminAccountLocator: xc19114
-  orgAdminAccountRegion: eu-central-1
+  orgAdminAccountRegion: aws-eu-central-1
 aws:
   region: eu-central-1
 `
@@ -495,7 +517,7 @@ snowflake:
   org: my_org_name
   orgAdminAccount: my_org_admin_account_name
   orgAdminAccountLocator: xc19114
-  orgAdminAccountRegion: eu-central-1
+  orgAdminAccountRegion: aws-eu-central-1
   usePrivateLink: false
 aws:
   region: eu-central-1
@@ -538,7 +560,7 @@ snowflake:
   org: my_org_name
   orgAdminAccount: my_org_admin_account_name
   orgAdminAccountLocator: xc19114
-  orgAdminAccountRegion: eu-central-1
+  orgAdminAccountRegion: aws-eu-central-1
 azure:
   subscriptionId: some-id
 `
@@ -558,7 +580,7 @@ snowflake:
   org: my_org_name
   orgAdminAccount: my_org_admin_account_name
   orgAdminAccountLocator: xc19114
-  orgAdminAccountRegion: eu-central-1
+  orgAdminAccountRegion: aws-eu-central-1
 gcp:
   project: some-project
 `
@@ -587,7 +609,7 @@ snowflake:
   org: my_org_name
   orgAdminAccount: my_org_admin_account_name
   orgAdminAccountLocator: xc19114
-  orgAdminAccountRegion: eu-central-1
+  orgAdminAccountRegion: aws-eu-central-1
 `,
 		},
 		{
@@ -597,7 +619,7 @@ snowflake:
   org: my_org_name
   orgAdminAccount: my_org_admin_account_name
   orgAdminAccountLocator: xc19114
-  orgAdminAccountRegion: eu-central-1
+  orgAdminAccountRegion: aws-eu-central-1
 aws:
   region: eu-central-1
 `,
@@ -624,7 +646,7 @@ snowflake:
   org: my_org_name
   orgAdminAccount: my_org_admin_account_name
   orgAdminAccountLocator: xc19114
-  orgAdminAccountRegion: eu-central-1
+  orgAdminAccountRegion: aws-eu-central-1
 aws: {}
 `
 	cfg, err := Load(newConfigDir(t, fixture))
@@ -643,7 +665,7 @@ snowflake:
   org: my_org_name
   orgAdminAccount: my_org_admin_account_name
   orgAdminAccountLocator: xc19114
-  orgAdminAccountRegion: eu-central-1
+  orgAdminAccountRegion: aws-eu-central-1
 aws:
   region: xx-nowhere-9
 `
@@ -663,7 +685,7 @@ snowflake:
   org: my_org_name
   orgAdminAccount: my_org_admin_account_name
   orgAdminAccountLocator: xc19114
-  orgAdminAccountRegion: eu-central-1
+  orgAdminAccountRegion: aws-eu-central-1
 aws:
   region: Frankfurt!
 `
@@ -707,7 +729,7 @@ snowflake:
   org: my_org_name
   orgAdminAccount: my_org_admin_account_name
   orgAdminAccountLocator: xc19114
-  orgAdminAccountRegion: eu-central-1
+  orgAdminAccountRegion: aws-eu-central-1
 aws:
   region: eu-central-1
   kmsKeyId: ` + tc.kmsKeyId + `
@@ -730,7 +752,7 @@ snowflake:
   org: my_org_name
   orgAdminAccount: my_org_admin_account_name
   orgAdminAccountLocator: xc19114
-  orgAdminAccountRegion: eu-central-1
+  orgAdminAccountRegion: aws-eu-central-1
 aws:
   region: eu-central-1
   kmsKeyId: "not a key!"
@@ -761,7 +783,7 @@ snowflake:
   org: my_org_name
   orgAdminAccount: my_org_admin_account_name
   orgAdminAccountLocator: xc19114
-  orgAdminAccountRegion: eu-central-1
+  orgAdminAccountRegion: aws-eu-central-1
   maxConnectionPoolSize: 10
 aws:
   region: eu-central-1
