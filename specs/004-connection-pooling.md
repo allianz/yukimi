@@ -18,7 +18,6 @@ This specification defines the `internal/snowflake/pool/` package that:
 - SQL statement semantics, safe rendering, and error decoration — that is 005's job. This package hands 005 a plain `*sql.DB`; it never imports `internal/snowflake/statement`, and 005 never imports this package (see Key Concept below).
 - Any concrete secrets backend — this package takes a `secrets.Backend` as a constructor parameter and never imports `internal/secrets/aws` or any other backend package.
 - Generating, storing, or rotating credentials — that is 003's job. This package only reads what 003 already stored.
-- Promoting pool-tuning values (connection limits, lifetimes, probe timeout) into `baseConfig.yaml`'s schema. They are static constants in this package for now, each marked with a `TODO` — see Edge Cases.
 - Anything about which SQL statements run once a connection is obtained — that is every downstream module's business (010–013, 015, 016, 019), never this package's.
 
 ## Key Concept: Two Connection Scopes and the Privilege Step-Down
@@ -65,7 +64,9 @@ type Pool struct { /* unexported */ }
 //   - backend: the secrets.Backend (003) credentials are read through; never
 //     a concrete backend package
 //   - cfg: BaseConfig (002) — Snowflake.Org, OrgAdminAccount,
-//     OrgAdminAccountLocator, OrgAdminAccountRegion, UsePrivateLink
+//     OrgAdminAccountLocator, OrgAdminAccountRegion, UsePrivateLink,
+//     MaxConnectionPoolSize, MaxIdleConnections, ConnectionMaxLifetime,
+//     ConnectionMaxIdleTime, ConnectionProbeTimeout
 //
 // Returns:
 //   - *Pool: never nil
@@ -155,7 +156,7 @@ This package re-validates the region shape independently of whatever validation 
 - **What happens if two goroutines call `TenantAccount` for the same key at the same time on a cold cache?** - Both block behind that key's own lock, acquired per-key rather than pool-wide; the first to acquire it dials and caches, the second observes the now-populated cache and returns the same `*sql.DB` without dialing a second time. A cold dial for a *different* key never waits on this — see Edge Cases below on running at a few thousand accounts.
 - **Does a pool-wide lock serialize connecting a few thousand accounts, e.g. right after the process starts?** - No — the lock is per key, so cold dials for different accounts proceed concurrently; only two callers racing for the *same* account's first connection serialize. A shared pool-wide lock would have made a cold start across thousands of accounts take minutes of pure lock contention instead of running them in parallel, so this is a hard design requirement, not an implementation detail. The map holding thousands of cached entries costs a small, fixed amount of memory per entry (map slot plus an idle `*sql.DB`) — negligible at this scale. What ops must size for instead is the pod's open-file-descriptor limit: with per-account idle-connection limits set (see below), a few thousand actively-reconciled accounts can hold a correspondingly large number of idle TCP connections at once, all to different Snowflake accounts rather than concentrated on one, so no single account's own connection limit is at risk.
 - **What happens when an account is dropped and later recreated under the same CRD name and namespace?** - See Key Concept: Self-Healing. The new locator no longer matches the cached entry, so the stale connection is closed and a fresh one dialed automatically, without requiring 017 to call `EvictTenant` first — though 017 calls it anyway, immediately after `DROP ACCOUNT`, so the cache never briefly serves a connection to an account already gone.
-- **What tunes the underlying `*sql.DB`'s own connection limits, idle timeout, and maximum lifetime?** - Static, unexported constants in `connect.go`, each marked `// TODO: promote to baseConfig.yaml once real tuning data exists`. `BaseConfig` (002) anticipated fields like these (`snowflake.maxConnectionPoolSize`) but none exist yet; wiring them through is deferred rather than guessed at now.
+- **What tunes the underlying `*sql.DB`'s own connection limits, idle timeout, and maximum lifetime?** - `BaseConfig.Snowflake` (002): `MaxConnectionPoolSize`, `MaxIdleConnections`, `ConnectionMaxLifetime`, `ConnectionMaxIdleTime`, each with a documented default when omitted from `baseConfig.yaml`. `New` reads them once and applies them via `SetMaxOpenConns`/`SetMaxIdleConns`/`SetConnMaxLifetime`/`SetConnMaxIdleTime` to every `*sql.DB` this package dials.
 - **Does the health probe run on every `OrgAdmin`/`TenantAccount` call, or only when a new connection is dialed?** - Only when a new connection is dialed (a cold cache, or after eviction/self-healing). A cache hit returns the already-cached `*sql.DB` with no probe and no other network call — probing on every call would defeat the point of caching.
 - **Why does session role scoping use a `Config` field instead of a runtime `USE ROLE` statement?** - The Snowflake Go driver accepts a `Role` at connection construction time, applied automatically to every physical connection the driver opens underneath the cached `*sql.DB` — this needs no SQL statement and therefore no dependency on 005's statement execution. If a future need arises for session setup `Config` cannot express, it is done with the raw driver (`db.ExecContext`) directly in this package — never via `internal/snowflake/statement` (005), which is exactly the dependency direction this package must not create (005 already depends on the connection this package hands it; the reverse would be a cycle).
 - **What if the region passed to `TenantAccount` is well-formed but the cloud prefix is one this package has never seen (say a future `gcp-`)?** - Accepted. `hostRegionSegment`'s default case strips whatever prefix precedes the first `-` and reattaches it as a trailing segment — it has no allowlist of recognized clouds, only a named exception for `aws-eu-central-1`. Whether the resulting host is real is discovered on connect, exactly like an unverified region in 002.
@@ -163,7 +164,7 @@ This package re-validates the region shape independently of whatever validation 
 ## Dependencies
 
 - **`internal/errors` (001)** - Used APIs: `errors.NewUserError()` - Contract: used for the one region-format validation above.
-- **`internal/config` (002)** - Used APIs: `config.BaseConfig`, `Snowflake.Org`, `Snowflake.OrgAdminAccount`, `Snowflake.OrgAdminAccountLocator`, `Snowflake.OrgAdminAccountRegion`, `Snowflake.UsePrivateLink` - Contract: `Pool` reads these once at construction and treats them as fixed for the process's life, matching `BaseConfig`'s own immutability.
+- **`internal/config` (002)** - Used APIs: `config.BaseConfig`, `Snowflake.Org`, `Snowflake.OrgAdminAccount`, `Snowflake.OrgAdminAccountLocator`, `Snowflake.OrgAdminAccountRegion`, `Snowflake.UsePrivateLink`, `Snowflake.MaxConnectionPoolSize`, `Snowflake.MaxIdleConnections`, `Snowflake.ConnectionMaxLifetime`, `Snowflake.ConnectionMaxIdleTime`, `Snowflake.ConnectionProbeTimeout` - Contract: `Pool` reads these once at construction and treats them as fixed for the process's life, matching `BaseConfig`'s own immutability.
 - **`internal/secrets` (003)** - Used APIs: `secrets.Backend`, `NewOrgAdminPath()`, `NewTenantPath()`, `UnmarshalCredentials()` - Contract: takes a `secrets.Backend` as a constructor parameter, satisfied by whatever concrete backend `cmd/provider/main.go` wired up and wrapped in `secrets.NewCachedBackend`; never imports a concrete backend itself.
 - **`github.com/snowflakedb/gosnowflake` v1.18.1** - the only Snowflake driver dependency in the tree; this is the spec that adds it to `go.mod` (see Project Structure).
 
@@ -198,6 +199,7 @@ This package re-validates the region shape independently of whatever validation 
 - **SC-018**: `go.mod` pins `github.com/snowflakedb/gosnowflake` at `v1.18.1`.
 - **SC-019**: The dial step is reachable through an unexported, swappable seam so unit tests exercise `Pool`'s caching, eviction, self-healing, and concurrency behavior without a real Snowflake account, a real network call, or the real driver.
 - **SC-020**: Unit test coverage exceeds 95%.
+- **SC-021**: Every `*sql.DB` this package dials has `SetMaxOpenConns`, `SetMaxIdleConns`, `SetConnMaxLifetime`, and `SetConnMaxIdleTime` applied from `cfg.Snowflake.MaxConnectionPoolSize`/`MaxIdleConnections`/`ConnectionMaxLifetime`/`ConnectionMaxIdleTime`, and the health probe's context deadline is `cfg.Snowflake.ConnectionProbeTimeout`.
 
 ## Security Considerations
 
@@ -210,9 +212,9 @@ This package re-validates the region shape independently of whatever validation 
 ## Performance Considerations
 
 - One dial and one health probe per distinct connection target for the life of the process — not per reconcile — regardless of whether the calling cadence for that target is minutes apart in steady state or sub-second during exponential backoff.
-- The underlying `*sql.DB`'s own connection limits, idle timeout, and maximum lifetime are set explicitly (static constants, see Edge Cases) rather than left at the standard library's unbounded defaults, so a process managing many tenant accounts at once has a bounded number of idle physical connections per account rather than an unbounded one.
+- The underlying `*sql.DB`'s own connection limits, idle timeout, and maximum lifetime are set explicitly (`BaseConfig.Snowflake`, see Edge Cases) rather than left at the standard library's unbounded defaults, so a process managing many tenant accounts at once has a bounded number of idle physical connections per account rather than an unbounded one.
 - Cache lookups for an already-dialed key are lock-protected map reads with no network call. Locking is per key, never pool-wide: a network operation (a cold dial or a self-healing redial) blocks only other callers asking for that same key, so connecting a few thousand distinct accounts proceeds in parallel rather than serializing behind one lock.
-- At a few thousand managed accounts, the cache itself (one map entry per account) costs a small, fixed amount of memory per entry — not a scaling concern on its own. The real capacity-planning input is the pod's open-file-descriptor limit, since each account's idle connection allowance (static constants, see Edge Cases) multiplies by the number of actively-reconciled accounts.
+- At a few thousand managed accounts, the cache itself (one map entry per account) costs a small, fixed amount of memory per entry — not a scaling concern on its own. The real capacity-planning input is the pod's open-file-descriptor limit, since each account's idle connection allowance (`BaseConfig.Snowflake.MaxIdleConnections`, see Edge Cases) multiplies by the number of actively-reconciled accounts.
 
 ## References
 

@@ -22,6 +22,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/allianz/yukimi/internal/errors"
 )
@@ -79,6 +80,194 @@ func TestLoad_WellFormed(t *testing.T) {
 	if got := cfg.CloudProvider(); got != "aws" {
 		t.Errorf("CloudProvider() = %q, want %q", got, "aws")
 	}
+}
+
+// The pool-tuning and secrets-cache fields all default when omitted.
+func TestLoad_PoolAndCacheDefaults(t *testing.T) {
+	cfg, err := Load(newConfigDir(t, wellFormedFixture))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Snowflake.MaxConnectionPoolSize != defaultMaxConnectionPoolSize {
+		t.Errorf("MaxConnectionPoolSize = %d, want default %d", cfg.Snowflake.MaxConnectionPoolSize, defaultMaxConnectionPoolSize)
+	}
+	if cfg.Snowflake.MaxIdleConnections != defaultMaxIdleConnections {
+		t.Errorf("MaxIdleConnections = %d, want default %d", cfg.Snowflake.MaxIdleConnections, defaultMaxIdleConnections)
+	}
+	if cfg.Snowflake.ConnectionMaxLifetime != defaultConnectionMaxLifetime {
+		t.Errorf("ConnectionMaxLifetime = %v, want default %v", cfg.Snowflake.ConnectionMaxLifetime, defaultConnectionMaxLifetime)
+	}
+	if cfg.Snowflake.ConnectionMaxIdleTime != defaultConnectionMaxIdleTime {
+		t.Errorf("ConnectionMaxIdleTime = %v, want default %v", cfg.Snowflake.ConnectionMaxIdleTime, defaultConnectionMaxIdleTime)
+	}
+	if cfg.Snowflake.ConnectionProbeTimeout != defaultConnectionProbeTimeout {
+		t.Errorf("ConnectionProbeTimeout = %v, want default %v", cfg.Snowflake.ConnectionProbeTimeout, defaultConnectionProbeTimeout)
+	}
+	if cfg.Secrets.CacheTTL != defaultSecretsCacheTTL {
+		t.Errorf("Secrets.CacheTTL = %v, want default %v", cfg.Secrets.CacheTTL, defaultSecretsCacheTTL)
+	}
+}
+
+// An explicit value for each pool-tuning/secrets-cache field overrides its default.
+func TestLoad_PoolAndCacheExplicitValues(t *testing.T) {
+	fixture := `
+snowflake:
+  org: my_org_name
+  orgAdminAccount: my_org_admin_account_name
+  orgAdminAccountLocator: xc19114
+  orgAdminAccountRegion: aws-eu-central-1
+  maxConnectionPoolSize: 25
+  maxIdleConnections: 0
+  connectionMaxLifetime: 1h
+  connectionMaxIdleTime: 15m
+  connectionProbeTimeout: 30s
+aws:
+  region: eu-central-1
+secrets:
+  cacheTtl: 10m
+`
+	cfg, err := Load(newConfigDir(t, fixture))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Snowflake.MaxConnectionPoolSize != 25 {
+		t.Errorf("MaxConnectionPoolSize = %d, want 25", cfg.Snowflake.MaxConnectionPoolSize)
+	}
+	if cfg.Snowflake.MaxIdleConnections != 0 {
+		t.Errorf("MaxIdleConnections = %d, want 0", cfg.Snowflake.MaxIdleConnections)
+	}
+	if cfg.Snowflake.ConnectionMaxLifetime != time.Hour {
+		t.Errorf("ConnectionMaxLifetime = %v, want 1h", cfg.Snowflake.ConnectionMaxLifetime)
+	}
+	if cfg.Snowflake.ConnectionMaxIdleTime != 15*time.Minute {
+		t.Errorf("ConnectionMaxIdleTime = %v, want 15m", cfg.Snowflake.ConnectionMaxIdleTime)
+	}
+	if cfg.Snowflake.ConnectionProbeTimeout != 30*time.Second {
+		t.Errorf("ConnectionProbeTimeout = %v, want 30s", cfg.Snowflake.ConnectionProbeTimeout)
+	}
+	if cfg.Secrets.CacheTTL != 10*time.Minute {
+		t.Errorf("Secrets.CacheTTL = %v, want 10m", cfg.Secrets.CacheTTL)
+	}
+}
+
+// snowflake.maxConnectionPoolSize must be a positive integer.
+func TestLoad_MaxConnectionPoolSize_NotPositive(t *testing.T) {
+	fixture := wellFormedFixtureWith("  maxConnectionPoolSize: 0\n")
+	_, err := Load(newConfigDir(t, fixture))
+	want := "snowflake.maxConnectionPoolSize '0' must be a positive integer"
+	if err == nil || err.Error() != want {
+		t.Errorf("error = %v, want %q", err, want)
+	}
+	if !errors.IsUserError(err) {
+		t.Errorf("expected user error, got %v", err)
+	}
+}
+
+// snowflake.maxIdleConnections may not be negative.
+func TestLoad_MaxIdleConnections_Negative(t *testing.T) {
+	fixture := wellFormedFixtureWith("  maxIdleConnections: -1\n")
+	_, err := Load(newConfigDir(t, fixture))
+	want := "snowflake.maxIdleConnections '-1' must not be negative"
+	if err == nil || err.Error() != want {
+		t.Errorf("error = %v, want %q", err, want)
+	}
+	if !errors.IsUserError(err) {
+		t.Errorf("expected user error, got %v", err)
+	}
+}
+
+// snowflake.connectionMaxLifetime must parse as a Go duration string.
+func TestLoad_ConnectionMaxLifetime_Unparseable(t *testing.T) {
+	fixture := wellFormedFixtureWith("  connectionMaxLifetime: not-a-duration\n")
+	_, err := Load(newConfigDir(t, fixture))
+	want := "snowflake.connectionMaxLifetime 'not-a-duration' does not match the expected format (expected: a Go duration string, e.g. 30m)"
+	if err == nil || err.Error() != want {
+		t.Errorf("error = %v, want %q", err, want)
+	}
+	if !errors.IsUserError(err) {
+		t.Errorf("expected user error, got %v", err)
+	}
+}
+
+// snowflake.connectionMaxLifetime must be positive.
+func TestLoad_ConnectionMaxLifetime_NotPositive(t *testing.T) {
+	fixture := wellFormedFixtureWith("  connectionMaxLifetime: 0s\n")
+	_, err := Load(newConfigDir(t, fixture))
+	want := "snowflake.connectionMaxLifetime '0s' must be a positive duration"
+	if err == nil || err.Error() != want {
+		t.Errorf("error = %v, want %q", err, want)
+	}
+	if !errors.IsUserError(err) {
+		t.Errorf("expected user error, got %v", err)
+	}
+}
+
+// snowflake.connectionMaxIdleTime must parse as a Go duration string.
+func TestLoad_ConnectionMaxIdleTime_Unparseable(t *testing.T) {
+	fixture := wellFormedFixtureWith("  connectionMaxIdleTime: not-a-duration\n")
+	_, err := Load(newConfigDir(t, fixture))
+	want := "snowflake.connectionMaxIdleTime 'not-a-duration' does not match the expected format (expected: a Go duration string, e.g. 30m)"
+	if err == nil || err.Error() != want {
+		t.Errorf("error = %v, want %q", err, want)
+	}
+	if !errors.IsUserError(err) {
+		t.Errorf("expected user error, got %v", err)
+	}
+}
+
+// snowflake.connectionProbeTimeout must be positive.
+func TestLoad_ConnectionProbeTimeout_NotPositive(t *testing.T) {
+	fixture := wellFormedFixtureWith("  connectionProbeTimeout: -5s\n")
+	_, err := Load(newConfigDir(t, fixture))
+	want := "snowflake.connectionProbeTimeout '-5s' must be a positive duration"
+	if err == nil || err.Error() != want {
+		t.Errorf("error = %v, want %q", err, want)
+	}
+	if !errors.IsUserError(err) {
+		t.Errorf("expected user error, got %v", err)
+	}
+}
+
+// secrets.cacheTtl must parse as a Go duration string.
+func TestLoad_SecretsCacheTTL_Unparseable(t *testing.T) {
+	fixture := wellFormedFixture + "secrets:\n  cacheTtl: not-a-duration\n"
+	_, err := Load(newConfigDir(t, fixture))
+	want := "secrets.cacheTtl 'not-a-duration' does not match the expected format (expected: a Go duration string, e.g. 30m)"
+	if err == nil || err.Error() != want {
+		t.Errorf("error = %v, want %q", err, want)
+	}
+	if !errors.IsUserError(err) {
+		t.Errorf("expected user error, got %v", err)
+	}
+}
+
+// secrets.cacheTtl must be positive.
+func TestLoad_SecretsCacheTTL_NotPositive(t *testing.T) {
+	fixture := wellFormedFixture + "secrets:\n  cacheTtl: 0m\n"
+	_, err := Load(newConfigDir(t, fixture))
+	want := "secrets.cacheTtl '0m' must be a positive duration"
+	if err == nil || err.Error() != want {
+		t.Errorf("error = %v, want %q", err, want)
+	}
+	if !errors.IsUserError(err) {
+		t.Errorf("expected user error, got %v", err)
+	}
+}
+
+// wellFormedFixtureWith appends extraSnowflakeLines under wellFormedFixture's snowflake:
+// block, for tests that only need to override one pool-tuning field.
+func wellFormedFixtureWith(extraSnowflakeLines string) string {
+	return `
+snowflake:
+  org: my_org_name
+  orgAdminAccount: my_org_admin_account_name
+  orgAdminAccountLocator: xc19114
+  orgAdminAccountRegion: aws-eu-central-1
+  usePrivateLink: true
+` + extraSnowflakeLines + `
+aws:
+  region: eu-central-1
+`
 }
 
 // SC-002: Load returns a user error when <configDir>/baseConfig.yaml does not exist.
@@ -784,7 +973,7 @@ snowflake:
   orgAdminAccount: my_org_admin_account_name
   orgAdminAccountLocator: xc19114
   orgAdminAccountRegion: aws-eu-central-1
-  maxConnectionPoolSize: 10
+  someFutureSetting: 10
 aws:
   region: eu-central-1
 `
@@ -836,8 +1025,14 @@ func TestBaseConfig_ConcurrentReadOnlyUse(t *testing.T) {
 			_ = cfg.Snowflake.OrgAdminAccountLocator
 			_ = cfg.Snowflake.OrgAdminAccountRegion
 			_ = cfg.Snowflake.UsePrivateLink
+			_ = cfg.Snowflake.MaxConnectionPoolSize
+			_ = cfg.Snowflake.MaxIdleConnections
+			_ = cfg.Snowflake.ConnectionMaxLifetime
+			_ = cfg.Snowflake.ConnectionMaxIdleTime
+			_ = cfg.Snowflake.ConnectionProbeTimeout
 			_ = cfg.AWS.Region
 			_ = cfg.AWS.KmsKeyId
+			_ = cfg.Secrets.CacheTTL
 		}()
 	}
 	wg.Wait()
