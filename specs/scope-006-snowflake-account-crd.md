@@ -74,6 +74,28 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
   it is ops tooling (bash today, Terraform later) that creates the namespace, labels, repository and
   ArgoCD application. The platform only *reads* the labels it produces (here, in `labels.go`).
 
+## TODO — settled by 004 (apply when writing 006)
+
+The `url.go` bullet above predates `specs/004-connection-pooling.md`, which now owns the
+host and URL construction in a leaf package `internal/snowflake/host`. When 006 is
+written:
+
+1. `url.go` calls `host.URL(locator, region, usePrivateLink)` from
+   `internal/snowflake/host` rather than building the string itself. 004 owns the
+   region→host-segment mapping (`aws-eu-central-1` → `eu-central-1`, `aws-eu-west-3` →
+   `eu-west-3.aws`) and the `.privatelink.` suffix, so a second implementation here
+   would let `status.accountUrl` advertise a host the connection pool never dials.
+2. PrivateLink comes from `BaseConfig.Snowflake.UsePrivateLink` (002), supplied by the
+   controller (018) — not from the region's backplane config as the bullet above says:
+   the Backplane Config schema (design.md 3.5, spec 007) carries no such field, and 007
+   sorts above 006 so it could not be read from here in any case. design.md 3.6 states
+   this too.
+3. "Free of any Snowflake dependency" means no driver, no client, no network. Importing
+   `internal/snowflake/host` (standard library plus `internal/errors` only) preserves
+   that intent and keeps `internal/tenant` unit-testable without Snowflake access.
+4. `status.accountUrl` is scheme plus host per design.md 7.2 — no `/console/login` path.
+   Snowflake redirects a bare host to the login console on its own.
+
 ## References
 
 - **Product design**: `specs/design.md` — the authoritative product requirements, resource
