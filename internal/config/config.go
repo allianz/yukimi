@@ -24,9 +24,25 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/allianz/yukimi/internal/errors"
 	"gopkg.in/yaml.v3"
+)
+
+const (
+	// defaultMaxConnectionPoolSize is snowflake.maxConnectionPoolSize's default (004).
+	defaultMaxConnectionPoolSize = 10
+	// defaultMaxIdleConnections is snowflake.maxIdleConnections's default (004).
+	defaultMaxIdleConnections = 2
+	// defaultConnectionMaxLifetime is snowflake.connectionMaxLifetime's default (004).
+	defaultConnectionMaxLifetime = 30 * time.Minute
+	// defaultConnectionMaxIdleTime is snowflake.connectionMaxIdleTime's default (004).
+	defaultConnectionMaxIdleTime = 5 * time.Minute
+	// defaultConnectionProbeTimeout is snowflake.connectionProbeTimeout's default (004).
+	defaultConnectionProbeTimeout = 10 * time.Second
+	// defaultSecretsCacheTTL is secrets.cacheTtl's default (003).
+	defaultSecretsCacheTTL = 5 * time.Minute
 )
 
 var (
@@ -46,12 +62,12 @@ var (
 	// only rejects whitespace/punctuation, never judges realness.
 	accountLocatorPattern = regexp.MustCompile(`^[A-Za-z0-9]+$`)
 
-	// orgAdminRegionPattern matches the literal region-id used in a Snowflake account's
-	// connection hostname (e.g. "eu-central-1", "westeurope") — not the "aws-"-prefixed
-	// Backplane Config region key (design.md 3.5). Looser than awsRegionPattern because a
-	// Snowflake org's account may live on any cloud, independent of the controller's own
-	// AWS-hosted Secrets Manager backend.
-	orgAdminRegionPattern = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
+	// orgAdminRegionPattern matches the cloud-region form used by the Backplane Config's
+	// region keys and the SnowflakeAccount CRD's region field (e.g. "aws-eu-central-1",
+	// "azure-westeurope"; design.md 3.1, 3.5). The recognized prefixes must stay in sync
+	// with cloudSectionKeys below — a Snowflake org's account may live on any of the same
+	// three clouds, independent of the controller's own AWS-hosted Secrets Manager backend.
+	orgAdminRegionPattern = regexp.MustCompile(`^(aws|azure|gcp)-[a-z][a-z0-9-]*$`)
 
 	cloudSectionKeys = map[string]bool{"aws": true, "azure": true, "gcp": true}
 )
@@ -60,6 +76,7 @@ var (
 type BaseConfig struct {
 	Snowflake SnowflakeSettings // organization identity plus connection-affecting settings
 	AWS       AWSSettings       // consumed by 003.a; checked here for shape only
+	Secrets   SecretsSettings   // consumed by whoever wraps a Backend in secrets.NewCachedBackend (003)
 
 	cloudProvider string // resolved by Load from the cloud section present; read via CloudProvider()
 }
@@ -78,8 +95,20 @@ type SnowflakeSettings struct {
 	Org                    string // organization name; used in account identifiers, secret paths, and accountUrl
 	OrgAdminAccount        string // account used for org-level operations
 	OrgAdminAccountLocator string // Snowflake account locator for OrgAdminAccount (e.g. "xc19114"); static config because, unlike a tenant account, the controller never runs CREATE ACCOUNT for it (design.md 3.6)
-	OrgAdminAccountRegion  string // Snowflake region OrgAdminAccount lives in (hostname region-id, e.g. "eu-central-1" or "westeurope"); paired with OrgAdminAccountLocator to build the org-admin connection host (004)
+	OrgAdminAccountRegion  string // Snowflake region OrgAdminAccount lives in, cloud-region form (e.g. "aws-eu-central-1" or "azure-westeurope"); paired with OrgAdminAccountLocator to build the org-admin connection host (004)
 	UsePrivateLink         bool   // affects the connection host (004); defaults to true when omitted
+
+	MaxConnectionPoolSize  int           // max open connections per pooled *sql.DB target (004); defaults to 10 when omitted
+	MaxIdleConnections     int           // max idle connections kept per pooled *sql.DB target (004); defaults to 2 when omitted
+	ConnectionMaxLifetime  time.Duration // max lifetime of a physical connection before it is recycled (004); defaults to 30m when omitted
+	ConnectionMaxIdleTime  time.Duration // max time a physical connection may sit idle before being closed (004); defaults to 5m when omitted
+	ConnectionProbeTimeout time.Duration // timeout for the health probe run on first dial (004); defaults to 10s when omitted
+}
+
+// SecretsSettings holds settings for the secrets cache decorator (003), consumed by whoever
+// wraps a Backend in secrets.NewCachedBackend — today cmd/provider/main.go.
+type SecretsSettings struct {
+	CacheTTL time.Duration // TTL for the in-memory secrets cache (003); defaults to 5m when omitted
 }
 
 // AWSSettings holds AWS-specific settings, consumed only by 003.a.
@@ -96,6 +125,7 @@ type AWSSettings struct {
 type rawConfig struct {
 	Snowflake rawSnowflake `yaml:"snowflake"`
 	AWS       rawAWS       `yaml:"aws"`
+	Secrets   rawSecrets   `yaml:"secrets"`
 }
 
 type rawSnowflake struct {
@@ -104,11 +134,21 @@ type rawSnowflake struct {
 	OrgAdminAccountLocator string `yaml:"orgAdminAccountLocator"`
 	OrgAdminAccountRegion  string `yaml:"orgAdminAccountRegion"`
 	UsePrivateLink         *bool  `yaml:"usePrivateLink"`
+
+	MaxConnectionPoolSize  *int   `yaml:"maxConnectionPoolSize"`
+	MaxIdleConnections     *int   `yaml:"maxIdleConnections"`
+	ConnectionMaxLifetime  string `yaml:"connectionMaxLifetime"`
+	ConnectionMaxIdleTime  string `yaml:"connectionMaxIdleTime"`
+	ConnectionProbeTimeout string `yaml:"connectionProbeTimeout"`
 }
 
 type rawAWS struct {
 	Region   string `yaml:"region"`
 	KmsKeyId string `yaml:"kmsKeyId"`
+}
+
+type rawSecrets struct {
+	CacheTTL string `yaml:"cacheTtl"`
 }
 
 // Load reads, parses, and validates "<configDir>/baseConfig.yaml".
@@ -122,7 +162,10 @@ type rawAWS struct {
 //   - User error if the file is missing, unreadable, not valid YAML, a required field
 //     (Snowflake.Org, Snowflake.OrgAdminAccount, Snowflake.OrgAdminAccountLocator,
 //     Snowflake.OrgAdminAccountRegion) is empty, the file does not carry exactly
-//     one cloud section, or a field's value does not match its documented format
+//     one cloud section, a field's value does not match its documented format, a pool-tuning
+//     integer (MaxConnectionPoolSize, MaxIdleConnections) is out of range, or a duration field
+//     (ConnectionMaxLifetime, ConnectionMaxIdleTime, ConnectionProbeTimeout, Secrets.CacheTTL)
+//     does not parse as a positive Go duration
 //
 // Load walks the parsed YAML's top-level keys to find the cloud sections, so a section with
 // no Go struct yet (azure:, gcp:) is still recognized rather than silently dropped.
@@ -191,7 +234,7 @@ func Load(configDir string) (*BaseConfig, error) {
 	}
 	if !orgAdminRegionPattern.MatchString(raw.Snowflake.OrgAdminAccountRegion) {
 		return nil, errors.NewUserError(fmt.Sprintf(
-			"snowflake.orgAdminAccountRegion '%s' does not match the expected format (expected: eu-central-1 or westeurope)",
+			"snowflake.orgAdminAccountRegion '%s' does not match the expected format (expected: aws-eu-central-1 or azure-westeurope)",
 			raw.Snowflake.OrgAdminAccountRegion))
 	}
 
@@ -211,6 +254,41 @@ func Load(configDir string) (*BaseConfig, error) {
 		usePrivateLink = *raw.Snowflake.UsePrivateLink
 	}
 
+	maxConnectionPoolSize, err := resolvePositiveInt(
+		"snowflake.maxConnectionPoolSize", raw.Snowflake.MaxConnectionPoolSize, defaultMaxConnectionPoolSize)
+	if err != nil {
+		return nil, err
+	}
+
+	maxIdleConnections, err := resolveNonNegativeInt(
+		"snowflake.maxIdleConnections", raw.Snowflake.MaxIdleConnections, defaultMaxIdleConnections)
+	if err != nil {
+		return nil, err
+	}
+
+	connectionMaxLifetime, err := resolvePositiveDuration(
+		"snowflake.connectionMaxLifetime", raw.Snowflake.ConnectionMaxLifetime, defaultConnectionMaxLifetime)
+	if err != nil {
+		return nil, err
+	}
+
+	connectionMaxIdleTime, err := resolvePositiveDuration(
+		"snowflake.connectionMaxIdleTime", raw.Snowflake.ConnectionMaxIdleTime, defaultConnectionMaxIdleTime)
+	if err != nil {
+		return nil, err
+	}
+
+	connectionProbeTimeout, err := resolvePositiveDuration(
+		"snowflake.connectionProbeTimeout", raw.Snowflake.ConnectionProbeTimeout, defaultConnectionProbeTimeout)
+	if err != nil {
+		return nil, err
+	}
+
+	cacheTTL, err := resolvePositiveDuration("secrets.cacheTtl", raw.Secrets.CacheTTL, defaultSecretsCacheTTL)
+	if err != nil {
+		return nil, err
+	}
+
 	return &BaseConfig{
 		Snowflake: SnowflakeSettings{
 			Org:                    raw.Snowflake.Org,
@@ -218,13 +296,63 @@ func Load(configDir string) (*BaseConfig, error) {
 			OrgAdminAccountLocator: raw.Snowflake.OrgAdminAccountLocator,
 			OrgAdminAccountRegion:  raw.Snowflake.OrgAdminAccountRegion,
 			UsePrivateLink:         usePrivateLink,
+			MaxConnectionPoolSize:  maxConnectionPoolSize,
+			MaxIdleConnections:     maxIdleConnections,
+			ConnectionMaxLifetime:  connectionMaxLifetime,
+			ConnectionMaxIdleTime:  connectionMaxIdleTime,
+			ConnectionProbeTimeout: connectionProbeTimeout,
 		},
 		AWS: AWSSettings{
 			Region:   raw.AWS.Region,
 			KmsKeyId: raw.AWS.KmsKeyId,
 		},
+		Secrets: SecretsSettings{
+			CacheTTL: cacheTTL,
+		},
 		cloudProvider: cloudSections[0],
 	}, nil
+}
+
+// resolvePositiveInt returns def when raw is nil, and otherwise returns *raw if it is a
+// positive integer or a user error naming fieldPath if it is not.
+func resolvePositiveInt(fieldPath string, raw *int, def int) (int, error) {
+	if raw == nil {
+		return def, nil
+	}
+	if *raw <= 0 {
+		return 0, errors.NewUserError(fmt.Sprintf("%s '%d' must be a positive integer", fieldPath, *raw))
+	}
+	return *raw, nil
+}
+
+// resolveNonNegativeInt returns def when raw is nil, and otherwise returns *raw if it is not
+// negative or a user error naming fieldPath if it is.
+func resolveNonNegativeInt(fieldPath string, raw *int, def int) (int, error) {
+	if raw == nil {
+		return def, nil
+	}
+	if *raw < 0 {
+		return 0, errors.NewUserError(fmt.Sprintf("%s '%d' must not be negative", fieldPath, *raw))
+	}
+	return *raw, nil
+}
+
+// resolvePositiveDuration returns def when raw is empty, and otherwise parses raw as a Go
+// duration string, returning a user error naming fieldPath if it does not parse or is not
+// positive.
+func resolvePositiveDuration(fieldPath, raw string, def time.Duration) (time.Duration, error) {
+	if raw == "" {
+		return def, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, errors.NewUserError(fmt.Sprintf(
+			"%s '%s' does not match the expected format (expected: a Go duration string, e.g. 30m)", fieldPath, raw))
+	}
+	if d <= 0 {
+		return 0, errors.NewUserError(fmt.Sprintf("%s '%s' must be a positive duration", fieldPath, raw))
+	}
+	return d, nil
 }
 
 // detectCloudSections walks the parsed document's top-level mapping keys in document order and

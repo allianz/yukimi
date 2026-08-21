@@ -245,7 +245,7 @@ internal/secrets/
 ## Integration Points
 
 - **`internal/secrets/aws` (003.a)** - Implements `Backend` against AWS Secrets Manager, carrying the value string as a `SecretString` and reporting AWS API failures as plainly worded errors satisfying this interface's per-method contracts - Key functions: implements `secrets.Backend` - Notes: the only place an AWS SDK enters `go.mod`; never imported by anything above 003.
-- **`cmd/provider/main.go`** - Constructs the concrete `Backend` selected by `BaseConfig.CloudProvider()` (002), wraps it exactly once in `NewCachedBackend`, and passes the wrapped result to every consumer below - Key functions: `secrets.NewCachedBackend()`.
+- **`cmd/provider/main.go`** - Constructs the concrete `Backend` selected by `BaseConfig.CloudProvider()` (002), wraps it exactly once in `NewCachedBackend(backend, cfg.Secrets.CacheTTL)` — the TTL comes from `BaseConfig.Secrets.CacheTTL` (002), not a literal — and passes the wrapped result to every consumer below - Key functions: `secrets.NewCachedBackend()`.
 - **`internal/snowflake/pool` (004)** - Reads org-admin and per-tenant credentials through the `Backend` interface, keyed by the same `(org, namespace, account)` tuple as the tenant path - Key functions: `Backend.Get()`, `UnmarshalCredentials()`, `NewOrgAdminPath()`, `NewTenantPath()` - Notes: unit tests run against `FakeBackend`, never a real store.
 - **`internal/account/modules/account` (010)** - Generates a keypair and stores it with `Backend.Create` — never `Update` — before running `CREATE ACCOUNT`, using the generated public key in the SQL statement and never persisting the private key anywhere but the store - Key functions: `NewCredentials()`, `MarshalCredentials()`, `Backend.Create()`, `NewTenantPath()`.
 - **`internal/deletion` (017, not yet written)** - Calls `Backend.Delete()` on the tenant path when `DROP ACCOUNT` executes - Key functions: `Backend.Delete()`.
@@ -358,9 +358,9 @@ func (p *Pool) orgAdminCredentials(ctx context.Context, cached secrets.Backend, 
 }
 
 // Wired once at startup:
-// backend := secretsaws.New(cfg.AWS.Region)       // 003.a
-// cached := secrets.NewCachedBackend(backend, 5*time.Minute)
-// pool := pool.New(cached, ...)                    // 004 depends only on secrets.Backend
+// backend := secretsaws.New(cfg.AWS.Region)                     // 003.a
+// cached := secrets.NewCachedBackend(backend, cfg.Secrets.CacheTTL) // TTL from BaseConfig (002)
+// pool := pool.New(cached, ...)                                  // 004 depends only on secrets.Backend
 ```
 
 ### Example 3: Testing Against `FakeBackend`

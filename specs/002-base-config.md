@@ -46,6 +46,7 @@ Because both cases go through the same SDK-internal chain, the switch between wo
 type BaseConfig struct {
     Snowflake SnowflakeSettings // organization identity plus connection-affecting settings
     AWS       AWSSettings       // consumed by 003.a; checked here for shape only
+    Secrets   SecretsSettings   // consumed by whoever wraps a Backend in secrets.NewCachedBackend (003)
 
     cloudProvider string // resolved by Load from the cloud section present; read via CloudProvider()
 }
@@ -62,8 +63,14 @@ type SnowflakeSettings struct {
     Org                    string // organization name; used in account identifiers, secret paths, and accountUrl
     OrgAdminAccount        string // account used for org-level operations
     OrgAdminAccountLocator string // Snowflake account locator for OrgAdminAccount (e.g. "xc19114"); static config because, unlike a tenant account, the controller never runs CREATE ACCOUNT for it (design.md 3.6)
-    OrgAdminAccountRegion  string // Snowflake region OrgAdminAccount lives in (hostname region-id, e.g. "eu-central-1" or "westeurope"); paired with OrgAdminAccountLocator to build the org-admin connection host (004)
+    OrgAdminAccountRegion  string // Snowflake region OrgAdminAccount lives in, cloud-region form (e.g. "aws-eu-central-1" or "azure-westeurope"); paired with OrgAdminAccountLocator to build the org-admin connection host (004)
     UsePrivateLink         bool   // affects the connection host (004); defaults to true when omitted
+
+    MaxConnectionPoolSize  int           // max open connections per pooled *sql.DB target (004); defaults to 10 when omitted
+    MaxIdleConnections     int           // max idle connections kept per pooled *sql.DB target (004); defaults to 2 when omitted
+    ConnectionMaxLifetime  time.Duration // max lifetime of a physical connection before it is recycled (004); defaults to 30m when omitted
+    ConnectionMaxIdleTime  time.Duration // max time a physical connection may sit idle before being closed (004); defaults to 5m when omitted
+    ConnectionProbeTimeout time.Duration // timeout for the health probe run on first dial (004); defaults to 10s when omitted
 }
 
 // AWSSettings holds AWS-specific settings, consumed only by 003.a.
@@ -71,6 +78,12 @@ type AWSSettings struct {
     Region   string // optional here, shape-checked if set; an empty region is a user error in 003.a, not here
     KmsKeyId string // optional; reference to a customer-managed KMS key for encrypting/decrypting
                     // secrets in AWS Secrets Manager (003.a); shape-checked here only, not interpreted
+}
+
+// SecretsSettings holds settings for the secrets cache decorator (003), consumed by whoever
+// wraps a Backend in secrets.NewCachedBackend — today cmd/provider/main.go.
+type SecretsSettings struct {
+    CacheTTL time.Duration // TTL for the in-memory secrets cache (003); defaults to 5m when omitted
 }
 
 // Load reads, parses, and validates "<configDir>/baseConfig.yaml".
@@ -84,7 +97,10 @@ type AWSSettings struct {
 //   - User error if the file is missing, unreadable, not valid YAML, a required field
 //     (Snowflake.Org, Snowflake.OrgAdminAccount, Snowflake.OrgAdminAccountLocator,
 //     Snowflake.OrgAdminAccountRegion) is empty, the file does not carry exactly
-//     one cloud section, or a field's value does not match its documented format
+//     one cloud section, a field's value does not match its documented format, a pool-tuning
+//     integer (MaxConnectionPoolSize, MaxIdleConnections) is out of range, or a duration field
+//     (ConnectionMaxLifetime, ConnectionMaxIdleTime, ConnectionProbeTimeout, Secrets.CacheTTL)
+//     does not parse as a positive Go duration
 //
 // Load walks the parsed YAML's top-level keys to find the cloud sections, so a section with
 // no Go struct yet (azure:, gcp:) is still recognized rather than silently dropped.
@@ -102,11 +118,17 @@ Every field in `baseConfig.yaml` is freely editable and the whole file is reload
 | `snowflake.org` | string | **Yes** | Non-empty; matches `^[A-Za-z][A-Za-z0-9_]*$` (Snowflake identifier form, design.md 3.12). Used in account identifiers, secret paths, and `accountUrl` (design.md 3.11.1, 3.12, 7.2). |
 | `snowflake.orgAdminAccount` | string | **Yes** | Non-empty; matches `^[A-Za-z][A-Za-z0-9_]*$`. Used in the org-admin secret path (design.md 3.11.1). |
 | `snowflake.orgAdminAccountLocator` | string | **Yes** | Non-empty; matches `^[A-Za-z0-9]+$` (Snowflake account locator form, e.g. `xc19114`). Static because, unlike a tenant account, there is no `CREATE ACCOUNT` response to capture it from (design.md 3.6). Paired with `orgAdminAccountRegion` to build the org-admin connection host (004). |
-| `snowflake.orgAdminAccountRegion` | string | **Yes** | Non-empty; matches `^[a-z][a-z0-9-]*$` — the literal region-id used in a Snowflake account's connection hostname (e.g. `eu-central-1`, `westeurope`), not the `aws-`-prefixed Backplane Config region key (design.md 3.5). |
+| `snowflake.orgAdminAccountRegion` | string | **Yes** | Non-empty; matches `^(aws\|azure\|gcp)-[a-z][a-z0-9-]*$` — the cloud-region form used by the Backplane Config's region keys and the SnowflakeAccount CRD's `region` field (e.g. `aws-eu-central-1`, `azure-westeurope`; design.md 3.1, 3.5). |
 | `snowflake.usePrivateLink` | bool | No | Affects the Snowflake connection host (design.md 3.6). Default: `true` when omitted. |
+| `snowflake.maxConnectionPoolSize` | int | No | Max open connections per pooled `*sql.DB` target (004). Must be a positive integer if set. Default: `10` when omitted. |
+| `snowflake.maxIdleConnections` | int | No | Max idle connections kept per pooled `*sql.DB` target (004). Must not be negative if set. Default: `2` when omitted. |
+| `snowflake.connectionMaxLifetime` | string (duration) | No | Max lifetime of a physical connection before it is recycled (004). Must be a positive Go duration string (e.g. `30m`) if set. Default: `30m` when omitted. |
+| `snowflake.connectionMaxIdleTime` | string (duration) | No | Max time a physical connection may sit idle before being closed (004). Must be a positive Go duration string if set. Default: `5m` when omitted. |
+| `snowflake.connectionProbeTimeout` | string (duration) | No | Timeout for 004's health probe run when a connection is first dialed. Must be a positive Go duration string if set. Default: `10s` when omitted. |
 | `aws` | object | **Yes**, or another cloud section | The cloud section for AWS. Its presence is what makes `CloudProvider()` return `"aws"`. Exactly one of `aws` / `azure` / `gcp` must be present — none or several is a user error. |
 | `aws.region` | string | No | Not required here; if non-empty, matches `^[a-z]{2}(-[a-z]+)+-[0-9]$`. Whether the region exists and whether it is required at all is decided by 003.a's constructor. |
 | `aws.kmsKeyId` | string | No | Optional reference to a customer-managed KMS key (key ID, alias, or ARN) used by 003.a when creating/reading secrets in AWS Secrets Manager, in place of the AWS-managed default. Not required here; if non-empty, must match one of the documented KMS identifier forms (bare key ID, `alias/<name>`, key ARN, or alias ARN). Whether the key exists or is usable is 003.a's concern, never this package's. |
+| `secrets.cacheTtl` | string (duration) | No | TTL for the in-memory secrets cache (003), applied by whichever code wraps a `Backend` in `secrets.NewCachedBackend` (`cmd/provider/main.go`). Must be a positive Go duration string if set. Default: `5m` when omitted. |
 
 ## Project Structure
 
@@ -126,17 +148,23 @@ internal/config/
 - Missing required field: `snowflake.orgAdminAccountLocator is required in baseConfig.yaml`
 - Missing required field: `snowflake.orgAdminAccountRegion is required in baseConfig.yaml`
 - Malformed value: `snowflake.orgAdminAccountLocator 'xc-19114!' does not match the expected format (expected: xc19114)`
-- Malformed value: `snowflake.orgAdminAccountRegion 'Frankfurt!' does not match the expected format (expected: eu-central-1 or westeurope)`
+- Malformed value: `snowflake.orgAdminAccountRegion 'Frankfurt!' does not match the expected format (expected: aws-eu-central-1 or azure-westeurope)`
+- Malformed value: `snowflake.orgAdminAccountRegion 'eu-central-1' does not match the expected format (expected: aws-eu-central-1 or azure-westeurope)` — a region missing its cloud prefix
 - Malformed value: `aws.region 'Frankfurt!' does not match the expected format (expected: eu-central-1)` — and likewise for any other field with a documented regex
 - Malformed value: `aws.kmsKeyId 'not a key!' does not match the expected format (expected: a KMS key ID, alias, or ARN, e.g. alias/my-key)`
 - No cloud section: `baseConfig.yaml must contain one cloud section (one of: aws, azure, gcp)`
 - Several cloud sections: `baseConfig.yaml contains several cloud sections (aws, azure); exactly one is allowed`
+- Out-of-range pool-tuning integer: `snowflake.maxConnectionPoolSize '0' must be a positive integer`, `snowflake.maxIdleConnections '-1' must not be negative`
+- Malformed duration: `snowflake.connectionMaxLifetime 'not-a-duration' does not match the expected format (expected: a Go duration string, e.g. 30m)` — and likewise for `connectionMaxIdleTime`, `connectionProbeTimeout`, and `secrets.cacheTtl`
+- Non-positive duration: `snowflake.connectionMaxLifetime '0s' must be a positive duration` — and likewise for `connectionMaxIdleTime`, `connectionProbeTimeout`, and `secrets.cacheTtl`
 
 **System Errors**: this package makes no network calls and has no retryable infrastructure dependency, so it classifies no scenario as a system error on its own. An unexpected filesystem error (e.g. a permissions problem on the mounted volume) surfaces as a raw wrapped error (`fmt.Errorf("reading baseConfig.yaml: %w", err)`); the caller's error handling (001) treats it as a system error by default, since `Load` never wraps it in `errors.NewUserError`. This is intentionally minimal — this package does not attempt to distinguish every possible OS-level failure mode.
 
 ## Edge Cases
 
 - **What happens if `snowflake.usePrivateLink` is omitted?** - Defaults to `true`.
+- **What happens if `snowflake.maxConnectionPoolSize`, `maxIdleConnections`, `connectionMaxLifetime`, `connectionMaxIdleTime`, or `connectionProbeTimeout` is omitted?** - Each defaults independently: `10`, `2`, `30m`, `5m`, `10s` respectively.
+- **What happens if `secrets.cacheTtl` is omitted?** - Defaults to `5m`.
 - **What happens with an unrecognized YAML key (e.g. a future `timeout`)?** - Ignored by the decoder, not an error. The schema is expected to grow over time (timeouts, pool sizes, and similar settings may be added later as the codebase needs them), and unknown keys must not break `Load` on a rolling deployment.
 - **What if no cloud section is present, or more than one?** - Both are user errors from `Load`: exactly one of `aws` / `azure` / `gcp` is required, so `CloudProvider()` is always unambiguous.
 - **What if the cloud section has no backend compiled in (e.g. `azure:` today)?** - `Load` accepts it and `CloudProvider()` returns `"azure"` — this package has no notion of which backends exist. `cmd/provider/main.go` is the one that fails fast, listing the cloud providers actually compiled in.
@@ -153,9 +181,9 @@ internal/config/
 
 ## Integration Points
 
-- **`cmd/provider/main.go`** - Owns the `--configDir` flag and resolves it to a directory path. Calls `config.Load(configDir)` once at startup, then switches on `BaseConfig.CloudProvider()` to construct the matching secrets backend, fatally rejecting an unrecognized value by listing the cloud providers compiled in - Key functions: `config.Load()`, `BaseConfig.CloudProvider()`.
+- **`cmd/provider/main.go`** - Owns the `--configDir` flag and resolves it to a directory path. Calls `config.Load(configDir)` once at startup, then switches on `BaseConfig.CloudProvider()` to construct the matching secrets backend, fatally rejecting an unrecognized value by listing the cloud providers compiled in. Also reads `BaseConfig.Secrets.CacheTTL` and passes it to `secrets.NewCachedBackend(backend, cfg.Secrets.CacheTTL)` (003) — `internal/secrets` itself never imports `internal/config` - Key functions: `config.Load()`, `BaseConfig.CloudProvider()`.
 - **`internal/secrets/aws` (003.a)** - Consumes `BaseConfig.AWS.Region` when constructed by `main.go`; rejects an empty region as a user error itself, since 002 does not validate it. Also optionally consumes `BaseConfig.AWS.KmsKeyId`, passing it through to `CreateSecret`'s `KmsKeyId` parameter when non-empty, so Secrets Manager encrypts/decrypts with the customer-managed key instead of its AWS-managed default - Notes: credentials come from the AWS SDK's default chain, never from `BaseConfig`.
-- **`internal/snowflake/pool` (004)** - Consumes `BaseConfig.Snowflake.Org`, `OrgAdminAccount`, `OrgAdminAccountLocator`, `OrgAdminAccountRegion`, and `UsePrivateLink` for org-admin connection host construction (design.md 3.6, 3.11).
+- **`internal/snowflake/pool` (004)** - Consumes `BaseConfig.Snowflake.Org`, `OrgAdminAccount`, `OrgAdminAccountLocator`, `OrgAdminAccountRegion`, and `UsePrivateLink` for org-admin connection host construction (design.md 3.6, 3.11), plus `MaxConnectionPoolSize`, `MaxIdleConnections`, `ConnectionMaxLifetime`, `ConnectionMaxIdleTime`, and `ConnectionProbeTimeout` to tune every pooled `*sql.DB`.
 - **`internal/backplane` (007)** / **guardrails loader (008)** - Read their own sibling files (`backplane.yaml`, a guardrails/exceptions file) from the same `--configDir`, with independently implemented loading and validation logic — no code shared with `internal/config`.
 
 ## Success Criteria
@@ -178,12 +206,15 @@ internal/config/
 - **SC-015**: `Load` accepts an absent `aws.kmsKeyId`, accepts each well-formed KMS identifier form (bare key ID, `alias/<name>`, key ARN, alias ARN), and returns a user error for a malformed one.
 - **SC-016**: `Load` returns a user error when `snowflake.orgAdminAccountLocator` is empty or absent.
 - **SC-017**: `Load` returns a user error when `snowflake.orgAdminAccountRegion` is empty or absent.
-- **SC-018**: `Load` returns a user error when `snowflake.orgAdminAccountLocator` or `snowflake.orgAdminAccountRegion` contains characters outside their documented shape, and accepts a well-formed non-AWS-style region (e.g. `westeurope`).
+- **SC-018**: `Load` returns a user error when `snowflake.orgAdminAccountLocator` or `snowflake.orgAdminAccountRegion` contains characters outside their documented shape, accepts a well-formed region under any of the three recognized cloud prefixes (e.g. `azure-westeurope`), and rejects one missing its cloud prefix (e.g. `eu-central-1`).
+- **SC-019**: `Load` defaults `Snowflake.MaxConnectionPoolSize`, `MaxIdleConnections`, `ConnectionMaxLifetime`, `ConnectionMaxIdleTime`, `ConnectionProbeTimeout`, and `Secrets.CacheTTL` to `10`, `2`, `30m`, `5m`, `10s`, and `5m` respectively when each key is omitted, and honors an explicit value for each when given.
+- **SC-020**: `Load` returns a user error when `snowflake.maxConnectionPoolSize` is not a positive integer, or when `snowflake.maxIdleConnections` is negative.
+- **SC-021**: `Load` returns a user error when `snowflake.connectionMaxLifetime`, `connectionMaxIdleTime`, `connectionProbeTimeout`, or `secrets.cacheTtl` does not parse as a Go duration string, or parses to a non-positive duration.
 
 
 ## References
 
-- **Config Package**: `internal/config/config.go` - `BaseConfig`, `SnowflakeSettings`, `AWSSettings`, `Load`
+- **Config Package**: `internal/config/config.go` - `BaseConfig`, `SnowflakeSettings`, `AWSSettings`, `SecretsSettings`, `Load`
 - **Design Doc**: `specs/design.md`, §3.11.1 - the AWS Secrets Manager path grammar that consumes `Snowflake.Org`
 
 <br/><br/><br/><br/><br/>
@@ -225,7 +256,9 @@ func main() {
         log.Fatalf("no secrets backend compiled in for cloud section %q (compiled in: aws)", cfg.CloudProvider())
     }
 
-    // ... wire backend into the pool (004) and start the controller manager
+    cached := secrets.NewCachedBackend(backend, cfg.Secrets.CacheTTL) // 003
+
+    // ... wire cached into the pool (004) and start the controller manager
 }
 ```
 
@@ -236,12 +269,20 @@ snowflake:
   org: my_org_name
   orgAdminAccount: my_org_admin_account_name
   orgAdminAccountLocator: xc19114
-  orgAdminAccountRegion: eu-central-1
+  orgAdminAccountRegion: aws-eu-central-1
   usePrivateLink: true
+  # maxConnectionPoolSize: 10       # optional, default shown (004)
+  # maxIdleConnections: 2           # optional, default shown (004)
+  # connectionMaxLifetime: 30m      # optional, default shown (004)
+  # connectionMaxIdleTime: 5m       # optional, default shown (004)
+  # connectionProbeTimeout: 10s     # optional, default shown (004)
 
 aws:
   region: eu-central-1
   # kmsKeyId: alias/yukimi-secrets  # optional, customer-managed KMS key
+
+# secrets:
+#   cacheTtl: 5m                    # optional, default shown (003)
 ```
 
 The `aws:` section is the only cloud section here, so `CloudProvider()` returns `"aws"` — nothing else in the file states the provider.
