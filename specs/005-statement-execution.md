@@ -168,16 +168,17 @@ func (e *Error) Unwrap() error
 
 ```text
 internal/snowflake/statement/
-├── statement.go       # Executor, Runner, New, Exec, Query, Result
-├── statement_test.go  # sqlmock-driven tests
-├── render.go           # QuoteIdentifier, QuoteLiteral, BareIdentifier
+├── statement.go         # Executor, Runner, New, Exec, Query, Result
+├── statement_test.go    # sqlmock-driven tests
+├── integration_test.go  # live-Snowflake test via a real 004 Pool.TenantAccount connection
+├── render.go             # QuoteIdentifier, QuoteLiteral, BareIdentifier
 ├── render_test.go
-├── errors.go           # Error, Error(), Unwrap()
+├── errors.go             # Error, Error(), Unwrap()
 ├── errors_test.go
 └── doc.go
 ```
 
-This package depends only on `internal/errors` (001), via `BareIdentifier`'s user error. It never imports `internal/snowflake/pool` (004); 004 documents the reverse half of that same rule.
+Production code here depends only on `internal/errors` (001) and never imports `internal/snowflake/pool` (004) — `integration_test.go` is the sole exception, importing 004 to get a real `*sql.DB` for testing.
 
 ## Error Classification
 
@@ -204,10 +205,10 @@ This package depends only on `internal/errors` (001), via `BareIdentifier`'s use
 
 ## Integration Points
 
-- **Connection Pool (004)** - `Pool.OrgAdmin`/`Pool.TenantAccount` hand back the `*sql.DB` this package wraps as an `Executor` - Key functions: `statement.New` - Notes: no import in either direction; 004 documents this same rule from its side.
+- **Connection Pool (004)** - `Pool.OrgAdmin`/`Pool.TenantAccount` hand back the `*sql.DB` this package wraps as an `Executor` - Key functions: `statement.New` - Notes: no import in either direction from production code; 004 documents this same rule from its side. `integration_test.go` imports 004 (and 003.a, for the `secrets.Backend` `Pool.TenantAccount` needs) to obtain that real `*sql.DB` under test — a test-only exception, not a production dependency.
 - **Account Modules (010–013, 015, 016, 019 — not yet written)** - Call `statement.New` once per connection, then `Exec`/`Query` per statement, reaching for a renderer only at the specific positions their own spec identifies as unbindable - Key functions: `Runner.Exec`, `Runner.Query`, `QuoteIdentifier`, `QuoteLiteral`, `BareIdentifier`.
 - **Error Handling (001)** - `logger.Handle`, at the controller layer, classifies and logs whatever this package returns; this package never logs anything itself.
-- **Testing** - Module test suites drive the real `statement.New(db)` over `DATA-DOG/go-sqlmock` (`sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual)` for exact statement matching, `.WithArgs(...)` for bind assertions, `mock.ExpectationsWereMet()` for ordering) rather than a hand-rolled fake, exercising the real materializer, renderers and error decoration.
+- **Testing** - Module test suites drive the real `statement.New(db)` over `DATA-DOG/go-sqlmock` (`sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual)` for exact statement matching, `.WithArgs(...)` for bind assertions, `mock.ExpectationsWereMet()` for ordering) rather than a hand-rolled fake, exercising the real materializer, renderers and error decoration. `integration_test.go` additionally exercises `Exec`/`Query` against a real `Pool.TenantAccount` connection from the sample tenant account `.env` describes (see `internal/snowflake/pool/integration_test.go` for the same wiring), confirming real `*gosnowflake.SnowflakeError` decoration and real row materialization end to end — skipped under `-short`, run via `make test-integration`.
 
 ## Success Criteria
 
