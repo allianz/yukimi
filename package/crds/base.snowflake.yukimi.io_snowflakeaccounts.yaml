@@ -1,0 +1,279 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.18.0
+  name: snowflakeaccounts.base.snowflake.yukimi.io
+spec:
+  group: base.snowflake.yukimi.io
+  names:
+    kind: SnowflakeAccount
+    listKind: SnowflakeAccountList
+    plural: snowflakeaccounts
+    singular: snowflakeaccount
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: READY
+      type: string
+    - jsonPath: .status.conditions[?(@.type=='Synced')].status
+      name: SYNCED
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: AGE
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          A SnowflakeAccount is the resource a team commits to Git to describe the
+          Snowflake account they want (design.md 3.1).
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              SnowflakeAccountSpec defines the desired state of a SnowflakeAccount. Every
+              field is a direct sibling under spec, matching design.md 3.1's example
+              exactly — there is no forProvider wrapper (Key Concept: Minimal
+              Managed-Resource Surface).
+            properties:
+              contacts:
+                items:
+                  type: string
+                type: array
+              creditQuota:
+                description: |-
+                  This account's share of the namespace's monthly credit allowance
+                  (design.md 3.10). Ceiling enforcement is Guardrails'/Quota's job (008/016).
+                format: int32
+                type: integer
+              customAuthRules:
+                description: CustomAuthRules is design.md 3.1/3.9's customAuthRules
+                  block.
+                properties:
+                  exceptions:
+                    items:
+                      description: AuthException is one entry under customAuthRules.exceptions
+                        (design.md 3.9).
+                      properties:
+                        patAllowed:
+                          type: boolean
+                        reason:
+                          description: Audit only; never carried into Snowflake.
+                          type: string
+                        rsaKeyAllowed:
+                          type: boolean
+                        user:
+                          type: string
+                      required:
+                      - reason
+                      - user
+                      type: object
+                      x-kubernetes-validations:
+                      - message: exception must permit at least one of rsaKeyAllowed
+                          or patAllowed
+                        rule: self.rsaKeyAllowed || self.patAllowed
+                    type: array
+                type: object
+              customNetworkRules:
+                description: CustomNetworkRules is design.md 3.1/3.8's customNetworkRules
+                  block.
+                properties:
+                  accountWide:
+                    items:
+                      description: NetworkRule is one entry under customNetworkRules
+                        (design.md 3.8).
+                      properties:
+                        allowedIPs:
+                          items:
+                            type: string
+                          type: array
+                        connection:
+                          description: |-
+                            An inventory connection name from the region's Backplane Config (007);
+                            resolved, not validated, here.
+                          type: string
+                      required:
+                      - connection
+                      type: object
+                    type: array
+                  serviceUsers:
+                    additionalProperties:
+                      items:
+                        description: NetworkRule is one entry under customNetworkRules
+                          (design.md 3.8).
+                        properties:
+                          allowedIPs:
+                            items:
+                              type: string
+                            type: array
+                          connection:
+                            description: |-
+                              An inventory connection name from the region's Backplane Config (007);
+                              resolved, not validated, here.
+                            type: string
+                        required:
+                        - connection
+                        type: object
+                      type: array
+                    type: object
+                type: object
+              description:
+                type: string
+              environment:
+                description: |-
+                  Immutable after creation (design.md 3.11.3); selects the Guardrails
+                  baseline (008).
+                enum:
+                - dev
+                - prod
+                type: string
+                x-kubernetes-validations:
+                - message: environment is immutable
+                  rule: self == oldSelf
+              identityIntegration:
+                description: IdentityIntegration is design.md 3.1/3.7's identityIntegration
+                  block.
+                properties:
+                  groups:
+                    additionalProperties:
+                      items:
+                        type: string
+                      type: array
+                    description: Keyed by integration (e.g. "giam"); the key is free-form,
+                      not schema.
+                    type: object
+                  roleBindings:
+                    additionalProperties:
+                      type: string
+                    description: Must contain an ACCOUNTADMIN entry (design.md 3.7).
+                    type: object
+                    x-kubernetes-validations:
+                    - message: roleBindings must bind ACCOUNTADMIN
+                      rule: '''ACCOUNTADMIN'' in self'
+                required:
+                - roleBindings
+                type: object
+              managementPolicies:
+                default:
+                - '*'
+                description: |-
+                  The only crossplane-runtime managed-resource field this type carries.
+                  No ProviderConfigReference, no WriteConnectionSecretToReference.
+                items:
+                  description: |-
+                    A ManagementAction represents an action that the Crossplane controllers
+                    can take on an external resource.
+                  enum:
+                  - Observe
+                  - Create
+                  - Update
+                  - Delete
+                  - LateInitialize
+                  - '*'
+                  type: string
+                type: array
+              region:
+                description: Immutable after creation (design.md 3.11.3).
+                type: string
+                x-kubernetes-validations:
+                - message: region is immutable
+                  rule: self == oldSelf
+            required:
+            - environment
+            - identityIntegration
+            - region
+            type: object
+          status:
+            description: SnowflakeAccountStatus defines the observed state of a SnowflakeAccount.
+            properties:
+              accountLocator:
+                description: Captured from CREATE ACCOUNT's result (010).
+                type: string
+              accountName:
+                description: |-
+                  The resolved Snowflake account name (design.md 3.12) — not
+                  metadata.name.
+                type: string
+              accountUrl:
+                description: Built via internal/tenant.AccountURL (design.md 7.2).
+                type: string
+              conditions:
+                description: Conditions of the resource.
+                items:
+                  description: A Condition that may apply to a resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        LastTransitionTime is the last time this condition transitioned from one
+                        status to another.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        A Message containing details about this condition's last transition from
+                        one status to another, if any.
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        ObservedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      type: integer
+                    reason:
+                      description: A Reason for this condition's last transition from
+                        one status to another.
+                      type: string
+                    status:
+                      description: Status of this condition; is it currently True,
+                        False, or Unknown?
+                      type: string
+                    type:
+                      description: |-
+                        Type of this condition. At most one of each condition type may apply to
+                        a resource at any point in time.
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              observedGeneration:
+                description: |-
+                  ObservedGeneration is the latest metadata.generation
+                  which resulted in either a ready state, or stalled due to error
+                  it can not recover from without human intervention.
+                format: int64
+                type: integer
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

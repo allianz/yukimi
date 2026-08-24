@@ -813,12 +813,12 @@ Individual resource types may surface further conditions specific to their own c
 
 **A Healthy Resource**
 
-`accountName` is the resolved Snowflake name (3.12), not the CRD name, so a tenant can find the account in Snowflake.
+`accountName` is the resolved Snowflake name (3.12), not the CRD name, so a tenant can find the account in Snowflake. `accountUrl` is a login link, not a connection host.
 
 ```yaml
 status:
   accountName: "analytics_team_eu_5k3wf"
-  accountUrl: "https://xc19114.eu-central-1.privatelink.snowflakecomputing.com"
+  accountUrl: "https://xc19114.eu-central-1.privatelink.snowflakecomputing.com/console/login"
   conditions:
     - type: Ready
       status: "True"
