@@ -72,8 +72,8 @@ type Pool struct {
 //     a concrete backend package
 //   - cfg: BaseConfig (002) — Snowflake.Org, OrgAdminAccount,
 //     OrgAdminAccountLocator, OrgAdminAccountRegion, UsePrivateLink,
-//     MaxConnectionPoolSize, MaxIdleConnections, ConnectionMaxLifetime,
-//     ConnectionMaxIdleTime, ConnectionProbeTimeout
+//     DisableOCSPChecks, MaxConnectionPoolSize, MaxIdleConnections,
+//     ConnectionMaxLifetime, ConnectionMaxIdleTime, ConnectionProbeTimeout
 //
 // Returns:
 //   - *Pool: never nil
@@ -144,10 +144,11 @@ func (p *Pool) OrgAdmin(ctx context.Context) (*sql.DB, error) {
 		return nil, fmt.Errorf("failed to parse private key for org-admin: %w", err)
 	}
 
-	sfCfg := buildSnowflakeConfig(sf.OrgAdminAccountLocator, hostname, creds.Username, key, "ORGADMIN")
+	sfCfg := buildSnowflakeConfig(sf.OrgAdminAccountLocator, hostname, creds.Username, key, "ORGADMIN", sf.DisableOCSPChecks)
 	db, err := p.dial(dialConfig{snowflake: sfCfg, probeTimeout: sf.ConnectionProbeTimeout})
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to %s: %w", hostname, err)
+		return nil, fmt.Errorf("credentials for org-admin %s were read successfully, but failed to connect to %s: %w (tip: run `DESC USER %s` in Snowflake and compare RSA_PUBLIC_KEY_FP against %s; DisableOCSPChecks=%t)",
+			creds.Username, hostname, err, creds.Username, publicKeyFingerprint(key), sf.DisableOCSPChecks)
 	}
 	applyPoolSettings(db, p.cfg)
 
@@ -218,10 +219,11 @@ func (p *Pool) TenantAccount(ctx context.Context, namespace, accountName, locato
 		return nil, fmt.Errorf("failed to parse private key for %s/%s: %w", namespace, accountName, err)
 	}
 
-	sfCfg := buildSnowflakeConfig(locator, hostname, creds.Username, privKey, "ACCOUNTADMIN")
+	sfCfg := buildSnowflakeConfig(locator, hostname, creds.Username, privKey, "ACCOUNTADMIN", sf.DisableOCSPChecks)
 	db, err := p.dial(dialConfig{snowflake: sfCfg, probeTimeout: sf.ConnectionProbeTimeout})
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to %s: %w", hostname, err)
+		return nil, fmt.Errorf("credentials for %s/%s were read successfully, but failed to connect to %s: %w (debugging tip: run `DESC USER %s` in Snowflake and compare RSA_PUBLIC_KEY_FP against %s; DisableOCSPChecks=%t)",
+			namespace, accountName, hostname, err, creds.Username, publicKeyFingerprint(privKey), sf.DisableOCSPChecks)
 	}
 	applyPoolSettings(db, p.cfg)
 

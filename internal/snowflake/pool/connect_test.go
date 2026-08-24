@@ -30,10 +30,10 @@ import (
 	"github.com/allianz/yukimi/internal/secrets"
 )
 
-// SC-015, SC-016: buildSnowflakeConfig maps every field exactly, for both
-// scopes, and never sets Region — a set Region would make the driver rewrite
-// Config.Host from its own notion of a raw Snowflake region code before
-// dialing, silently overriding the host this package built.
+// SC-015, SC-016, SC-022: buildSnowflakeConfig maps every field exactly, for
+// both scopes, and never sets Region — a set Region would make the driver
+// rewrite Config.Host from its own notion of a raw Snowflake region code
+// before dialing, silently overriding the host this package built.
 func TestBuildSnowflakeConfig(t *testing.T) {
 	_, pemStr, err := secrets.GenerateKeyPair()
 	if err != nil {
@@ -45,18 +45,19 @@ func TestBuildSnowflakeConfig(t *testing.T) {
 	}
 
 	cases := []struct {
-		name    string
-		account string
-		host    string
-		user    string
-		role    string
+		name              string
+		account           string
+		host              string
+		user              string
+		role              string
+		disableOCSPChecks bool
 	}{
-		{"org-admin", "xc00000", "xc00000.eu-central-1.snowflakecomputing.com", "platform", "ORGADMIN"},
-		{"tenant", "xc19114", "xc19114.eu-central-1.privatelink.snowflakecomputing.com", "platform", "ACCOUNTADMIN"},
+		{"org-admin", "xc00000", "xc00000.eu-central-1.snowflakecomputing.com", "platform", "ORGADMIN", false},
+		{"tenant", "xc19114", "xc19114.eu-central-1.privatelink.snowflakecomputing.com", "platform", "ACCOUNTADMIN", true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			cfg := buildSnowflakeConfig(c.account, c.host, c.user, key, c.role)
+			cfg := buildSnowflakeConfig(c.account, c.host, c.user, key, c.role, c.disableOCSPChecks)
 			if cfg.Account != c.account {
 				t.Errorf("Account = %q, want %q", cfg.Account, c.account)
 			}
@@ -74,6 +75,9 @@ func TestBuildSnowflakeConfig(t *testing.T) {
 			}
 			if cfg.Authenticator != gosnowflake.AuthTypeJwt {
 				t.Errorf("Authenticator = %v, want AuthTypeJwt", cfg.Authenticator)
+			}
+			if cfg.DisableOCSPChecks != c.disableOCSPChecks {
+				t.Errorf("DisableOCSPChecks = %v, want %v", cfg.DisableOCSPChecks, c.disableOCSPChecks)
 			}
 			if cfg.Region != "" {
 				t.Errorf("Region = %q, want empty — a set Region lets the driver rewrite Host", cfg.Region)

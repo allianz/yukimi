@@ -112,8 +112,8 @@ type Pool struct { /* unexported */ }
 //     a concrete backend package
 //   - cfg: BaseConfig (002) — Snowflake.Org, OrgAdminAccount,
 //     OrgAdminAccountLocator, OrgAdminAccountRegion, UsePrivateLink,
-//     MaxConnectionPoolSize, MaxIdleConnections, ConnectionMaxLifetime,
-//     ConnectionMaxIdleTime, ConnectionProbeTimeout
+//     DisableOCSPChecks, MaxConnectionPoolSize, MaxIdleConnections,
+//     ConnectionMaxLifetime, ConnectionMaxIdleTime, ConnectionProbeTimeout
 //
 // Returns:
 //   - *Pool: never nil
@@ -221,7 +221,7 @@ internal/snowflake/pool/
 ## Dependencies
 
 - **`internal/errors` (001)** - Used APIs: `errors.NewUserError()` - Contract: used by both packages; in `host` for the one region-format validation above, in `pool` nowhere else.
-- **`internal/config` (002)** - Read by `pool` only; `host` never imports it - Used APIs: `config.BaseConfig`, `Snowflake.Org`, `Snowflake.OrgAdminAccount`, `Snowflake.OrgAdminAccountLocator`, `Snowflake.OrgAdminAccountRegion`, `Snowflake.UsePrivateLink`, `Snowflake.MaxConnectionPoolSize`, `Snowflake.MaxIdleConnections`, `Snowflake.ConnectionMaxLifetime`, `Snowflake.ConnectionMaxIdleTime`, `Snowflake.ConnectionProbeTimeout` - Contract: `Pool` reads these once at construction and treats them as fixed for the process's life, matching `BaseConfig`'s own immutability.
+- **`internal/config` (002)** - Read by `pool` only; `host` never imports it - Used APIs: `config.BaseConfig`, `Snowflake.Org`, `Snowflake.OrgAdminAccount`, `Snowflake.OrgAdminAccountLocator`, `Snowflake.OrgAdminAccountRegion`, `Snowflake.UsePrivateLink`, `Snowflake.DisableOCSPChecks`, `Snowflake.MaxConnectionPoolSize`, `Snowflake.MaxIdleConnections`, `Snowflake.ConnectionMaxLifetime`, `Snowflake.ConnectionMaxIdleTime`, `Snowflake.ConnectionProbeTimeout` - Contract: `Pool` reads these once at construction and treats them as fixed for the process's life, matching `BaseConfig`'s own immutability.
 - **`internal/secrets` (003)** - Used APIs: `secrets.Backend`, `NewOrgAdminPath()`, `NewTenantPath()`, `UnmarshalCredentials()` - Contract: takes a `secrets.Backend` as a constructor parameter, satisfied by whatever concrete backend `cmd/provider/main.go` wired up and wrapped in `secrets.NewCachedBackend`; never imports a concrete backend itself.
 - **`github.com/snowflakedb/gosnowflake` v1.18.1** - the only Snowflake driver dependency in the tree; this is the spec that adds it to `go.mod` (see Project Structure).
 
@@ -261,6 +261,7 @@ internal/snowflake/pool/
 - **SC-019**: The dial step is reachable through an unexported, swappable seam so unit tests exercise `Pool`'s caching, eviction, self-healing, and concurrency behavior without a real Snowflake account, a real network call, or the real driver.
 - **SC-020**: Unit test coverage exceeds 95% for both packages.
 - **SC-021**: Every `*sql.DB` this package dials has `SetMaxOpenConns`, `SetMaxIdleConns`, `SetConnMaxLifetime`, and `SetConnMaxIdleTime` applied from `cfg.Snowflake.MaxConnectionPoolSize`/`MaxIdleConnections`/`ConnectionMaxLifetime`/`ConnectionMaxIdleTime`, and the health probe's context deadline is `cfg.Snowflake.ConnectionProbeTimeout`.
+- **SC-022**: The `gosnowflake.Config` built for both `OrgAdmin` and `TenantAccount` sets `DisableOCSPChecks` from `cfg.Snowflake.DisableOCSPChecks`.
 
 ## Security Considerations
 
@@ -268,6 +269,7 @@ internal/snowflake/pool/
 - **Credentials never touch a concrete backend from this package's own code**: this package depends only on `secrets.Backend` (003), constructed and wrapped elsewhere; it cannot be the place a future backend-specific bug leaks a credential, because it never imports one.
 - **Role is set explicitly, not inherited**: both scopes set `Role` on every connection they dial (`ORGADMIN`, `ACCOUNTADMIN`) rather than relying on whatever a user's default role happens to be — matching design.md 3.11's framing of the platform "impersonating the accountadmin role exclusively for that specific tenant" as a deliberate choice, not an accident of account defaults.
 - **No credential material in an error message**: every error this package produces is built from a path's identifiers (namespace, account name, org-admin account), a host, and the underlying error — never a private key or any other credential content, matching 003's own rule for the paths it hands this package.
+- **OCSP checking defaults to on**: `Snowflake.DisableOCSPChecks` (002) defaults to `false`; disabling it is a deliberate, narrow escape hatch for local/integration testing and emergencies where the OCSP responder's network path is broken — never a routine production setting.
 - **The host a tenant is told to visit is the host the platform dials**: `host` handles no credentials and opens no connection, and both the `gosnowflake.Config.Host` here and `status.accountUrl` in 006 come out of the same function. A tenant's published URL therefore cannot name a host the platform does not itself connect to — a divergence that would otherwise send users to an endpoint outside the region's PrivateLink path while reconciliation reported success.
 - **Health-probe failures surface immediately, not on a tenant's first real query**: probing a newly dialed connection turns a bad credential or an unreachable host into a system error at the moment this package first tries it, rather than letting it surface later inside whichever module (010–013, 015) happens to run the first real statement.
 
