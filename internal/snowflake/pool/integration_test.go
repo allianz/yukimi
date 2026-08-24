@@ -25,6 +25,7 @@ import (
 	"github.com/joho/godotenv"
 
 	"github.com/allianz/yukimi/internal/config"
+	"github.com/allianz/yukimi/internal/secrets"
 	secretsaws "github.com/allianz/yukimi/internal/secrets/aws"
 )
 
@@ -45,22 +46,16 @@ func TestIntegration_TenantAccount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("secretsaws.New: %v", err)
 	}
+	cached := secrets.NewCachedBackend(backend, 5*time.Minute)
 
 	cfg := &config.BaseConfig{
 		Snowflake: config.SnowflakeSettings{
 			Org:                    os.Getenv("SNOWFLAKE_ORG"),
 			UsePrivateLink:         os.Getenv("SNOWFLAKE_USE_PRIVATELINK") == "true",
-			MaxConnectionPoolSize:  10,
-			MaxIdleConnections:     2,
-			ConnectionMaxLifetime:  30 * time.Minute,
-			ConnectionMaxIdleTime:  5 * time.Minute,
 			ConnectionProbeTimeout: 10 * time.Second,
-			// OrgAdmin* is intentionally left zero: this test only exercises
-			// TenantAccount, never OrgAdmin.
 		},
 	}
-
-	p := New(backend, cfg)
+	p := New(cached, cfg)
 	t.Cleanup(func() { _ = p.Close() })
 
 	ctx := context.Background()
