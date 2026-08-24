@@ -65,6 +65,7 @@ type SnowflakeSettings struct {
     OrgAdminAccountLocator string // Snowflake account locator for OrgAdminAccount (e.g. "xc19114"); static config because, unlike a tenant account, the controller never runs CREATE ACCOUNT for it (design.md 3.6)
     OrgAdminAccountRegion  string // Snowflake region OrgAdminAccount lives in, cloud-region form (e.g. "aws-eu-central-1" or "azure-westeurope"); paired with OrgAdminAccountLocator to build the org-admin connection host (004)
     UsePrivateLink         bool   // affects the connection host (004); defaults to true when omitted
+    DisableOCSPChecks      bool   // disables OCSP certificate-revocation checking on Snowflake connections (004); testing/emergency use only. Defaults to false when omitted
 
     MaxConnectionPoolSize  int           // max open connections per pooled *sql.DB target (004); defaults to 10 when omitted
     MaxIdleConnections     int           // max idle connections kept per pooled *sql.DB target (004); defaults to 2 when omitted
@@ -120,6 +121,7 @@ Every field in `baseConfig.yaml` is freely editable and the whole file is reload
 | `snowflake.orgAdminAccountLocator` | string | **Yes** | Non-empty; matches `^[A-Za-z0-9]+$` (Snowflake account locator form, e.g. `xc19114`). Static because, unlike a tenant account, there is no `CREATE ACCOUNT` response to capture it from (design.md 3.6). Paired with `orgAdminAccountRegion` to build the org-admin connection host (004). |
 | `snowflake.orgAdminAccountRegion` | string | **Yes** | Non-empty; matches `^(aws\|azure\|gcp)-[a-z][a-z0-9-]*$` — the cloud-region form used by the Backplane Config's region keys and the SnowflakeAccount CRD's `region` field (e.g. `aws-eu-central-1`, `azure-westeurope`; design.md 3.1, 3.5). |
 | `snowflake.usePrivateLink` | bool | No | Affects the Snowflake connection host (design.md 3.6). Default: `true` when omitted. |
+| `snowflake.disableOcspChecks` | bool | No | Disables OCSP certificate-revocation checking on Snowflake connections (004); testing/emergency use only. Default: `false` when omitted. |
 | `snowflake.maxConnectionPoolSize` | int | No | Max open connections per pooled `*sql.DB` target (004). Must be a positive integer if set. Default: `10` when omitted. |
 | `snowflake.maxIdleConnections` | int | No | Max idle connections kept per pooled `*sql.DB` target (004). Must not be negative if set. Default: `2` when omitted. |
 | `snowflake.connectionMaxLifetime` | string (duration) | No | Max lifetime of a physical connection before it is recycled (004). Must be a positive Go duration string (e.g. `30m`) if set. Default: `30m` when omitted. |
@@ -163,6 +165,7 @@ internal/config/
 ## Edge Cases
 
 - **What happens if `snowflake.usePrivateLink` is omitted?** - Defaults to `true`.
+- **What happens if `snowflake.disableOcspChecks` is omitted?** - Defaults to `false`; OCSP certificate-revocation checks stay on.
 - **What happens if `snowflake.maxConnectionPoolSize`, `maxIdleConnections`, `connectionMaxLifetime`, `connectionMaxIdleTime`, or `connectionProbeTimeout` is omitted?** - Each defaults independently: `10`, `2`, `30m`, `5m`, `10s` respectively.
 - **What happens if `secrets.cacheTtl` is omitted?** - Defaults to `5m`.
 - **What happens with an unrecognized YAML key (e.g. a future `timeout`)?** - Ignored by the decoder, not an error. The schema is expected to grow over time (timeouts, pool sizes, and similar settings may be added later as the codebase needs them), and unknown keys must not break `Load` on a rolling deployment.
@@ -183,7 +186,7 @@ internal/config/
 
 - **`cmd/provider/main.go`** - Owns the `--configDir` flag and resolves it to a directory path. Calls `config.Load(configDir)` once at startup, then switches on `BaseConfig.CloudProvider()` to construct the matching secrets backend, fatally rejecting an unrecognized value by listing the cloud providers compiled in. Also reads `BaseConfig.Secrets.CacheTTL` and passes it to `secrets.NewCachedBackend(backend, cfg.Secrets.CacheTTL)` (003) — `internal/secrets` itself never imports `internal/config` - Key functions: `config.Load()`, `BaseConfig.CloudProvider()`.
 - **`internal/secrets/aws` (003.a)** - Consumes `BaseConfig.AWS.Region` when constructed by `main.go`; rejects an empty region as a user error itself, since 002 does not validate it. Also optionally consumes `BaseConfig.AWS.KmsKeyId`, passing it through to `CreateSecret`'s `KmsKeyId` parameter when non-empty, so Secrets Manager encrypts/decrypts with the customer-managed key instead of its AWS-managed default - Notes: credentials come from the AWS SDK's default chain, never from `BaseConfig`.
-- **`internal/snowflake/pool` (004)** - Consumes `BaseConfig.Snowflake.Org`, `OrgAdminAccount`, `OrgAdminAccountLocator`, `OrgAdminAccountRegion`, and `UsePrivateLink` for org-admin connection host construction (design.md 3.6, 3.11), plus `MaxConnectionPoolSize`, `MaxIdleConnections`, `ConnectionMaxLifetime`, `ConnectionMaxIdleTime`, and `ConnectionProbeTimeout` to tune every pooled `*sql.DB`.
+- **`internal/snowflake/pool` (004)** - Consumes `BaseConfig.Snowflake.Org`, `OrgAdminAccount`, `OrgAdminAccountLocator`, `OrgAdminAccountRegion`, `UsePrivateLink`, and `DisableOCSPChecks` for org-admin connection host/config construction (design.md 3.6, 3.11), plus `MaxConnectionPoolSize`, `MaxIdleConnections`, `ConnectionMaxLifetime`, `ConnectionMaxIdleTime`, and `ConnectionProbeTimeout` to tune every pooled `*sql.DB`.
 - **`internal/backplane` (007)** / **guardrails loader (008)** - Read their own sibling files (`backplane.yaml`, a guardrails/exceptions file) from the same `--configDir`, with independently implemented loading and validation logic — no code shared with `internal/config`.
 
 ## Success Criteria
@@ -210,6 +213,7 @@ internal/config/
 - **SC-019**: `Load` defaults `Snowflake.MaxConnectionPoolSize`, `MaxIdleConnections`, `ConnectionMaxLifetime`, `ConnectionMaxIdleTime`, `ConnectionProbeTimeout`, and `Secrets.CacheTTL` to `10`, `2`, `30m`, `5m`, `10s`, and `5m` respectively when each key is omitted, and honors an explicit value for each when given.
 - **SC-020**: `Load` returns a user error when `snowflake.maxConnectionPoolSize` is not a positive integer, or when `snowflake.maxIdleConnections` is negative.
 - **SC-021**: `Load` returns a user error when `snowflake.connectionMaxLifetime`, `connectionMaxIdleTime`, `connectionProbeTimeout`, or `secrets.cacheTtl` does not parse as a Go duration string, or parses to a non-positive duration.
+- **SC-022**: `Load` defaults `Snowflake.DisableOCSPChecks` to `false` when the key is omitted, and honors an explicit `true`/`false` value when given.
 
 
 ## References
@@ -271,6 +275,7 @@ snowflake:
   orgAdminAccountLocator: xc19114
   orgAdminAccountRegion: aws-eu-central-1
   usePrivateLink: true
+  # disableOcspChecks: false        # optional, default shown (004); testing/emergency use only
   # maxConnectionPoolSize: 10       # optional, default shown (004)
   # maxIdleConnections: 2           # optional, default shown (004)
   # connectionMaxLifetime: 30m      # optional, default shown (004)

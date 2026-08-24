@@ -52,7 +52,8 @@ func TestIntegration_TenantAccount(t *testing.T) {
 		Snowflake: config.SnowflakeSettings{
 			Org:                    os.Getenv("SNOWFLAKE_ORG"),
 			UsePrivateLink:         os.Getenv("SNOWFLAKE_USE_PRIVATELINK") == "true",
-			ConnectionProbeTimeout: 10 * time.Second,
+			DisableOCSPChecks:      os.Getenv("SNOWFLAKE_DISABLE_OCSP_CHECKS") == "true",
+			ConnectionProbeTimeout: 5 * time.Second,
 		},
 	}
 	p := New(cached, cfg)
@@ -63,7 +64,7 @@ func TestIntegration_TenantAccount(t *testing.T) {
 		os.Getenv("SAMPLE_CUSTOMER_NAMESPACE"), os.Getenv("SAMPLE_CUSTOMER_ACCOUNT"),
 		os.Getenv("SAMPLE_CUSTOMER_ACCOUNT_LOCATOR"), os.Getenv("SAMPLE_CUSTOMER_ACCOUNT_REGION"))
 	if err != nil {
-		t.Fatalf("TenantAccount: %v (does the tenant credential secret exist at the expected AWS Secrets Manager path? this test only reads one, never creates it)", err)
+		t.Fatalf("TenantAccount: %v", err)
 	}
 
 	var role string

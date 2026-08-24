@@ -7,6 +7,7 @@ tool sigs.k8s.io/controller-tools/cmd/controller-gen
 tool github.com/crossplane/crossplane-tools/cmd/angryjet
 
 require (
+	github.com/DATA-DOG/go-sqlmock v1.5.2
 	github.com/alecthomas/kingpin/v2 v2.4.0
 	github.com/aws/aws-sdk-go-v2 v1.43.6
 	github.com/aws/aws-sdk-go-v2/config v1.32.37

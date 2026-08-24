@@ -97,6 +97,7 @@ type SnowflakeSettings struct {
 	OrgAdminAccountLocator string // Snowflake account locator for OrgAdminAccount (e.g. "xc19114"); static config because, unlike a tenant account, the controller never runs CREATE ACCOUNT for it (design.md 3.6)
 	OrgAdminAccountRegion  string // Snowflake region OrgAdminAccount lives in, cloud-region form (e.g. "aws-eu-central-1" or "azure-westeurope"); paired with OrgAdminAccountLocator to build the org-admin connection host (004)
 	UsePrivateLink         bool   // affects the connection host (004); defaults to true when omitted
+	DisableOCSPChecks      bool   // disables OCSP certificate-revocation checking on Snowflake connections (004); testing/emergency use only. Defaults to false when omitted
 
 	MaxConnectionPoolSize  int           // max open connections per pooled *sql.DB target (004); defaults to 10 when omitted
 	MaxIdleConnections     int           // max idle connections kept per pooled *sql.DB target (004); defaults to 2 when omitted
@@ -134,6 +135,7 @@ type rawSnowflake struct {
 	OrgAdminAccountLocator string `yaml:"orgAdminAccountLocator"`
 	OrgAdminAccountRegion  string `yaml:"orgAdminAccountRegion"`
 	UsePrivateLink         *bool  `yaml:"usePrivateLink"`
+	DisableOCSPChecks      *bool  `yaml:"disableOcspChecks"`
 
 	MaxConnectionPoolSize  *int   `yaml:"maxConnectionPoolSize"`
 	MaxIdleConnections     *int   `yaml:"maxIdleConnections"`
@@ -254,6 +256,11 @@ func Load(configDir string) (*BaseConfig, error) {
 		usePrivateLink = *raw.Snowflake.UsePrivateLink
 	}
 
+	disableOCSPChecks := false
+	if raw.Snowflake.DisableOCSPChecks != nil {
+		disableOCSPChecks = *raw.Snowflake.DisableOCSPChecks
+	}
+
 	maxConnectionPoolSize, err := resolvePositiveInt(
 		"snowflake.maxConnectionPoolSize", raw.Snowflake.MaxConnectionPoolSize, defaultMaxConnectionPoolSize)
 	if err != nil {
@@ -296,6 +303,7 @@ func Load(configDir string) (*BaseConfig, error) {
 			OrgAdminAccountLocator: raw.Snowflake.OrgAdminAccountLocator,
 			OrgAdminAccountRegion:  raw.Snowflake.OrgAdminAccountRegion,
 			UsePrivateLink:         usePrivateLink,
+			DisableOCSPChecks:      disableOCSPChecks,
 			MaxConnectionPoolSize:  maxConnectionPoolSize,
 			MaxIdleConnections:     maxIdleConnections,
 			ConnectionMaxLifetime:  connectionMaxLifetime,
