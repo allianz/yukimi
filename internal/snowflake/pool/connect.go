@@ -19,8 +19,10 @@ package pool
 import (
 	"context"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
 	"database/sql"
+	"encoding/base64"
 	"encoding/pem"
 	"fmt"
 	"time"
@@ -74,6 +76,19 @@ func buildSnowflakeConfig(account, host, user string, key *rsa.PrivateKey, role 
 		Role:          role,
 		Authenticator: gosnowflake.AuthTypeJwt,
 	}
+}
+
+// publicKeyFingerprint returns key's public half in the same "SHA256:<...>"
+// form Snowflake prints for RSA_PUBLIC_KEY_FP in `DESC USER`, so a connection
+// failure can be compared directly against what Snowflake has on file.
+// Returns "" if the public key cannot be marshaled.
+func publicKeyFingerprint(key *rsa.PrivateKey) string {
+	der, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(der)
+	return "SHA256:" + base64.StdEncoding.EncodeToString(sum[:])
 }
 
 // parsePrivateKey parses a PEM-wrapped PKCS#8 private key, the form

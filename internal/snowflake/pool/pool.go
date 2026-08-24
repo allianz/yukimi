@@ -147,7 +147,8 @@ func (p *Pool) OrgAdmin(ctx context.Context) (*sql.DB, error) {
 	sfCfg := buildSnowflakeConfig(sf.OrgAdminAccountLocator, hostname, creds.Username, key, "ORGADMIN")
 	db, err := p.dial(dialConfig{snowflake: sfCfg, probeTimeout: sf.ConnectionProbeTimeout})
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to %s: %w", hostname, err)
+		return nil, fmt.Errorf("credentials for org-admin %s were read successfully, but failed to connect to %s: %w (tip: run `DESC USER %s` in Snowflake and compare RSA_PUBLIC_KEY_FP against %s)",
+			creds.Username, hostname, err, creds.Username, publicKeyFingerprint(key))
 	}
 	applyPoolSettings(db, p.cfg)
 
@@ -221,7 +222,8 @@ func (p *Pool) TenantAccount(ctx context.Context, namespace, accountName, locato
 	sfCfg := buildSnowflakeConfig(locator, hostname, creds.Username, privKey, "ACCOUNTADMIN")
 	db, err := p.dial(dialConfig{snowflake: sfCfg, probeTimeout: sf.ConnectionProbeTimeout})
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to %s: %w", hostname, err)
+		return nil, fmt.Errorf("credentials for %s/%s were read successfully, but failed to connect to %s: %w (debugging tip: run `DESC USER %s` in Snowflake and compare RSA_PUBLIC_KEY_FP against %s)",
+			namespace, accountName, hostname, err, creds.Username, publicKeyFingerprint(privKey))
 	}
 	applyPoolSettings(db, p.cfg)
 
