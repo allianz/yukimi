@@ -258,11 +258,11 @@ func CostCenter(labels map[string]string) (string, error)
 func CreditQuota(labels map[string]string) (int, error)
 
 // AccountURL returns the SnowflakeAccount's status.accountUrl (design.md
-// 7.2): the account's browser URL, built from the locator Snowflake assigned
-// at CREATE ACCOUNT (010) and the CRD's region. It never derives from the
-// resolved account name, which has no relationship to the locator.
-// A thin wrapper over internal/snowflake/host.URL (004); adds no validation
-// of its own.
+// 7.2): the account's login URL — host.URL's bare host plus
+// "/console/login" — built from the locator Snowflake assigned at CREATE
+// ACCOUNT (010) and the CRD's region. It never derives from the resolved
+// account name, which has no relationship to the locator. Wraps
+// internal/snowflake/host.URL (004); adds no validation beyond that call.
 //
 // Parameters:
 //   - locator: the account locator returned by CREATE ACCOUNT (e.g. "xc19114").
@@ -328,7 +328,7 @@ internal/tenant/
 ├── naming_test.go
 ├── labels.go         # Department, CostCenter, CreditQuota (chapter 2)
 ├── labels_test.go
-├── url.go            # AccountURL wrapping internal/snowflake/host.URL
+├── url.go            # AccountURL: internal/snowflake/host.URL + "/console/login"
 ├── url_test.go
 └── doc.go
 ```
@@ -378,8 +378,8 @@ caller (018) already has the namespace object from its own reconcile and passes 
   itself, and only re-surfaces the user error `internal/snowflake/host` (004) already produces for
   `AccountURL`'s region-format failure.
 - **internal/snowflake/host (004)** - Used APIs: `host.URL(locator, region, usePrivateLink)` -
-  Contract: `internal/tenant/url.go` is a pure pass-through; it adds no validation or wrapping
-  beyond calling `host.URL` directly.
+  Contract: `internal/tenant/url.go` calls `host.URL` and appends `/console/login`; no validation
+  of its own.
 
 ## Integration Points
 
@@ -468,14 +468,14 @@ name := tenant.ResolveName("analytics-team-eu", "finance")
 // name == "analytics_team_eu_5k3wf"
 ```
 
-**Example 2: Building an account's browser URL**
+**Example 2: Building an account's browser login URL**
 
 ```go
 url, err := tenant.AccountURL("xc19114", "aws-eu-central-1", true)
 if err != nil {
     return err // user error: malformed region, per spec 004
 }
-// url == "https://xc19114.eu-central-1.privatelink.snowflakecomputing.com"
+// url == "https://xc19114.eu-central-1.privatelink.snowflakecomputing.com/console/login"
 ```
 
 **Example 3: Reading onboarding metadata from a namespace's labels**
