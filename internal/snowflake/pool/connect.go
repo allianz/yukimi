@@ -67,14 +67,15 @@ func defaultDial(dc dialConfig) (*sql.DB, error) {
 // driver rewrites Config.Host from its own notion of a raw Snowflake region
 // code before dialing, which would silently override the host this package
 // built specifically to get the PrivateLink suffix right.
-func buildSnowflakeConfig(account, host, user string, key *rsa.PrivateKey, role string) gosnowflake.Config {
+func buildSnowflakeConfig(account, host, user string, key *rsa.PrivateKey, role string, disableOCSPChecks bool) gosnowflake.Config {
 	return gosnowflake.Config{
-		Account:       account,
-		Host:          host,
-		User:          user,
-		PrivateKey:    key,
-		Role:          role,
-		Authenticator: gosnowflake.AuthTypeJwt,
+		Account:           account,
+		Host:              host,
+		User:              user,
+		PrivateKey:        key,
+		Role:              role,
+		Authenticator:     gosnowflake.AuthTypeJwt,
+		DisableOCSPChecks: disableOCSPChecks,
 	}
 }
 

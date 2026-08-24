@@ -731,6 +731,42 @@ func TestLoad_UsePrivateLink_ExplicitTrue(t *testing.T) {
 	}
 }
 
+// SC-022: Snowflake.DisableOCSPChecks defaults to false when omitted.
+func TestLoad_DisableOCSPChecks_Omitted(t *testing.T) {
+	cfg, err := Load(newConfigDir(t, wellFormedFixture))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Snowflake.DisableOCSPChecks {
+		t.Error("DisableOCSPChecks = true, want false (default)")
+	}
+}
+
+// SC-022: an explicit "disableOcspChecks: false" is honored.
+func TestLoad_DisableOCSPChecks_ExplicitFalse(t *testing.T) {
+	fixture := wellFormedFixtureWith("  disableOcspChecks: false\n")
+	cfg, err := Load(newConfigDir(t, fixture))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Snowflake.DisableOCSPChecks {
+		t.Error("DisableOCSPChecks = true, want false (explicit)")
+	}
+}
+
+// SC-022: an explicit "disableOcspChecks: true" is honored, proving the decoder
+// distinguishes omitted from explicitly-false/true.
+func TestLoad_DisableOCSPChecks_ExplicitTrue(t *testing.T) {
+	fixture := wellFormedFixtureWith("  disableOcspChecks: true\n")
+	cfg, err := Load(newConfigDir(t, fixture))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.Snowflake.DisableOCSPChecks {
+		t.Error("DisableOCSPChecks = false, want true (explicit)")
+	}
+}
+
 // SC-008: CloudProvider() returns "aws" for a file whose only cloud section is aws:.
 func TestLoad_CloudProvider_AWS(t *testing.T) {
 	cfg, err := Load(newConfigDir(t, wellFormedFixture))
@@ -1025,6 +1061,7 @@ func TestBaseConfig_ConcurrentReadOnlyUse(t *testing.T) {
 			_ = cfg.Snowflake.OrgAdminAccountLocator
 			_ = cfg.Snowflake.OrgAdminAccountRegion
 			_ = cfg.Snowflake.UsePrivateLink
+			_ = cfg.Snowflake.DisableOCSPChecks
 			_ = cfg.Snowflake.MaxConnectionPoolSize
 			_ = cfg.Snowflake.MaxIdleConnections
 			_ = cfg.Snowflake.ConnectionMaxLifetime

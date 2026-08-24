@@ -55,6 +55,7 @@ func TestIntegration_RunnerAgainstLiveSnowflake(t *testing.T) {
 		Snowflake: config.SnowflakeSettings{
 			Org:                    os.Getenv("SNOWFLAKE_ORG"),
 			UsePrivateLink:         os.Getenv("SNOWFLAKE_USE_PRIVATELINK") == "true",
+			DisableOCSPChecks:      os.Getenv("SNOWFLAKE_DISABLE_OCSP_CHECKS") == "true",
 			ConnectionProbeTimeout: 5 * time.Second,
 		},
 	}
