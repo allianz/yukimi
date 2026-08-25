@@ -63,3 +63,25 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
   schemas and behavior specifications this scope note was derived from.
 - **Shape reference**: `specs/001-error-and-logging.md` — the one spec written so far; follow its
   section skeleton (also given in `specs/000-template.md`).
+
+## Raised by the 009 clarification
+
+Recorded by `/yukimi.clarify 009`; see `specs/wip-009-account-pipeline.md` for the full reasoning.
+
+- **Updates are a blunt overwrite, not a diff.** Re-assert the full desired state on every `Apply`
+  (`CREATE OR REPLACE` plus re-bind), with no read-back of current state first (wip-009 D-011).
+  Drift is not detected or repaired until Organization Policies ship (wip-009 D-010, P-001).
+- **Nothing is pruned, and this spec must state the resulting gap explicitly.** When a tenant removes
+  a `serviceUsers` entry from `customNetworkRules`, its network rule and its policy are left in place
+  **still bound to that user**, so the user keeps ingress the CRD no longer grants (wip-009 P-002).
+  That is security-relevant, not untidiness: the tenant's own reading of their CRD stops describing
+  who can reach the account. Write it into Security Considerations and Edge Cases as a known,
+  accepted gap — not as an omission. The likely eventual fix is pruning by the `CUSTOM_` prefix via
+  `SHOW NETWORK RULES` and a set-difference, but it is not decided.
+- **A rejected entry never stops the run.** 012 returning `Rejected(userErr)` leaves the account on
+  its baseline and the remaining modules still execute (wip-009 D-008, design 3.8/3.9). Only the
+  structural module can abort.
+- **The guardrail verdict is resolved once by 018 and handed in through the pipeline context** — do
+  not re-run the merge here, because 013 reads the same verdict and the two must never disagree
+  (wip-009 D-014). This is why 008 must be written before 012 (wip-009 P-003).
+- 012 implements `Observe(ctx, mc) (bool, Outcome)` returning `true, Done()` today (wip-009 D-002).

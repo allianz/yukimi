@@ -46,3 +46,19 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
   schemas and behavior specifications this scope note was derived from.
 - **Shape reference**: `specs/001-error-and-logging.md` — the one spec written so far; follow its
   section skeleton (also given in `specs/000-template.md`).
+
+## Raised by the 009 clarification
+
+Recorded by `/yukimi.clarify 009`; see `specs/wip-009-account-pipeline.md` for the full reasoning.
+
+- **Same overwrite-and-orphan contract as 012.** Re-assert auth rules and policy bindings in full on
+  every `Apply`, no read-back, no diff (wip-009 D-011); drift is not detected or repaired until
+  Organization Policies ship (wip-009 D-010, P-001).
+- **Nothing is pruned.** A removed `customAuthRules` entry leaves its policy and its binding behind,
+  so the affected user keeps an authentication path the CRD no longer grants (wip-009 P-002). State it
+  in Security Considerations and Edge Cases as a known, accepted gap.
+- **A rejected exception never stops the run** (wip-009 D-008, design 3.8/3.9).
+- **013 validates exceptions against the same guardrail verdict instance 012 uses**, handed in through
+  the pipeline context and never recomputed here (wip-009 D-014) — the two modules must not be able to
+  reach different conclusions about one CRD. Blocked on 008 (wip-009 P-003).
+- 013 implements `Observe(ctx, mc) (bool, Outcome)` returning `true, Done()` today (wip-009 D-002).

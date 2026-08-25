@@ -76,3 +76,20 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
   schemas and behavior specifications this scope note was derived from.
 - **Shape reference**: `specs/001-error-and-logging.md` — the one spec written so far; follow its
   section skeleton (also given in `specs/000-template.md`).
+
+## Raised by the 009 clarification
+
+Recorded by `/yukimi.clarify 009`; see `specs/wip-009-account-pipeline.md` for the full reasoning.
+
+- **008 is deferred and written out of ascending order.** 009 depends on 008, but 008 will be written
+  after 009. The pipeline's shared context carries the merged guardrail verdict as a **documented
+  placeholder** whose type 008 owns (wip-009 D-015); the pipeline itself does nothing with the value
+  beyond carrying it, so 009 can be written and implemented against the placeholder.
+- **008 must land before 012.** 012 resolves the guardrail `"full"` rule and 013 validates auth
+  exceptions against the verdict, and neither can be written against a placeholder because the
+  verdict's *shape* determines their validation code (wip-009 P-003). 009, 010 and 011 are unaffected.
+- **The verdict is evaluated exactly once per reconcile**, by 018's validation phase, and handed to
+  every module through the pipeline context. No module re-runs the merge: 012 and 013 must read the
+  identical verdict instance, because two modules must never be able to disagree about one CRD
+  (wip-009 D-014). Design 008's API so a single merged result can be computed once and passed by
+  value/pointer, rather than as a helper each consumer calls for itself.

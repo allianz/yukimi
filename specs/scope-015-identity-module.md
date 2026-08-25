@@ -39,3 +39,31 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
   schemas and behavior specifications this scope note was derived from.
 - **Shape reference**: `specs/001-error-and-logging.md` — the one spec written so far; follow its
   section skeleton (also given in `specs/000-template.md`).
+
+## Raised by the 009 clarification
+
+Recorded by `/yukimi.clarify 009`; see `specs/wip-009-account-pipeline.md` for the full reasoning.
+
+- **015 owns emission of `IdentitySyncRequest`**, closing the question of who calls 014's emitter — no
+  spec claimed it before. On each `Apply`: emit the request if one is not already outstanding, stamp
+  its start time, then import whatever groups are already `Ready=True` (wip-009 D-018). Emission and
+  import live in one module because they share the same `Pending`/timeout accounting.
+- **015 may add its own explicit `status` field.** 009 adds no CRD field, but that binds the pipeline,
+  not the modules: an `identitySyncStartedAt` (or equivalently named) field on
+  `SnowflakeAccountStatus` is expected, since design 4.3's timeout cannot be computed without a start
+  timestamp and there is nowhere else to keep it (wip-009 D-012). Name it explicitly; do not introduce
+  a generic per-module state blob.
+- **Return `Pending(reason)` while a sync is outstanding, never `Failed`.** An outstanding sync is
+  expected, not a failure (design 4.3), and `Pending` exists precisely for it (wip-009 D-005).
+  `Pending` carries no requeue hint — the controller's poll interval governs timing, which is fine
+  because the sync horizon is tens of minutes (wip-009 D-017).
+- **`IdentitySynced=False` forces `Ready=False`.** 009 owns the condition type constant
+  (`account.TypeIdentitySynced`) and the static `Ready`-gating table; 015 attaches the condition to
+  its outcome and the pipeline applies the table (wip-009 D-016). Do not restate the gating rule here
+  and do not decide it per module.
+- **Re-application is driven by generation, so `Pending` self-retries.** 018 advances
+  `status.observedGeneration` only after a run in which every module returned `Done`, so an
+  outstanding sync keeps the resource out-of-date and keeps `Apply` running until the sync lands or
+  times out (wip-009 D-009). 015 needs no retry loop of its own.
+- Known consequence: nothing is emitted while the structural module keeps failing, because 015 runs
+  after it and any non-`Done` structural outcome aborts the run (wip-009 P-005).

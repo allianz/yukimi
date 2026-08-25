@@ -102,3 +102,28 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
   schemas and behavior specifications this scope note was derived from.
 - **Shape reference**: `specs/001-error-and-logging.md` — the one spec written so far; follow its
   section skeleton (also given in `specs/000-template.md`).
+
+## Raised by the 009 clarification
+
+Recorded by `/yukimi.clarify 009`; see `specs/wip-009-account-pipeline.md` for the full reasoning.
+
+- **010 is the pipeline's structural module**, passed in 009's constructor's dedicated first slot:
+  `account.New(structural Module, rest ...Module)` (wip-009 D-003). Registration happens in 018.
+- **`Observe` is mandatory and is the sole source of `ResourceExists`.** No other module contributes
+  to it (wip-009 D-002, D-003).
+- **Any non-`Done` outcome from 010 stops the run** — `Pending` and `Rejected` included, not just
+  `Failed` (wip-009 D-006). Consequence for this spec: do not use `Pending` for a state that is
+  actually fine to proceed from, because it will silently skip every other module. Modules that never
+  ran are absent from the result, and 018 leaves their conditions untouched (wip-009 D-007).
+- **010 must call `mc.SetLocator(locator)` immediately after `CREATE ACCOUNT` returns.** The shared
+  context late-binds the account locator: `PlatformDB(ctx)` resolves lazily on first use and
+  `pool.TenantAccount` needs the locator, so if 010 does not publish it, every later module loses its
+  connection on the first reconcile (wip-009 D-013). 018 seeds it from `status.accountLocator` when it
+  is already set, so a brand-new account is created *and* fully configured inside one `Create` call.
+- **Drift is not detected or repaired** anywhere in the pipeline until Snowflake ships Organization
+  Policies (wip-009 D-010, P-001). 010's `Observe` still answers existence — that is not drift — but
+  it must not read back or repair anything else (the `platform` user's key, the account's own
+  parameters). This spec should state deliberately what it does *not* check.
+- **010 must not emit `IdentitySyncRequest`** — that is 015's (wip-009 D-018).
+- 010 classifies its own errors and returns them inside the `Outcome`; it never calls
+  `logger.Handle`, which is 018's (wip-009 D-005).
