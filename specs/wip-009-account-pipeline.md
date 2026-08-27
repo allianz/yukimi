@@ -673,7 +673,7 @@ naming a not-yet-existing account is harmless — if so, emission could move ear
 - **017/018 (deletion)** — own the whole teardown path; 009 has no teardown half (D-019), including
   disposal of the RSA keypair in 003's store.
 - **018 (controller)** — calls `Observe` from `Observe` and `Apply` from both `Create` and `Update`
-  (D-001); builds the `*Context` (D-014); calls `logger.Handle` once per carried error (D-005);
+  (D-001); builds the `*ModuleContext` (D-014); calls `logger.Handle` once per carried error (D-005);
   advances `status.observedGeneration` only when `result.AllDone()` (D-009); leaves conditions owned by
   modules absent from `Result` untouched (D-007); must not blank an existing `status.accountUrl` on an
   aborted run; must resolve O-001. Registration order is 010 → 011 → 012 → 013 → 015 → 016, with 010
