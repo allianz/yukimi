@@ -26,8 +26,8 @@ controller methods have different jobs but only one set of modules exists?
 **Decision**: Two public entry points and no state carried between them:
 
 ```go
-func (p *Pipeline) Observe(ctx context.Context, mc *Context) (Observation, error)
-func (p *Pipeline) Apply(ctx context.Context, mc *Context) (Result, error)
+func (p *Pipeline) Observe(ctx context.Context, mc *ModuleContext) (Observation, error)
+func (p *Pipeline) Apply(ctx context.Context, mc *ModuleContext) (Result, error)
 ```
 
 `Observe` is read-back only and mutates nothing in Snowflake. `Apply` runs every registered module
@@ -56,8 +56,8 @@ idempotent `Apply` makes it optional".
 ```go
 type Module interface {
     Name() string
-    Observe(ctx context.Context, mc *Context) (inSync bool, outcome Outcome)
-    Apply(ctx context.Context, mc *Context) Outcome
+    Observe(ctx context.Context, mc *ModuleContext) (inSync bool, outcome Outcome)
+    Apply(ctx context.Context, mc *ModuleContext) Outcome
 }
 ```
 
@@ -367,10 +367,10 @@ module after 010 get a connection on the very first reconcile?
 **Decision**: The context owns the locator and hands out connections lazily:
 
 ```go
-func (c *Context) Locator() string
-func (c *Context) SetLocator(locator string)              // 010 only
-func (c *Context) OrgAdminDB(ctx context.Context) (*sql.DB, error)
-func (c *Context) PlatformDB(ctx context.Context) (*sql.DB, error)  // needs Locator()
+func (c *ModuleContext) Locator() string
+func (c *ModuleContext) SetLocator(locator string)              // 010 only
+func (c *ModuleContext) OrgAdminDB(ctx context.Context) (*sql.DB, error)
+func (c *ModuleContext) PlatformDB(ctx context.Context) (*sql.DB, error)  // needs Locator()
 ```
 
 018 seeds the locator from `status.accountLocator` when it is already set. 010 calls
@@ -392,7 +392,7 @@ rather than a phase of the pipeline.
 **Question**: The scope note lists the context's contents. What exactly is in it, who assembles it,
 and what may a module recompute?
 
-**Decision**: 018's validation phase builds one `*Context` per reconcile and hands the same value to
+**Decision**: 018's validation phase builds one `*ModuleContext` per reconcile and hands the same value to
 every module. It carries:
 
 - the `*SnowflakeAccount` CRD — **spec and status both**, since 015 reads its own timestamp field back
