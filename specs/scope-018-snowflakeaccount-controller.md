@@ -80,8 +80,8 @@ Recorded by `/yukimi.clarify 009`; see `specs/wip-009-account-pipeline.md` for t
   the region lookup. Guardrails (008) run earlier, in the validation phase, strictly before pipeline
   execution; the context carries nothing derived from them.
 - **Seed the account locator from `status.accountLocator`** when it is set. The context late-binds it;
-  the structural module publishes it via `SetLocator` after `CREATE ACCOUNT`, so a fresh account is
-  created and fully configured inside one `Create` (wip-009 D-013).
+  010 publishes it via `SetLocator` after `CREATE ACCOUNT`, so a fresh account is created and fully
+  configured inside one `Create` (wip-009 D-013).
 - **`ResourceUpToDate` is generation-based**:
   `exists && cr.Status.ObservedGeneration == cr.Generation && allModulesInSync`. Advance the counter
   with `cr.Status.SetObservedGeneration(cr.Generation)` **only** when `result.AllDone()` — so a spec
@@ -91,17 +91,17 @@ Recorded by `/yukimi.clarify 009`; see `specs/wip-009-account-pipeline.md` for t
   `crossplane-runtime/v2@v2.0.0` never writes it — so no CRD schema change is needed and the field is
   018's to own. Known cost: one persistently rejected module re-runs every module every poll interval
   (wip-009 P-004, accepted).
-- **Registration order is 010 → 011 → 012 → 013 → 015 → 016**, with 010 in `New`'s dedicated
-  structural slot: `account.New(accountModule, parameterModule, networkModule, authModule,
+- **Registration order is 010 → 011 → 012 → 013 → 015 → 016**, with 010 first in `New`'s ordered
+  module list: `account.New(accountModule, parameterModule, networkModule, authModule,
   identityModule, quotaModule)` (wip-009 D-003). Modules run sequentially in that order; there is no
   parallelism and no per-module timeout (wip-009 D-004).
 - **018 calls `logger.Handle` once per carried error** in the result — the pipeline classifies nothing
   and handles nothing itself (wip-009 D-005, D-019).
-- **Modules absent from `Result` must be left alone.** When the structural module returns any
-  non-`Done` outcome the run aborts, and unrun modules are absent from `Result.Outcomes` entirely —
-  not recorded as skipped or unknown. Leave any condition such a module owns exactly as the previous
-  reconcile left it: neither blanked nor set to `Unknown` (wip-009 D-006, D-007). "We did not look" is
-  not the same claim as "we looked and it is unknown".
+- **Modules absent from `Result` must be left alone.** When a module's outcome sets `Abort` (in
+  practice, only 010's does) the run stops, and unrun modules are absent from `Result.Outcomes`
+  entirely — not recorded as skipped or unknown. Leave any condition such a module owns exactly as the
+  previous reconcile left it: neither blanked nor set to `Unknown` (wip-009 D-006, D-007). "We did not
+  look" is not the same claim as "we looked and it is unknown".
 - **Do not blank an existing `status.accountUrl` (or `accountName`/`accountLocator`) on an aborted or
   partially-failed run** — same reasoning as above.
 - **Render conditions from the pipeline's aggregate.** 009 owns the `QuotaAvailable` /

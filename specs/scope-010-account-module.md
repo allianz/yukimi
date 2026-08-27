@@ -49,8 +49,9 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
   - **Which of 009's four outcomes this module returns**: `Done`, `Failed(systemErr)`, and
     `Rejected(userErr)` for an org-wide account-name collision — the one failure here a tenant can
     fix, by renaming the CRD. `CREATE ACCOUNT` is synchronous, so there is no `Pending`. The module
-    does **not** signal an abort: 009 dropped the abort flag from `Failed` and treats a failure of
-    this module as the pipeline's single structural stop, so returning the outcome is all it does.
+    **does** signal an abort explicitly: it calls `.Aborting()` on any outcome that is not `Done`
+    (wip-009 D-006), since it is registered first (wip-009 D-003) and every later module's first
+    statement depends on the account already existing.
   - Drift / `Observe`: does the account exist under its resolved name.
     - `Observe` is **mandatory** for this module rather than optional (009 leaves that open in
       general): the pipeline's abort decision hangs on its answer. The resolved name itself is
@@ -106,14 +107,15 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
 
 Recorded by `/yukimi.clarify 009`; see `specs/wip-009-account-pipeline.md` for the full reasoning.
 
-- **010 is the pipeline's structural module**, passed in 009's constructor's dedicated first slot:
-  `account.New(structural Module, rest ...Module)` (wip-009 D-003). Registration happens in 018.
+- **010 must be registered first in 009's ordered module list**: `account.New(modules ...Module)`,
+  with `modules[0] == account module` (wip-009 D-003). Registration happens in 018.
 - **`Observe` is mandatory and is the sole source of `ResourceExists`.** No other module contributes
   to it (wip-009 D-002, D-003).
-- **Any non-`Done` outcome from 010 stops the run** — `Pending` and `Rejected` included, not just
-  `Failed` (wip-009 D-006). Consequence for this spec: do not use `Pending` for a state that is
-  actually fine to proceed from, because it will silently skip every other module. Modules that never
-  ran are absent from the result, and 018 leaves their conditions untouched (wip-009 D-007).
+- **010 must call `.Aborting()` on any non-`Done` outcome, which stops the run** — `Pending` and
+  `Rejected` included, not just `Failed` (wip-009 D-006). Consequence for this spec: do not use
+  `Pending` for a state that is actually fine to proceed from, because it will silently skip every
+  other module. Modules that never ran are absent from the result, and 018 leaves their conditions
+  untouched (wip-009 D-007).
 - **010 must call `mc.SetLocator(locator)` immediately after `CREATE ACCOUNT` returns.** The shared
   context late-binds the account locator: `PlatformDB(ctx)` resolves lazily on first use and
   `pool.TenantAccount` needs the locator, so if 010 does not publish it, every later module loses its

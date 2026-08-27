@@ -82,6 +82,6 @@ Recorded by `/yukimi.clarify 009`; see `specs/wip-009-account-pipeline.md` for t
   accepted gap — not as an omission. The likely eventual fix is pruning by the `CUSTOM_` prefix via
   `SHOW NETWORK RULES` and a set-difference, but it is not decided.
 - **A rejected entry never stops the run.** 012 returning `Rejected(userErr)` leaves the account on
-  its baseline and the remaining modules still execute (wip-009 D-008, design 3.8/3.9). Only the
-  structural module can abort.
+  its baseline and the remaining modules still execute (wip-009 D-008, design 3.8/3.9). Only 010 ever
+  aborts the run; 012 never calls `.Aborting()` on its own outcome.
 - 012 implements `Observe(ctx, mc) (bool, Outcome)` returning `true, Done()` today (wip-009 D-002).

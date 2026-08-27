@@ -57,7 +57,8 @@ Recorded by `/yukimi.clarify 009`; see `specs/wip-009-account-pipeline.md` for t
 - **Nothing is pruned.** A removed `customAuthRules` entry leaves its policy and its binding behind,
   so the affected user keeps an authentication path the CRD no longer grants (wip-009 P-002). State it
   in Security Considerations and Edge Cases as a known, accepted gap.
-- **A rejected exception never stops the run** (wip-009 D-008, design 3.8/3.9).
+- **A rejected exception never stops the run.** Only 010 ever aborts the run; 013 never calls
+  `.Aborting()` on its own outcome (wip-009 D-008, design 3.8/3.9).
 - **013 has no guardrail dependency.** Design.md's guardrails section (3.3) does not constrain
   `customAuthRules`, so exceptions are validated only against 006's CRD schema and design 3.9's own
   rule (an entry naming neither method is a validation error).

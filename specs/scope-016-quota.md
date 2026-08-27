@@ -72,7 +72,7 @@ Recorded by `/yukimi.clarify 009`; see `specs/wip-009-account-pipeline.md` for t
 - **016 implements `Observe(ctx, mc) (bool, Outcome)` returning `true, Done()` today** — no read-back,
   and no repair of a detached or altered resource monitor, until Organization Policies ship (wip-009
   D-002, D-010, P-001). The `Apply` half re-asserts the monitor unconditionally (wip-009 D-011).
-- **A `Failed` or `Rejected` outcome from 016 does not stop the run**; only the structural module
-  aborts (wip-009 D-008).
+- **A `Failed` or `Rejected` outcome from 016 does not stop the run**; only 010 aborts (it calls
+  `.Aborting()`; 016 never does) (wip-009 D-008).
 - 016 reads `creditQuota` from the ops-set namespace labels via the shared context, already resolved
   by 018 (`tenant.CreditQuota`) — it does not re-read them (wip-009 D-014).

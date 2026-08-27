@@ -81,7 +81,7 @@ Recorded by `/yukimi.clarify 009`; see `specs/wip-009-account-pipeline.md` for t
   `Pending`/timeout accounting (wip-009 D-018). 014 owns the CRD contract and the emitter API; it must
   be callable from inside a pipeline module, i.e. from a module `Apply` holding only the shared
   context.
-- **Worth confirming with whoever fulfils the request**: because 015 runs after the structural module,
-  nothing is emitted while `CREATE ACCOUNT` keeps failing (wip-009 P-005). If a request naming a
+- **Worth confirming with whoever fulfils the request**: because 015 runs after 010, nothing is
+  emitted while `CREATE ACCOUNT` keeps failing (wip-009 P-005). If a request naming a
   not-yet-existing account is harmless to the fulfilling controller, emission could move earlier
   cheaply; if it is not, the current ordering is required rather than merely accepted.

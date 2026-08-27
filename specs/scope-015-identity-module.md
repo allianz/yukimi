@@ -65,5 +65,5 @@ Recorded by `/yukimi.clarify 009`; see `specs/wip-009-account-pipeline.md` for t
   `status.observedGeneration` only after a run in which every module returned `Done`, so an
   outstanding sync keeps the resource out-of-date and keeps `Apply` running until the sync lands or
   times out (wip-009 D-009). 015 needs no retry loop of its own.
-- Known consequence: nothing is emitted while the structural module keeps failing, because 015 runs
-  after it and any non-`Done` structural outcome aborts the run (wip-009 P-005).
+- Known consequence: nothing is emitted while 010 keeps failing, because 015 runs after it, and 010
+  aborts the run on any non-`Done` outcome (wip-009 P-005).
