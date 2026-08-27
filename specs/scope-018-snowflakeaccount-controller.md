@@ -75,10 +75,10 @@ Recorded by `/yukimi.clarify 009`; see `specs/wip-009-account-pipeline.md` for t
   following `Apply` (wip-009 D-001, D-011).
 - **018 builds one `*account.Context` per reconcile** and hands the same value to every module: the
   CRD (spec **and** status), the resolved account name (006), the region's `*backplane.Region` entry
-  already admitted against `Available` (007), the ops-set namespace labels (006), the merged guardrail
-  verdict (008, a placeholder for now), and a `*logger.Logger` with the operation already scoped
-  (wip-009 D-014, D-015). Resolve once, pass down — no module re-runs the guardrail merge or the
-  region lookup.
+  already admitted against `Available` (007), the ops-set namespace labels (006), and a
+  `*logger.Logger` with the operation already scoped. Resolve once, pass down — no module re-runs
+  the region lookup. Guardrails (008) run earlier, in the validation phase, strictly before pipeline
+  execution; the context carries nothing derived from them.
 - **Seed the account locator from `status.accountLocator`** when it is set. The context late-binds it;
   the structural module publishes it via `SetLocator` after `CREATE ACCOUNT`, so a fresh account is
   created and fully configured inside one `Create` (wip-009 D-013).

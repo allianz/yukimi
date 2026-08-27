@@ -58,7 +58,7 @@ Recorded by `/yukimi.clarify 009`; see `specs/wip-009-account-pipeline.md` for t
   so the affected user keeps an authentication path the CRD no longer grants (wip-009 P-002). State it
   in Security Considerations and Edge Cases as a known, accepted gap.
 - **A rejected exception never stops the run** (wip-009 D-008, design 3.8/3.9).
-- **013 validates exceptions against the same guardrail verdict instance 012 uses**, handed in through
-  the pipeline context and never recomputed here (wip-009 D-014) — the two modules must not be able to
-  reach different conclusions about one CRD. Blocked on 008 (wip-009 P-003).
+- **013 has no guardrail dependency.** Design.md's guardrails section (3.3) does not constrain
+  `customAuthRules`, so exceptions are validated only against 006's CRD schema and design 3.9's own
+  rule (an entry naming neither method is a validation error).
 - 013 implements `Observe(ctx, mc) (bool, Outcome)` returning `true, Done()` today (wip-009 D-002).

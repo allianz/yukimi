@@ -175,7 +175,7 @@ flowchart LR
 ```
 
 * **SnowflakeAccount CRD (3.1):** The customer commits a `SnowflakeAccount` CRD describing the account they want, kicking off the reconciliation flow.
-* **Guardrails (3.3):** OEs (Operating Entities) define the rules that gate and preset the customer's SnowflakeAccount CRD input before it is ever applied to Snowflake.
+* **Guardrails (3.3):** OEs (Operating Entities) define the rules that gate the customer's SnowflakeAccount CRD input before it is ever applied to Snowflake.
 * **Approved Exceptions (3.4):** ISO approves one-off exceptions to what the guardrails would otherwise reject — e.g. opening a public-internet IP range.
 * **Backplane Config (3.5):** Once Ops has provisioned a region's network via Terraform and closed out the follow-up setup tickets, they record the resulting IDs and IP ranges in the Backplane Config for the controller to use.
 * **Account Bootstrapping (3.6):** The controller creates the Snowflake account and binds it to the regional backplane infrastructure from the Backplane Config.
@@ -192,11 +192,10 @@ Guardrails act as a gatekeeper that validates and modifies a tenant's input befo
 
 **Scope:** Guardrails apply exclusively to `SnowflakeAccount` resources; other resource types handle their own separate validation.
 
-Each guardrail defines up to three components — `target` plus at least one of `constraints` or `preset`:
+Each guardrail defines two components: `target` and `constraints`:
 
   * **`target`:** Defines which accounts the guardrail applies to. An omitted field or a `"*"` wildcard means the rule matches all accounts. Each key is read from a fixed source: `environment` and `region` from the CRD's spec fields (3.1), `account` from `metadata.name` as the tenant wrote it (not the resolved Snowflake name — guardrails run before the account exists; see 3.12), and `department` from the namespace label set by ops during onboarding (2). Since `department` is ops-owned, tenants cannot move themselves out of their department's rules; `environment`, by contrast, the tenant declares themselves.
   * **`constraints`:** The strict rules the user's input must pass, such as correct naming conventions, maximum credit quotas, and network rules. If a submitted CRD violates these rules, the system immediately rejects it with a validation error.
-  * **`preset`:** Sets defaults. For CRD fields the user omitted (like `creditQuota`) the value is filled in and then enforced as usual. For account settings with no CRD field at all (like `timeZone`) it is only an initial value — unlike `constraints`, it is not enforced, and the tenant's account admin may change it afterwards in Snowflake.
 
 **On self-declared `environment`:** Because the tenant sets `environment` in their own CRD, they can choose `dev` and receive its looser constraints. The platform does not verify that a `dev` account is actually used for development — a team running production workloads in an account they declared as `dev` carries that risk themselves.
 
@@ -240,12 +239,6 @@ guardrails:
           public: "/32"         # account-wide, but single IPs only
           dbt-cloud: "full"     # VPCE-only: no CIDR to narrow
           "*": "off"            # any other connection → no account-wide additions
-
-    # preset: Defaults. creditQuota fills an omitted CRD field; timeZone has no CRD
-    # field and is only an initial value the account admin may later change.
-    preset:
-      timeZone: "UTC"
-      creditQuota: 100                      # modest default rather than zero-credit
 
   # 2️⃣ Dev Overrides — agn needs no CIDR (convenience)
   - target:

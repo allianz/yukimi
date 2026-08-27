@@ -18,17 +18,15 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
 ## Roadmap's original scope notes
 
 - Package: `internal/account/`. Covers the design 3.2 create flow and the 7.1 aggregation.
-  Depends on: 001, 004, 006, 007, 008.
+  Depends on: 001, 004, 006, 007.
 - Scope:
   - The **module contract**: an `Observe` half for drift detection and an `Apply` half. There is
     no teardown half — see the deletion bullet below.
   - The **shared context** handed to each module: the CRD, the resolved name (006), the region's
-    backplane entry (007), the merged guardrail result (008), the ops-set namespace labels (006's
-    `labels.go`), and the connection handles (004).
-  - **Resolve once, pass down.** Guardrails and the region entry are evaluated once, by 018's
-    validation phase, and handed to every module through the context. No module re-runs the
-    guardrail merge: 012 resolves the `"full"` rule and 013 validates auth exceptions against the
-    same verdict, and two modules must never be able to disagree about one CRD.
+    backplane entry (007), the ops-set namespace labels (006's `labels.go`), and the connection
+    handles (004).
+  - **Resolve once, pass down.** The region entry is looked up once, by 018's validation phase,
+    and handed to every module through the context, so no module re-runs the lookup.
   - **Modules execute their own SQL; the pipeline executes none and imports 005 nowhere.** 3.11's
     privilege step-down keeps org-admin to `CREATE ACCOUNT`/`DROP ACCOUNT` (010 alone) while every
     other module runs as the account's own `platform` user, so there is no single connection an

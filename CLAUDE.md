@@ -45,7 +45,7 @@ A `specs/wip-NNN-<slug>.md` alongside a scope note is a clarification record pro
 | `005-statement-execution.md` | `internal/snowflake/statement/` | SQL execution with safe rendering, error decoration and a materialized row type |
 | `006-snowflake-account-crd.md` | `apis/base/v1alpha1/` + `internal/tenant/` | SnowflakeAccount schema, account naming, namespace labels |
 | `007-backplane-config.md` | `internal/backplane/` | Per-region backplane inventory, parameters, allowlist |
-| `008-guardrails.md` | `internal/guardrails/` | Tenant input constraints, presets, approved exceptions |
+| `008-guardrails.md` | `internal/guardrails/` | Tenant input constraints, approved exceptions |
 | `009-account-pipeline.md` | `internal/account/` | Module interface, outcomes, condition aggregation |
 | `010-account-module.md` | `internal/account/modules/account/` | `CREATE ACCOUNT` and platform user bootstrapping |
 | `011-parameter-module.md` | `internal/account/modules/parameter/` | Global and regional account parameter enforcement |

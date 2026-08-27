@@ -18,8 +18,10 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
 ## Roadmap's original scope notes
 
 - Package: `internal/guardrails/`. Covers design 3.3 and 3.4. Depends on: 001, 002, 006.
-- Concept: a gatekeeper that validates and modifies tenant input **before** anything reaches
-  Snowflake. It applies exclusively to `SnowflakeAccount`; the other kinds validate themselves.
+- Concept: a gatekeeper that validates tenant input **before** anything reaches Snowflake. It
+  applies exclusively to `SnowflakeAccount`; the other kinds validate themselves. It is a pure
+  function over the CRD, the exceptions file, and the namespace's `department` label — no
+  Snowflake calls and no Backplane Config (007) lookups, ever.
 - Scope — a ConfigMap loader plus evaluation:
   - `target` selects which accounts a guardrail applies to; an omitted field or `"*"` matches all.
     Each key has a fixed source: `environment` and `region` come from CRD spec fields, `account`
@@ -30,10 +32,6 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
   - `constraints` — strict rules the input must pass: an `accountName` regex, a `groupNames` regex
     (applied to every group under `identityIntegration.groups`), `maxCreditQuota`,
     `allowedRegions[]`, and `connections`.
-  - `preset` — defaults, with two distinct behaviors that the spec must state explicitly. For CRD
-    fields the user omitted (for example `creditQuota`) the value is filled in **and then enforced as
-    usual**. For account settings with no corresponding CRD field (for example `timeZone`) it is only
-    an initial value: not enforced, and the tenant's account admin may change it later in Snowflake.
   - **Connection constraints**, scoped first by `serviceUsers` / `accountWide` (mirroring the CRD
     keys) and then by connection name, each carrying one of three rules: `"/NN"` means a CIDR is
     required but capped at that maximum width; `"full"` means the user may not specify a range and
@@ -77,19 +75,19 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
 - **Shape reference**: `specs/001-error-and-logging.md` — the one spec written so far; follow its
   section skeleton (also given in `specs/000-template.md`).
 
-## Raised by the 009 clarification
+## Relationship to the account pipeline (009)
 
-Recorded by `/yukimi.clarify 009`; see `specs/wip-009-account-pipeline.md` for the full reasoning.
+Guardrails run in full, once, inside 018's validation phase — strictly before the account pipeline
+(009) is ever invoked. Its only output is accept-or-reject (a validation error on rejection). No
+guardrail type or result crosses into `internal/account`'s pipeline context, and no module reads
+anything guardrail-owned:
 
-- **008 is deferred and written out of ascending order.** 009 depends on 008, but 008 will be written
-  after 009. The pipeline's shared context carries the merged guardrail verdict as a **documented
-  placeholder** whose type 008 owns (wip-009 D-015); the pipeline itself does nothing with the value
-  beyond carrying it, so 009 can be written and implemented against the placeholder.
-- **008 must land before 012.** 012 resolves the guardrail `"full"` rule and 013 validates auth
-  exceptions against the verdict, and neither can be written against a placeholder because the
-  verdict's *shape* determines their validation code (wip-009 P-003). 009, 010 and 011 are unaffected.
-- **The verdict is evaluated exactly once per reconcile**, by 018's validation phase, and handed to
-  every module through the pipeline context. No module re-runs the merge: 012 and 013 must read the
-  identical verdict instance, because two modules must never be able to disagree about one CRD
-  (wip-009 D-014). Design 008's API so a single merged result can be computed once and passed by
-  value/pointer, rather than as a helper each consumer calls for itself.
+- **012 (network module)** resolves the `"full"` connection rule purely from the CRD's own shape —
+  an entry with no `allowedIPs` only passed guardrails because `"full"` was the applicable rule, so
+  012 infers that case directly rather than consulting guardrails.
+- **013 (auth module)** has no guardrail dependency at all: design.md's guardrails section (3.3)
+  never constrains `customAuthRules`.
+
+Because of this, 008 has no dependency relationship with 009, 010–013, 015, or 016 in either
+direction, and can be written and implemented in normal ascending order — before 009, as its
+number implies.

@@ -20,10 +20,9 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
 - Package: `internal/account/modules/account/`. Covers design 3.6 step 1.
   Depends on: 003, 004, 005, 006, 007, 009. 007 is needed because `url.go` (006) has to know whether
   the region has PrivateLink enabled, and this module reads that off the region entry 009 puts in the
-  shared context rather than loading the backplane config itself. Two things the context also carries
-  are deliberately unused here: the guardrail verdict (008) — nothing this module emits is
-  guardrailed, the account `COMMENT` comes straight from the CRD's `description` — and the namespace
-  labels (006's `labels.go`). Re-checking the region's `available` gate is 018's validation phase, not
+  shared context rather than loading the backplane config itself. One thing the context also
+  carries is deliberately unused here: the namespace labels (006's `labels.go`). Re-checking the
+  region's `available` gate is 018's validation phase, not
   this module's. 005 stays on the list even though 009 dropped it: the pipeline executes no SQL, and
   this module executes its own.
 - Scope:
