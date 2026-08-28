@@ -10,7 +10,6 @@ This specification defines the `internal/secrets/` package that:
 - Defines the `Backend` interface — a string-valued keystore — and the per-method success and failure conditions every implementation owes its callers.
 - Constructs and validates the two secret paths design.md 3.11.1 requires: the tenant `platform` credential path and the org-admin credential path.
 - Generates RSA keypairs and defines the JSON shape credentials are stored in.
-- Provides `Rotate`, the key-replacement primitive a future credential-rotation feature will need.
 - Wraps any `Backend` in an in-memory, TTL-based, lazily-evicted cache.
 - Exports an in-memory fake `Backend`, with injectable per-method failures, for every other package to test against.
 - Classifies every failure this package can produce into a user or system error per 001's model.
@@ -20,7 +19,7 @@ This specification defines the `internal/secrets/` package that:
 - Constructing or selecting a `Backend`. That is `cmd/provider/main.go`'s job, switching on `BaseConfig.CloudProvider()` (002).
 - A singleton, package-level instance, or `Initialize`/`GetInstance`-style access pattern. Every function in this package takes a `Backend` explicitly; whoever wires `main.go` owns the only instance, wrapped once in the cache decorator this spec defines.
 - Reconciling a path whose stored credential disagrees with the world outside the store — a credential sitting at a path whose Snowflake account was never created, or a path inherited from a deleted account whose name a new one reuses. `Create` reports the collision and stops; this package resolves nothing on its own, because it cannot see the Snowflake account behind a path. Whoever owns that sequence owns the decision.
-- Pushing a rotated public key into Snowflake (`ALTER USER ... SET RSA_PUBLIC_KEY`). That needs the connection pool (004), which does not exist yet — `Rotate` only replaces what is stored, so a future rotation feature has a primitive to build on rather than a redesign to do.
+- Credential rotation itself, including pushing a rotated public key into Snowflake (`ALTER USER ... SET RSA_PUBLIC_KEY`). That is the connection pool's job (004) — it already holds an authenticated connection to push over, and calls `GenerateKeyPair`/`NewCredentials`/`MarshalCredentials` and `Backend.Update` directly rather than through a dedicated rotation primitive here.
 - A `HealthCheck` method.
 - Interpreting or validating `PrivateKey`/`PublicKey` contents beyond non-emptiness — whether a stored key actually parses as a valid RSA key is the first consumer's (004's) problem, not this package's.
 
@@ -161,19 +160,6 @@ func NewCredentials(username string) (*Credentials, error)
 func MarshalCredentials(c *Credentials) (string, error)
 func UnmarshalCredentials(data string, rotatedAt time.Time) (*Credentials, error)
 
-// Rotate generates a fresh keypair, with RotatedAt set to time.Now(), and
-// overwrites whatever is stored at path. Update semantics: it fails if
-// nothing is there yet — rotation only ever replaces a live credential,
-// never creates one. Pushing the new public key into Snowflake (ALTER USER
-// ... SET RSA_PUBLIC_KEY) is the caller's job once the connection pool (004)
-// exists; this function only makes key replacement available as a
-// primitive.
-//
-// Returns:
-//   - System error if nothing is stored at path, or if the store or key
-//     generation fails
-func Rotate(ctx context.Context, b Backend, path Path, username string) (*Credentials, error)
-
 // CachedBackend wraps a Backend with an in-memory, TTL-based, lazily-evicted
 // cache. It implements Backend itself, so callers depend on the interface,
 // never on this concrete type.
@@ -184,9 +170,8 @@ type CachedBackend struct { /* unexported */ }
 func NewCachedBackend(b Backend, ttl time.Duration) *CachedBackend
 
 // Invalidate clears path's cache entry without touching the underlying
-// Backend. Exposed for a future rotation feature that needs the cache cleared
-// before its own write becomes visible through normal Create/Update/Delete
-// invalidation.
+// Backend. Exposed for a caller that needs a path forced cold without going
+// through Create/Update/Delete.
 func (c *CachedBackend) Invalidate(path Path)
 
 // FakeBackend is an in-memory Backend for tests, exported (not a _test.go
@@ -222,8 +207,6 @@ internal/secrets/
 ├── path_test.go
 ├── credentials.go        # Credentials, GenerateKeyPair, NewCredentials, Marshal/UnmarshalCredentials
 ├── credentials_test.go
-├── rotate.go             # Rotate
-├── rotate_test.go
 ├── cache.go              # CachedBackend, NewCachedBackend, Invalidate
 ├── cache_test.go
 ├── fake.go               # FakeBackend — exported, not a _test.go file (004/010 import it directly)
@@ -250,7 +233,6 @@ internal/secrets/
 - **What happens if two controller replicas race to `Create` the same path?** - One wins outright. The other's `Create` fails on the now-occupied path, which surfaces as a system error with an incident ID (001) rather than being reconciled away, because from inside this package that loss is indistinguishable from any other occupied path.
 - **Why is a missing credential a system error rather than a user error, when path validation failures are user errors?** - A malformed path segment is fixed by editing the CRD or config value that produced it — that is what makes it a user error. A well-formed path with nothing stored at it is not fixable that way: there is no CRD field a tenant edits to make a credential appear, and for the org-admin path there is no owning CRD at all. Whether the missing credential reflects a controller sequencing bug (a `Get` running ahead of the `Create` that should have provisioned it), an unexpected deletion, or ops never having provisioned an org-admin credential, all three need operator visibility — an incident ID, not a silent Debug-level message — so a `Get` or `Update` that finds nothing stored is classified as a system error regardless of which path type it came from.
 - **What happens to a tenant secret after `DROP ACCOUNT` (017, not yet written)?** - `Backend.Delete` is called on the tenant path. What that leaves behind is the concrete backend's business — an outright removal on a store with no recovery concept, a value inside a recovery window on one that has. This package makes no guarantee about which, and nothing in it reads a deleted path afterwards.
-- **Can `Rotate` be called on a path nothing has ever been stored at?** - No. `Rotate` uses `Update` semantics; calling it on an empty path returns the store's not-found condition as a system error, since rotating a credential that was never provisioned is a caller bug, not a recoverable state.
 - **What if `UnmarshalCredentials` receives well-formed JSON but a truncated or otherwise invalid PEM private key?** - Out of scope for this package's validation. `UnmarshalCredentials` checks only that the three fields are non-empty strings; whether `PrivateKey` parses as an actual RSA key is the first consumer's (the connection pool, 004) problem to detect when it tries to use it.
 - **What happens if a cache entry expires while a request is in flight?** - Lazy eviction: the next `Get` after expiry is a plain cache miss. It fetches from the underlying `Backend` and repopulates the entry with a fresh TTL — there is no special-cased mid-flight behavior.
 - **What if the underlying store is unavailable while a cached entry is still within its TTL?** - `CachedBackend.Get` returns the cached value without calling the underlying `Backend` at all. Serving a value that could be up to `ttl` stale in exchange for availability during an outage is an accepted trade-off, not a defect.
@@ -281,7 +263,6 @@ internal/secrets/
 - **SC-008**: `GenerateKeyPair` produces a minimum 2048-bit RSA key: PKCS#8-encoded, PEM-wrapped private key; PKIX-encoded, single-line base64 public key with no PEM delimiters.
 - **SC-009**: `UnmarshalCredentials` returns an error when any of the three JSON fields is empty; on success it sets the returned `Credentials.RotatedAt` to its `rotatedAt` parameter, and `MarshalCredentials` never serializes `RotatedAt`.
 - **SC-010**: `Create` on an occupied path returns an error and leaves the stored value byte-for-byte unchanged.
-- **SC-011**: `Rotate` returns a system error when nothing exists yet at `path`, and otherwise overwrites the stored value with a freshly generated `Credentials` whose `RotatedAt` is set to `time.Now()`; `NewCredentials` does the same on its own returned value.
 - **SC-012**: `CachedBackend.Get` returns a cached value and its timestamp within `ttl` without invoking the underlying `Backend`.
 - **SC-013**: `CachedBackend` never caches a failed `Get` — two consecutive `Get`s on a path nothing is stored at both reach the underlying `Backend`.
 - **SC-014**: `CachedBackend` invalidates a path's cache entry on every successful `Create`/`Update`/`Delete` through it, and via an explicit `Invalidate` call.

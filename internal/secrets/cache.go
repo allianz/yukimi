@@ -93,9 +93,8 @@ func (c *CachedBackend) Delete(ctx context.Context, path Path) error {
 }
 
 // Invalidate clears path's cache entry without touching the underlying
-// Backend. Exposed for a future rotation feature that needs the cache cleared
-// before its own write becomes visible through normal Create/Update/Delete
-// invalidation.
+// Backend. Exposed for a caller that needs a path forced cold without going
+// through Create/Update/Delete.
 func (c *CachedBackend) Invalidate(path Path) {
 	c.mu.Lock()
 	delete(c.entries, path)

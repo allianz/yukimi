@@ -106,7 +106,9 @@ func (p *Pool) keyLock(key tenantKey) *sync.Mutex {
 // and DROP ACCOUNT (design.md 3.6, 6.3, 3.11 intro). The credential is read
 // from the org-admin secret path (003) and the connection is authenticated
 // with the ORGADMIN role. Opened on first call; every later call returns the
-// same *sql.DB.
+// same *sql.DB. Also rotates the credential inline once it is more than six
+// months old (see specs/004-connection-pooling.md, Key Concept: Inline
+// Rotation); a rotation failure never fails this call.
 //
 // Returns:
 //   - System error if the org-admin credential cannot be read, does not
@@ -115,18 +117,19 @@ func (p *Pool) OrgAdmin(ctx context.Context) (*sql.DB, error) {
 	p.orgAdminMu.Lock()
 	defer p.orgAdminMu.Unlock()
 
-	if p.orgAdminDB != nil {
-		return p.orgAdminDB, nil
-	}
-
 	sf := &p.cfg.Snowflake
 
-	hostname, err := host.Hostname(sf.OrgAdminAccountLocator, sf.OrgAdminAccountRegion, sf.UsePrivateLink)
+	path, err := secrets.NewOrgAdminPath(sf.Org, sf.OrgAdminAccount)
 	if err != nil {
 		return nil, err
 	}
 
-	path, err := secrets.NewOrgAdminPath(sf.Org, sf.OrgAdminAccount)
+	if p.orgAdminDB != nil {
+		p.maybeRotateLocked(ctx, p.orgAdminDB, path)
+		return p.orgAdminDB, nil
+	}
+
+	hostname, err := host.Hostname(sf.OrgAdminAccountLocator, sf.OrgAdminAccountRegion, sf.UsePrivateLink)
 	if err != nil {
 		return nil, err
 	}
@@ -153,6 +156,7 @@ func (p *Pool) OrgAdmin(ctx context.Context) (*sql.DB, error) {
 	applyPoolSettings(db, p.cfg)
 
 	p.orgAdminDB = db
+	p.maybeRotateLocked(ctx, db, path)
 	return db, nil
 }
 
@@ -161,7 +165,10 @@ func (p *Pool) OrgAdmin(ctx context.Context) (*sql.DB, error) {
 // 3.6, 3.11, Appendix B X1). Keyed by (org, namespace, accountName) — the
 // same tuple as the tenant secret path (003) — plus the account's current
 // locator and region: a mismatch against a cached entry's locator or region
-// closes it and dials again (see Key Concept: Self-Healing).
+// closes it and dials again (see Key Concept: Self-Healing). Also rotates
+// the credential inline once it is more than six months old (see
+// specs/004-connection-pooling.md, Key Concept: Inline Rotation); a
+// rotation failure never fails this call.
 //
 // Parameters:
 //   - namespace: metadata.namespace at the call site, never a spec field
@@ -181,9 +188,11 @@ func (p *Pool) OrgAdmin(ctx context.Context) (*sql.DB, error) {
 //     as a valid private key, or the connection cannot be established
 func (p *Pool) TenantAccount(ctx context.Context, namespace, accountName, locator, region string) (*sql.DB, error) {
 	key := tenantKey{namespace: namespace, accountName: accountName}
+	sf := &p.cfg.Snowflake
 
-	if db, ok := p.cachedTenant(key, locator, region); ok {
-		return db, nil
+	path, err := secrets.NewTenantPath(sf.Org, namespace, accountName)
+	if err != nil {
+		return nil, err
 	}
 
 	lock := p.keyLock(key)
@@ -191,17 +200,11 @@ func (p *Pool) TenantAccount(ctx context.Context, namespace, accountName, locato
 	defer lock.Unlock()
 
 	if db, ok := p.cachedTenant(key, locator, region); ok {
+		p.maybeRotateLocked(ctx, db, path)
 		return db, nil
 	}
 
-	sf := &p.cfg.Snowflake
-
 	hostname, err := host.Hostname(locator, region, sf.UsePrivateLink)
-	if err != nil {
-		return nil, err
-	}
-
-	path, err := secrets.NewTenantPath(sf.Org, namespace, accountName)
 	if err != nil {
 		return nil, err
 	}
@@ -236,6 +239,7 @@ func (p *Pool) TenantAccount(ctx context.Context, namespace, accountName, locato
 		_ = stale.db.Close()
 	}
 
+	p.maybeRotateLocked(ctx, db, path)
 	return db, nil
 }
 
