@@ -75,3 +75,108 @@ func TestIntegration_TenantAccount(t *testing.T) {
 		t.Fatalf("CURRENT_ROLE() = %q, want ACCOUNTADMIN", role)
 	}
 }
+
+// TestIntegration_TenantAccount_RotatesStaleCredential only runs via `make
+// test-integration` (skipped whenever tests run with -short). Unlike
+// TestIntegration_TenantAccount, this test does mutate the pre-existing
+// sample tenant credential .env describes: it configures an
+// effectively-zero Secrets.RotationInterval so the stored credential is
+// always "due", then confirms Pool pushes a fresh key into Snowflake's spare
+// key slot (Key Concept: Inline Rotation), records the new credential in the
+// secret store, and — the part that actually proves the new key is valid,
+// not just written — that a brand-new connection dialed after evicting the
+// cache authenticates with it. Rotation is designed to be repeatable and
+// self-healing (it only ever touches the slot not currently in use), so
+// running this test more than once against the same sample account is safe.
+func TestIntegration_TenantAccount_RotatesStaleCredential(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test — run via `make test-integration`")
+	}
+	_ = godotenv.Load("../../../.env")
+
+	backend, err := secretsaws.New(os.Getenv("AWS_REGION"), "")
+	if err != nil {
+		t.Fatalf("secretsaws.New: %v", err)
+	}
+
+	cfg := &config.BaseConfig{
+		Snowflake: config.SnowflakeSettings{
+			Org:                    os.Getenv("SNOWFLAKE_ORG"),
+			UsePrivateLink:         os.Getenv("SNOWFLAKE_USE_PRIVATELINK") == "true",
+			DisableOCSPChecks:      os.Getenv("SNOWFLAKE_DISABLE_OCSP_CHECKS") == "true",
+			ConnectionProbeTimeout: 5 * time.Second,
+		},
+		// A near-zero interval means any stored credential, however
+		// recently rotated, is immediately "due" — the short-interval
+		// trick suggested in specs/004-connection-pooling.md's own
+		// rotation design, exercised here for real instead of against a
+		// fake connection.
+		Secrets: config.SecretsSettings{RotationInterval: time.Nanosecond},
+	}
+	p := New(backend, cfg)
+	t.Cleanup(func() { _ = p.Close() })
+
+	namespace := os.Getenv("SAMPLE_CUSTOMER_NAMESPACE")
+	accountName := os.Getenv("SAMPLE_CUSTOMER_ACCOUNT")
+	locator := os.Getenv("SAMPLE_CUSTOMER_ACCOUNT_LOCATOR")
+	region := os.Getenv("SAMPLE_CUSTOMER_ACCOUNT_REGION")
+
+	path, err := secrets.NewTenantPath(cfg.Snowflake.Org, namespace, accountName)
+	if err != nil {
+		t.Fatalf("NewTenantPath: %v", err)
+	}
+
+	ctx := context.Background()
+
+	beforeRaw, beforeRotatedAt, err := backend.Get(ctx, path)
+	if err != nil {
+		t.Fatalf("reading the credential before rotation: %v", err)
+	}
+	before, err := secrets.UnmarshalCredentials(beforeRaw, beforeRotatedAt)
+	if err != nil {
+		t.Fatalf("UnmarshalCredentials (before): %v", err)
+	}
+
+	db, err := p.TenantAccount(ctx, namespace, accountName, locator, region)
+	if err != nil {
+		t.Fatalf("TenantAccount: %v", err)
+	}
+	var role string
+	if err := db.QueryRowContext(ctx, "SELECT CURRENT_ROLE()").Scan(&role); err != nil {
+		t.Fatalf("query failed on the connection rotation ran over: %v", err)
+	}
+	if role != "ACCOUNTADMIN" {
+		t.Fatalf("CURRENT_ROLE() = %q, want ACCOUNTADMIN", role)
+	}
+
+	afterRaw, afterRotatedAt, err := backend.Get(ctx, path)
+	if err != nil {
+		t.Fatalf("reading the credential after rotation: %v", err)
+	}
+	after, err := secrets.UnmarshalCredentials(afterRaw, afterRotatedAt)
+	if err != nil {
+		t.Fatalf("UnmarshalCredentials (after): %v", err)
+	}
+	if after.PrivateKey == before.PrivateKey {
+		t.Fatal("expected rotation to have replaced the stored private key, but it is unchanged")
+	}
+	if !afterRotatedAt.After(beforeRotatedAt) {
+		t.Fatalf("afterRotatedAt = %v, want it after beforeRotatedAt = %v", afterRotatedAt, beforeRotatedAt)
+	}
+
+	// The real test of rotation: evict the cached connection (dialed with
+	// the pre-rotation key) and dial fresh. If the new key Snowflake now
+	// holds were not actually valid, this authentication would fail.
+	p.EvictTenant(namespace, accountName)
+	freshDB, err := p.TenantAccount(ctx, namespace, accountName, locator, region)
+	if err != nil {
+		t.Fatalf("TenantAccount with the rotated credential: %v", err)
+	}
+	var roleAfterRotation string
+	if err := freshDB.QueryRowContext(ctx, "SELECT CURRENT_ROLE()").Scan(&roleAfterRotation); err != nil {
+		t.Fatalf("query failed on a connection dialed with the rotated key: %v", err)
+	}
+	if roleAfterRotation != "ACCOUNTADMIN" {
+		t.Fatalf("CURRENT_ROLE() = %q, want ACCOUNTADMIN", roleAfterRotation)
+	}
+}

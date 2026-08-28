@@ -148,7 +148,11 @@ func targetSlot(ctx context.Context, db *sql.DB, username, currentFingerprint st
 // quoteIdentifier double-quotes a Snowflake identifier, doubling any
 // embedded quote. Only ever called with usernames this package itself
 // generated or read from the secret store — never with tenant-controlled
-// input.
+// input. The stored username (e.g. "platform") is the value CREATE
+// ACCOUNT's unquoted ADMIN_NAME parameter produced (design.md 3.6), and
+// Snowflake folds an unquoted identifier to uppercase when it creates the
+// object; quoting the stored value verbatim would instead address it
+// case-sensitively and never match, so it is uppercased first.
 func quoteIdentifier(s string) string {
-	return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
+	return `"` + strings.ReplaceAll(strings.ToUpper(s), `"`, `""`) + `"`
 }
