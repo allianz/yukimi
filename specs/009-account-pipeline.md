@@ -29,8 +29,10 @@ happened into Kubernetes conditions without understanding what any individual mo
   sequences calls into them.
 - Classifying any error as a user or system error. Each module is the only code that knows why its
   own call failed, so each module classifies its own failures before reporting an `Outcome`.
-- Detecting or repairing drift. No module reads back current Snowflake state to compare against; see
-  Key Concept below.
+- Detecting or repairing drift. No module reads Snowflake state back to compare and repair it;
+  Organization Policies will make that state org-owned, so the work would not survive to be used. The
+  one read-back sanctioned here is a pruning module's enumeration of objects the CRD no longer lists —
+  it drops, it never repairs (see Key Concept below).
 - Any teardown. Deletion is a single `DROP ACCOUNT` plus finalizer release owned by 017/018 and
   cascades to every object inside the account — there is no per-module teardown to sequence.
 - Guardrail admission (008). That runs as its own gate inside the controller, entirely *before* the
@@ -68,18 +70,25 @@ This is what makes `Apply` safe to call from both `Create` and `Update` with no 
 between (see Public API) — a run interrupted halfway leaves a partially-applied account that the very
 next `Apply` finishes re-asserting in full, with nothing to resume and nothing to compensate for.
 
-Because nothing is diffed, nothing on the Snowflake side tells the pipeline *when* to bother calling
-`Apply` at all. That decision falls to the Kubernetes generation counter instead: the controller only
+Because no module diffs to decide whether to act, nothing on the Snowflake side tells the pipeline
+*when* to bother calling `Apply` at all. That decision falls to the Kubernetes generation counter instead: the controller only
 calls `Apply` when the CRD's generation has moved past what the last successful run recorded, and it
 only records a new generation once every module in that run reported `Done`. A `Pending` identity
 sync or a `Rejected` network-rule entry therefore keeps the pipeline re-applying on every reconcile
 until whatever is wrong clears — which is exactly the retry-until-timeout behavior §4.3 needs, and the
 "report until the tenant fixes it" behavior §3.8/§3.9 need.
 
-**Important**: nothing removed from a tenant's CRD is ever pruned from Snowflake. An entry deleted
-from `customNetworkRules` or `customAuthRules` leaves its rule, policy, and binding in place inside
-the account — overwrite handles changed and added entries, never removed ones. This is a known,
-inherited gap in every module that overwrites without pruning; this package does not close it.
+**Important**: what a tenant removes from the CRD is removed from Snowflake. Before re-asserting a
+tenant-supplied list, `Apply` enumerates the objects that module owns — `SHOW <objects> LIKE '<its own
+prefix>'` — and drops every one the CRD no longer lists, unbinding it first. Deleting an entry from
+`customNetworkRules` or `customAuthRules` moves the generation like any other edit, so the next
+`Apply` prunes it.
+
+Pruning compares names only, never definitions: an object the CRD lists but Snowflake has lost is
+simply recreated by the overwrite. Nothing here repairs drift — Organization Policies (design.md
+Appendix B) will make this state org-owned and tenant-unmodifiable, so a read-back built now would be
+dead code. Only 012 and 013 prune, each naming its own prefix; baseline rules, account parameters and
+identity bindings are untouched.
 
 ## Public API
 
@@ -93,8 +102,9 @@ type Module interface {
     // Observe is read-back only; it must mutate nothing in Snowflake.
     Observe(ctx context.Context, mc *ModuleContext) (inSync bool, outcome Outcome)
 
-    // Apply re-asserts this module's full desired state. It must be safe to call
-    // repeatedly with no other call in between (Key Concept: Overwrite Apply).
+    // Apply re-asserts this module's full desired state, pruning any object the
+    // CRD no longer lists. It must be safe to call repeatedly with no other call
+    // in between (Key Concept: Overwrite Apply).
     Apply(ctx context.Context, mc *ModuleContext) Outcome
 }
 
@@ -288,8 +298,8 @@ empty — every other failure surfacing from `OrgAdminDB`/`PlatformDB` is `inter
 - **A tenant leaves one module permanently `Rejected` — does the pipeline keep re-running forever?** -
   Yes, by design: `observedGeneration` never advances past a run with any non-`Done` outcome (Key
   Concept: Overwrite Apply), so every poll re-applies every module until the tenant corrects the CRD.
-  Each re-apply is a handful of idempotent statements, so this is accepted as cheap-but-unbounded
-  rather than solved here.
+  Each re-apply is a handful of idempotent statements plus one enumeration query per pruning module,
+  so this is accepted as cheap-but-unbounded rather than solved here.
 
 ## Dependencies
 
@@ -356,10 +366,11 @@ before the pipeline is ever invoked, so this package neither imports nor referen
   account module, the tenant's own account scope for every other module). A bug in sequencing can
   therefore reorder or skip a module's *work*, but cannot hand any module a broader connection than
   the one it explicitly asked for.
-- Overwrite-without-pruning (Key Concept: Overwrite Apply) is a security-relevant gap this package
-  inherits into every consuming module rather than one it introduces: a network rule or auth exception
-  removed from the CRD leaves live access behind. Each consuming module must state this gap in its own
-  spec; this package does not resolve it.
+- Pruning (Key Concept: Overwrite Apply) keeps the CRD an honest record of who can reach the account:
+  an entry the tenant deletes takes its rule, policy and binding with it, so no live access outlives
+  the text that granted it. What remains is access created outside a pruning module's prefix — a policy
+  the tenant names freely and binds by hand is neither enumerated nor dropped. Organization Policies
+  close that residue by making the state org-owned.
 
 ## References
 

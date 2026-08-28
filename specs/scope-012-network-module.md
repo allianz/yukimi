@@ -72,15 +72,23 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
 Recorded by `/yukimi.clarify 009`; see `specs/wip-009-account-pipeline.md` for the full reasoning.
 
 - **Updates are a blunt overwrite, not a diff.** Re-assert the full desired state on every `Apply`
-  (`CREATE OR REPLACE` plus re-bind), with no read-back of current state first (wip-009 D-011).
-  Drift is not detected or repaired until Organization Policies ship (wip-009 D-010, P-001).
-- **Nothing is pruned, and this spec must state the resulting gap explicitly.** When a tenant removes
-  a `serviceUsers` entry from `customNetworkRules`, its network rule and its policy are left in place
-  **still bound to that user**, so the user keeps ingress the CRD no longer grants (wip-009 P-002).
-  That is security-relevant, not untidiness: the tenant's own reading of their CRD stops describing
-  who can reach the account. Write it into Security Considerations and Edge Cases as a known,
-  accepted gap — not as an omission. The likely eventual fix is pruning by the `CUSTOM_` prefix via
-  `SHOW NETWORK RULES` and a set-difference, but it is not decided.
+  (`CREATE OR REPLACE` plus re-bind), with no read-back of existing entries to compare against.
+- **What the CRD no longer lists is pruned.** Enumerate by the `CUSTOM_` prefix
+  (`SHOW NETWORK RULES LIKE 'CUSTOM_%'`, plus the matching `SHOW NETWORK POLICIES` for the per-user
+  policies), set-difference against the CRD, then unbind before dropping:
+  `ALTER USER … UNSET NETWORK_POLICY` for a user policy, or
+  `ALTER NETWORK POLICY PLATFORM_ACCOUNT_POLICY REMOVE ALLOWED_NETWORK_RULE_LIST=(…)` for an
+  `accountWide` rule, and only then `DROP`. The order is the point — a rule dropped while a live policy
+  still references it is the failure mode to avoid.
+- **Removing a `serviceUsers` entry must leave that user no ingress the CRD does not grant.** Spell the
+  unbind-then-drop order out here: a policy left bound to a user is exactly the security gap pruning
+  closes.
+- **Baseline `regionalAllowlist` rules are never pruned** — they are named by bare connection, and only
+  the `CUSTOM_` prefix is enumerated. That prefix is now load-bearing for correctness, not just
+  readability.
+- **Drift is still neither detected nor repaired**, because Organization Policies will take away the
+  tenant's ability to create it: a `CUSTOM_` rule present in the CRD but missing in Snowflake is simply
+  recreated by the overwrite, and nothing outside the `CUSTOM_` prefix is inspected at all.
 - **A rejected entry never stops the run.** 012 returning `Rejected(userErr)` leaves the account on
   its baseline and the remaining modules still execute (wip-009 D-008, design 3.8/3.9). Only 010 ever
   aborts the run; 012 never calls `.Aborting()` on its own outcome.
