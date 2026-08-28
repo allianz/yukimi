@@ -73,7 +73,8 @@ type Pool struct {
 //   - cfg: BaseConfig (002) — Snowflake.Org, OrgAdminAccount,
 //     OrgAdminAccountLocator, OrgAdminAccountRegion, UsePrivateLink,
 //     DisableOCSPChecks, MaxConnectionPoolSize, MaxIdleConnections,
-//     ConnectionMaxLifetime, ConnectionMaxIdleTime, ConnectionProbeTimeout
+//     ConnectionMaxLifetime, ConnectionMaxIdleTime, ConnectionProbeTimeout,
+//     Secrets.RotationInterval
 //
 // Returns:
 //   - *Pool: never nil
@@ -106,9 +107,9 @@ func (p *Pool) keyLock(key tenantKey) *sync.Mutex {
 // and DROP ACCOUNT (design.md 3.6, 6.3, 3.11 intro). The credential is read
 // from the org-admin secret path (003) and the connection is authenticated
 // with the ORGADMIN role. Opened on first call; every later call returns the
-// same *sql.DB. Also rotates the credential inline once it is more than six
-// months old (see specs/004-connection-pooling.md, Key Concept: Inline
-// Rotation); a rotation failure never fails this call.
+// same *sql.DB. Also rotates the credential inline once it is older than
+// cfg.Secrets.RotationInterval (see specs/004-connection-pooling.md,
+// Key Concept: Inline Rotation); a rotation failure never fails this call.
 //
 // Returns:
 //   - System error if the org-admin credential cannot be read, does not
@@ -166,8 +167,8 @@ func (p *Pool) OrgAdmin(ctx context.Context) (*sql.DB, error) {
 // same tuple as the tenant secret path (003) — plus the account's current
 // locator and region: a mismatch against a cached entry's locator or region
 // closes it and dials again (see Key Concept: Self-Healing). Also rotates
-// the credential inline once it is more than six months old (see
-// specs/004-connection-pooling.md, Key Concept: Inline Rotation); a
+// the credential inline once it is older than cfg.Secrets.RotationInterval
+// (see specs/004-connection-pooling.md, Key Concept: Inline Rotation); a
 // rotation failure never fails this call.
 //
 // Parameters:

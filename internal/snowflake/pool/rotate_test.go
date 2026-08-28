@@ -125,14 +125,19 @@ func newRotateFakeDBWithQueryErr(queryErr error) *sql.DB {
 // --- credentialDue ------------------------------------------------------------
 
 func TestCredentialDue(t *testing.T) {
-	if credentialDue(time.Now()) {
+	const interval = 6 * 30 * 24 * time.Hour // ~six months, matching the old static threshold
+
+	if credentialDue(time.Now(), interval) {
 		t.Error("a freshly written credential must not be due")
 	}
-	if credentialDue(time.Now().AddDate(0, -5, 0)) {
-		t.Error("a credential younger than six months must not be due")
+	if credentialDue(time.Now().Add(-5*30*24*time.Hour), interval) {
+		t.Error("a credential younger than the interval must not be due")
 	}
-	if !credentialDue(time.Now().AddDate(0, -7, 0)) {
-		t.Error("a credential older than six months must be due")
+	if !credentialDue(time.Now().Add(-7*30*24*time.Hour), interval) {
+		t.Error("a credential older than the interval must be due")
+	}
+	if !credentialDue(time.Now().Add(-2*time.Second), time.Second) {
+		t.Error("a short interval must be honored, not just the default")
 	}
 }
 

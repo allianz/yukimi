@@ -27,22 +27,15 @@ import (
 	"github.com/allianz/yukimi/internal/secrets"
 )
 
-// rotationIntervalMonths is the static age, in calendar months, past which
-// OrgAdmin/TenantAccount rotate a stored credential inline.
-//
-// TODO: promote to a Base Config (002) setting once it needs to be
-// configurable; not done now because 002 has no other consumer for it yet.
-const rotationIntervalMonths = 6
-
 const (
 	rsaPublicKeySlot  = "RSA_PUBLIC_KEY"
 	rsaPublicKey2Slot = "RSA_PUBLIC_KEY_2"
 )
 
 // credentialDue reports whether a credential last written at rotatedAt is
-// older than the static rotation threshold.
-func credentialDue(rotatedAt time.Time) bool {
-	return rotatedAt.Before(time.Now().AddDate(0, -rotationIntervalMonths, 0))
+// older than interval (config.BaseConfig's Secrets.RotationInterval, 002).
+func credentialDue(rotatedAt time.Time, interval time.Duration) bool {
+	return rotatedAt.Before(time.Now().Add(-interval))
 }
 
 // maybeRotateLocked checks the stored credential's age at path and, if it is
@@ -56,7 +49,7 @@ func credentialDue(rotatedAt time.Time) bool {
 // the same check simply runs again on the next call.
 func (p *Pool) maybeRotateLocked(ctx context.Context, db *sql.DB, path secrets.Path) {
 	raw, rotatedAt, err := p.backend.Get(ctx, path)
-	if err != nil || !credentialDue(rotatedAt) {
+	if err != nil || !credentialDue(rotatedAt, p.cfg.Secrets.RotationInterval) {
 		return
 	}
 	creds, err := secrets.UnmarshalCredentials(raw, rotatedAt)
