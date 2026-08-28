@@ -65,11 +65,11 @@ func TestCreate_OccupiedPathRejectedAndValuePreserved(t *testing.T) {
 		t.Fatal("expected the second create to fail on an occupied path")
 	}
 
-	value, err := b.Get(ctx, path)
+	value, rotatedAt, err := b.Get(ctx, path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	stored, err := UnmarshalCredentials(value)
+	stored, err := UnmarshalCredentials(value, rotatedAt)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -116,11 +116,11 @@ func TestRotate_OverwritesExisting(t *testing.T) {
 		t.Error("expected a freshly generated keypair, not the original")
 	}
 
-	value, err := b.Get(ctx, path)
+	value, rotatedAt, err := b.Get(ctx, path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	stored, err := UnmarshalCredentials(value)
+	stored, err := UnmarshalCredentials(value, rotatedAt)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -148,11 +148,11 @@ func TestRotate_KeyGenerationFailureLeavesStoreUntouched(t *testing.T) {
 	}
 
 	b.OnUpdate = nil
-	value, err := b.Get(ctx, path)
+	value, rotatedAt, err := b.Get(ctx, path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	stored, err := UnmarshalCredentials(value)
+	stored, err := UnmarshalCredentials(value, rotatedAt)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

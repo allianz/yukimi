@@ -90,12 +90,15 @@ func TestIntegration_CreateGetDelete(t *testing.T) {
 	if err := backend.Create(ctx, path, "integration-test-value"); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	got, err := backend.Get(ctx, path)
+	got, gotAt, err := backend.Get(ctx, path)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
 	if got != "integration-test-value" {
 		t.Fatalf("Get returned %q", got)
+	}
+	if gotAt.IsZero() {
+		t.Fatal("Get returned a zero CreatedDate")
 	}
 	if err := backend.Delete(ctx, path); err != nil {
 		t.Fatalf("Delete: %v", err)

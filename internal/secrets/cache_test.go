@@ -34,17 +34,48 @@ func TestCachedBackend_Get_ServesWithinTTL(t *testing.T) {
 	}
 
 	c := NewCachedBackend(fake, time.Hour)
-	if _, err := c.Get(ctx, path); err != nil {
+	if _, _, err := c.Get(ctx, path); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	fake.OnGet = func(Path) error { return errStoreFault }
-	got, err := c.Get(ctx, path)
+	got, _, err := c.Get(ctx, path)
 	if err != nil {
 		t.Fatalf("expected cached Get to succeed without touching the backend, got %v", err)
 	}
 	if got != "value" {
 		t.Errorf("got %q, want %q", got, "value")
+	}
+}
+
+// SC-012: a cache hit replays the exact (value, modifiedAt) pair first
+// fetched from the backend; a miss re-fetches a fresh pair.
+func TestCachedBackend_Get_ReplaysModifiedAtOnHit(t *testing.T) {
+	ctx := t.Context()
+	fake := NewFakeBackend()
+	path := testPath(t)
+	fixed := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	fake.Clock = func() time.Time { return fixed }
+	if err := fake.Create(ctx, path, "value"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	c := NewCachedBackend(fake, time.Hour)
+	_, modifiedAt, err := c.Get(ctx, path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !modifiedAt.Equal(fixed) {
+		t.Fatalf("got %v, want %v", modifiedAt, fixed)
+	}
+
+	fake.Clock = func() time.Time { return fixed.Add(time.Hour) } // must not affect a cache hit
+	_, cachedModifiedAt, err := c.Get(ctx, path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cachedModifiedAt.Equal(fixed) {
+		t.Errorf("cache hit modifiedAt = %v, want unchanged %v", cachedModifiedAt, fixed)
 	}
 }
 
@@ -59,10 +90,10 @@ func TestCachedBackend_Get_NeverCachesAFailedGet(t *testing.T) {
 	fake.OnGet = func(Path) error { calls++; return nil }
 
 	c := NewCachedBackend(fake, time.Hour)
-	if _, err := c.Get(ctx, path); err == nil {
+	if _, _, err := c.Get(ctx, path); err == nil {
 		t.Fatal("expected the first Get to fail on a path nothing is stored at")
 	}
-	if _, err := c.Get(ctx, path); err == nil {
+	if _, _, err := c.Get(ctx, path); err == nil {
 		t.Fatal("expected the second Get to fail on a path nothing is stored at")
 	}
 	if calls != 2 {
@@ -83,13 +114,13 @@ func TestCachedBackend_InvalidatesOnWrite(t *testing.T) {
 	t.Run("Create", func(t *testing.T) {
 		ctx := t.Context()
 		c, _, path := newCache(t)
-		if _, err := c.Get(ctx, path); err == nil {
+		if _, _, err := c.Get(ctx, path); err == nil {
 			t.Fatal("expected a Get on a path nothing is stored at to fail")
 		}
 		if err := c.Create(ctx, path, "value"); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		got, err := c.Get(ctx, path)
+		got, _, err := c.Get(ctx, path)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -104,13 +135,13 @@ func TestCachedBackend_InvalidatesOnWrite(t *testing.T) {
 		if err := c.Create(ctx, path, "original"); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if _, err := c.Get(ctx, path); err != nil { // warm the cache
+		if _, _, err := c.Get(ctx, path); err != nil { // warm the cache
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if err := c.Update(ctx, path, "updated"); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		got, err := c.Get(ctx, path)
+		got, _, err := c.Get(ctx, path)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -125,13 +156,13 @@ func TestCachedBackend_InvalidatesOnWrite(t *testing.T) {
 		if err := c.Create(ctx, path, "value"); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if _, err := c.Get(ctx, path); err != nil { // warm the cache
+		if _, _, err := c.Get(ctx, path); err != nil { // warm the cache
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if err := c.Delete(ctx, path); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if _, err := c.Get(ctx, path); err == nil {
+		if _, _, err := c.Get(ctx, path); err == nil {
 			t.Error("expected a Get after Delete to fail (stale cached value must not have been served)")
 		}
 	})
@@ -148,7 +179,7 @@ func TestInvalidate_ClearsEntryDirectly(t *testing.T) {
 	}
 
 	c := NewCachedBackend(fake, time.Hour)
-	if _, err := c.Get(ctx, path); err != nil { // warm the cache
+	if _, _, err := c.Get(ctx, path); err != nil { // warm the cache
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -162,7 +193,7 @@ func TestInvalidate_ClearsEntryDirectly(t *testing.T) {
 	if err := fake.Update(ctx, path, "updated"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	got, err := c.Get(ctx, path)
+	got, _, err := c.Get(ctx, path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -185,11 +216,11 @@ func TestCachedBackend_Get_ExpiredEntryRefetches(t *testing.T) {
 	fake.OnGet = func(Path) error { calls++; return nil }
 
 	c := NewCachedBackend(fake, 5*time.Millisecond)
-	if _, err := c.Get(ctx, path); err != nil {
+	if _, _, err := c.Get(ctx, path); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	time.Sleep(30 * time.Millisecond)
-	if _, err := c.Get(ctx, path); err != nil {
+	if _, _, err := c.Get(ctx, path); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if calls != 2 {
@@ -209,12 +240,12 @@ func TestCachedBackend_Get_ServesStaleDuringOutage(t *testing.T) {
 	}
 
 	c := NewCachedBackend(fake, time.Hour)
-	if _, err := c.Get(ctx, path); err != nil {
+	if _, _, err := c.Get(ctx, path); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	fake.OnGet = func(Path) error { return errStoreFault }
-	got, err := c.Get(ctx, path)
+	got, _, err := c.Get(ctx, path)
 	if err != nil {
 		t.Fatalf("expected cached value to be served during outage, got %v", err)
 	}
@@ -272,9 +303,9 @@ func TestCachedBackend_ConcurrentAccess_NoRace(t *testing.T) {
 			defer wg.Done()
 			p := paths[i%len(paths)]
 			_ = c.Create(ctx, p, "value")
-			_, _ = c.Get(ctx, p)
+			_, _, _ = c.Get(ctx, p)
 			c.Invalidate(p)
-			_, _ = c.Get(ctx, p)
+			_, _, _ = c.Get(ctx, p)
 		}(i)
 	}
 	wg.Wait()

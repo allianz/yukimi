@@ -20,7 +20,14 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 )
+
+// fakeEntry holds a stored value and the time it was last recorded.
+type fakeEntry struct {
+	value      string
+	modifiedAt time.Time
+}
 
 // FakeBackend is an in-memory Backend for tests, exported (not a _test.go
 // file) so 004, 010, and every other consumer can depend on it without a real
@@ -34,8 +41,13 @@ type FakeBackend struct {
 	OnUpdate func(path Path) error
 	OnDelete func(path Path) error
 
+	// Clock returns the time recorded against a path on Create and Update,
+	// and returned by Get. Defaults to time.Now; tests override it for a
+	// deterministic RotatedAt.
+	Clock func() time.Time
+
 	mu      sync.Mutex
-	entries map[Path]string
+	entries map[Path]fakeEntry
 }
 
 var _ Backend = (*FakeBackend)(nil)
@@ -44,24 +56,24 @@ var _ Backend = (*FakeBackend)(nil)
 // outright and is idempotent, so a Create on a deleted path succeeds and a Get
 // on one fails exactly as it would on a path nothing was ever stored at.
 func NewFakeBackend() *FakeBackend {
-	return &FakeBackend{entries: make(map[Path]string)}
+	return &FakeBackend{entries: make(map[Path]fakeEntry), Clock: time.Now}
 }
 
-func (f *FakeBackend) Get(_ context.Context, path Path) (string, error) {
+func (f *FakeBackend) Get(_ context.Context, path Path) (string, time.Time, error) {
 	if f.OnGet != nil {
 		if err := f.OnGet(path); err != nil {
-			return "", err
+			return "", time.Time{}, err
 		}
 	}
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	value, ok := f.entries[path]
+	entry, ok := f.entries[path]
 	if !ok {
-		return "", fmt.Errorf("secrets: no secret stored at %s", path)
+		return "", time.Time{}, fmt.Errorf("secrets: no secret stored at %s", path)
 	}
-	return value, nil
+	return entry.value, entry.modifiedAt, nil
 }
 
 func (f *FakeBackend) Create(_ context.Context, path Path, value string) error {
@@ -77,7 +89,7 @@ func (f *FakeBackend) Create(_ context.Context, path Path, value string) error {
 	if _, ok := f.entries[path]; ok {
 		return fmt.Errorf("secrets: a secret already exists at %s", path)
 	}
-	f.entries[path] = value
+	f.entries[path] = fakeEntry{value: value, modifiedAt: f.Clock()}
 	return nil
 }
 
@@ -94,7 +106,7 @@ func (f *FakeBackend) Update(_ context.Context, path Path, value string) error {
 	if _, ok := f.entries[path]; !ok {
 		return fmt.Errorf("secrets: no secret stored at %s", path)
 	}
-	f.entries[path] = value
+	f.entries[path] = fakeEntry{value: value, modifiedAt: f.Clock()}
 	return nil
 }
 
