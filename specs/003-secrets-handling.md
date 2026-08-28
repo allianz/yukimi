@@ -28,6 +28,8 @@ This specification defines the `internal/secrets/` package that:
 
 A `Backend` sees paths and strings, nothing else. It never parses a credential, never caches, and never logs — it returns a plainly worded error naming the path it failed on and lets 001 do the reporting. Its four methods are the narrow set any keystore can implement: `Get`, `Create` (fails if something is already there), `Update` (fails if nothing is there), and `Delete`. `Create` and `Update` are deliberately separate rather than one upsert: 010 must store a keypair *before* `CREATE ACCOUNT` runs, and "create, failing if occupied" has to be atomic in the store, or a retried request could silently overwrite the key a live account already authenticates with. That atomicity is the only thing standing between a retried request and a lost credential, so it is a property of the store, never something this package emulates with a read-then-write.
 
+`Get` also returns the time the backend wrote the value currently stored at `path` — creation time if never overwritten, modification time otherwise. That timestamp is a property of the store, not of the credential: a `Backend` still never parses what it stores, so the time travels back as a second return value rather than a field inside the value itself.
+
 The stored value is an opaque string. This package owns the *credential's* encoding — the JSON shape below — while each backend owns how that string is persisted: AWS Secrets Manager holds it as a `SecretString`, another store may choose differently. A backend never inspects the string it is handed.
 
 Paths are an opaque type, `Path`, constructible only through `NewTenantPath` and `NewOrgAdminPath`. A `Backend` implementation never receives a raw string, so an unvalidated path can never reach a store:
@@ -43,11 +45,13 @@ A stored credential is a `Credentials` value with exactly three fields — `User
 
 `Username` is a caller-supplied string, not a literal this package owns — design.md 3.6's `ADMIN_NAME='platform'` is domain knowledge belonging to the account module (010), not to a generic secrets package. `NewCredentials(username string)` generates a keypair and fills in the username the caller passes.
 
+A fourth field, `RotatedAt`, is not part of that JSON shape at all: it lives only in memory, set by `UnmarshalCredentials` from a caller-supplied timestamp — ordinarily whatever `Get` just returned alongside the value — so the store never has to hold a second, independently-drifting copy of the same fact. `NewCredentials` and `Rotate` set it to the local `time.Now()` at the moment their own write succeeds, since neither reads the value back from the store to learn its authoritative timestamp.
+
 ## Key Concept: The Cache Is a `Backend`, Not a Manager
 
 The in-memory TTL cache is a decorator over any `Backend`, not a separate manager type and not package-level state: `NewCachedBackend(b Backend, ttl time.Duration)` returns a value that itself implements `Backend`. Whichever concrete backend `main.go` constructs gets wrapped exactly once, and every backend — 003.a today, any future 003.b — inherits identical freshness semantics with no cache logic of its own to get wrong or forget.
 
-`Get` serves a cached value within `ttl` without touching the underlying backend; a miss (including an expired entry — lazy eviction, no background goroutine) fetches from the backend and populates the cache. A failed `Get` is never cached — not a missing path, not a store fault, not anything else — so a `Create` that lands moments after a failed lookup is never masked by a stale negative result. `Create`, `Update`, and `Delete` write through to the underlying backend and, on success, invalidate that path's cache entry rather than pre-populating it with the new value — the next `Get` simply misses and re-fetches. This is deliberately the cache racing toward "cold," never toward "stale." `Invalidate(path Path)` is also exposed directly, for a future rotation feature that needs a path's cache entry cleared before its write becomes externally visible through the store.
+`Get` serves a cached value, along with the timestamp it was fetched with, within `ttl` without touching the underlying backend; a miss (including an expired entry — lazy eviction, no background goroutine) fetches both from the backend and populates the cache. A failed `Get` is never cached — not a missing path, not a store fault, not anything else — so a `Create` that lands moments after a failed lookup is never masked by a stale negative result. `Create`, `Update`, and `Delete` write through to the underlying backend and, on success, invalidate that path's cache entry rather than pre-populating it with the new value — the next `Get` simply misses and re-fetches. This is deliberately the cache racing toward "cold," never toward "stale." `Invalidate(path Path)` is also exposed directly, for a future rotation feature that needs a path's cache entry cleared before its write becomes externally visible through the store.
 
 ## Public API
 
@@ -67,9 +71,12 @@ import (
 // error's identity. How the value string is persisted is each implementation's
 // own choice.
 type Backend interface {
-    // Get returns the value stored at path. It fails if nothing is stored
-    // there, and it fails if the store cannot be read.
-    Get(ctx context.Context, path Path) (string, error)
+    // Get returns the value stored at path, along with the time the backend
+    // last wrote that value — creation time if never overwritten,
+    // modification time otherwise. It fails if nothing is stored there, and
+    // it fails if the store cannot be read; the returned time is the zero
+    // value on error.
+    Get(ctx context.Context, path Path) (string, time.Time, error)
 
     // Create stores value at path. It fails if path is already occupied, and
     // leaves the occupying value untouched when it does — this is the
@@ -124,9 +131,10 @@ func (p Path) String() string
 // Credentials is the JSON shape a credential is stored in: exactly three
 // fields, deliberately no account field (the path already identifies it).
 type Credentials struct {
-    Username   string `json:"username"`
-    PublicKey  string `json:"public_key"`  // PKIX, single-line base64, no PEM delimiters
-    PrivateKey string `json:"private_key"` // PKCS#8, PEM-wrapped
+    Username   string    `json:"username"`
+    PublicKey  string    `json:"public_key"`  // PKIX, single-line base64, no PEM delimiters
+    PrivateKey string    `json:"private_key"` // PKCS#8, PEM-wrapped
+    RotatedAt  time.Time `json:"-"`           // when this value was last written to the store; never persisted
 }
 
 // GenerateKeyPair generates a fresh RSA keypair: crypto/rand, minimum 2048-bit,
@@ -139,23 +147,27 @@ type Credentials struct {
 func GenerateKeyPair() (publicKeyB64, privateKeyPEM string, err error)
 
 // NewCredentials generates a fresh keypair via GenerateKeyPair and returns it
-// as a Credentials value for username. username is caller-supplied domain
-// knowledge (e.g. design.md 3.6's "platform") — this package owns no literal.
+// as a Credentials value for username, with RotatedAt set to time.Now().
+// username is caller-supplied domain knowledge (e.g. design.md 3.6's
+// "platform") — this package owns no literal.
 func NewCredentials(username string) (*Credentials, error)
 
 // MarshalCredentials and UnmarshalCredentials convert between Credentials and
-// the JSON string a Backend stores. UnmarshalCredentials rejects a value with
-// any of the three fields empty; it does not otherwise validate PublicKey or
-// PrivateKey contents.
+// the JSON string a Backend stores. MarshalCredentials never serializes
+// RotatedAt. UnmarshalCredentials rejects a value with any of the three JSON
+// fields empty; it does not otherwise validate PublicKey or PrivateKey
+// contents. It sets the returned Credentials' RotatedAt to rotatedAt —
+// ordinarily whatever Backend.Get just returned alongside value.
 func MarshalCredentials(c *Credentials) (string, error)
-func UnmarshalCredentials(data string) (*Credentials, error)
+func UnmarshalCredentials(data string, rotatedAt time.Time) (*Credentials, error)
 
-// Rotate generates a fresh keypair and overwrites whatever is stored at path.
-// Update semantics: it fails if nothing is there yet — rotation only ever
-// replaces a live credential, never creates one. Pushing the new public key
-// into Snowflake (ALTER USER ... SET RSA_PUBLIC_KEY) is the caller's job once
-// the connection pool (004) exists; this function only makes key replacement
-// available as a primitive.
+// Rotate generates a fresh keypair, with RotatedAt set to time.Now(), and
+// overwrites whatever is stored at path. Update semantics: it fails if
+// nothing is there yet — rotation only ever replaces a live credential,
+// never creates one. Pushing the new public key into Snowflake (ALTER USER
+// ... SET RSA_PUBLIC_KEY) is the caller's job once the connection pool (004)
+// exists; this function only makes key replacement available as a
+// primitive.
 //
 // Returns:
 //   - System error if nothing is stored at path, or if the store or key
@@ -188,6 +200,11 @@ type FakeBackend struct {
     OnCreate func(path Path) error
     OnUpdate func(path Path) error
     OnDelete func(path Path) error
+
+    // Clock returns the time recorded against a path on Create and Update,
+    // and returned by Get. Defaults to time.Now; tests override it for a
+    // deterministic RotatedAt.
+    Clock func() time.Time
 }
 
 // NewFakeBackend returns an empty FakeBackend. Delete removes the entry
@@ -237,6 +254,8 @@ internal/secrets/
 - **What if `UnmarshalCredentials` receives well-formed JSON but a truncated or otherwise invalid PEM private key?** - Out of scope for this package's validation. `UnmarshalCredentials` checks only that the three fields are non-empty strings; whether `PrivateKey` parses as an actual RSA key is the first consumer's (the connection pool, 004) problem to detect when it tries to use it.
 - **What happens if a cache entry expires while a request is in flight?** - Lazy eviction: the next `Get` after expiry is a plain cache miss. It fetches from the underlying `Backend` and repopulates the entry with a fresh TTL — there is no special-cased mid-flight behavior.
 - **What if the underlying store is unavailable while a cached entry is still within its TTL?** - `CachedBackend.Get` returns the cached value without calling the underlying `Backend` at all. Serving a value that could be up to `ttl` stale in exchange for availability during an outage is an accepted trade-off, not a defect.
+- **What does a failed `Get` return as a timestamp?** - The zero `time.Time`, alongside the error. No caller reads it, since the error already signals that the value (and its timestamp) were not obtained.
+- **Where does `FakeBackend` get a timestamp from, since it has no real store to ask?** - Its own `Clock` field, defaulting to `time.Now`: `Create` and `Update` record `Clock()` against the path, and `Get` returns whatever was last recorded. Tests that need a fixed `RotatedAt` set `Clock` to a function returning a constant time.
 
 ## Dependencies
 
@@ -253,21 +272,22 @@ internal/secrets/
 ## Success Criteria
 
 - **SC-001**: `Backend` has exactly four methods — `Get`, `Create`, `Update`, `Delete` — each taking a `Path`.
-- **SC-002**: Every `Backend` method carries its value as a `string` — `Get` returns one, `Create` and `Update` accept one; no method exposes `[]byte`.
+- **SC-002**: Every `Backend` method carries its value as a `string` — `Get` returns one (alongside a `time.Time`), `Create` and `Update` accept one; no method exposes `[]byte`.
 - **SC-003**: `NewTenantPath` constructs `snowflake/tenant/<org>/<namespace>/<accountName>/platform-credentials` from exactly those four inputs.
 - **SC-004**: `NewOrgAdminPath` constructs `snowflake/org/<org>/<orgAdminAccount>/org-admin-credentials`.
 - **SC-005**: Both path constructors return a user error for any empty segment, or one containing `/`, `.`, `..`, or a character outside `[A-Za-z0-9_-]`.
 - **SC-006**: `Path` values are constructible only via `NewTenantPath`/`NewOrgAdminPath` — no exported field or function accepts an arbitrary unvalidated string as a `Path`.
 - **SC-007**: `Credentials` marshals to JSON with exactly the fields `username`, `public_key`, `private_key` — no `account` field.
 - **SC-008**: `GenerateKeyPair` produces a minimum 2048-bit RSA key: PKCS#8-encoded, PEM-wrapped private key; PKIX-encoded, single-line base64 public key with no PEM delimiters.
-- **SC-009**: `UnmarshalCredentials` returns an error when any of the three JSON fields is empty.
+- **SC-009**: `UnmarshalCredentials` returns an error when any of the three JSON fields is empty; on success it sets the returned `Credentials.RotatedAt` to its `rotatedAt` parameter, and `MarshalCredentials` never serializes `RotatedAt`.
 - **SC-010**: `Create` on an occupied path returns an error and leaves the stored value byte-for-byte unchanged.
-- **SC-011**: `Rotate` returns a system error when nothing exists yet at `path`, and otherwise overwrites the stored value with a freshly generated `Credentials`.
-- **SC-012**: `CachedBackend.Get` returns a cached value within `ttl` without invoking the underlying `Backend`.
+- **SC-011**: `Rotate` returns a system error when nothing exists yet at `path`, and otherwise overwrites the stored value with a freshly generated `Credentials` whose `RotatedAt` is set to `time.Now()`; `NewCredentials` does the same on its own returned value.
+- **SC-012**: `CachedBackend.Get` returns a cached value and its timestamp within `ttl` without invoking the underlying `Backend`.
 - **SC-013**: `CachedBackend` never caches a failed `Get` — two consecutive `Get`s on a path nothing is stored at both reach the underlying `Backend`.
 - **SC-014**: `CachedBackend` invalidates a path's cache entry on every successful `Create`/`Update`/`Delete` through it, and via an explicit `Invalidate` call.
 - **SC-015**: `FakeBackend`'s per-method hooks, when set and returning a non-nil error, short-circuit before any state mutation.
 - **SC-016**: `FakeBackend.Delete` removes the entry outright and is idempotent: a following `Create` on that path succeeds, a following `Get` fails as it would on a path nothing was ever stored at, and a `Delete` of an absent path is not an error.
+- **SC-016a**: `FakeBackend.Get` returns the timestamp its `Create` or `Update` most recently recorded for that path, taken from `Clock` (default `time.Now`).
 - **SC-017**: `internal/secrets` exposes no `Initialize`/`GetInstance`-style singleton and holds no package-level mutable state.
 - **SC-018**: `internal/secrets` imports `internal/errors` and no other package internal to this repository.
 - **SC-019**: `internal/secrets` exposes no `HealthCheck` method.
@@ -349,12 +369,12 @@ func (p *Pool) orgAdminCredentials(ctx context.Context, cached secrets.Backend, 
         return nil, err
     }
 
-    value, err := cached.Get(ctx, path) // cache hit avoids a store round-trip on every reconcile
+    value, rotatedAt, err := cached.Get(ctx, path) // cache hit avoids a store round-trip on every reconcile
     if err != nil {
         return nil, err // nothing stored here means ops has not provisioned this credential yet
     }
 
-    return secrets.UnmarshalCredentials(value)
+    return secrets.UnmarshalCredentials(value, rotatedAt)
 }
 
 // Wired once at startup:
@@ -394,7 +414,7 @@ func TestCreate_RejectsAnOccupiedPath(t *testing.T) {
         t.Fatal("expected the second create to fail on an occupied path")
     }
 
-    stored, err := backend.Get(ctx, path)
+    stored, _, err := backend.Get(ctx, path)
     if err != nil {
         t.Fatalf("get: %v", err)
     }
@@ -414,7 +434,7 @@ func TestGet_PropagatesInjectedFailure(t *testing.T) {
     backend.OnGet = func(path secrets.Path) error { return errStoreUnavailable }
 
     path, _ := secrets.NewOrgAdminPath("my_org", "my_org_admin_account")
-    if _, err := backend.Get(ctx, path); !errors.Is(err, errStoreUnavailable) {
+    if _, _, err := backend.Get(ctx, path); !errors.Is(err, errStoreUnavailable) {
         t.Fatalf("got %v, want errStoreUnavailable", err)
     }
 }
