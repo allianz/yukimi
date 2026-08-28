@@ -65,3 +65,23 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
   schemas and behavior specifications this scope note was derived from.
 - **Shape reference**: `specs/001-error-and-logging.md` — the one spec written so far; follow its
   section skeleton (also given in `specs/000-template.md`).
+
+## Raised by the 009 clarification
+
+Recorded by `/yukimi.clarify 009`; see `specs/wip-009-account-pipeline.md` for the full reasoning.
+
+- **`BaseConfig` has no `identitySync` section yet, and 014 must add it.** Design 4.3 places
+  `identitySync.enabled` and `identitySync.timeout` in `baseConfig.yaml`, but 002 was written without
+  them — `internal/config/config.go`'s `BaseConfig` carries only `Snowflake`, `AWS` and `Secrets`
+  (verified against the code). 014 therefore extends `internal/config`, which no earlier spec does
+  (wip-009 O-002). Decide and state what an absent or disabled `identitySync` means for the
+  `IdentitySynced` condition.
+- **015 calls the emitter, not 018.** Emission of `IdentitySyncRequest` is owned by the identity
+  module, because emission and import are two halves of one concern and share the same
+  `Pending`/timeout accounting (wip-009 D-018). 014 owns the CRD contract and the emitter API; it must
+  be callable from inside a pipeline module, i.e. from a module `Apply` holding only the shared
+  context.
+- **Worth confirming with whoever fulfils the request**: because 015 runs after 010, nothing is
+  emitted while `CREATE ACCOUNT` keeps failing (wip-009 P-005). If a request naming a
+  not-yet-existing account is harmless to the fulfilling controller, emission could move earlier
+  cheaply; if it is not, the current ordering is required rather than merely accepted.

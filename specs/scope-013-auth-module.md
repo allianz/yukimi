@@ -46,3 +46,23 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
   schemas and behavior specifications this scope note was derived from.
 - **Shape reference**: `specs/001-error-and-logging.md` — the one spec written so far; follow its
   section skeleton (also given in `specs/000-template.md`).
+
+## Raised by the 009 clarification
+
+Recorded by `/yukimi.clarify 009`; see `specs/wip-009-account-pipeline.md` for the full reasoning.
+
+- **Same overwrite-and-prune contract as 012.** Re-assert auth policies and bindings in full on every
+  `Apply`, with no read-back of existing entries to compare against, **and drop the per-user policies
+  the CRD no longer lists** — unbinding the user first, so the account falls back to the SSO-only
+  baseline rather than keeping an authentication path the CRD no longer grants.
+- **Name the enumeration handle.** Pruning works by listing the policies this module owns and taking a
+  set difference, so 013 needs its own naming convention for per-user auth policies (012 has `CUSTOM_`;
+  013 has nothing sketched yet). Deciding that name is part of writing 013.
+- **Drift is still neither detected nor repaired**, because Organization Policies will take away the
+  tenant's ability to create it.
+- **A rejected exception never stops the run.** Only 010 ever aborts the run; 013 never calls
+  `.Aborting()` on its own outcome (wip-009 D-008, design 3.8/3.9).
+- **013 has no guardrail dependency.** Design.md's guardrails section (3.3) does not constrain
+  `customAuthRules`, so exceptions are validated only against 006's CRD schema and design 3.9's own
+  rule (an entry naming neither method is a validation error).
+- 013 implements `Observe(ctx, mc) (bool, Outcome)` returning `true, Done()` today (wip-009 D-002).

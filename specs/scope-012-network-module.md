@@ -46,7 +46,10 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
     tight explicit ingress paths rather than the broad ranges intended for humans.
   - **Strict containment**: every `allowedIPs` entry must fall entirely within that connection's
     `maxCidrs`, using 007's helper. Anything broader or outside is rejected.
-  - Resolve the guardrail `"full"` rule into concrete CIDRs here (deferred from 008).
+  - An entry under `customNetworkRules` with no `allowedIPs` means guardrails' `"full"` rule
+    already validated it (008) — resolve it here by inheriting the connection's full range from
+    the region's inventory (007). This module does not consult guardrails directly: it infers the
+    case purely from the CRD's shape, since guardrails would have rejected the CRD otherwise.
   - **No duplicate connections**: a connection may appear at most once per user list and at most once
     under `accountWide`. A repeat within a scope is a validation error, not a silent merge.
   - Rejection behavior: because custom rules run **after** bootstrapping, the account already exists.
@@ -63,3 +66,30 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
   schemas and behavior specifications this scope note was derived from.
 - **Shape reference**: `specs/001-error-and-logging.md` — the one spec written so far; follow its
   section skeleton (also given in `specs/000-template.md`).
+
+## Raised by the 009 clarification
+
+Recorded by `/yukimi.clarify 009`; see `specs/wip-009-account-pipeline.md` for the full reasoning.
+
+- **Updates are a blunt overwrite, not a diff.** Re-assert the full desired state on every `Apply`
+  (`CREATE OR REPLACE` plus re-bind), with no read-back of existing entries to compare against.
+- **What the CRD no longer lists is pruned.** Enumerate by the `CUSTOM_` prefix
+  (`SHOW NETWORK RULES LIKE 'CUSTOM_%'`, plus the matching `SHOW NETWORK POLICIES` for the per-user
+  policies), set-difference against the CRD, then unbind before dropping:
+  `ALTER USER … UNSET NETWORK_POLICY` for a user policy, or
+  `ALTER NETWORK POLICY PLATFORM_ACCOUNT_POLICY REMOVE ALLOWED_NETWORK_RULE_LIST=(…)` for an
+  `accountWide` rule, and only then `DROP`. The order is the point — a rule dropped while a live policy
+  still references it is the failure mode to avoid.
+- **Removing a `serviceUsers` entry must leave that user no ingress the CRD does not grant.** Spell the
+  unbind-then-drop order out here: a policy left bound to a user is exactly the security gap pruning
+  closes.
+- **Baseline `regionalAllowlist` rules are never pruned** — they are named by bare connection, and only
+  the `CUSTOM_` prefix is enumerated. That prefix is now load-bearing for correctness, not just
+  readability.
+- **Drift is still neither detected nor repaired**, because Organization Policies will take away the
+  tenant's ability to create it: a `CUSTOM_` rule present in the CRD but missing in Snowflake is simply
+  recreated by the overwrite, and nothing outside the `CUSTOM_` prefix is inspected at all.
+- **A rejected entry never stops the run.** 012 returning `Rejected(userErr)` leaves the account on
+  its baseline and the remaining modules still execute (wip-009 D-008, design 3.8/3.9). Only 010 ever
+  aborts the run; 012 never calls `.Aborting()` on its own outcome.
+- 012 implements `Observe(ctx, mc) (bool, Outcome)` returning `true, Done()` today (wip-009 D-002).

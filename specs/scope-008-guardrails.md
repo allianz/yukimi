@@ -18,8 +18,10 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
 ## Roadmap's original scope notes
 
 - Package: `internal/guardrails/`. Covers design 3.3 and 3.4. Depends on: 001, 002, 006.
-- Concept: a gatekeeper that validates and modifies tenant input **before** anything reaches
-  Snowflake. It applies exclusively to `SnowflakeAccount`; the other kinds validate themselves.
+- Concept: a gatekeeper that validates tenant input **before** anything reaches Snowflake. It
+  applies exclusively to `SnowflakeAccount`; the other kinds validate themselves. It is a pure
+  function over the CRD, the exceptions file, and the namespace's `department` label — no
+  Snowflake calls and no Backplane Config (007) lookups, ever.
 - Scope — a ConfigMap loader plus evaluation:
   - `target` selects which accounts a guardrail applies to; an omitted field or `"*"` matches all.
     Each key has a fixed source: `environment` and `region` come from CRD spec fields, `account`
@@ -30,10 +32,6 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
   - `constraints` — strict rules the input must pass: an `accountName` regex, a `groupNames` regex
     (applied to every group under `identityIntegration.groups`), `maxCreditQuota`,
     `allowedRegions[]`, and `connections`.
-  - `preset` — defaults, with two distinct behaviors that the spec must state explicitly. For CRD
-    fields the user omitted (for example `creditQuota`) the value is filled in **and then enforced as
-    usual**. For account settings with no corresponding CRD field (for example `timeZone`) it is only
-    an initial value: not enforced, and the tenant's account admin may change it later in Snowflake.
   - **Connection constraints**, scoped first by `serviceUsers` / `accountWide` (mirroring the CRD
     keys) and then by connection name, each carrying one of three rules: `"/NN"` means a CIDR is
     required but capped at that maximum width; `"full"` means the user may not specify a range and
@@ -76,3 +74,20 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
   schemas and behavior specifications this scope note was derived from.
 - **Shape reference**: `specs/001-error-and-logging.md` — the one spec written so far; follow its
   section skeleton (also given in `specs/000-template.md`).
+
+## Relationship to the account pipeline (009)
+
+Guardrails run in full, once, inside 018's validation phase — strictly before the account pipeline
+(009) is ever invoked. Its only output is accept-or-reject (a validation error on rejection). No
+guardrail type or result crosses into `internal/account`'s pipeline context, and no module reads
+anything guardrail-owned:
+
+- **012 (network module)** resolves the `"full"` connection rule purely from the CRD's own shape —
+  an entry with no `allowedIPs` only passed guardrails because `"full"` was the applicable rule, so
+  012 infers that case directly rather than consulting guardrails.
+- **013 (auth module)** has no guardrail dependency at all: design.md's guardrails section (3.3)
+  never constrains `customAuthRules`.
+
+Because of this, 008 has no dependency relationship with 009, 010–013, 015, or 016 in either
+direction, and can be written and implemented in normal ascending order — before 009, as its
+number implies.

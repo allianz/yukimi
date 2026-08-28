@@ -33,6 +33,8 @@ Each `internal/` package has a corresponding numbered spec in `specs/`. The spec
 
 Specs are written and implemented one at a time in ascending order, so **a spec may depend only on specs numbered strictly below it** — the code for higher-numbered specs does not exist yet. For a spec not yet written, `specs/scope-NNN-<slug>.md` (if present) gives a starting-point idea of its intended scope — see that file's own header for how much weight to give it; `specs/design.md` is always the authoritative source. A letter suffix (`003.a`) marks a pluggable backend implementing an interface owned by its parent number; it sorts between `003` and `004`, and only `cmd/provider/main.go` may depend on one.
 
+A `specs/wip-NNN-<slug>.md` alongside a scope note is a clarification record produced by `/yukimi.clarify NNN`: decisions, problem areas and open questions settling what `specs/design.md` intentionally leaves out. It is not product design and not a spec — read it together with the scope note when writing `NNN-<slug>.md`, then delete both.
+
 | Spec | Package | Description |
 |------|---------|-------------|
 | `001-error-and-logging.md` | `internal/errors/` + `internal/logger/` | User vs system errors, incident IDs, operation-scoped logging |
@@ -43,7 +45,7 @@ Specs are written and implemented one at a time in ascending order, so **a spec 
 | `005-statement-execution.md` | `internal/snowflake/statement/` | SQL execution with safe rendering, error decoration and a materialized row type |
 | `006-snowflake-account-crd.md` | `apis/base/v1alpha1/` + `internal/tenant/` | SnowflakeAccount schema, account naming, namespace labels |
 | `007-backplane-config.md` | `internal/backplane/` | Per-region backplane inventory, parameters, allowlist |
-| `008-guardrails.md` | `internal/guardrails/` | Tenant input constraints, presets, approved exceptions |
+| `008-guardrails.md` | `internal/guardrails/` | Tenant input constraints, approved exceptions |
 | `009-account-pipeline.md` | `internal/account/` | Module interface, outcomes, condition aggregation |
 | `010-account-module.md` | `internal/account/modules/account/` | `CREATE ACCOUNT` and platform user bootstrapping |
 | `011-parameter-module.md` | `internal/account/modules/parameter/` | Global and regional account parameter enforcement |

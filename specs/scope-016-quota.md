@@ -55,3 +55,24 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
   schemas and behavior specifications this scope note was derived from.
 - **Shape reference**: `specs/001-error-and-logging.md` — the one spec written so far; follow its
   section skeleton (also given in `specs/000-template.md`).
+
+## Raised by the 009 clarification
+
+Recorded by `/yukimi.clarify 009`; see `specs/wip-009-account-pipeline.md` for the full reasoning.
+
+- **`QuotaAvailable=False` must leave `Ready=True`** (design 3.10 — the account is fully intact and
+  warehouses are merely suspended). 009 owns the condition type constant
+  (`account.TypeQuotaAvailable`) and the static table recording which conditions gate `Ready`; 016
+  attaches its condition to its outcome and the pipeline applies the table (wip-009 D-016). Do not
+  restate or re-decide the gating rule in this spec — it is deliberately kept in one place, next to
+  `IdentitySynced`, which *does* gate `Ready`.
+- **`Admit()` stays outside the module contract** and is called separately by 018's validation phase;
+  only `Observe`/`Apply` participate in the pipeline (wip-009 D-019, and the scope note's own rule
+  that the contract must be implementable from outside `modules/`).
+- **016 implements `Observe(ctx, mc) (bool, Outcome)` returning `true, Done()` today** — no read-back,
+  and no repair of a detached or altered resource monitor, until Organization Policies ship (wip-009
+  D-002, D-010, P-001). The `Apply` half re-asserts the monitor unconditionally (wip-009 D-011).
+- **A `Failed` or `Rejected` outcome from 016 does not stop the run**; only 010 aborts (it calls
+  `.Aborting()`; 016 never does) (wip-009 D-008).
+- 016 reads `creditQuota` from the ops-set namespace labels via the shared context, already resolved
+  by 018 (`tenant.CreditQuota`) — it does not re-read them (wip-009 D-014).
