@@ -116,3 +116,20 @@ Recorded by `/yukimi.clarify 009`; see `specs/wip-009-account-pipeline.md` for t
   drift or status message from `Observe`.
 - **Drift is not detected or repaired** anywhere in this pipeline until Snowflake ships Organization
   Policies (wip-009 D-010, P-001). 018 should not add a repair path of its own.
+
+## Raised by the 010 clarification
+
+Recorded by `/yukimi.clarify 010`; see `specs/wip-010-account-module.md` (D/O sections) for the full
+reasoning.
+
+- **018 computes `status.accountName`/`accountUrl`/`accountLocator` itself, directly from the
+  `ModuleContext` it already built and holds** — `mc.ResolvedAccountName()`, `mc.Locator()` (readable
+  after `Apply` returns), and `tenant.AccountURL(locator, region, usePrivateLink)` with
+  `usePrivateLink` from `BaseConfig.Snowflake.UsePrivateLink` (002) — never from a payload on any
+  module's `Outcome` (wip-010 D-003, D-004). 010's `Outcome` carries no string result; there is nothing
+  to read off it for this purpose.
+- **Persist `status.accountLocator` as promptly as possible after `Apply` returns.** Every reconcile
+  between a successful `CREATE ACCOUNT` and that persist is a crash window: 010 has no way to recover
+  from it automatically (wip-010 D-005, D-007), so a crash there permanently strands the resource in
+  `Failed(systemErr)` until an operator manually reconciles `status.accountLocator` or the underlying
+  Snowflake account. Minimizing how long that window stays open is 018's responsibility, not 010's.
