@@ -35,7 +35,7 @@ type tenantArgs struct {
 	namespace, accountName, locator, region string
 }
 
-// fakeDBPool implements dbPool for tests, recording call counts/args and
+// fakeDBPool implements DBPool for tests, recording call counts/args and
 // optionally failing the test if either method is invoked at all.
 type fakeDBPool struct {
 	t           *testing.T
@@ -81,7 +81,7 @@ func newTestCR(name, namespace, region, locator string) *v1alpha1.SnowflakeAccou
 func TestPlatformDB_EmptyLocator_NeverCallsPool(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "")
 	fake := &fakeDBPool{t: t, forbidCalls: true}
-	mc := newModuleContext(cr, "ns", nil, nil, nil, fake)
+	mc := NewModuleContext(cr, "ns", nil, nil, nil, fake)
 
 	_, err := mc.PlatformDB(context.Background())
 	if err == nil {
@@ -103,7 +103,7 @@ func TestPlatformDB_MemoizesSameDB(t *testing.T) {
 
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345")
 	fake := &fakeDBPool{tenantDB: db1}
-	mc := newModuleContext(cr, "ns", nil, nil, nil, fake)
+	mc := NewModuleContext(cr, "ns", nil, nil, nil, fake)
 
 	got1, err := mc.PlatformDB(context.Background())
 	if err != nil {
@@ -133,7 +133,7 @@ func TestPlatformDB_PassesRawCRNameNotResolvedName(t *testing.T) {
 
 	cr := newTestCR("analytics-team", "finance", "aws-eu-central-1", "AB12345")
 	fake := &fakeDBPool{tenantDB: db1}
-	mc := newModuleContext(cr, "finance", nil, nil, nil, fake)
+	mc := NewModuleContext(cr, "finance", nil, nil, nil, fake)
 
 	if _, err := mc.PlatformDB(context.Background()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -171,7 +171,7 @@ func TestPlatformDB_FailureNotCached(t *testing.T) {
 
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "")
 	fake := &fakeDBPool{tenantDB: db1}
-	mc := newModuleContext(cr, "ns", nil, nil, nil, fake)
+	mc := NewModuleContext(cr, "ns", nil, nil, nil, fake)
 
 	if _, err := mc.PlatformDB(context.Background()); err == nil {
 		t.Fatal("expected an error on first call with empty locator")
@@ -198,7 +198,7 @@ func TestPlatformDB_PoolError(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345")
 	wantErr := errors.New("dial failed")
 	fake := &fakeDBPool{tenantErr: wantErr}
-	mc := newModuleContext(cr, "ns", nil, nil, nil, fake)
+	mc := NewModuleContext(cr, "ns", nil, nil, nil, fake)
 
 	_, err := mc.PlatformDB(context.Background())
 	if !errors.Is(err, wantErr) {
@@ -219,7 +219,7 @@ func TestOrgAdminDB_PassesThrough(t *testing.T) {
 
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "")
 	fake := &fakeDBPool{orgAdminDB: db1}
-	mc := newModuleContext(cr, "ns", nil, nil, nil, fake)
+	mc := NewModuleContext(cr, "ns", nil, nil, nil, fake)
 
 	got, err := mc.OrgAdminDB(context.Background())
 	if err != nil {
@@ -231,7 +231,7 @@ func TestOrgAdminDB_PassesThrough(t *testing.T) {
 
 	wantErr := errors.New("dial failed")
 	fake2 := &fakeDBPool{orgAdminErr: wantErr}
-	mc2 := newModuleContext(cr, "ns", nil, nil, nil, fake2)
+	mc2 := NewModuleContext(cr, "ns", nil, nil, nil, fake2)
 	if _, err := mc2.OrgAdminDB(context.Background()); err != wantErr {
 		t.Errorf("err = %v, want %v", err, wantErr)
 	}
@@ -253,7 +253,7 @@ func TestNewModuleContext_ResolvedAccountName(t *testing.T) {
 // NewModuleContext seeds Locator() from cr.Status.AccountLocator when set.
 func TestNewModuleContext_SeedsLocatorFromStatus(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345")
-	mc := newModuleContext(cr, "ns", nil, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
+	mc := NewModuleContext(cr, "ns", nil, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
 
 	if got := mc.Locator(); got != "AB12345" {
 		t.Errorf("Locator() = %q, want %q", got, "AB12345")
@@ -264,7 +264,7 @@ func TestNewModuleContext_SeedsLocatorFromStatus(t *testing.T) {
 // empty.
 func TestNewModuleContext_EmptyStatusLocator(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "")
-	mc := newModuleContext(cr, "ns", nil, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
+	mc := NewModuleContext(cr, "ns", nil, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
 
 	if got := mc.Locator(); got != "" {
 		t.Errorf("Locator() = %q, want empty", got)
@@ -274,7 +274,7 @@ func TestNewModuleContext_EmptyStatusLocator(t *testing.T) {
 // SetLocator overrides whatever Locator() previously returned.
 func TestSetLocator_Overrides(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "")
-	mc := newModuleContext(cr, "ns", nil, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
+	mc := NewModuleContext(cr, "ns", nil, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
 
 	mc.SetLocator("XY999")
 	if got := mc.Locator(); got != "XY999" {
@@ -287,7 +287,7 @@ func TestModuleContext_Accessors(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "")
 	labels := map[string]string{"department": "analytics"}
 
-	mc := newModuleContext(cr, "ns", nil, labels, nil, &fakeDBPool{t: t, forbidCalls: true})
+	mc := NewModuleContext(cr, "ns", nil, labels, nil, &fakeDBPool{t: t, forbidCalls: true})
 
 	if mc.CR() != cr {
 		t.Error("CR() did not return the exact CRD pointer passed in")

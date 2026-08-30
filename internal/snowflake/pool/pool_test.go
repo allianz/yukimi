@@ -227,8 +227,8 @@ func TestOrgAdmin_FirstCall(t *testing.T) {
 	if dc.snowflake.PrivateKey == nil {
 		t.Error("PrivateKey must be set")
 	}
-	if dc.snowflake.Role != "ORGADMIN" {
-		t.Errorf("Role = %q, want ORGADMIN", dc.snowflake.Role)
+	if dc.snowflake.Role != "GLOBALORGADMIN" {
+		t.Errorf("Role = %q, want GLOBALORGADMIN", dc.snowflake.Role)
 	}
 	if dc.probeTimeout != cfg.Snowflake.ConnectionProbeTimeout {
 		t.Errorf("probeTimeout = %v, want %v", dc.probeTimeout, cfg.Snowflake.ConnectionProbeTimeout)

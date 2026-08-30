@@ -122,8 +122,8 @@ func New(backend secrets.Backend, cfg *config.BaseConfig) *Pool
 // OrgAdmin returns the single org-admin *sql.DB, used only for CREATE ACCOUNT
 // and DROP ACCOUNT (design.md 3.6, 6.3, 3.11 intro). The credential is read
 // from the org-admin secret path (003) and the connection is authenticated
-// with the ORGADMIN role. Opened on first call; every later call returns the
-// same *sql.DB.
+// with the GLOBALORGADMIN role. Opened on first call; every later call
+// returns the same *sql.DB.
 //
 // Returns:
 //   - System error if the org-admin credential cannot be read, does not
@@ -253,7 +253,7 @@ internal/snowflake/pool/
 - **SC-012**: `EvictTenant` closes and removes the cached entry for `(namespace, accountName)`; a following `TenantAccount` call with the same key dials again.
 - **SC-013**: `EvictTenant` on a key never dialed does not error and does not panic.
 - **SC-014**: `Close` closes every cached `*sql.DB` — org-admin, if opened, and every tenant entry — and returns a joined error if any individual close fails, without skipping the rest.
-- **SC-015**: The `gosnowflake.Config` built for `OrgAdmin` sets `Authenticator` to `AuthTypeJwt`, `User` and `PrivateKey` from the stored org-admin credential, `Role` to `ORGADMIN`, and `Account`/`Host` from `OrgAdminAccountLocator`/`OrgAdminAccountRegion`.
+- **SC-015**: The `gosnowflake.Config` built for `OrgAdmin` sets `Authenticator` to `AuthTypeJwt`, `User` and `PrivateKey` from the stored org-admin credential, `Role` to `GLOBALORGADMIN`, and `Account`/`Host` from `OrgAdminAccountLocator`/`OrgAdminAccountRegion`.
 - **SC-016**: The `gosnowflake.Config` built for `TenantAccount` sets `Role` to `ACCOUNTADMIN` and `Account`/`Host` from the caller-supplied `locator`/`region`.
 - **SC-017**: `internal/snowflake/pool` imports `internal/snowflake/host`, `internal/config`, `internal/secrets`, `internal/errors`, and `github.com/snowflakedb/gosnowflake` among dependencies with an `internal/` boundary or a new `go.mod` entry — never `internal/secrets/aws` and never `internal/snowflake/statement`, grep-provable.
 - **SC-017a**: `internal/snowflake/host` imports only the standard library and `internal/errors` — never `internal/config`, `internal/secrets`, `internal/snowflake/pool`, or `github.com/snowflakedb/gosnowflake`, grep-provable.

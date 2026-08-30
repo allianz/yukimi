@@ -28,16 +28,17 @@ import (
 	"github.com/allianz/yukimi/internal/tenant"
 )
 
-// dbPool is the subset of *pool.Pool's API ModuleContext depends on, defined
-// locally so tests in this package can inject a fake without reaching into
-// internal/snowflake/pool's own unexported test seam. *pool.Pool satisfies
-// this implicitly.
-type dbPool interface {
+// DBPool is the subset of *pool.Pool's API ModuleContext depends on, defined
+// here (rather than imported from internal/snowflake/pool) so any package —
+// including a module under internal/account/modules/ — can inject a fake
+// without reaching into pool's own unexported dial-function test seam.
+// *pool.Pool satisfies this implicitly.
+type DBPool interface {
 	OrgAdmin(ctx context.Context) (*sql.DB, error)
 	TenantAccount(ctx context.Context, namespace, accountName, locator, region string) (*sql.DB, error)
 }
 
-var _ dbPool = (*pool.Pool)(nil)
+var _ DBPool = (*pool.Pool)(nil)
 
 // ModuleContext is built once per reconcile and handed unchanged to every
 // module. Everything on it is either immutable for the run or, in the case of
@@ -50,7 +51,7 @@ type ModuleContext struct {
 	namespaceLabels map[string]string
 	log             *logger.Logger
 
-	pool dbPool
+	pool DBPool
 
 	locator string
 
@@ -66,27 +67,16 @@ type ModuleContext struct {
 // onboarding; Department/CostCenter/CreditQuota are read from them by each
 // module itself, not by this constructor. If cr.Status.AccountLocator is
 // already set, it seeds Locator() immediately — callers never seed it
-// themselves; see SetLocator for the only other way it changes.
+// themselves; see SetLocator for the only other way it changes. p is
+// DBPool, not the concrete *pool.Pool, so a module package's own tests can
+// pass a fake.
 func NewModuleContext(
 	cr *v1alpha1.SnowflakeAccount,
 	namespace string,
 	backplaneRegion *backplane.Region,
 	namespaceLabels map[string]string,
 	log *logger.Logger,
-	p *pool.Pool,
-) *ModuleContext {
-	return newModuleContext(cr, namespace, backplaneRegion, namespaceLabels, log, p)
-}
-
-// newModuleContext is NewModuleContext's implementation, taking dbPool
-// instead of *pool.Pool so tests can inject a fake.
-func newModuleContext(
-	cr *v1alpha1.SnowflakeAccount,
-	namespace string,
-	backplaneRegion *backplane.Region,
-	namespaceLabels map[string]string,
-	log *logger.Logger,
-	p dbPool,
+	p DBPool,
 ) *ModuleContext {
 	return &ModuleContext{
 		cr:              cr,
