@@ -19,6 +19,7 @@ package secretsaws
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -82,18 +83,19 @@ func New(region, kmsKeyId string) (secrets.Backend, error) {
 	}, nil
 }
 
-// Get reads the value stored at path via GetSecretValue.
+// Get reads the value and CreatedDate stored at path via GetSecretValue.
 //
 // Returns:
-//   - System error if the secret does not exist or the call otherwise fails
-func (b *Backend) Get(ctx context.Context, path secrets.Path) (string, error) {
+//   - System error if the secret does not exist or the call otherwise fails;
+//     the returned time is the zero value on error
+func (b *Backend) Get(ctx context.Context, path secrets.Path) (string, time.Time, error) {
 	out, err := b.client.GetSecretValue(ctx, &secretsmanager.GetSecretValueInput{
 		SecretId: aws.String(path.String()),
 	})
 	if err != nil {
-		return "", fmt.Errorf("failed to get secret at %s: %w", path, err)
+		return "", time.Time{}, fmt.Errorf("failed to get secret at %s: %w", path, err)
 	}
-	return aws.ToString(out.SecretString), nil
+	return aws.ToString(out.SecretString), aws.ToTime(out.CreatedDate), nil
 }
 
 // Create stores value at path via CreateSecret, setting KmsKeyId when the

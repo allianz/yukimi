@@ -22,10 +22,12 @@ import (
 	"time"
 )
 
-// cacheEntry holds a cached value and the time at which it stops being served.
+// cacheEntry holds a cached value, the time the backend last wrote it, and
+// the time at which the entry stops being served.
 type cacheEntry struct {
-	value   string
-	expires time.Time
+	value      string
+	modifiedAt time.Time
+	expires    time.Time
 }
 
 // CachedBackend wraps a Backend with an in-memory, TTL-based, lazily-evicted
@@ -47,23 +49,23 @@ func NewCachedBackend(b Backend, ttl time.Duration) *CachedBackend {
 	return &CachedBackend{backend: b, ttl: ttl, entries: make(map[Path]cacheEntry)}
 }
 
-func (c *CachedBackend) Get(ctx context.Context, path Path) (string, error) {
+func (c *CachedBackend) Get(ctx context.Context, path Path) (string, time.Time, error) {
 	c.mu.Lock()
 	entry, ok := c.entries[path]
 	c.mu.Unlock()
 	if ok && time.Now().Before(entry.expires) {
-		return entry.value, nil
+		return entry.value, entry.modifiedAt, nil
 	}
 
-	value, err := c.backend.Get(ctx, path)
+	value, modifiedAt, err := c.backend.Get(ctx, path)
 	if err != nil {
-		return "", err // never cache a failure, not even a missing path
+		return "", time.Time{}, err // never cache a failure, not even a missing path
 	}
 
 	c.mu.Lock()
-	c.entries[path] = cacheEntry{value: value, expires: time.Now().Add(c.ttl)}
+	c.entries[path] = cacheEntry{value: value, modifiedAt: modifiedAt, expires: time.Now().Add(c.ttl)}
 	c.mu.Unlock()
-	return value, nil
+	return value, modifiedAt, nil
 }
 
 func (c *CachedBackend) Create(ctx context.Context, path Path, value string) error {
@@ -91,9 +93,8 @@ func (c *CachedBackend) Delete(ctx context.Context, path Path) error {
 }
 
 // Invalidate clears path's cache entry without touching the underlying
-// Backend. Exposed for a future rotation feature that needs the cache cleared
-// before its own write becomes visible through normal Create/Update/Delete
-// invalidation.
+// Backend. Exposed for a caller that needs a path forced cold without going
+// through Create/Update/Delete.
 func (c *CachedBackend) Invalidate(path Path) {
 	c.mu.Lock()
 	delete(c.entries, path)

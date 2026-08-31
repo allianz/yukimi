@@ -43,6 +43,8 @@ const (
 	defaultConnectionProbeTimeout = 10 * time.Second
 	// defaultSecretsCacheTTL is secrets.cacheTtl's default (003).
 	defaultSecretsCacheTTL = 5 * time.Minute
+	// defaultRotationInterval is secrets.rotationInterval's default (004).
+	defaultRotationInterval = 4320 * time.Hour
 )
 
 var (
@@ -109,7 +111,8 @@ type SnowflakeSettings struct {
 // SecretsSettings holds settings for the secrets cache decorator (003), consumed by whoever
 // wraps a Backend in secrets.NewCachedBackend — today cmd/provider/main.go.
 type SecretsSettings struct {
-	CacheTTL time.Duration // TTL for the in-memory secrets cache (003); defaults to 5m when omitted
+	CacheTTL         time.Duration // TTL for the in-memory secrets cache (003); defaults to 5m when omitted
+	RotationInterval time.Duration // age past which OrgAdmin/TenantAccount rotate a stored credential inline (004); defaults to 4320h (~6 months) when omitted
 }
 
 // AWSSettings holds AWS-specific settings, consumed only by 003.a.
@@ -150,7 +153,8 @@ type rawAWS struct {
 }
 
 type rawSecrets struct {
-	CacheTTL string `yaml:"cacheTtl"`
+	CacheTTL         string `yaml:"cacheTtl"`
+	RotationInterval string `yaml:"rotationInterval"`
 }
 
 // Load reads, parses, and validates "<configDir>/baseConfig.yaml".
@@ -166,8 +170,8 @@ type rawSecrets struct {
 //     Snowflake.OrgAdminAccountRegion) is empty, the file does not carry exactly
 //     one cloud section, a field's value does not match its documented format, a pool-tuning
 //     integer (MaxConnectionPoolSize, MaxIdleConnections) is out of range, or a duration field
-//     (ConnectionMaxLifetime, ConnectionMaxIdleTime, ConnectionProbeTimeout, Secrets.CacheTTL)
-//     does not parse as a positive Go duration
+//     (ConnectionMaxLifetime, ConnectionMaxIdleTime, ConnectionProbeTimeout, Secrets.CacheTTL,
+//     Secrets.RotationInterval) does not parse as a positive Go duration
 //
 // Load walks the parsed YAML's top-level keys to find the cloud sections, so a section with
 // no Go struct yet (azure:, gcp:) is still recognized rather than silently dropped.
@@ -296,6 +300,12 @@ func Load(configDir string) (*BaseConfig, error) {
 		return nil, err
 	}
 
+	rotationInterval, err := resolvePositiveDuration(
+		"secrets.rotationInterval", raw.Secrets.RotationInterval, defaultRotationInterval)
+	if err != nil {
+		return nil, err
+	}
+
 	return &BaseConfig{
 		Snowflake: SnowflakeSettings{
 			Org:                    raw.Snowflake.Org,
@@ -315,7 +325,8 @@ func Load(configDir string) (*BaseConfig, error) {
 			KmsKeyId: raw.AWS.KmsKeyId,
 		},
 		Secrets: SecretsSettings{
-			CacheTTL: cacheTTL,
+			CacheTTL:         cacheTTL,
+			RotationInterval: rotationInterval,
 		},
 		cloudProvider: cloudSections[0],
 	}, nil

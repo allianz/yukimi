@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"time"
 )
 
 // minRSABits is the minimum RSA key size GenerateKeyPair produces.
@@ -32,9 +33,10 @@ const minRSABits = 2048
 // Credentials is the JSON shape a credential is stored in: exactly three
 // fields, deliberately no account field (the path already identifies it).
 type Credentials struct {
-	Username   string `json:"username"`
-	PublicKey  string `json:"public_key"`  // PKIX, single-line base64, no PEM delimiters
-	PrivateKey string `json:"private_key"` // PKCS#8, PEM-wrapped
+	Username   string    `json:"username"`
+	PublicKey  string    `json:"public_key"`  // PKIX, single-line base64, no PEM delimiters
+	PrivateKey string    `json:"private_key"` // PKCS#8, PEM-wrapped
+	RotatedAt  time.Time `json:"-"`           // when this value was last written to the store; never persisted
 }
 
 // GenerateKeyPair generates a fresh RSA keypair: crypto/rand, minimum 2048-bit,
@@ -66,26 +68,30 @@ func GenerateKeyPair() (publicKeyB64, privateKeyPEM string, err error) {
 }
 
 // NewCredentials generates a fresh keypair via GenerateKeyPair and returns it
-// as a Credentials value for username. username is caller-supplied domain
-// knowledge (e.g. design.md 3.6's "platform") — this package owns no literal.
+// as a Credentials value for username, with RotatedAt set to time.Now().
+// username is caller-supplied domain knowledge (e.g. design.md 3.6's
+// "platform") — this package owns no literal.
 func NewCredentials(username string) (*Credentials, error) {
 	pub, priv, err := GenerateKeyPair()
 	if err != nil {
 		return nil, err
 	}
-	return &Credentials{Username: username, PublicKey: pub, PrivateKey: priv}, nil
+	return &Credentials{Username: username, PublicKey: pub, PrivateKey: priv, RotatedAt: time.Now()}, nil
 }
 
-// MarshalCredentials converts c to the JSON string a Backend stores.
+// MarshalCredentials converts c to the JSON string a Backend stores. It never
+// serializes RotatedAt.
 func MarshalCredentials(c *Credentials) (string, error) {
 	data, err := json.Marshal(c)
 	return string(data), err
 }
 
 // UnmarshalCredentials converts the JSON string a Backend stores back into a
-// Credentials value. It rejects a value with any of the three fields empty;
-// it does not otherwise validate PublicKey or PrivateKey contents.
-func UnmarshalCredentials(data string) (*Credentials, error) {
+// Credentials value. It rejects a value with any of the three JSON fields
+// empty; it does not otherwise validate PublicKey or PrivateKey contents. It
+// sets the returned Credentials' RotatedAt to rotatedAt — ordinarily whatever
+// Backend.Get just returned alongside value.
+func UnmarshalCredentials(data string, rotatedAt time.Time) (*Credentials, error) {
 	var c Credentials
 	if err := json.Unmarshal([]byte(data), &c); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal credentials: %w", err)
@@ -93,5 +99,6 @@ func UnmarshalCredentials(data string) (*Credentials, error) {
 	if c.Username == "" || c.PublicKey == "" || c.PrivateKey == "" {
 		return nil, fmt.Errorf("failed to unmarshal credentials: username, public_key, and private_key must all be non-empty")
 	}
+	c.RotatedAt = rotatedAt
 	return &c, nil
 }

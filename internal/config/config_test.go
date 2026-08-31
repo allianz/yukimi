@@ -106,6 +106,9 @@ func TestLoad_PoolAndCacheDefaults(t *testing.T) {
 	if cfg.Secrets.CacheTTL != defaultSecretsCacheTTL {
 		t.Errorf("Secrets.CacheTTL = %v, want default %v", cfg.Secrets.CacheTTL, defaultSecretsCacheTTL)
 	}
+	if cfg.Secrets.RotationInterval != defaultRotationInterval {
+		t.Errorf("Secrets.RotationInterval = %v, want default %v", cfg.Secrets.RotationInterval, defaultRotationInterval)
+	}
 }
 
 // An explicit value for each pool-tuning/secrets-cache field overrides its default.
@@ -125,6 +128,7 @@ aws:
   region: eu-central-1
 secrets:
   cacheTtl: 10m
+  rotationInterval: 1s
 `
 	cfg, err := Load(newConfigDir(t, fixture))
 	if err != nil {
@@ -147,6 +151,9 @@ secrets:
 	}
 	if cfg.Secrets.CacheTTL != 10*time.Minute {
 		t.Errorf("Secrets.CacheTTL = %v, want 10m", cfg.Secrets.CacheTTL)
+	}
+	if cfg.Secrets.RotationInterval != time.Second {
+		t.Errorf("Secrets.RotationInterval = %v, want 1s", cfg.Secrets.RotationInterval)
 	}
 }
 
@@ -220,6 +227,32 @@ func TestLoad_ConnectionProbeTimeout_NotPositive(t *testing.T) {
 	fixture := wellFormedFixtureWith("  connectionProbeTimeout: -5s\n")
 	_, err := Load(newConfigDir(t, fixture))
 	want := "snowflake.connectionProbeTimeout '-5s' must be a positive duration"
+	if err == nil || err.Error() != want {
+		t.Errorf("error = %v, want %q", err, want)
+	}
+	if !errors.IsUserError(err) {
+		t.Errorf("expected user error, got %v", err)
+	}
+}
+
+// secrets.rotationInterval must parse as a Go duration string.
+func TestLoad_SecretsRotationInterval_Unparseable(t *testing.T) {
+	fixture := wellFormedFixture + "secrets:\n  rotationInterval: not-a-duration\n"
+	_, err := Load(newConfigDir(t, fixture))
+	want := "secrets.rotationInterval 'not-a-duration' does not match the expected format (expected: a Go duration string, e.g. 30m)"
+	if err == nil || err.Error() != want {
+		t.Errorf("error = %v, want %q", err, want)
+	}
+	if !errors.IsUserError(err) {
+		t.Errorf("expected user error, got %v", err)
+	}
+}
+
+// secrets.rotationInterval must be positive.
+func TestLoad_SecretsRotationInterval_NotPositive(t *testing.T) {
+	fixture := wellFormedFixture + "secrets:\n  rotationInterval: 0s\n"
+	_, err := Load(newConfigDir(t, fixture))
+	want := "secrets.rotationInterval '0s' must be a positive duration"
 	if err == nil || err.Error() != want {
 		t.Errorf("error = %v, want %q", err, want)
 	}

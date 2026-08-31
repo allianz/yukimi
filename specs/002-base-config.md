@@ -67,11 +67,11 @@ type SnowflakeSettings struct {
     UsePrivateLink         bool   // affects the connection host (004); defaults to true when omitted
     DisableOCSPChecks      bool   // disables OCSP certificate-revocation checking on Snowflake connections (004); testing/emergency use only. Defaults to false when omitted
 
-    MaxConnectionPoolSize  int           // max open connections per pooled *sql.DB target (004); defaults to 10 when omitted
-    MaxIdleConnections     int           // max idle connections kept per pooled *sql.DB target (004); defaults to 2 when omitted
-    ConnectionMaxLifetime  time.Duration // max lifetime of a physical connection before it is recycled (004); defaults to 30m when omitted
-    ConnectionMaxIdleTime  time.Duration // max time a physical connection may sit idle before being closed (004); defaults to 5m when omitted
-    ConnectionProbeTimeout time.Duration // timeout for the health probe run on first dial (004); defaults to 10s when omitted
+    MaxConnectionPoolSize      int           // max open connections per pooled *sql.DB target (004); defaults to 10 when omitted
+    MaxIdleConnections         int           // max idle connections kept per pooled *sql.DB target (004); defaults to 2 when omitted
+    ConnectionMaxLifetime      time.Duration // max lifetime of a physical connection before it is recycled (004); defaults to 30m when omitted
+    ConnectionMaxIdleTime      time.Duration // max time a physical connection may sit idle before being closed (004); defaults to 5m when omitted
+    ConnectionProbeTimeout     time.Duration // timeout for the health probe run on first dial (004); defaults to 10s when omitted
 }
 
 // AWSSettings holds AWS-specific settings, consumed only by 003.a.
@@ -84,7 +84,8 @@ type AWSSettings struct {
 // SecretsSettings holds settings for the secrets cache decorator (003), consumed by whoever
 // wraps a Backend in secrets.NewCachedBackend — today cmd/provider/main.go.
 type SecretsSettings struct {
-    CacheTTL time.Duration // TTL for the in-memory secrets cache (003); defaults to 5m when omitted
+    CacheTTL         time.Duration // TTL for the in-memory secrets cache (003); defaults to 5m when omitted
+    RotationInterval time.Duration // age past which OrgAdmin/TenantAccount rotate a stored credential inline (004); defaults to 4320h (~6 months) when omitted
 }
 
 // Load reads, parses, and validates "<configDir>/baseConfig.yaml".
@@ -100,8 +101,8 @@ type SecretsSettings struct {
 //     Snowflake.OrgAdminAccountRegion) is empty, the file does not carry exactly
 //     one cloud section, a field's value does not match its documented format, a pool-tuning
 //     integer (MaxConnectionPoolSize, MaxIdleConnections) is out of range, or a duration field
-//     (ConnectionMaxLifetime, ConnectionMaxIdleTime, ConnectionProbeTimeout, Secrets.CacheTTL)
-//     does not parse as a positive Go duration
+//     (ConnectionMaxLifetime, ConnectionMaxIdleTime, ConnectionProbeTimeout, Secrets.CacheTTL,
+//     Secrets.RotationInterval) does not parse as a positive Go duration
 //
 // Load walks the parsed YAML's top-level keys to find the cloud sections, so a section with
 // no Go struct yet (azure:, gcp:) is still recognized rather than silently dropped.
@@ -131,6 +132,7 @@ Every field in `baseConfig.yaml` is freely editable and the whole file is reload
 | `aws.region` | string | No | Not required here; if non-empty, matches `^[a-z]{2}(-[a-z]+)+-[0-9]$`. Whether the region exists and whether it is required at all is decided by 003.a's constructor. |
 | `aws.kmsKeyId` | string | No | Optional reference to a customer-managed KMS key (key ID, alias, or ARN) used by 003.a when creating/reading secrets in AWS Secrets Manager, in place of the AWS-managed default. Not required here; if non-empty, must match one of the documented KMS identifier forms (bare key ID, `alias/<name>`, key ARN, or alias ARN). Whether the key exists or is usable is 003.a's concern, never this package's. |
 | `secrets.cacheTtl` | string (duration) | No | TTL for the in-memory secrets cache (003), applied by whichever code wraps a `Backend` in `secrets.NewCachedBackend` (`cmd/provider/main.go`). Must be a positive Go duration string if set. Default: `5m` when omitted. |
+| `secrets.rotationInterval` | string (duration) | No | Age past which 004 rotates a stored Snowflake credential inline. Must be a positive Go duration string if set (e.g. `1s` for tests). Default: `4320h` (~6 months) when omitted. |
 
 ## Project Structure
 
@@ -288,6 +290,7 @@ aws:
 
 # secrets:
 #   cacheTtl: 5m                    # optional, default shown (003)
+#   rotationInterval: 4320h         # optional, default shown (004)
 ```
 
 The `aws:` section is the only cloud section here, so `CloudProvider()` returns `"aws"` — nothing else in the file states the provider.

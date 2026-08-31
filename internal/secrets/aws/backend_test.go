@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
@@ -57,8 +58,12 @@ func (f *fakeClient) GetSecretValue(_ context.Context, in *secretsmanager.GetSec
 	if f.getErr != nil {
 		return nil, f.getErr
 	}
-	return &secretsmanager.GetSecretValueOutput{SecretString: aws.String("stored-value")}, nil
+	return &secretsmanager.GetSecretValueOutput{SecretString: aws.String("stored-value"), CreatedDate: aws.Time(fakeCreatedDate)}, nil
 }
+
+// fakeCreatedDate is what fakeClient.GetSecretValue reports as the secret's
+// CreatedDate, so TestGet can assert Get reads it through unchanged.
+var fakeCreatedDate = time.Date(2024, 3, 15, 12, 0, 0, 0, time.UTC)
 
 func (f *fakeClient) CreateSecret(_ context.Context, in *secretsmanager.CreateSecretInput, _ ...func(*secretsmanager.Options)) (*secretsmanager.CreateSecretOutput, error) {
 	f.createCalled = true
@@ -149,12 +154,15 @@ func TestGet(t *testing.T) {
 		fake := &fakeClient{}
 		backend := &Backend{client: fake}
 
-		got, err := backend.Get(context.Background(), path)
+		got, gotAt, err := backend.Get(context.Background(), path)
 		if err != nil {
 			t.Fatalf("Get: %v", err)
 		}
 		if got != "stored-value" {
 			t.Fatalf("Get = %q, want %q", got, "stored-value")
+		}
+		if !gotAt.Equal(fakeCreatedDate) {
+			t.Fatalf("Get returned time %v, want %v", gotAt, fakeCreatedDate)
 		}
 		if !fake.getCalled {
 			t.Fatal("expected GetSecretValue to be called")
@@ -169,7 +177,7 @@ func TestGet(t *testing.T) {
 		fake := &fakeClient{getErr: underlying}
 		backend := &Backend{client: fake}
 
-		_, err := backend.Get(context.Background(), path)
+		_, _, err := backend.Get(context.Background(), path)
 		if err == nil {
 			t.Fatal("expected an error")
 		}

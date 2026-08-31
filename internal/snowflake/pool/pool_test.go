@@ -142,6 +142,9 @@ func testConfig() *config.BaseConfig {
 			ConnectionMaxIdleTime:  5 * time.Minute,
 			ConnectionProbeTimeout: 2 * time.Second,
 		},
+		Secrets: config.SecretsSettings{
+			RotationInterval: 6 * 30 * 24 * time.Hour,
+		},
 	}
 }
 
