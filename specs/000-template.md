@@ -21,13 +21,15 @@ Add 1-2 sections explaining key concepts specific to this feature.
 Examples: "Key Concept: Connection Format", "Key Concept: Secret Path Structure", "Key Concept: Execution Model"
 Focus on WHAT, not HOW. Explain domain-specific concepts, data formats, or behavioral models.
 
-Explain the concept: name the idea, say what it is and why it is
-shaped that way. May be technical and demand real attention from the reader.
-Leave secondary details to Edge Cases.
-Open with one very simple sentence introducing the concept, then go deeper.
--->
+Give the mental model, not the mechanism. Under 150 words per concept: one plain opening
+sentence naming the idea, then why it is shaped that way. Precise technical vocabulary,
+but no algorithm in prose, no field-by-field lists,
+no case enumeration, no error handling, no Go types, methods or field paths — name things
+in domain terms.
 
-{One simple introductory sentence}
+Test: a reader of this section alone can predict roughly how the subsystem behaves,
+without being able to implement it.
+-->
 
 {Explanation of key concept}
 
@@ -105,16 +107,25 @@ the Appendix.
 
 ### Source Code
 
+<!--
+List every file the implementation creates, with a comment saying what it holds.
+
+Test files:
+- Every file with logic gets its `_test.go` sibling.
+- Add `integration_test.go` whenever the feature talks to an external system (Snowflake,
+  AWS, the Kubernetes API); its comment names what it exercises.
+-->
+
 ```text
 {Package/directory structure for this feature}
 
 Example:
 internal/{feature}/
 ├── manager.go           # Main interface implementation
-├── types.go             # Internal types
+├── manager_test.go      # Unit tests, no network
 ├── config.go            # Configuration
-├── manager_test.go      # Unit tests
-└── integration_test.go  # Integration tests
+├── config_test.go
+└── integration_test.go  # TestIntegration...
 ```
 
 ## Error Classification
@@ -161,8 +172,9 @@ Format: **Question?** - Answer
 - **SC-005**: {Measurable criterion}
 <!-- Add 10-20 criteria total -->
 - **SC-XXX**: Unit test coverage exceeds 95%.
-<!-- OPTIONAL: only if this package integrates with an external system (AWS, Snowflake, etc.) and has its own integration test suite -->
-- **SC-XXX**: Integration test coverage {covers all external-system call paths / exceeds N%}.
+<!-- Keep the next line only if Project Structure lists an `integration_test.go`; name what
+     the live run must prove. -->
+- **SC-XXX**: `integration_test.go` proves {behavior} against a real {system}.
 
 ## Security Considerations
 

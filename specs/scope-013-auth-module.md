@@ -49,7 +49,10 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
 
 ## Raised by the 009 clarification
 
-Recorded by `/yukimi.clarify 009`; see `specs/wip-009-account-pipeline.md` for the full reasoning.
+Recorded by `/yukimi.clarify 009`. `specs/009-account-pipeline.md` now carries the pipeline-wide rules
+these points rest on — see its "Key Concept: Overwrite Apply, Generation-Gated Re-Apply" for the
+overwrite-and-prune contract, and "Key Concept: Sequential Modules, One Abort Signal" for who may stop
+a run.
 
 - **Same overwrite-and-prune contract as 012.** Re-assert auth policies and bindings in full on every
   `Apply`, with no read-back of existing entries to compare against, **and drop the per-user policies
@@ -61,8 +64,10 @@ Recorded by `/yukimi.clarify 009`; see `specs/wip-009-account-pipeline.md` for t
 - **Drift is still neither detected nor repaired**, because Organization Policies will take away the
   tenant's ability to create it.
 - **A rejected exception never stops the run.** Only 010 ever aborts the run; 013 never calls
-  `.Aborting()` on its own outcome (wip-009 D-008, design 3.8/3.9).
+  `.Aborting()` on its own outcome. Design 3.8/3.9's "a rejected entry leaves the account on its
+  baseline" only holds if the modules after the rejecting one still get to run.
 - **013 has no guardrail dependency.** Design.md's guardrails section (3.3) does not constrain
   `customAuthRules`, so exceptions are validated only against 006's CRD schema and design 3.9's own
   rule (an entry naming neither method is a validation error).
-- 013 implements `Observe(ctx, mc) (bool, Outcome)` returning `true, Done()` today (wip-009 D-002).
+- 013 implements `Observe(ctx, mc) (bool, Outcome)` returning `true, Done()` today, for the same reason
+  011 does: the method exists so a real read-back can be added later without reopening the interface.
