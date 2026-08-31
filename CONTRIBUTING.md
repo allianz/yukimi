@@ -21,13 +21,16 @@ flowchart TB
         design["design.md"] --> plan("/yukimi.plan")
     end
 
-    %% Invisible spacer, same rank as the Preparation box. Mermaid centres every rank, so without
-    %% something to its right the small Preparation box floats in the middle of the much wider
-    %% implementation half. Its text is transparent — only its width does any work, so add or
-    %% remove dots to nudge the box further left or right.
-    spacer["...................................................."]
+    %% Left alignment: mermaid centres every rank, so the Preparation box needs something to its
+    %% right to be pushed left. `spacer` is a transparent node — only its width does any work —
+    %% and the invisible `~~~` link is what pins it to the same rank as the box instead of letting
+    %% it float off on its own. Add or remove dots to nudge Preparation further left or right.
+    spacer["............................................................................................................................................................................................................................"]
 
+    %% Edge order decides the left-to-right order of the two sources: Preparation's edge comes
+    %% first, so it sits left and the spacer takes the room to its right.
     prep --> impl
+    spacer ~~~ impl
 
     %% Invisible grouping box. Rows are declared NNN-first because the last one renders on top.
     subgraph impl[" "]
