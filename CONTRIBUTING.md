@@ -75,7 +75,6 @@ flowchart TB
 ```
 
 
-What each step reads and writes:
 
 | Step | Skill | Model | Output |
 |---|---|---|---|
@@ -85,8 +84,7 @@ What each step reads and writes:
 | Write the spec | `/yukimi.specify NNN` | Sonnet 5 | `specs/NNN-*.md` |
 | Implement it | `/yukimi.implement NNN` | Sonnet 5 | `apis/`, `internal/` |
 
-A written spec is reviewed by a human and then corrected in place — by hand or by prompting —
-before implementation starts.
+
 
 ## Notes
 
