@@ -27,23 +27,20 @@ flowchart TB
     %% it float off on its own. Add or remove dots to nudge Preparation further left or right.
     spacer["........................................................................................................................................................................................."]
 
-    %% `anchor` is a second invisible node, directly below Preparation. The arrow terminates there
-    %% instead of on the wide implementation box, so it drops straight down rather than leaning
-    %% towards that box's centre. Edge order decides the left-to-right order at each rank, so the
-    %% Preparation/anchor edges come before the spacer's.
+    %% `anchor` is a second invisible node, one rank below Preparation and nothing else — that is
+    %% what makes the arrow drop straight down from the box's centre. It must NOT link to `impl`:
+    %% with that link, mermaid balances the anchor between Preparation and the wide box's centre
+    %% and the arrow leans right again. `mid` carries the invisible route down to `impl` instead,
+    %% which also gives the anchor a rank of its own so the arrow stays short.
     prep --> anchor[" "]
-    anchor ~~~ impl
-    spacer ~~~ impl
+    spacer ~~~ mid[" "]
+    mid ~~~ impl
 
-    %% Invisible grouping box. The rendered row order is not simply the declaration order — it also
-    %% depends on the order of the `scope-*` edges at the end of this block, and the two orders are
-    %% deliberately opposite. Reversing both at once changes nothing; flip exactly one.
+    %% Invisible grouping box. The rendered row order is a right-rotation of the declaration order:
+    %% declaring 001, 002, NNN comes out as NNN, 001, 002. Declaring 002, NNN, 001 is therefore what
+    %% renders 001 on top and NNN at the bottom. Verified by rendering, so change it with care.
     subgraph impl[" "]
         direction LR
-
-        subgraph spec1["Implement Feature 001"]
-            c1("/yukimi.clarify 001") --> s1("/yukimi.specify 001") --> sf1["spec-001.md"] --> i1("/yukimi.implement 001")
-        end
 
         subgraph spec2["Implement Feature 002"]
             c2("/yukimi.clarify 002") --> s2("/yukimi.specify 002") --> sf2["spec-002.md"] --> i2("/yukimi.implement 002")
@@ -51,6 +48,10 @@ flowchart TB
 
         subgraph specn["Implement Feature NNN"]
             cn("/yukimi.clarify NNN") --> sn("/yukimi.specify NNN") --> sfn["spec-NNN.md"] --> imn("/yukimi.implement NNN")
+        end
+
+        subgraph spec1["Implement Feature 001"]
+            c1("/yukimi.clarify 001") --> s1("/yukimi.specify 001") --> sf1["spec-001.md"] --> i1("/yukimi.implement 001")
         end
 
         sc1["scope-001.md"] --> c1
@@ -66,6 +67,7 @@ flowchart TB
     style prep fill:transparent,stroke:#9aa0a6,stroke-dasharray:2 4
     style spacer fill:transparent,stroke:transparent,color:transparent
     style anchor fill:transparent,stroke:transparent,color:transparent
+    style mid fill:transparent,stroke:transparent,color:transparent
     style impl fill:transparent,stroke:transparent
     style spec1 fill:transparent,stroke:#9aa0a6,stroke-dasharray:4 3
     style spec2 fill:transparent,stroke:#9aa0a6,stroke-dasharray:4 3
