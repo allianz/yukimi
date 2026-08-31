@@ -7,47 +7,67 @@ a time in ascending order. Most steps are driven by a project skill in `.claude/
 
 ## The pipeline
 
+There are two processes. **Preparation** runs once over the whole product design and cuts it into
+numbered scope notes. **Implementation** then runs once per number, in ascending order, and its
+input is exactly what preparation produced.
+
 ```mermaid
-flowchart LR
-    design["design.md"] --> plan("/yukimi.plan")
-
-    %% Rows are declared NNN-first on purpose: mermaid stacks the last-declared row at the top,
-    %% so this is what puts spec 001 on top of the rendered diagram.
-    plan --> scn["scope-NNN.md"]
-    plan --> sc2["scope-002.md"]
-    plan --> sc1["scope-001.md"]
-
-    subgraph specn["Implement Feature NNN"]
-        direction LR
-        cn("/yukimi.clarify NNN") --> sn("/yukimi.specify NNN") --> imn("/yukimi.implement NNN")
+flowchart TB
+    %% Two stacked halves. Edges run box-to-box, never from an inner node to the outside: an edge
+    %% out of an inner node makes mermaid drop that box's own `direction`, and the directions are
+    %% what shape this diagram (design.md above /yukimi.plan, and the feature rows left to right).
+    subgraph prep["Preparation — once"]
+        direction TB
+        design["design.md"] --> plan("/yukimi.plan")
     end
 
-    subgraph spec2["Implement Feature 002"]
-        direction LR
-        c2("/yukimi.clarify 002") --> s2("/yukimi.specify 002") --> i2("/yukimi.implement 002")
-    end
+    %% Invisible spacer, same rank as the Preparation box. Mermaid centres every rank, so without
+    %% something to its right the small Preparation box floats in the middle of the much wider
+    %% implementation half. Its text is transparent — only its width does any work, so add or
+    %% remove dots to nudge the box further left or right.
+    spacer["...................................................."]
 
-    subgraph spec1["Implement Feature 001"]
-        direction LR
-        c1("/yukimi.clarify 001") --> s1("/yukimi.specify 001") --> i1("/yukimi.implement 001")
-    end
+    prep --> impl
 
-    scn --> cn
-    sc2 --> c2
-    sc1 --> c1
+    %% Invisible grouping box. Rows are declared NNN-first because the last one renders on top.
+    subgraph impl[" "]
+        direction LR
+
+        subgraph specn["Implement Feature NNN"]
+            cn("/yukimi.clarify NNN") --> sn("/yukimi.specify NNN") --> imn("/yukimi.implement NNN")
+        end
+
+        subgraph spec2["Implement Feature 002"]
+            c2("/yukimi.clarify 002") --> s2("/yukimi.specify 002") --> i2("/yukimi.implement 002")
+        end
+
+        subgraph spec1["Implement Feature 001"]
+            c1("/yukimi.clarify 001") --> s1("/yukimi.specify 001") --> i1("/yukimi.implement 001")
+        end
+
+        scn["scope-NNN.md"] --> cn
+        sc2["scope-002.md"] --> c2
+        sc1["scope-001.md"] --> c1
+    end
 
     classDef file fill:transparent,stroke:transparent,stroke-width:0
     classDef skill fill:#e8f4fd,stroke:#22c2ff,color:#123
     class design,scn,sc2,sc1 file
     class plan,cn,sn,imn,c2,s2,i2,c1,s1,i1 skill
 
+    style prep fill:transparent,stroke:#9aa0a6,stroke-dasharray:2 4
+    style spacer fill:transparent,stroke:transparent,color:transparent
+    style impl fill:transparent,stroke:transparent
     style spec1 fill:transparent,stroke:#9aa0a6,stroke-dasharray:4 3
     style spec2 fill:transparent,stroke:#9aa0a6,stroke-dasharray:4 3
     style specn fill:transparent,stroke:#9aa0a6,stroke-dasharray:4 3
 ```
 
-Bare labels are files under `specs/`, rounded boxes are skills you invoke in Claude Code. One row
-per numbered spec, run to completion before the next row starts. What each step reads and writes:
+Bare labels are files under `specs/`, rounded boxes are skills you invoke in Claude Code. The
+`scope-*.md` notes are the handover: `/yukimi.plan` writes one per feature, and each one is the entry
+point of its own implementation row. A row runs to completion before the next one starts.
+
+What each step reads and writes:
 
 | Step | Skill | Model | Output |
 |---|---|---|---|
