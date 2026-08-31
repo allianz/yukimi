@@ -27,6 +27,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/allianz/yukimi/internal/errors"
 )
@@ -128,6 +129,9 @@ func TestNewCredentials_SetsUsername(t *testing.T) {
 	if c.PublicKey == "" || c.PrivateKey == "" {
 		t.Error("expected non-empty PublicKey and PrivateKey")
 	}
+	if c.RotatedAt.IsZero() {
+		t.Error("expected RotatedAt to be set to the current time")
+	}
 }
 
 // SC-008: a key-generation failure is a system error, wrapped so the
@@ -172,7 +176,7 @@ func TestUnmarshalCredentials_RejectsEmptyField(t *testing.T) {
 		{"empty private_key", `{"username":"platform","public_key":"pub","private_key":""}`},
 	}
 	for _, tt := range tests {
-		if _, err := UnmarshalCredentials(tt.json); err == nil {
+		if _, err := UnmarshalCredentials(tt.json, time.Time{}); err == nil {
 			t.Errorf("%s: expected error, got nil", tt.name)
 		}
 	}
@@ -180,23 +184,48 @@ func TestUnmarshalCredentials_RejectsEmptyField(t *testing.T) {
 
 // SC-009: UnmarshalCredentials rejects malformed JSON as a system error.
 func TestUnmarshalCredentials_RejectsMalformedJSON(t *testing.T) {
-	if _, err := UnmarshalCredentials("not json"); err == nil {
+	if _, err := UnmarshalCredentials("not json", time.Time{}); err == nil {
 		t.Error("expected error for malformed JSON")
 	}
 }
 
-// SC-009: A well-formed value with all three fields populated round-trips cleanly.
+// SC-009: A well-formed value with all three fields populated round-trips
+// cleanly, and RotatedAt is set from the caller-supplied parameter rather
+// than the (non-persisted) JSON.
 func TestUnmarshalCredentials_WellFormedRoundTrip(t *testing.T) {
-	c := &Credentials{Username: "platform", PublicKey: "pub", PrivateKey: "priv"}
+	rotatedAt := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	c := &Credentials{Username: "platform", PublicKey: "pub", PrivateKey: "priv", RotatedAt: rotatedAt}
 	data, err := MarshalCredentials(c)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	got, err := UnmarshalCredentials(data)
+	got, err := UnmarshalCredentials(data, rotatedAt)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if *got != *c {
 		t.Errorf("got %+v, want %+v", got, c)
+	}
+}
+
+// UnmarshalCredentials sets RotatedAt from its parameter, never from the JSON
+// payload — RotatedAt is tagged json:"-" and never round-trips through Marshal.
+func TestUnmarshalCredentials_RotatedAtNeverPersisted(t *testing.T) {
+	c := &Credentials{Username: "platform", PublicKey: "pub", PrivateKey: "priv", RotatedAt: time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)}
+	data, err := MarshalCredentials(c)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(data, "2020") {
+		t.Errorf("expected RotatedAt to be absent from the marshaled JSON, got %q", data)
+	}
+
+	rotatedAt := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
+	got, err := UnmarshalCredentials(data, rotatedAt)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !got.RotatedAt.Equal(rotatedAt) {
+		t.Errorf("got RotatedAt %v, want %v", got.RotatedAt, rotatedAt)
 	}
 }

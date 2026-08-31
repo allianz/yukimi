@@ -16,7 +16,10 @@ limitations under the License.
 
 package secrets
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // Backend is a string-valued keystore. It never parses a credential, never
 // caches, and never logs — every method reports failure as an ordinary error
@@ -24,9 +27,12 @@ import "context"
 // error's identity. How the value string is persisted is each implementation's
 // own choice.
 type Backend interface {
-	// Get returns the value stored at path. It fails if nothing is stored
-	// there, and it fails if the store cannot be read.
-	Get(ctx context.Context, path Path) (string, error)
+	// Get returns the value stored at path, along with the time the backend
+	// last wrote that value — creation time if never overwritten,
+	// modification time otherwise. It fails if nothing is stored there, and
+	// it fails if the store cannot be read; the returned time is the zero
+	// value on error.
+	Get(ctx context.Context, path Path) (string, time.Time, error)
 
 	// Create stores value at path. It fails if path is already occupied, and
 	// leaves the occupying value untouched when it does — this is the

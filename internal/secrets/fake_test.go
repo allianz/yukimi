@@ -20,6 +20,7 @@ import (
 	stderrors "errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 // errStoreFault is the error every test injects through FakeBackend's hooks. It
@@ -44,7 +45,7 @@ func TestFakeBackend_HookShortCircuitsBeforeMutation_Get(t *testing.T) {
 	path := testPath(t)
 	b.OnGet = func(Path) error { return errStoreFault }
 
-	if _, err := b.Get(ctx, path); !stderrors.Is(err, errStoreFault) {
+	if _, _, err := b.Get(ctx, path); !stderrors.Is(err, errStoreFault) {
 		t.Fatalf("got %v, want errStoreFault", err)
 	}
 }
@@ -62,7 +63,7 @@ func TestFakeBackend_HookShortCircuitsBeforeMutation_Create(t *testing.T) {
 	}
 
 	b.OnCreate = nil
-	if _, err := b.Get(ctx, path); err == nil {
+	if _, _, err := b.Get(ctx, path); err == nil {
 		t.Fatal("expected nothing stored after hook short-circuit, got a value")
 	}
 }
@@ -83,7 +84,7 @@ func TestFakeBackend_HookShortCircuitsBeforeMutation_Update(t *testing.T) {
 	}
 
 	b.OnUpdate = nil
-	got, err := b.Get(ctx, path)
+	got, _, err := b.Get(ctx, path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -107,8 +108,42 @@ func TestFakeBackend_HookShortCircuitsBeforeMutation_Delete(t *testing.T) {
 	}
 
 	b.OnDelete = nil
-	if _, err := b.Get(ctx, path); err != nil {
+	if _, _, err := b.Get(ctx, path); err != nil {
 		t.Fatalf("expected entry to remain after hook short-circuit, got %v", err)
+	}
+}
+
+// SC-016a: Get returns the timestamp Create/Update most recently recorded,
+// taken from Clock — which defaults to something close to time.Now and is
+// overridable for a deterministic RotatedAt.
+func TestFakeBackend_Clock(t *testing.T) {
+	ctx := t.Context()
+	b := NewFakeBackend()
+	path := testPath(t)
+
+	before := time.Now()
+	if err := b.Create(ctx, path, "original"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	_, modifiedAt, err := b.Get(ctx, path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if modifiedAt.Before(before) || modifiedAt.After(time.Now()) {
+		t.Errorf("default Clock modifiedAt = %v, want between %v and now", modifiedAt, before)
+	}
+
+	fixed := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	b.Clock = func() time.Time { return fixed }
+	if err := b.Update(ctx, path, "updated"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	_, modifiedAt, err = b.Get(ctx, path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !modifiedAt.Equal(fixed) {
+		t.Errorf("got %v, want %v", modifiedAt, fixed)
 	}
 }
 
@@ -127,7 +162,7 @@ func TestFakeBackend_DeleteRemovesOutright(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if _, err := b.Get(ctx, path); err == nil || !strings.Contains(err.Error(), "no secret stored") {
+	if _, _, err := b.Get(ctx, path); err == nil || !strings.Contains(err.Error(), "no secret stored") {
 		t.Errorf("Get after Delete: got %v, want an error naming the path as not stored", err)
 	}
 	if err := b.Create(ctx, path, "new"); err != nil {
