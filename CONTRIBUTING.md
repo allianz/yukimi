@@ -5,7 +5,7 @@ Engineering*), and features are not coded straight from it. Instead each part of
 through the pipeline below as one numbered spec, and the numbers are written and implemented one at
 a time in ascending order. Most steps are driven by a project skill in `.claude/skills/`.
 
-## The pipeline
+## The AI coding process
 
 There are two processes. **Preparation** runs once over the whole product design and cuts it into
 numbered scope notes. **Implementation** then runs once per number, in ascending order, and its
@@ -35,7 +35,9 @@ flowchart TB
     anchor ~~~ impl
     spacer ~~~ impl
 
-    %% Invisible grouping box. Row order follows declaration order here, so 001 first, NNN last.
+    %% Invisible grouping box. The rendered row order is not simply the declaration order — it also
+    %% depends on the order of the `scope-*` edges at the end of this block, and the two orders are
+    %% deliberately opposite. Reversing both at once changes nothing; flip exactly one.
     subgraph impl[" "]
         direction LR
 
@@ -70,9 +72,6 @@ flowchart TB
     style specn fill:transparent,stroke:#9aa0a6,stroke-dasharray:4 3
 ```
 
-Bare labels are files under `specs/`, rounded boxes are skills you invoke in Claude Code. The
-`scope-*.md` notes are the handover: `/yukimi.plan` writes one per feature, and each one is the entry
-point of its own implementation row. A row runs to completion before the next one starts.
 
 What each step reads and writes:
 
@@ -85,28 +84,18 @@ What each step reads and writes:
 | Implement it | `/yukimi.implement NNN` | Sonnet 5 | `apis/`, `internal/` |
 
 A written spec is reviewed by a human and then corrected in place — by hand or by prompting —
-before implementation starts. The same is true of `design.md`, which is the product of many
-iterations rather than a single pass.
+before implementation starts.
 
 ## Notes
 
 - **Run `/clear` before invoking any of the skills.** Each one spends its whole run reasoning about
   a single spec, and unrelated conversation history degrades it. The skills check for this and will
   ask you to clear rather than push on.
-- **`/yukimi.plan` does not exist yet.** The diagram shows the intended shape; today's `scope-*`
-  notes came out of a single one-off run over a temporary `roadmap.md`. Turning that into a
-  repeatable skill is a known gap.
 - **Ascending order is a hard rule.** A spec may depend only on specs numbered strictly below it —
   the code for higher numbers does not exist yet. A letter suffix (`003.a`) marks a pluggable
   backend and sorts between `003` and `004`.
-- **The two transient documents are deleted at different points.** `scope-NNN-*.md` goes once the
-  spec is written; `wip-NNN-*.md` stays until the code lands, because it holds the research and
   worked detail the spec deliberately omits. Where the two disagree, the spec wins.
 - **The spec is authoritative for its package.** Read `specs/NNN-*.md` before changing anything
-  under the package it owns; `CLAUDE.md` maps numbers to packages.
+  under the package it owns; 
 
-## Before you open a PR
 
-Build, test and local-cluster setup are documented in
-[`docs/development/development.md`](docs/development/development.md). Make sure `make reviewable`
-passes.
