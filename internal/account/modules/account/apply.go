@@ -41,7 +41,7 @@ const duplicateAccountSQLState = "42710"
 // Concept: Create-Then-Verify Lifecycle, specs/010-account-module.md.
 func (m *module) Apply(ctx context.Context, mc *coreaccount.ModuleContext) coreaccount.Outcome {
 	if mc.Locator() != "" {
-		if _, err := mc.PlatformDB(ctx); err != nil {
+		if _, err := mc.TenantDB(ctx); err != nil {
 			return coreaccount.Failed(fmt.Errorf(
 				"platform connection failed for existing account locator %s: %w", mc.Locator(), err)).Aborting()
 		}

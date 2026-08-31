@@ -33,7 +33,7 @@ func (m *module) Observe(ctx context.Context, mc *coreaccount.ModuleContext) (bo
 		return false, coreaccount.Outcome{}
 	}
 
-	if _, err := mc.PlatformDB(ctx); err != nil {
+	if _, err := mc.TenantDB(ctx); err != nil {
 		return false, coreaccount.Failed(fmt.Errorf(
 			"platform connection failed for existing account locator %s: %w", mc.Locator(), err))
 	}

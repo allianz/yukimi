@@ -55,7 +55,7 @@ type ModuleContext struct {
 
 	locator string
 
-	platformDB *sql.DB
+	tenantDB *sql.DB
 }
 
 // NewModuleContext builds the shared context for one reconcile.
@@ -118,25 +118,25 @@ func (c *ModuleContext) OrgAdminDB(ctx context.Context) (*sql.DB, error) {
 	return c.pool.OrgAdmin(ctx)
 }
 
-// PlatformDB returns a connection scoped to this tenant's own account,
+// TenantDB returns a connection scoped to this tenant's own account,
 // resolved on first call and memoized for the rest of the run.
 //
 // Returns:
 //   - System error if Locator() is still empty — every module after 010
 //     needs a locator, and getting one is the whole point of running 010
 //     first.
-func (c *ModuleContext) PlatformDB(ctx context.Context) (*sql.DB, error) {
-	if c.platformDB != nil {
-		return c.platformDB, nil
+func (c *ModuleContext) TenantDB(ctx context.Context) (*sql.DB, error) {
+	if c.tenantDB != nil {
+		return c.tenantDB, nil
 	}
 	if c.locator == "" {
-		return nil, fmt.Errorf("cannot resolve platform connection: account locator is not yet known for %s/%s", c.namespace, c.cr.Name)
+		return nil, fmt.Errorf("cannot resolve tenant connection: account locator is not yet known for %s/%s", c.namespace, c.cr.Name)
 	}
 
 	db, err := c.pool.TenantAccount(ctx, c.namespace, c.cr.Name, c.locator, c.cr.Spec.Region)
 	if err != nil {
 		return nil, err
 	}
-	c.platformDB = db
+	c.tenantDB = db
 	return db, nil
 }

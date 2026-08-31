@@ -147,7 +147,7 @@ internal/account/modules/account/
 - **Secrets Handling (003)** — Used APIs: `GenerateKeyPair()`/`NewCredentials()`, `MarshalCredentials()`,
   `NewTenantPath()`, `Backend.Create()` — Contract: `Backend.Create` only, never `Update`; the module
   never reads a credential back.
-- **Connection Pooling (004)** — Used APIs: `ModuleContext.OrgAdminDB()`, `ModuleContext.PlatformDB()` —
+- **Connection Pooling (004)** — Used APIs: `ModuleContext.OrgAdminDB()`, `ModuleContext.TenantDB()` —
   Contract: reached only through `ModuleContext`; this module never imports `internal/snowflake/pool` or
   `internal/snowflake/host` directly.
 - **Statement Execution (005)** — Used APIs: `statement.New()`, `Runner.Exec()`, `Runner.Query()`,
@@ -157,7 +157,7 @@ internal/account/modules/account/
   — Contract: read-only; this module never writes to the CRD's spec.
 - **Account Pipeline (009)** — Used APIs: `account.Module`, `Done()`/`Pending()`/`Rejected()`/`Failed()`,
   `Outcome.Aborting()`, `ModuleContext.ResolvedAccountName()`, `.Locator()`, `.SetLocator()`,
-  `.OrgAdminDB()`, `.PlatformDB()` — Contract: registered as `modules[0]` in `account.New(...)`; calls
+  `.OrgAdminDB()`, `.TenantDB()` — Contract: registered as `modules[0]` in `account.New(...)`; calls
   `.Aborting()` on every outcome that is not `Done`.
 
 ## Integration Points

@@ -76,14 +76,14 @@ func newTestCR(name, namespace, region, locator string) *v1alpha1.SnowflakeAccou
 	}
 }
 
-// SC-009: ModuleContext.PlatformDB returns a system error when Locator() is
+// SC-009: ModuleContext.TenantDB returns a system error when Locator() is
 // empty, and never calls the pool when it is.
-func TestPlatformDB_EmptyLocator_NeverCallsPool(t *testing.T) {
+func TestTenantDB_EmptyLocator_NeverCallsPool(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "")
 	fake := &fakeDBPool{t: t, forbidCalls: true}
 	mc := NewModuleContext(cr, "ns", nil, nil, nil, fake)
 
-	_, err := mc.PlatformDB(context.Background())
+	_, err := mc.TenantDB(context.Background())
 	if err == nil {
 		t.Fatal("expected an error, got nil")
 	}
@@ -92,9 +92,9 @@ func TestPlatformDB_EmptyLocator_NeverCallsPool(t *testing.T) {
 	}
 }
 
-// SC-010: ModuleContext.PlatformDB resolves the connection once and returns
+// SC-010: ModuleContext.TenantDB resolves the connection once and returns
 // the same *sql.DB on every subsequent call within the same context.
-func TestPlatformDB_MemoizesSameDB(t *testing.T) {
+func TestTenantDB_MemoizesSameDB(t *testing.T) {
 	db1, _, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("sqlmock.New() error: %v", err)
@@ -105,26 +105,26 @@ func TestPlatformDB_MemoizesSameDB(t *testing.T) {
 	fake := &fakeDBPool{tenantDB: db1}
 	mc := NewModuleContext(cr, "ns", nil, nil, nil, fake)
 
-	got1, err := mc.PlatformDB(context.Background())
+	got1, err := mc.TenantDB(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	got2, err := mc.PlatformDB(context.Background())
+	got2, err := mc.TenantDB(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	if got1 != db1 || got2 != db1 {
-		t.Error("PlatformDB did not return the pool's *sql.DB")
+		t.Error("TenantDB did not return the pool's *sql.DB")
 	}
 	if fake.tenantCalls != 1 {
 		t.Errorf("TenantAccount called %d times, want 1", fake.tenantCalls)
 	}
 }
 
-// PlatformDB must pass cr.Name (the CRD's bare metadata.name), not
+// TenantDB must pass cr.Name (the CRD's bare metadata.name), not
 // ResolvedAccountName(), and cr.Spec.Region as the region string.
-func TestPlatformDB_PassesRawCRNameNotResolvedName(t *testing.T) {
+func TestTenantDB_PassesRawCRNameNotResolvedName(t *testing.T) {
 	db1, _, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("sqlmock.New() error: %v", err)
@@ -135,7 +135,7 @@ func TestPlatformDB_PassesRawCRNameNotResolvedName(t *testing.T) {
 	fake := &fakeDBPool{tenantDB: db1}
 	mc := NewModuleContext(cr, "finance", nil, nil, nil, fake)
 
-	if _, err := mc.PlatformDB(context.Background()); err != nil {
+	if _, err := mc.TenantDB(context.Background()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -160,9 +160,9 @@ func TestPlatformDB_PassesRawCRNameNotResolvedName(t *testing.T) {
 	}
 }
 
-// A failed PlatformDB call (empty locator) must not be cached — once the
+// A failed TenantDB call (empty locator) must not be cached — once the
 // locator is set, a later call must still try the pool.
-func TestPlatformDB_FailureNotCached(t *testing.T) {
+func TestTenantDB_FailureNotCached(t *testing.T) {
 	db1, _, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("sqlmock.New() error: %v", err)
@@ -173,7 +173,7 @@ func TestPlatformDB_FailureNotCached(t *testing.T) {
 	fake := &fakeDBPool{tenantDB: db1}
 	mc := NewModuleContext(cr, "ns", nil, nil, nil, fake)
 
-	if _, err := mc.PlatformDB(context.Background()); err == nil {
+	if _, err := mc.TenantDB(context.Background()); err == nil {
 		t.Fatal("expected an error on first call with empty locator")
 	}
 	if fake.tenantCalls != 0 {
@@ -181,26 +181,26 @@ func TestPlatformDB_FailureNotCached(t *testing.T) {
 	}
 
 	mc.SetLocator("AB12345")
-	got, err := mc.PlatformDB(context.Background())
+	got, err := mc.TenantDB(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error after SetLocator: %v", err)
 	}
 	if got != db1 {
-		t.Error("PlatformDB did not return the pool's *sql.DB after SetLocator")
+		t.Error("TenantDB did not return the pool's *sql.DB after SetLocator")
 	}
 	if fake.tenantCalls != 1 {
 		t.Errorf("TenantAccount called %d times, want 1", fake.tenantCalls)
 	}
 }
 
-// PlatformDB passes through a pool error without caching it.
-func TestPlatformDB_PoolError(t *testing.T) {
+// TenantDB passes through a pool error without caching it.
+func TestTenantDB_PoolError(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345")
 	wantErr := errors.New("dial failed")
 	fake := &fakeDBPool{tenantErr: wantErr}
 	mc := NewModuleContext(cr, "ns", nil, nil, nil, fake)
 
-	_, err := mc.PlatformDB(context.Background())
+	_, err := mc.TenantDB(context.Background())
 	if !errors.Is(err, wantErr) {
 		t.Errorf("err = %v, want %v", err, wantErr)
 	}
