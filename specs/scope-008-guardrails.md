@@ -91,3 +91,13 @@ anything guardrail-owned:
 Because of this, 008 has no dependency relationship with 009, 010–013, 015, or 016 in either
 direction, and can be written and implemented in normal ascending order — before 009, as its
 number implies.
+
+## Raised by the 010 clarification
+
+Recorded by `/yukimi.clarify 010`; see `specs/wip-010-account-module.md` (D/O sections) for the full
+reasoning.
+
+- **`CREATE ACCOUNT` requires `EMAIL`, and 010 sources it from `spec.contacts[0]`** (wip-010 D-011,
+  verified against Snowflake's own `CREATE ACCOUNT` reference). 008 must add a constraint requiring a
+  non-empty `contacts[]` at admission — today (006) `contacts[]` is fully optional with no CEL
+  constraint, so without this an account could otherwise reach 010 with nothing to put in `EMAIL`.

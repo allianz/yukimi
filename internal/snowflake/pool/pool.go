@@ -106,7 +106,7 @@ func (p *Pool) keyLock(key tenantKey) *sync.Mutex {
 // OrgAdmin returns the single org-admin *sql.DB, used only for CREATE ACCOUNT
 // and DROP ACCOUNT (design.md 3.6, 6.3, 3.11 intro). The credential is read
 // from the org-admin secret path (003) and the connection is authenticated
-// with the ORGADMIN role. Opened on first call; every later call returns the
+// with the GLOBALORGADMIN role. Opened on first call; every later call returns the
 // same *sql.DB. Also rotates the credential inline once it is older than
 // cfg.Secrets.RotationInterval (see specs/004-connection-pooling.md,
 // Key Concept: Inline Rotation); a rotation failure never fails this call.
@@ -148,7 +148,7 @@ func (p *Pool) OrgAdmin(ctx context.Context) (*sql.DB, error) {
 		return nil, fmt.Errorf("failed to parse private key for org-admin: %w", err)
 	}
 
-	sfCfg := buildSnowflakeConfig(sf.OrgAdminAccountLocator, hostname, creds.Username, key, "ORGADMIN", sf.DisableOCSPChecks)
+	sfCfg := buildSnowflakeConfig(sf.OrgAdminAccountLocator, hostname, creds.Username, key, "GLOBALORGADMIN", sf.DisableOCSPChecks)
 	db, err := p.dial(dialConfig{snowflake: sfCfg, probeTimeout: sf.ConnectionProbeTimeout})
 	if err != nil {
 		return nil, fmt.Errorf("credentials for org-admin %s were read successfully, but failed to connect to %s: %w (tip: run `DESC USER %s` in Snowflake and compare RSA_PUBLIC_KEY_FP against %s; DisableOCSPChecks=%t)",

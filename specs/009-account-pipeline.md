@@ -230,13 +230,13 @@ func (c *ModuleContext) SetLocator(locator string)
 // Only the account module (010) needs this scope.
 func (c *ModuleContext) OrgAdminDB(ctx context.Context) (*sql.DB, error)
 
-// PlatformDB returns a connection scoped to this tenant's own account,
+// TenantDB returns a connection scoped to this tenant's own account,
 // resolved on first call and memoized for the rest of the run.
 //
 // Returns:
 //   - System error if Locator() is still empty — every module after 010 needs
 //     a locator, and getting one is the whole point of running 010 first.
-func (c *ModuleContext) PlatformDB(ctx context.Context) (*sql.DB, error)
+func (c *ModuleContext) TenantDB(ctx context.Context) (*sql.DB, error)
 
 // Custom condition types this package defines, plus the static table deciding
 // which of them forces the resource's aggregate Ready to False. A module
@@ -259,7 +259,7 @@ var GatesReady = map[xpv1.ConditionType]bool{
 internal/account/
 ├── module.go       # Module interface, Outcome, State, Done/Pending/Rejected/Failed, Aborting
 ├── pipeline.go     # Pipeline, New, Observe, Apply, Observation, Result, ModuleOutcome, AllDone
-├── context.go      # ModuleContext, NewModuleContext, Locator/SetLocator, OrgAdminDB/PlatformDB
+├── context.go      # ModuleContext, NewModuleContext, Locator/SetLocator, OrgAdminDB/TenantDB
 └── conditions.go   # TypeQuotaAvailable, TypeIdentitySynced, GatesReady
 ```
 
@@ -272,8 +272,8 @@ package's.
 
 **System Errors**: likewise none of this package's own, with one exception. Every module wraps its
 own system failures with `fmt.Errorf("...: %w", err)` before returning `Failed(err)`. The one system
-error this package itself can produce is `ModuleContext.PlatformDB`'s error when `Locator()` is still
-empty — every other failure surfacing from `OrgAdminDB`/`PlatformDB` is `internal/snowflake/pool`'s
+error this package itself can produce is `ModuleContext.TenantDB`'s error when `Locator()` is still
+empty — every other failure surfacing from `OrgAdminDB`/`TenantDB` is `internal/snowflake/pool`'s
 (004) own error, passed through unwrapped for the calling module to classify.
 
 ## Edge Cases
@@ -290,7 +290,7 @@ empty — every other failure surfacing from `OrgAdminDB`/`PlatformDB` is `inter
   moment that module reports `Done` instead.
 - **What happens on the very first reconcile, before `CREATE ACCOUNT` has ever returned a locator?** -
   `ModuleContext.Locator()` returns `""`. Only the account module (010) can proceed without one; every
-  later module's first call to `PlatformDB` fails with a system error until 010 has called
+  later module's first call to `TenantDB` fails with a system error until 010 has called
   `SetLocator`, which is why 010 must run first and must abort on anything but `Done`.
 - **A module returns `Pending` — who decides when the pipeline is retried?** - Nobody, at this layer.
   `Pending` carries only its reason string, no requeue hint; the controller's own poll interval governs
@@ -309,7 +309,7 @@ empty — every other failure surfacing from `OrgAdminDB`/`PlatformDB` is `inter
   `ModuleContext` carries a `*Logger` for modules to log through; only the caller that built the
   context calls `Handle` on a carried error, once per error.
 - **`internal/snowflake/pool` (004)** - Used APIs: `Pool.OrgAdmin()`, `Pool.TenantAccount()` - Contract:
-  `ModuleContext.OrgAdminDB`/`PlatformDB` wrap these; `PlatformDB` additionally requires a locator.
+  `ModuleContext.OrgAdminDB`/`TenantDB` wrap these; `TenantDB` additionally requires a locator.
 - **`internal/tenant` (006)** - Used APIs: `tenant.ResolveName()`, `tenant.Department()`,
   `tenant.CostCenter()`, `tenant.CreditQuota()` - Contract: `NewModuleContext` resolves the account
   name once via `ResolveName`; modules read the label accessors from `NamespaceLabels()` themselves.
@@ -351,9 +351,9 @@ before the pipeline is ever invoked, so this package neither imports nor referen
    unchanged.
 8. **SC-008**: `Result.AllDone()` is true iff `Outcomes` is non-empty, `Aborted` is false, and every
    entry's `State` is `StateDone`.
-9. **SC-009**: `ModuleContext.PlatformDB` returns a system error when `Locator()` is empty, and never
+9. **SC-009**: `ModuleContext.TenantDB` returns a system error when `Locator()` is empty, and never
    calls the pool when it is.
-10. **SC-010**: `ModuleContext.PlatformDB` resolves the connection once and returns the same `*sql.DB`
+10. **SC-010**: `ModuleContext.TenantDB` resolves the connection once and returns the same `*sql.DB`
     on every subsequent call within the same context.
 11. **SC-011**: `ModuleContext.ResolvedAccountName()` returns the same value `tenant.ResolveName` would
     compute directly from the same CRD name and namespace.
@@ -522,7 +522,7 @@ func (m *Module) Observe(ctx context.Context, mc *account.ModuleContext) (bool, 
 // Apply re-asserts every global and regional parameter unconditionally: no
 // SHOW PARAMETERS, no diff against current state.
 func (m *Module) Apply(ctx context.Context, mc *account.ModuleContext) account.Outcome {
-    db, err := mc.PlatformDB(ctx)
+    db, err := mc.TenantDB(ctx)
     if err != nil {
         return account.Failed(fmt.Errorf("getting platform connection: %w", err))
     }

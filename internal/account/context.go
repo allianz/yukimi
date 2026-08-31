@@ -28,16 +28,17 @@ import (
 	"github.com/allianz/yukimi/internal/tenant"
 )
 
-// dbPool is the subset of *pool.Pool's API ModuleContext depends on, defined
-// locally so tests in this package can inject a fake without reaching into
-// internal/snowflake/pool's own unexported test seam. *pool.Pool satisfies
-// this implicitly.
-type dbPool interface {
+// DBPool is the subset of *pool.Pool's API ModuleContext depends on, defined
+// here (rather than imported from internal/snowflake/pool) so any package —
+// including a module under internal/account/modules/ — can inject a fake
+// without reaching into pool's own unexported dial-function test seam.
+// *pool.Pool satisfies this implicitly.
+type DBPool interface {
 	OrgAdmin(ctx context.Context) (*sql.DB, error)
 	TenantAccount(ctx context.Context, namespace, accountName, locator, region string) (*sql.DB, error)
 }
 
-var _ dbPool = (*pool.Pool)(nil)
+var _ DBPool = (*pool.Pool)(nil)
 
 // ModuleContext is built once per reconcile and handed unchanged to every
 // module. Everything on it is either immutable for the run or, in the case of
@@ -50,11 +51,11 @@ type ModuleContext struct {
 	namespaceLabels map[string]string
 	log             *logger.Logger
 
-	pool dbPool
+	pool DBPool
 
 	locator string
 
-	platformDB *sql.DB
+	tenantDB *sql.DB
 }
 
 // NewModuleContext builds the shared context for one reconcile.
@@ -66,27 +67,16 @@ type ModuleContext struct {
 // onboarding; Department/CostCenter/CreditQuota are read from them by each
 // module itself, not by this constructor. If cr.Status.AccountLocator is
 // already set, it seeds Locator() immediately — callers never seed it
-// themselves; see SetLocator for the only other way it changes.
+// themselves; see SetLocator for the only other way it changes. p is
+// DBPool, not the concrete *pool.Pool, so a module package's own tests can
+// pass a fake.
 func NewModuleContext(
 	cr *v1alpha1.SnowflakeAccount,
 	namespace string,
 	backplaneRegion *backplane.Region,
 	namespaceLabels map[string]string,
 	log *logger.Logger,
-	p *pool.Pool,
-) *ModuleContext {
-	return newModuleContext(cr, namespace, backplaneRegion, namespaceLabels, log, p)
-}
-
-// newModuleContext is NewModuleContext's implementation, taking dbPool
-// instead of *pool.Pool so tests can inject a fake.
-func newModuleContext(
-	cr *v1alpha1.SnowflakeAccount,
-	namespace string,
-	backplaneRegion *backplane.Region,
-	namespaceLabels map[string]string,
-	log *logger.Logger,
-	p dbPool,
+	p DBPool,
 ) *ModuleContext {
 	return &ModuleContext{
 		cr:              cr,
@@ -128,25 +118,25 @@ func (c *ModuleContext) OrgAdminDB(ctx context.Context) (*sql.DB, error) {
 	return c.pool.OrgAdmin(ctx)
 }
 
-// PlatformDB returns a connection scoped to this tenant's own account,
+// TenantDB returns a connection scoped to this tenant's own account,
 // resolved on first call and memoized for the rest of the run.
 //
 // Returns:
 //   - System error if Locator() is still empty — every module after 010
 //     needs a locator, and getting one is the whole point of running 010
 //     first.
-func (c *ModuleContext) PlatformDB(ctx context.Context) (*sql.DB, error) {
-	if c.platformDB != nil {
-		return c.platformDB, nil
+func (c *ModuleContext) TenantDB(ctx context.Context) (*sql.DB, error) {
+	if c.tenantDB != nil {
+		return c.tenantDB, nil
 	}
 	if c.locator == "" {
-		return nil, fmt.Errorf("cannot resolve platform connection: account locator is not yet known for %s/%s", c.namespace, c.cr.Name)
+		return nil, fmt.Errorf("cannot resolve tenant connection: account locator is not yet known for %s/%s", c.namespace, c.cr.Name)
 	}
 
 	db, err := c.pool.TenantAccount(ctx, c.namespace, c.cr.Name, c.locator, c.cr.Spec.Region)
 	if err != nil {
 		return nil, err
 	}
-	c.platformDB = db
+	c.tenantDB = db
 	return db, nil
 }

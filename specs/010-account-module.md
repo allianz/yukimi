@@ -1,0 +1,281 @@
+# Specification: Account Module (010)
+
+## Overview
+
+This module creates a brand-new Snowflake account for a tenant and sets up the one service user the
+platform uses to manage it afterward. It solves the very first step of provisioning a tenant: nothing
+else in the pipeline can run until an account actually exists and the platform can log into it. It is
+needed because creating an account requires organization-wide privileges that no other part of the
+system should hold. The approach is simple: generate a fresh login key, save it safely first, ask
+Snowflake to create the account with that key, and then remember the account's unique ID so every later
+step can find it again.
+
+## Scope
+
+This specification defines the account module that:
+- Generates and stores the `platform` service user's RSA keypair, create-only.
+- Issues `CREATE ACCOUNT` over the org-admin connection and captures the returned account locator.
+- Detects, on every reconcile, whether the account already exists — the pipeline's sole existence signal.
+- Publishes the resolved account name and locator onto the shared `ModuleContext` for every later module.
+
+**Out of Scope**:
+- `DROP ACCOUNT` and credential disposal (017/018).
+- `IdentitySyncRequest` emission (015).
+- Drift detection or repair of the account's own parameters or the `platform` key — not until Snowflake
+  ships Organization Policies (design.md Appendix B).
+- Validating the region's `available` gate (018's validation phase).
+
+## Key Concept: Create-Then-Verify Lifecycle
+
+A tenant's Snowflake account is created exactly once. Before doing anything else, this module checks
+whether that account already exists; if it does, the module never creates another and never touches the
+stored credential again — it only re-confirms that the platform can still log in. An account that has
+gone missing or become unreachable outside the platform's own deletion flow is reported as a problem, not
+treated as a reason to try creating it again: doing so could orphan a live account or replace a key it
+still depends on.
+
+## Key Concept: The Only Module With Organization-Wide Privileges
+
+Creating a Snowflake account needs privileges that span the whole Snowflake organization, not just one
+tenant's account — and organization-wide credentials are exactly what the platform's security model
+(design.md §3.11) tries hardest to avoid using routinely. This module is the sole exception: it is the
+only place in the whole pipeline that ever connects with those privileges, and only for the single act of
+creating the account. Every other connection this module makes — including its own later checks —
+authenticates as the tenant's own account instead.
+
+## Public API
+
+```go
+// package account // internal/account/modules/account
+//
+// The package name deliberately collides with internal/account's own; the two nest the same way
+// design.md's own module list does. Callers alias one side, e.g.:
+//   accountmodule "github.com/allianz/yukimi/internal/account/modules/account"
+
+// New constructs the account module — the pipeline's first module (design.md 3.6). It implements
+// internal/account.Module's Observe/Apply contract; see Key Concept: Create-Then-Verify Lifecycle
+// for what each method does.
+//
+// Parameters:
+//   - backend: the secrets.Backend (003) the platform keypair is stored through, via Backend.Create
+//     only — this module never calls Update.
+//   - org: BaseConfig.Snowflake.Org (002), used to build the tenant secret path (003) exactly as
+//     internal/snowflake/pool does.
+//
+// Returns:
+//   - coreaccount.Module: never nil.
+func New(backend secrets.Backend, org string) coreaccount.Module
+```
+
+`Observe` and `Apply` themselves are unexported methods on the value `New` returns — nothing outside
+this module's own tests calls them directly, so their behavior is documented under Key Concept:
+Create-Then-Verify Lifecycle above rather than here.
+
+**Note**: whether `CREATE ACCOUNT` additionally accepts bind parameters for any of its positions (rather
+than rendered text, see Security Considerations) is an unverified vendor fact — not needed to build this
+module correctly, since the rendering Security Considerations describes is already safe, but worth
+confirming opportunistically and recording in a Snowflake SQL-mechanics notes file if one is ever
+started.
+
+## Project Structure
+
+```text
+internal/account/modules/account/
+├── module.go            # module struct, New, Name()
+├── observe.go           # Observe: existence probe via the tenant platform connection
+├── apply.go             # Apply: keypair generation, credential storage, CREATE ACCOUNT, locator capture
+├── module_test.go
+├── observe_test.go
+├── apply_test.go
+└── integration_test.go  # live Snowflake + AWS Secrets Manager round trip
+```
+
+## Error Classification
+
+**User Errors**:
+- `CREATE ACCOUNT` fails because the resolved account name is already taken by another account org-wide.
+- `spec.contacts` is empty when this module reaches its fresh-create path (defense-in-depth backstop;
+  Guardrails (008) is expected to already block this at admission).
+- The resolved account name does not start with a letter (same backstop).
+
+**System Errors**:
+- RSA keypair generation fails.
+- The secret store's create-only write fails, for any reason — including the path already being
+  occupied.
+- The org-admin connection cannot be opened.
+- `CREATE ACCOUNT` fails for any reason other than the name collision above.
+- The post-create locator lookup finds no matching account despite `CREATE ACCOUNT` having just
+  succeeded.
+- The platform connection fails when a locator is already known (the account exists but is currently
+  unreachable).
+
+## Edge Cases
+
+- **A crash lands between a successful credential store write (or `CREATE ACCOUNT`) and the locator
+  being persisted to status — what happens on the next reconcile?** The next reconcile still has no
+  locator, so it repeats the fresh-create path — and the credential store's create-only write now fails,
+  because the path is already occupied from the previous attempt. This is accepted as a known, bounded
+  operational cost rather than auto-recovered: there is no reliable way to tell "this secret is an orphan
+  from a crashed attempt" apart from "this secret is a live account's platform credential", so guessing
+  would be unsafe. Recovery is manual: an operator inspects the account directly in Snowflake and either
+  patches the resource's status to point at the live account's locator, or deletes both the stray secret
+  and any orphaned account so the resource can create cleanly on its next reconcile.
+- **Why does `Apply` reconnect instead of failing outright whenever a locator is already known?** A
+  locator being known does not by itself mean anything is wrong — it is also true of a perfectly healthy
+  account whose `Apply` is running only because some other module further down the pipeline has drifted.
+  Reconnecting distinguishes "healthy, nothing to do here" from "the account exists but the platform
+  cannot reach it" — the second case, and only the second, is a real failure, and only that case aborts
+  the pipeline.
+- **Why does the post-create locator lookup discard rows that aren't an exact, case-insensitive match?**
+  A pattern-matching lookup treats every underscore in the resolved account name as a single-character
+  wildcard, since the resolved name always contains underscores by construction. Left unguarded, this
+  lookup could return a different account's row whenever that account's name happens to match at every
+  other position. The comparison is also case-insensitive because the resolved name is generated in
+  lowercase, while Snowflake displays unquoted identifiers uppercased.
+- **Why does `Observe` never look accounts up over the org-admin connection?** The org-admin connection
+  is reserved for `CREATE ACCOUNT` and `DROP ACCOUNT` alone. Every module downstream of this one already
+  needs a connection authenticated as the account's own `platform` user, so `Observe` reuses that same
+  path to check existence rather than opening a more privileged one just to look.
+- **Does this module need anything from the Backplane Config (007)?** No. The region literal comes
+  entirely from the CRD plus a fixed transform, and whether a region is open for new accounts at all is
+  checked earlier, during 018's validation phase — not here.
+
+## Dependencies
+
+- **Base Configuration (002)** — Used APIs: `BaseConfig.Snowflake.Org` — Contract: passed to `New` as a
+  plain string; this module never loads the config file itself.
+- **Secrets Handling (003)** — Used APIs: `GenerateKeyPair()`/`NewCredentials()`, `MarshalCredentials()`,
+  `NewTenantPath()`, `Backend.Create()` — Contract: `Backend.Create` only, never `Update`; the module
+  never reads a credential back.
+- **Connection Pooling (004)** — Used APIs: `ModuleContext.OrgAdminDB()`, `ModuleContext.TenantDB()` —
+  Contract: reached only through `ModuleContext`; this module never imports `internal/snowflake/pool` or
+  `internal/snowflake/host` directly.
+- **Statement Execution (005)** — Used APIs: `statement.New()`, `Runner.Exec()`, `Runner.Query()`,
+  `QuoteLiteral()`, `BareIdentifier()`, `*statement.Error` — Contract: every tenant-influenced value is
+  rendered through one of these, never concatenated raw.
+- **SnowflakeAccount CRD (006)** — Used APIs: `SnowflakeAccountSpec.Description`, `.Contacts`, `.Region`
+  — Contract: read-only; this module never writes to the CRD's spec.
+- **Account Pipeline (009)** — Used APIs: `account.Module`, `Done()`/`Pending()`/`Rejected()`/`Failed()`,
+  `Outcome.Aborting()`, `ModuleContext.ResolvedAccountName()`, `.Locator()`, `.SetLocator()`,
+  `.OrgAdminDB()`, `.TenantDB()` — Contract: registered as `modules[0]` in `account.New(...)`; calls
+  `.Aborting()` on every outcome that is not `Done`.
+
+## Integration Points
+
+- **SnowflakeAccount Controller (018)** — Registers this module first in the pipeline via
+  `account.New(...)`, alongside its `secrets.Backend` and `BaseConfig`. Seeds each reconcile's
+  `ModuleContext` from `status.accountLocator` when already set. After `Pipeline.Apply` returns, reads
+  `ModuleContext.ResolvedAccountName()` and `.Locator()` directly — never from this module's `Outcome` —
+  to render `status.accountName`, `status.accountLocator`, and (via `internal/tenant.AccountURL`)
+  `status.accountUrl`. Should persist `status.accountLocator` as promptly as possible after `Apply`
+  returns, since every reconcile between a successful `CREATE ACCOUNT` and that persist is the crash
+  window described above.
+
+## Success Criteria
+
+- **SC-001**: `Observe` returns not-in-sync with no connection attempt when no locator is known.
+- **SC-002**: `Observe` returns in-sync once a known locator's platform connection succeeds.
+- **SC-003**: `Observe` returns not-in-sync, with a system error, when a known locator's platform
+  connection fails.
+- **SC-004**: `Apply` returns `Done()` without touching the credential store or issuing `CREATE ACCOUNT`
+  when a locator is already known and the platform connection succeeds.
+- **SC-005**: `Apply` aborts with a system error, and issues no SQL, when a locator is already known but
+  the platform connection fails.
+- **SC-006**: A fresh create generates a keypair, stores it create-only, then issues `CREATE ACCOUNT` —
+  in that order, and only in that order.
+- **SC-007**: A fresh create aborts with a system error, generating no keypair and issuing no SQL, when
+  the resolved secret path is already occupied.
+- **SC-008**: `CREATE ACCOUNT`'s `REGION` literal is the CRD's region uppercased with every `-` replaced
+  by `_`.
+- **SC-009**: `CREATE ACCOUNT`'s `COMMENT` clause is omitted entirely when `spec.description` is empty.
+- **SC-010**: `CREATE ACCOUNT`'s `EMAIL` is always `spec.contacts[0]`.
+- **SC-011**: A fresh create aborts with a user error, generating no keypair, when `spec.contacts` is
+  empty.
+- **SC-012**: A `CREATE ACCOUNT` failure due to an org-wide name collision is classified as a user error;
+  every other `CREATE ACCOUNT` failure is classified as a system error.
+- **SC-013**: The post-create locator lookup discards a row whose account name is not an exact,
+  case-insensitive match to the resolved name, even when the lookup's own pattern matching returns it.
+- **SC-014**: A fresh create aborts with a system error when the post-create locator lookup finds no
+  matching row.
+- **SC-015**: A successful fresh create calls `SetLocator` with the looked-up locator before returning
+  `Done()`.
+- **SC-016**: Every outcome other than `Done()` carries `Abort == true`.
+- **SC-017**: Unit test coverage exceeds 95%.
+- **SC-018**: Integration test coverage includes a full create-then-reconnect round trip against a live
+  Snowflake organization and a live secrets backend.
+
+## Security Considerations
+
+- The org-admin connection is opened only inside this module, and only on the fresh-create path — no
+  other module, and no other path through this one, ever requests it.
+- The secret store's create-only write is the sole safeguard against overwriting a live account's
+  credential on a retried request; this module never reads a stored credential back to decide whether to
+  reuse it.
+- The post-create locator lookup's pattern matching is a coarse pre-filter only; the exact,
+  case-insensitive re-check is load-bearing, not defensive style, given how often the resolved account
+  name's own underscores would otherwise produce a false match.
+- **`CREATE ACCOUNT` rendering.** Only two of this statement's values are tenant-supplied free text —
+  `EMAIL` and `COMMENT` — and both are rendered as escaped, quoted string literals. Every other position
+  is either a fixed controller literal or an algorithmically-derived token, never raw tenant input, and
+  is still passed through a bare-identifier charset check as a defense-in-depth backstop rather than
+  trusted implicitly. None of these values is ever concatenated into the statement text unescaped.
+
+  | Position | Value | Rendering |
+  | --- | --- | --- |
+  | account name | the resolved account name (design.md 3.12) | bare identifier |
+  | `ADMIN_NAME` | fixed `"platform"` | quoted literal |
+  | `ADMIN_RSA_PUBLIC_KEY` | the generated public key | quoted literal |
+  | `ADMIN_USER_TYPE` | fixed `SERVICE` | bare token |
+  | `EMAIL` | `spec.contacts[0]` (tenant free text) | quoted literal |
+  | `EDITION` | fixed `ENTERPRISE` | bare token |
+  | `REGION` | `spec.region`, transformed into Snowflake's region-identifier form | bare identifier |
+  | `COMMENT` | `spec.description` (tenant free text); clause omitted if empty | quoted literal |
+
+## References
+
+- **Product design**: `specs/design.md` §3.2, §3.6, §3.11, §3.11.1, §3.12, Appendix B (X1).
+- **Account Pipeline**: `internal/account/module.go`, `context.go`, `pipeline.go` — the `Module`
+  interface, `Outcome` vocabulary, and shared `ModuleContext` this module implements against.
+- **Secrets Handling**: `internal/secrets/backend.go`, `path.go`, `credentials.go`.
+- **Statement Execution**: `internal/snowflake/statement/statement.go`, `render.go`, `errors.go`.
+- **Snowflake `CREATE ACCOUNT` reference**: https://docs.snowflake.com/en/sql-reference/sql/create-account
+  — required parameters, and which parameter positions are quoted string literals versus bare tokens.
+- **Snowflake `SHOW ACCOUNTS` reference**: https://docs.snowflake.com/en/sql-reference/sql/show-accounts
+  — the `account_locator`/`account_name` columns, and `LIKE`'s wildcard-only, case-insensitive matching.
+
+<br/><br/><br/><br/><br/>
+
+================
+
+## Appendix: Usage Examples
+
+### Example 1: Wiring the module into the pipeline (018)
+
+```go
+import (
+    accountmodule "github.com/allianz/yukimi/internal/account/modules/account"
+    "github.com/allianz/yukimi/internal/account"
+)
+
+pipeline := account.New(
+    accountmodule.New(secretsBackend, baseConfig.Snowflake.Org),
+    // ... modules 011-016, in order
+)
+```
+
+### Example 2: First reconcile creates, second only reconnects
+
+```go
+mc := account.NewModuleContext(cr, "finance", nil, nsLabels, log, pool)
+
+// First reconcile: no locator yet.
+inSync, _ := module.Observe(ctx, mc)   // inSync == false, nothing has been touched yet
+outcome := module.Apply(ctx, mc)       // generates keypair, stores it, issues CREATE ACCOUNT,
+                                        // calls mc.SetLocator(...), returns Done()
+
+// A later reconcile against the same resource, with status.accountLocator now seeded into a
+// fresh ModuleContext by 018:
+mc2 := account.NewModuleContext(cr, "finance", nil, nsLabels, log, pool) // mc2.Locator() != ""
+inSync2, _ := module.Observe(ctx, mc2) // reconnects as platform; inSync2 == true
+outcome2 := module.Apply(ctx, mc2)     // reconnects again, no SQL issued, returns Done()
+```
