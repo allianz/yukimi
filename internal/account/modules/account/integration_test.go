@@ -114,7 +114,7 @@ func TestIntegration_Create(t *testing.T) {
 	p := pool.New(backend, cfg)
 	t.Cleanup(func() { _ = p.Close() })
 
-	namespace := "integration-test"
+	namespace := os.Getenv("SAMPLE_CUSTOMER_NAMESPACE")
 	name := fmt.Sprintf("integration-test-%d", time.Now().Unix())
 	cr := &v1alpha1.SnowflakeAccount{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
