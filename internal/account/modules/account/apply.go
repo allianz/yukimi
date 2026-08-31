@@ -90,7 +90,7 @@ func (m *module) createAccount(ctx context.Context, mc *coreaccount.ModuleContex
 	}
 	runner := statement.New(orgAdminDB)
 
-	locator, outcome := issueCreateAccount(ctx, runner, resolvedName, cr.Spec.Region, cr.Spec.Contacts[0], cr.Spec.Description, creds.PublicKey)
+	locator, outcome := runCreateAccount(ctx, runner, resolvedName, cr.Spec.Region, cr.Spec.Contacts[0], cr.Spec.Description, creds.PublicKey)
 	if outcome.State != coreaccount.StateDone {
 		return outcome
 	}
@@ -99,10 +99,10 @@ func (m *module) createAccount(ctx context.Context, mc *coreaccount.ModuleContex
 	return coreaccount.Done()
 }
 
-// issueCreateAccount renders and executes CREATE ACCOUNT over runner, then
+// runCreateAccount renders and executes CREATE ACCOUNT over runner, then
 // looks up the locator Snowflake assigned. It is pure with respect to
 // ModuleContext — testable with a sqlmock-backed *statement.Runner alone.
-func issueCreateAccount(ctx context.Context, runner *statement.Runner, resolvedName, region, email, description, publicKey string) (string, coreaccount.Outcome) {
+func runCreateAccount(ctx context.Context, runner *statement.Runner, resolvedName, region, email, description, publicKey string) (string, coreaccount.Outcome) {
 	nameToken, err := statement.BareIdentifier(resolvedName)
 	if err != nil {
 		return "", coreaccount.Rejected(err).Aborting()
