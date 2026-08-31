@@ -25,41 +25,45 @@ flowchart TB
     %% right to be pushed left. `spacer` is a transparent node — only its width does any work —
     %% and the invisible `~~~` link is what pins it to the same rank as the box instead of letting
     %% it float off on its own. Add or remove dots to nudge Preparation further left or right.
-    spacer["............................................................................................................................................................................................................................"]
+    spacer["........................................................................................................................................................................................."]
 
-    %% Edge order decides the left-to-right order of the two sources: Preparation's edge comes
-    %% first, so it sits left and the spacer takes the room to its right.
-    prep --> impl
+    %% `anchor` is a second invisible node, directly below Preparation. The arrow terminates there
+    %% instead of on the wide implementation box, so it drops straight down rather than leaning
+    %% towards that box's centre. Edge order decides the left-to-right order at each rank, so the
+    %% Preparation/anchor edges come before the spacer's.
+    prep --> anchor[" "]
+    anchor ~~~ impl
     spacer ~~~ impl
 
-    %% Invisible grouping box. Rows are declared NNN-first because the last one renders on top.
+    %% Invisible grouping box. Row order follows declaration order here, so 001 first, NNN last.
     subgraph impl[" "]
         direction LR
 
-        subgraph specn["Implement Feature NNN"]
-            cn("/yukimi.clarify NNN") --> sn("/yukimi.specify NNN") --> imn("/yukimi.implement NNN")
+        subgraph spec1["Implement Feature 001"]
+            c1("/yukimi.clarify 001") --> s1("/yukimi.specify 001") --> sf1["spec-001.md"] --> i1("/yukimi.implement 001")
         end
 
         subgraph spec2["Implement Feature 002"]
-            c2("/yukimi.clarify 002") --> s2("/yukimi.specify 002") --> i2("/yukimi.implement 002")
+            c2("/yukimi.clarify 002") --> s2("/yukimi.specify 002") --> sf2["spec-002.md"] --> i2("/yukimi.implement 002")
         end
 
-        subgraph spec1["Implement Feature 001"]
-            c1("/yukimi.clarify 001") --> s1("/yukimi.specify 001") --> i1("/yukimi.implement 001")
+        subgraph specn["Implement Feature NNN"]
+            cn("/yukimi.clarify NNN") --> sn("/yukimi.specify NNN") --> sfn["spec-NNN.md"] --> imn("/yukimi.implement NNN")
         end
 
-        scn["scope-NNN.md"] --> cn
-        sc2["scope-002.md"] --> c2
         sc1["scope-001.md"] --> c1
+        sc2["scope-002.md"] --> c2
+        scn["scope-NNN.md"] --> cn
     end
 
     classDef file fill:transparent,stroke:transparent,stroke-width:0
     classDef skill fill:#e8f4fd,stroke:#22c2ff,color:#123
-    class design,scn,sc2,sc1 file
+    class design,scn,sc2,sc1,sfn,sf2,sf1 file
     class plan,cn,sn,imn,c2,s2,i2,c1,s1,i1 skill
 
     style prep fill:transparent,stroke:#9aa0a6,stroke-dasharray:2 4
     style spacer fill:transparent,stroke:transparent,color:transparent
+    style anchor fill:transparent,stroke:transparent,color:transparent
     style impl fill:transparent,stroke:transparent
     style spec1 fill:transparent,stroke:#9aa0a6,stroke-dasharray:4 3
     style spec2 fill:transparent,stroke:#9aa0a6,stroke-dasharray:4 3
