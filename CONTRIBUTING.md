@@ -25,7 +25,7 @@ flowchart TB
     %% right to be pushed left. `spacer` is a transparent node — only its width does any work —
     %% and the invisible `~~~` link is what pins it to the same rank as the box instead of letting
     %% it float off on its own. Add or remove dots to nudge Preparation further left or right.
-    spacer["........................................................................................................................................................................................."]
+    spacer["..........................................................................................................................................."]
 
     %% `anchor` is a second invisible node, one rank below Preparation and nothing else — that is
     %% what makes the arrow drop straight down from the box's centre. It must NOT link to `impl`:
