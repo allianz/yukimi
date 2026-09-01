@@ -43,20 +43,20 @@ flowchart TB
         direction LR
 
         subgraph spec2["Implement Feature 002"]
-            c2("/yukimi.clarify 002") --> s2("/yukimi.specify 002") --> sf2["spec-002.md"] --> i2("/yukimi.implement 002")
+            c2("/yukimi.clarify 002") --> s2("/yukimi.specify 002") --> sf2["spec-002-*.md"] --> i2("/yukimi.implement 002")
         end
 
         subgraph specn["Implement Feature NNN"]
-            cn("/yukimi.clarify NNN") --> sn("/yukimi.specify NNN") --> sfn["spec-NNN.md"] --> imn("/yukimi.implement NNN")
+            cn("/yukimi.clarify NNN") --> sn("/yukimi.specify NNN") --> sfn["spec-NNN-*.md"] --> imn("/yukimi.implement NNN")
         end
 
         subgraph spec1["Implement Feature 001"]
-            c1("/yukimi.clarify 001") --> s1("/yukimi.specify 001") --> sf1["spec-001.md"] --> i1("/yukimi.implement 001")
+            c1("/yukimi.clarify 001") --> s1("/yukimi.specify 001") --> sf1["spec-001-*.md"] --> i1("/yukimi.implement 001")
         end
 
-        sc1["scope-001.md"] --> c1
-        sc2["scope-002.md"] --> c2
-        scn["scope-NNN.md"] --> cn
+        sc1["scope-001-*.md"] --> c1
+        sc2["scope-002-*.md"] --> c2
+        scn["scope-NNN-*.md"] --> cn
     end
 
     classDef file fill:transparent,stroke:transparent,stroke-width:0
