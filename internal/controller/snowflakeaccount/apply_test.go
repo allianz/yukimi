@@ -23,7 +23,13 @@ import (
 	xpv1 "github.com/crossplane/crossplane-runtime/v2/apis/common/v1"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	v1alpha1 "github.com/allianz/yukimi/apis/base/v1alpha1"
 	coreaccount "github.com/allianz/yukimi/internal/account"
 	"github.com/allianz/yukimi/internal/config"
 	internalerrors "github.com/allianz/yukimi/internal/errors"
@@ -127,5 +133,63 @@ func TestApply_PersistsStatusEvenOnFailure(t *testing.T) {
 	}
 	if cr.Status.AccountName == "" {
 		t.Errorf("AccountName not set")
+	}
+}
+
+// Regression test for a bug found live: crossplane-runtime's managed
+// reconciler reverts any in-memory status change Create() makes once it
+// persists the critical external-create-succeeded annotation right
+// afterward (a plain Update() on a status-subresource type decodes the API
+// server's still-stale status back over ours). Without apply()'s own
+// synchronous Status().Update() call, a freshly captured accountLocator
+// never survives past the in-memory struct — this test proves it survives
+// a second, independent Get() against the same fake client, not just a
+// re-read of the same cr pointer apply() already mutated.
+func TestApply_StatusSurvivesAFreshGet(t *testing.T) {
+	cr := newTestCR("team-a", "aws-eu-central-1")
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-a"}}
+
+	scheme := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme(clientgoscheme) error = %v", err)
+	}
+	if err := v1alpha1.SchemeBuilder.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme(v1alpha1) error = %v", err)
+	}
+	// WithStatusSubresource is required for the fake client's Status().Update()
+	// to behave like a real cluster's status subresource (kubebuilder's
+	// +kubebuilder:subresource:status marker on the type isn't itself visible
+	// to the fake client) — without it Status().Update() fails "not found".
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&v1alpha1.SnowflakeAccount{}).WithObjects(ns, cr).Build()
+
+	// A real reconcile always calls Create with an object freshly Get'd from
+	// the API server (carrying its real resourceVersion); WithObjects seeded
+	// the tracker with a copy, leaving cr's own resourceVersion at its zero
+	// value, so re-fetch it here to match that real precondition.
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(cr), cr); err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+
+	e := &external{
+		kube: kube,
+		log:  logging.NewNopLogger(),
+		deps: Dependencies{
+			Backplane: newTestBackplane(),
+			Pipeline:  coreaccount.New(&fakeModule{name: "account", applyOut: coreaccount.Done(), setLocator: "xc19114"}),
+			Config:    &config.BaseConfig{},
+			Pool:      &fakePool{},
+		},
+	}
+
+	if _, err := e.Create(context.Background(), cr); err != nil {
+		t.Fatalf("Create() error = %v, want nil", err)
+	}
+
+	fresh := &v1alpha1.SnowflakeAccount{}
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(cr), fresh); err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if fresh.Status.AccountLocator != "xc19114" {
+		t.Errorf("a fresh Get() sees AccountLocator = %q, want %q — status did not survive", fresh.Status.AccountLocator, "xc19114")
 	}
 }

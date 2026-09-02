@@ -62,8 +62,17 @@ type SnowflakeAccountSpec struct {
 	// +optional
 	CustomAuthRules *CustomAuthRules `json:"customAuthRules,omitempty"`
 
-	// The only crossplane-runtime managed-resource field this type carries.
-	// No ProviderConfigReference, no WriteConnectionSecretToReference.
+	// No ProviderConfigReference (Key Concept: Minimal Managed-Resource
+	// Surface) — but WriteConnectionSecretToReference is carried anyway,
+	// unused by this controller (Create/Update never populate
+	// ConnectionDetails), because crossplane-runtime v2's managed reconciler
+	// calls PublishConnection after every Observe/Create/Update
+	// unconditionally, type-switching on resource.LocalConnectionSecretOwner
+	// with no opt-out — omitting this field entirely errors every reconcile
+	// before Create is ever reached.
+	// +optional
+	WriteConnectionSecretToReference *xpv1.LocalSecretReference `json:"writeConnectionSecretToRef,omitempty"`
+
 	// +optional
 	// +kubebuilder:default={"*"}
 	ManagementPolicies common.ManagementPolicies `json:"managementPolicies,omitempty"`
@@ -181,7 +190,22 @@ func (a *SnowflakeAccount) SetConditions(c ...xpv1.Condition) {
 	a.Status.SetConditions(c...)
 }
 
+// GetWriteConnectionSecretToReference and SetWriteConnectionSecretToReference
+// satisfy resource.LocalConnectionSecretOwner — required by
+// crossplane-runtime v2's managed reconciler to call PublishConnection at
+// all (see the field's own doc comment); this controller never sets a
+// reference, so the framework's publisher always treats it as "no secret
+// requested" and no-ops.
+func (a *SnowflakeAccount) GetWriteConnectionSecretToReference() *xpv1.LocalSecretReference {
+	return a.Spec.WriteConnectionSecretToReference
+}
+
+func (a *SnowflakeAccount) SetWriteConnectionSecretToReference(r *xpv1.LocalSecretReference) {
+	a.Spec.WriteConnectionSecretToReference = r
+}
+
 var _ resource.Managed = &SnowflakeAccount{}
+var _ resource.LocalConnectionSecretOwner = &SnowflakeAccount{}
 
 // +kubebuilder:object:root=true
 

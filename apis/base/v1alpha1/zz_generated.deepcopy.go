@@ -23,6 +23,7 @@ package v1alpha1
 
 import (
 	"github.com/crossplane/crossplane-runtime/v2/apis/common"
+	"github.com/crossplane/crossplane-runtime/v2/apis/common/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 )
 
@@ -236,6 +237,11 @@ func (in *SnowflakeAccountSpec) DeepCopyInto(out *SnowflakeAccountSpec) {
 		in, out := &in.CustomAuthRules, &out.CustomAuthRules
 		*out = new(CustomAuthRules)
 		(*in).DeepCopyInto(*out)
+	}
+	if in.WriteConnectionSecretToReference != nil {
+		in, out := &in.WriteConnectionSecretToReference, &out.WriteConnectionSecretToReference
+		*out = new(v1.LocalSecretReference)
+		**out = **in
 	}
 	if in.ManagementPolicies != nil {
 		in, out := &in.ManagementPolicies, &out.ManagementPolicies

@@ -35,6 +35,10 @@ type fakeModule struct {
 	observeOut    coreaccount.Outcome
 	applyOut      coreaccount.Outcome
 	applyCalled   int
+
+	// setLocator, if non-empty, is set on the ModuleContext during Apply —
+	// mirrors the account module (010) capturing CREATE ACCOUNT's locator.
+	setLocator string
 }
 
 func (f *fakeModule) Name() string { return f.name }
@@ -43,8 +47,11 @@ func (f *fakeModule) Observe(_ context.Context, _ *coreaccount.ModuleContext) (b
 	return f.observeInSync, f.observeOut
 }
 
-func (f *fakeModule) Apply(_ context.Context, _ *coreaccount.ModuleContext) coreaccount.Outcome {
+func (f *fakeModule) Apply(_ context.Context, mc *coreaccount.ModuleContext) coreaccount.Outcome {
 	f.applyCalled++
+	if f.setLocator != "" {
+		mc.SetLocator(f.setLocator)
+	}
 	return f.applyOut
 }
 

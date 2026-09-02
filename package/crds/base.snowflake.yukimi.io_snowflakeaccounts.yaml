@@ -176,8 +176,8 @@ spec:
                 default:
                 - '*'
                 description: |-
-                  The only crossplane-runtime managed-resource field this type carries.
-                  No ProviderConfigReference, no WriteConnectionSecretToReference.
+                  ManagementPolicies determine how should Crossplane controllers manage an
+                  external resource through an array of ManagementActions.
                 items:
                   description: |-
                     A ManagementAction represents an action that the Crossplane controllers
@@ -197,6 +197,23 @@ spec:
                 x-kubernetes-validations:
                 - message: region is immutable
                   rule: self == oldSelf
+              writeConnectionSecretToRef:
+                description: |-
+                  No ProviderConfigReference (Key Concept: Minimal Managed-Resource
+                  Surface) — but WriteConnectionSecretToReference is carried anyway,
+                  unused by this controller (Create/Update never populate
+                  ConnectionDetails), because crossplane-runtime v2's managed reconciler
+                  calls PublishConnection after every Observe/Create/Update
+                  unconditionally, type-switching on resource.LocalConnectionSecretOwner
+                  with no opt-out — omitting this field entirely errors every reconcile
+                  before Create is ever reached.
+                properties:
+                  name:
+                    description: Name of the secret.
+                    type: string
+                required:
+                - name
+                type: object
             required:
             - environment
             - identityIntegration

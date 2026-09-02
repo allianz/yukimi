@@ -51,6 +51,23 @@ func (e *external) apply(ctx context.Context, cr *v1alpha1.SnowflakeAccount, op 
 	if result.AllDone() {
 		cr.Status.SetObservedGeneration(cr.Generation)
 	}
+
+	// crossplane-runtime's managed reconciler reverts any in-memory status
+	// change made during Create() once it persists the critical
+	// external-create-succeeded annotation right afterward (its own
+	// UpdateCriticalAnnotations doc comment: "Any other changes made during
+	// Create will be reverted when annotations are updated" — a plain
+	// Update() on a status-subresource type decodes the API server's
+	// still-stale status back over ours). Persisting here, synchronously,
+	// before returning, means that later step reads back the real value
+	// instead of wiping it — without this, a freshly captured
+	// accountLocator never survives a Create() call, and every later
+	// reconcile re-attempts CREATE ACCOUNT against the same name forever,
+	// hitting a silent, invisible duplicate-name rejection every time
+	// (confirmed against a live org while debugging 018).
+	if err := e.kube.Status().Update(ctx, cr); err != nil {
+		_ = log.Handle(err) // best-effort; the framework's own status update after this call still tries again
+	}
 	return nil
 }
 

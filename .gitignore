@@ -33,4 +33,3 @@ Thumbs.db
 
 # Personal local-dev setup (Minikube helper Makefile + generated config)
 /Makefile.local
-/local/

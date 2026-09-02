@@ -12,7 +12,7 @@
 apiVersion: base.snowflake.yukimi.io/v1alpha1
 kind: SnowflakeAccount
 metadata:
-  name: myfirstaccount # created in Snowflake as analytics_team_eu_<hash> (design.md 3.12)
+  name: myfirstaccount5 # created in Snowflake as analytics_team_eu_<hash> (design.md 3.12)
 spec:
   description: "Analytics team Snowflake environment for EU operations"
   contacts:

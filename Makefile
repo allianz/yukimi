@@ -102,7 +102,7 @@ dev: $(KIND) $(KUBECTL)
 	@$(INFO) Generating local provider config from .env
 	@$(ROOT_DIR)/cluster/local/generate-local-config.sh
 	@$(INFO) Starting Yukimi controllers
-	@$(GO) run cmd/provider/main.go --configDir=$(ROOT_DIR)/local/config --debug
+	@set -a && source .env && set +a && $(GO) run cmd/provider/main.go --configDir=$(ROOT_DIR)/local/config --debug
 
 dev-clean: $(KIND) $(KUBECTL)
 	@$(INFO) Deleting kind cluster
