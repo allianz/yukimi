@@ -157,10 +157,10 @@ type rawSecrets struct {
 	RotationInterval string `yaml:"rotationInterval"`
 }
 
-// Load reads, parses, and validates "<configDir>/baseConfig.yaml".
+// Load reads, parses, and validates "<configDir>/base.yaml".
 //
 // Parameters:
-//   - configDir: directory containing baseConfig.yaml (and, in a full deployment,
+//   - configDir: directory containing base.yaml (and, in a full deployment,
 //     its sibling config files for 007/008 — this package reads only its own file)
 //
 // Returns:
@@ -176,41 +176,41 @@ type rawSecrets struct {
 // Load walks the parsed YAML's top-level keys to find the cloud sections, so a section with
 // no Go struct yet (azure:, gcp:) is still recognized rather than silently dropped.
 func Load(configDir string) (*Config, error) {
-	path := filepath.Join(configDir, "baseConfig.yaml")
+	path := filepath.Join(configDir, "base.yaml")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, errors.NewUserError(fmt.Sprintf("baseConfig.yaml not found in %s", configDir))
+			return nil, errors.NewUserError(fmt.Sprintf("base.yaml not found in %s", configDir))
 		}
-		return nil, fmt.Errorf("reading baseConfig.yaml: %w", err)
+		return nil, fmt.Errorf("reading base.yaml: %w", err)
 	}
 
 	var root yaml.Node
 	if err := yaml.Unmarshal(data, &root); err != nil {
-		return nil, errors.NewUserError(fmt.Sprintf("failed to parse baseConfig.yaml: %v", err))
+		return nil, errors.NewUserError(fmt.Sprintf("failed to parse base.yaml: %v", err))
 	}
 
 	var raw rawConfig
 	if root.Kind == yaml.DocumentNode && len(root.Content) > 0 {
 		if err := root.Decode(&raw); err != nil {
-			return nil, errors.NewUserError(fmt.Sprintf("failed to parse baseConfig.yaml: %v", err))
+			return nil, errors.NewUserError(fmt.Sprintf("failed to parse base.yaml: %v", err))
 		}
 	}
 
 	cloudSections := detectCloudSections(&root)
 	switch len(cloudSections) {
 	case 0:
-		return nil, errors.NewUserError("baseConfig.yaml must contain one cloud section (one of: aws, azure, gcp)")
+		return nil, errors.NewUserError("base.yaml must contain one cloud section (one of: aws, azure, gcp)")
 	case 1:
 		// exactly one, continue
 	default:
 		return nil, errors.NewUserError(fmt.Sprintf(
-			"baseConfig.yaml contains several cloud sections (%s); exactly one is allowed",
+			"base.yaml contains several cloud sections (%s); exactly one is allowed",
 			strings.Join(cloudSections, ", ")))
 	}
 
 	if raw.Snowflake.Org == "" {
-		return nil, errors.NewUserError("snowflake.org is required in baseConfig.yaml")
+		return nil, errors.NewUserError("snowflake.org is required in base.yaml")
 	}
 	if !identifierPattern.MatchString(raw.Snowflake.Org) {
 		return nil, errors.NewUserError(fmt.Sprintf(
@@ -218,7 +218,7 @@ func Load(configDir string) (*Config, error) {
 	}
 
 	if raw.Snowflake.OrgAdminAccount == "" {
-		return nil, errors.NewUserError("snowflake.orgAdminAccount is required in baseConfig.yaml")
+		return nil, errors.NewUserError("snowflake.orgAdminAccount is required in base.yaml")
 	}
 	if !identifierPattern.MatchString(raw.Snowflake.OrgAdminAccount) {
 		return nil, errors.NewUserError(fmt.Sprintf(
@@ -227,7 +227,7 @@ func Load(configDir string) (*Config, error) {
 	}
 
 	if raw.Snowflake.OrgAdminAccountLocator == "" {
-		return nil, errors.NewUserError("snowflake.orgAdminAccountLocator is required in baseConfig.yaml")
+		return nil, errors.NewUserError("snowflake.orgAdminAccountLocator is required in base.yaml")
 	}
 	if !accountLocatorPattern.MatchString(raw.Snowflake.OrgAdminAccountLocator) {
 		return nil, errors.NewUserError(fmt.Sprintf(
@@ -236,7 +236,7 @@ func Load(configDir string) (*Config, error) {
 	}
 
 	if raw.Snowflake.OrgAdminAccountRegion == "" {
-		return nil, errors.NewUserError("snowflake.orgAdminAccountRegion is required in baseConfig.yaml")
+		return nil, errors.NewUserError("snowflake.orgAdminAccountRegion is required in base.yaml")
 	}
 	if !orgAdminRegionPattern.MatchString(raw.Snowflake.OrgAdminAccountRegion) {
 		return nil, errors.NewUserError(fmt.Sprintf(

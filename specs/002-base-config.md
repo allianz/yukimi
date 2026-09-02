@@ -2,31 +2,31 @@
 
 ## Overview
 
-`internal/config/base/` loads the controller's base configuration — `baseConfig.yaml`, read from a mounted directory at startup — into an immutable `Config` struct. It carries the Snowflake organization identity plus exactly what's needed to reach the cloud provider the controller runs on and that provider's own secret manager. It is a plain file loader: no Kubernetes API calls, no CRD, no reconciliation. Failing fast here means a misconfigured deployment never reaches a reconcile loop.
+`internal/config/base/` loads the controller's base configuration — `base.yaml`, read from a mounted directory at startup — into an immutable `Config` struct. It carries the Snowflake organization identity plus exactly what's needed to reach the cloud provider the controller runs on and that provider's own secret manager. It is a plain file loader: no Kubernetes API calls, no CRD, no reconciliation. Failing fast here means a misconfigured deployment never reaches a reconcile loop.
 
 ## Scope
 
 This specification defines the `internal/config/base/` package that:
-- Loads `<configDir>/baseConfig.yaml` at startup, where `configDir` is a directory path resolved elsewhere (see Integration Points).
+- Loads `<configDir>/base.yaml` at startup, where `configDir` is a directory path resolved elsewhere (see Integration Points).
 - Exposes the parsed, validated result as an immutable `Config` struct.
 - Validates required fields, raising `errors.NewUserError` for missing or malformed values, so the process fails fast at startup rather than once per reconcile.
 
 **Out of Scope**:
 - No CRD, no controller, no reconciler, no Kubernetes watch. This is not a Crossplane `ProviderConfig`.
 - No interpretation of any field's meaning. Fields owned by other components are checked for existence and shape only; e.g. whether `aws.region` names a real region is 003.a's concern, never this package's.
-- No knowledge of environment variables, `.env`, or how a Makefile might materialize `baseConfig.yaml` for local development. `Load` only ever reads a file from disk.
+- No knowledge of environment variables, `.env`, or how a Makefile might materialize `base.yaml` for local development. `Load` only ever reads a file from disk.
 - No credential fields of any kind. Workload identity vs. local environment-variable/profile credentials is resolved entirely inside the cloud SDK's own default credential chain (003.a) — never modeled as a `Config` field or an explicit "auth mode" switch.
 - No check of `CloudProvider()`'s result against the set of backends actually compiled into the binary. That check — and the fatal rejection of a cloud section with no backend — belongs to `cmd/provider/main.go`, not this package.
 
 ## Key Concept: Shared Settings, Structural Validation Only
 
-Almost every field in `baseConfig.yaml` belongs to another component — `aws.region` to 003.a, the `snowflake` block to 003, 004 and 006 — as will fields added later, say a `snowflake.maxConnectionPoolSize` for 004. One shared file for the whole controller weakens encapsulation deliberately: this package names fields it never reads, and in return a bad value fails once at startup instead of at each package's first reconcile.
+Almost every field in `base.yaml` belongs to another component — `aws.region` to 003.a, the `snowflake` block to 003, 004 and 006 — as will fields added later, say a `snowflake.maxConnectionPoolSize` for 004. One shared file for the whole controller weakens encapsulation deliberately: this package names fields it never reads, and in return a bad value fails once at startup instead of at each package's first reconcile.
 
 What this package checks is therefore limited to structure: **existence** (present, non-empty) and **shape** (a regex, per the schema table below). Meaning stays with the owner — whether the value names something real, cross-field consistency, anything needing a network call. `Load` rejects `aws.region: "Frankfurt!"` on shape but accepts `aws.region: "xx-nowhere-9"`; only 003.a can reject that.
 
 ## Key Concept: Shared `--configDir`, Duplicated Loaders
 
-`baseConfig.yaml` is one of several files this platform reads from a single mounted directory — sibling files will hold the Backplane Config (007) and the Guardrails / Approved Exceptions config (008). All of them are addressed through one directory path, conventionally supplied to `cmd/provider/main.go` via a `--configDir` flag; `internal/config/base` itself takes only the resolved directory string, not the flag.
+`base.yaml` is one of several files this platform reads from a single mounted directory — sibling files will hold the Backplane Config (007) and the Guardrails / Approved Exceptions config (008). All of them are addressed through one directory path, conventionally supplied to `cmd/provider/main.go` via a `--configDir` flag; `internal/config/base` itself takes only the resolved directory string, not the flag.
 
 Each of those packages reads its own well-known filename from that shared directory independently. `internal/config/base` defines no shared "multi-file config loader" interface, no common YAML-decoding helper, and no validation framework for the others to build on. Each loader's "open file → parse → validate" logic is fully duplicated across 002, 007, and 008. This is deliberate: the loaders are small, and their validation rules differ enough — different required fields, different failure modes — that a shared abstraction would cost more to maintain than the duplication it would remove.
 
@@ -35,9 +35,9 @@ Each of those packages reads its own well-known filename from that shared direct
 `Load` behaves identically regardless of where the controller runs — nothing in this package branches on environment. What differs between production and local development is how the cloud SDK resolves credentials underneath the secrets backend (003.a), entirely outside `Config`'s schema:
 
 - **In-cluster (production)**: the controller runs as a pod with workload identity (IRSA for AWS). The AWS SDK's default credential provider chain picks up the projected service-account token automatically — no configuration from this package is involved.
-- **Local development**: the controller runs outside the Kubernetes cluster, so no workload identity exists. Credentials instead come from environment variables (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN`) or `AWS_PROFILE`. The *same* default credential chain simply falls through to them, since no IRSA metadata is present outside the cluster. How those environment variables are populated — including a Makefile copying `.env` values into `baseConfig.yaml` or the shell environment for local runs — is tooling, out of scope for this spec.
+- **Local development**: the controller runs outside the Kubernetes cluster, so no workload identity exists. Credentials instead come from environment variables (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN`) or `AWS_PROFILE`. The *same* default credential chain simply falls through to them, since no IRSA metadata is present outside the cluster. How those environment variables are populated — including a Makefile copying `.env` values into `base.yaml` or the shell environment for local runs — is tooling, out of scope for this spec.
 
-Because both cases go through the same SDK-internal chain, the switch between workload identity and local credentials is never a setting anyone writes into `baseConfig.yaml`. `Config.AWS` carries only `Region` and the optional `KmsKeyId` reference described above — never credentials, never an explicit "auth mode" flag. 003.a's constructor calls the SDK's default chain and nothing else, so the identical code path resolves to workload identity or environment-variable credentials purely based on what the process finds at startup. This package's only responsibility is making sure `baseConfig.yaml` loads the same way no matter which environment the binary runs in.
+Because both cases go through the same SDK-internal chain, the switch between workload identity and local credentials is never a setting anyone writes into `base.yaml`. `Config.AWS` carries only `Region` and the optional `KmsKeyId` reference described above — never credentials, never an explicit "auth mode" flag. 003.a's constructor calls the SDK's default chain and nothing else, so the identical code path resolves to workload identity or environment-variable credentials purely based on what the process finds at startup. This package's only responsibility is making sure `base.yaml` loads the same way no matter which environment the binary runs in.
 
 ## Public API
 
@@ -88,10 +88,10 @@ type SecretsSettings struct {
     RotationInterval time.Duration // age past which OrgAdmin/TenantAccount rotate a stored credential inline (004); defaults to 4320h (~6 months) when omitted
 }
 
-// Load reads, parses, and validates "<configDir>/baseConfig.yaml".
+// Load reads, parses, and validates "<configDir>/base.yaml".
 //
 // Parameters:
-//   - configDir: directory containing baseConfig.yaml (and, in a full deployment,
+//   - configDir: directory containing base.yaml (and, in a full deployment,
 //     its sibling config files for 007/008 — this package reads only its own file)
 //
 // Returns:
@@ -111,9 +111,9 @@ func Load(configDir string) (*Config, error)
 
 ## Schema Specification
 
-Every field in `baseConfig.yaml` is freely editable and the whole file is reloaded wholesale on the next pod restart — there is no per-field mutability rule to enforce, so the table below omits a Mutability column.
+Every field in `base.yaml` is freely editable and the whole file is reloaded wholesale on the next pod restart — there is no per-field mutability rule to enforce, so the table below omits a Mutability column.
 
-### Fields (`baseConfig.yaml`)
+### Fields (`base.yaml`)
 
 | Field Path | Type | Required | Validation / Constraints |
 | ---------- | ---- | -------- | ------------------------ |
@@ -145,24 +145,24 @@ internal/config/base/
 ## Error Classification
 
 **User Errors** (use `errors.NewUserError()`):
-- Missing file: `baseConfig.yaml not found in <configDir>`
-- Malformed YAML: `failed to parse baseConfig.yaml: <parse error>`
-- Missing required field: `snowflake.org is required in baseConfig.yaml`
-- Missing required field: `snowflake.orgAdminAccount is required in baseConfig.yaml`
-- Missing required field: `snowflake.orgAdminAccountLocator is required in baseConfig.yaml`
-- Missing required field: `snowflake.orgAdminAccountRegion is required in baseConfig.yaml`
+- Missing file: `base.yaml not found in <configDir>`
+- Malformed YAML: `failed to parse base.yaml: <parse error>`
+- Missing required field: `snowflake.org is required in base.yaml`
+- Missing required field: `snowflake.orgAdminAccount is required in base.yaml`
+- Missing required field: `snowflake.orgAdminAccountLocator is required in base.yaml`
+- Missing required field: `snowflake.orgAdminAccountRegion is required in base.yaml`
 - Malformed value: `snowflake.orgAdminAccountLocator 'xc-19114!' does not match the expected format (expected: xc19114)`
 - Malformed value: `snowflake.orgAdminAccountRegion 'Frankfurt!' does not match the expected format (expected: aws-eu-central-1 or azure-westeurope)`
 - Malformed value: `snowflake.orgAdminAccountRegion 'eu-central-1' does not match the expected format (expected: aws-eu-central-1 or azure-westeurope)` — a region missing its cloud prefix
 - Malformed value: `aws.region 'Frankfurt!' does not match the expected format (expected: eu-central-1)` — and likewise for any other field with a documented regex
 - Malformed value: `aws.kmsKeyId 'not a key!' does not match the expected format (expected: a KMS key ID, alias, or ARN, e.g. alias/my-key)`
-- No cloud section: `baseConfig.yaml must contain one cloud section (one of: aws, azure, gcp)`
-- Several cloud sections: `baseConfig.yaml contains several cloud sections (aws, azure); exactly one is allowed`
+- No cloud section: `base.yaml must contain one cloud section (one of: aws, azure, gcp)`
+- Several cloud sections: `base.yaml contains several cloud sections (aws, azure); exactly one is allowed`
 - Out-of-range pool-tuning integer: `snowflake.maxConnectionPoolSize '0' must be a positive integer`, `snowflake.maxIdleConnections '-1' must not be negative`
 - Malformed duration: `snowflake.connectionMaxLifetime 'not-a-duration' does not match the expected format (expected: a Go duration string, e.g. 30m)` — and likewise for `connectionMaxIdleTime`, `connectionProbeTimeout`, and `secrets.cacheTtl`
 - Non-positive duration: `snowflake.connectionMaxLifetime '0s' must be a positive duration` — and likewise for `connectionMaxIdleTime`, `connectionProbeTimeout`, and `secrets.cacheTtl`
 
-**System Errors**: this package makes no network calls and has no retryable infrastructure dependency, so it classifies no scenario as a system error on its own. An unexpected filesystem error (e.g. a permissions problem on the mounted volume) surfaces as a raw wrapped error (`fmt.Errorf("reading baseConfig.yaml: %w", err)`); the caller's error handling (001) treats it as a system error by default, since `Load` never wraps it in `errors.NewUserError`. This is intentionally minimal — this package does not attempt to distinguish every possible OS-level failure mode.
+**System Errors**: this package makes no network calls and has no retryable infrastructure dependency, so it classifies no scenario as a system error on its own. An unexpected filesystem error (e.g. a permissions problem on the mounted volume) surfaces as a raw wrapped error (`fmt.Errorf("reading base.yaml: %w", err)`); the caller's error handling (001) treats it as a system error by default, since `Load` never wraps it in `errors.NewUserError`. This is intentionally minimal — this package does not attempt to distinguish every possible OS-level failure mode.
 
 ## Edge Cases
 
@@ -178,7 +178,7 @@ internal/config/base/
 - **What if `orgAdminAccountLocator`/`orgAdminAccountRegion` is well-formed but not real (e.g. a locator that doesn't exist, or a region Snowflake doesn't offer)?** - `Load` accepts it. Shape is all this package can judge; realness can only be discovered on 004's first connection attempt.
 - **What happens if `aws.kmsKeyId` is omitted?** - `Load` accepts it; 003.a passes no `KmsKeyId` to AWS Secrets Manager, which falls back to its AWS-managed default key. The feature is opt-in.
 - **What if `aws.kmsKeyId` is malformed (e.g. `aws.kmsKeyId: "not a key!"`)?** - A user error at `Load`, exactly like a malformed `aws.region`. Whether a well-formed but non-existent or inaccessible key is rejected is 003.a's concern at first use, not this package's.
-- **What differs when the controller runs outside the cluster (local development)?** - Nothing in this package. `Load` reads and validates `baseConfig.yaml` identically either way; only the AWS SDK's underlying credential resolution differs beneath 003.a (see Key Concept above), and that difference is invisible to `internal/config/base`.
+- **What differs when the controller runs outside the cluster (local development)?** - Nothing in this package. `Load` reads and validates `base.yaml` identically either way; only the AWS SDK's underlying credential resolution differs beneath 003.a (see Key Concept above), and that difference is invisible to `internal/config/base`.
 
 ## Dependencies
 
@@ -193,8 +193,8 @@ internal/config/base/
 
 ## Success Criteria
 
-- **SC-001**: `Load` returns a populated `*Config` for a well-formed `baseConfig.yaml`.
-- **SC-002**: `Load` returns a user error when `<configDir>/baseConfig.yaml` does not exist.
+- **SC-001**: `Load` returns a populated `*Config` for a well-formed `base.yaml`.
+- **SC-002**: `Load` returns a user error when `<configDir>/base.yaml` does not exist.
 - **SC-003**: `Load` returns a user error when the file is not valid YAML.
 - **SC-004**: `Load` returns a user error when `snowflake.org` is empty or absent.
 - **SC-005**: `Load` returns a user error when `snowflake.orgAdminAccount` is empty or absent.
@@ -243,7 +243,7 @@ import (
 )
 
 func main() {
-    configDir := flag.String("configDir", "/etc/yukimi/config", "directory containing baseConfig.yaml and sibling config files")
+    configDir := flag.String("configDir", "/etc/yukimi/config", "directory containing base.yaml and sibling config files")
     flag.Parse()
 
     cfg, err := base.Load(*configDir)
@@ -268,7 +268,7 @@ func main() {
 }
 ```
 
-### Example 2: A `baseConfig.yaml` Fixture
+### Example 2: A `base.yaml` Fixture
 
 ```yaml
 snowflake:

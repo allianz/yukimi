@@ -402,7 +402,7 @@ ALTER ACCOUNT SET NETWORK_POLICY = 'PLATFORM_ACCOUNT_POLICY';
 
 ```
 
-`CREATE ACCOUNT` returns the account locator Snowflake assigns (for example `xc19114`); the controller captures it here and builds `status.accountUrl` (7.2) from it, since the URL Snowflake returns omits the PrivateLink segment. Whether PrivateLink applies is a provider-wide setting in the controller's base configuration (`baseConfig.yaml`); it changes only the domain suffix, not whether the locator is used.
+`CREATE ACCOUNT` returns the account locator Snowflake assigns (for example `xc19114`); the controller captures it here and builds `status.accountUrl` (7.2) from it, since the URL Snowflake returns omits the PrivateLink segment. Whether PrivateLink applies is a provider-wide setting in the controller's base configuration (`base.yaml`); it changes only the domain suffix, not whether the locator is used.
 
 **Note:** Snowflake is expected to release a new feature/syntax called Organization Policies, which will let this same network policy be enforced centrally on the account rather than via the `ALTER ACCOUNT` commands above. Once that syntax is available, this implementation will be swapped to use it — the enforced policy stays the same, but tenants will no longer be able to modify or unset it themselves. Not yet released as of this writing.
 
@@ -609,7 +609,7 @@ Before the controller can import groups into a local account (3.7), those groups
 
 If your enterprise architecture does not automatically sync all corporate groups to the organization account by default, an explicit integration is required. To facilitate this, the platform emits an `IdentitySyncRequest` to request the needed groups.
 
-The two settings that govern this behavior — whether requests are emitted at all, and how long an outstanding request may stay unfulfilled before it is reported as stalled — are org-wide, since identity is integrated globally (3.7). They live in the controller's base configuration (`baseConfig.yaml`).
+The two settings that govern this behavior — whether requests are emitted at all, and how long an outstanding request may stay unfulfilled before it is reported as stalled — are org-wide, since identity is integrated globally (3.7). They live in the controller's base configuration (`base.yaml`).
 
 ### 4.1 Example
 

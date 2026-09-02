@@ -16,7 +16,7 @@ few lookup and validation helpers that other packages call directly.
 
 This specification defines the `internal/config/backplane/` package that:
 - Loads `<configDir>/backplane.yaml` at startup, where `configDir` is the same directory path
-  `002` reads `baseConfig.yaml` from.
+  `002` reads `base.yaml` from.
 - Exposes the parsed, validated result as an immutable `Config` struct.
 - Looks up a region by name, and a connection by name within a region's inventory.
 - Provides a CIDR-containment helper reused by the network module (012).
@@ -87,7 +87,7 @@ type AllowlistEntry struct {
 // Load reads, parses, and validates "<configDir>/backplane.yaml".
 //
 // Parameters:
-//   - configDir: directory containing backplane.yaml (a sibling of baseConfig.yaml, 002)
+//   - configDir: directory containing backplane.yaml (a sibling of base.yaml, 002)
 //
 // Returns:
 //   - *Config: the validated configuration; never nil on a nil error
@@ -125,7 +125,7 @@ func ContainsCIDR(ranges []string, candidate string) (bool, error)
 ## Schema Specification
 
 Every field in `backplane.yaml` is freely editable and the whole file is reloaded wholesale on the
-next pod restart, exactly like `baseConfig.yaml` (002) — no Mutability column.
+next pod restart, exactly like `base.yaml` (002) — no Mutability column.
 
 ### Fields (`backplane.yaml`)
 

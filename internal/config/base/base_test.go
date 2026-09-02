@@ -27,12 +27,12 @@ import (
 	"github.com/allianz/yukimi/internal/errors"
 )
 
-// newConfigDir writes content as baseConfig.yaml into a fresh temp directory
+// newConfigDir writes content as base.yaml into a fresh temp directory
 // and returns the directory path.
 func newConfigDir(t *testing.T, content string) string {
 	t.Helper()
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "baseConfig.yaml"), []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "base.yaml"), []byte(content), 0o644); err != nil {
 		t.Fatalf("writing fixture: %v", err)
 	}
 	return dir
@@ -50,7 +50,7 @@ aws:
   region: eu-central-1
 `
 
-// SC-001: Load returns a populated *Config for a well-formed baseConfig.yaml.
+// SC-001: Load returns a populated *Config for a well-formed base.yaml.
 func TestLoad_WellFormed(t *testing.T) {
 	cfg, err := Load(newConfigDir(t, wellFormedFixture))
 	if err != nil {
@@ -303,7 +303,7 @@ aws:
 `
 }
 
-// SC-002: Load returns a user error when <configDir>/baseConfig.yaml does not exist.
+// SC-002: Load returns a user error when <configDir>/base.yaml does not exist.
 func TestLoad_MissingFile(t *testing.T) {
 	dir := t.TempDir()
 	_, err := Load(dir)
@@ -313,7 +313,7 @@ func TestLoad_MissingFile(t *testing.T) {
 	if !errors.IsUserError(err) {
 		t.Errorf("expected user error, got %v", err)
 	}
-	want := "baseConfig.yaml not found in " + dir
+	want := "base.yaml not found in " + dir
 	if err.Error() != want {
 		t.Errorf("error = %q, want %q", err.Error(), want)
 	}
@@ -322,9 +322,9 @@ func TestLoad_MissingFile(t *testing.T) {
 // Error Classification (system error): an OS error other than "not exist" is not a user error.
 func TestLoad_UnreadableFile(t *testing.T) {
 	dir := t.TempDir()
-	// Make baseConfig.yaml a directory so os.ReadFile fails deterministically (EISDIR),
+	// Make base.yaml a directory so os.ReadFile fails deterministically (EISDIR),
 	// avoiding a flaky/permission-dependent chmod-based fixture.
-	if err := os.Mkdir(filepath.Join(dir, "baseConfig.yaml"), 0o755); err != nil {
+	if err := os.Mkdir(filepath.Join(dir, "base.yaml"), 0o755); err != nil {
 		t.Fatalf("setting up fixture: %v", err)
 	}
 
@@ -335,8 +335,8 @@ func TestLoad_UnreadableFile(t *testing.T) {
 	if errors.IsUserError(err) {
 		t.Errorf("expected non-user error, got user error: %v", err)
 	}
-	if !strings.HasPrefix(err.Error(), "reading baseConfig.yaml:") {
-		t.Errorf("error = %q, want prefix %q", err.Error(), "reading baseConfig.yaml:")
+	if !strings.HasPrefix(err.Error(), "reading base.yaml:") {
+		t.Errorf("error = %q, want prefix %q", err.Error(), "reading base.yaml:")
 	}
 }
 
@@ -349,8 +349,8 @@ func TestLoad_MalformedYAML_Syntax(t *testing.T) {
 	if !errors.IsUserError(err) {
 		t.Errorf("expected user error, got %v", err)
 	}
-	if !strings.HasPrefix(err.Error(), "failed to parse baseConfig.yaml:") {
-		t.Errorf("error = %q, want prefix %q", err.Error(), "failed to parse baseConfig.yaml:")
+	if !strings.HasPrefix(err.Error(), "failed to parse base.yaml:") {
+		t.Errorf("error = %q, want prefix %q", err.Error(), "failed to parse base.yaml:")
 	}
 }
 
@@ -363,8 +363,8 @@ func TestLoad_MalformedYAML_WrongShape(t *testing.T) {
 	if !errors.IsUserError(err) {
 		t.Errorf("expected user error, got %v", err)
 	}
-	if !strings.HasPrefix(err.Error(), "failed to parse baseConfig.yaml:") {
-		t.Errorf("error = %q, want prefix %q", err.Error(), "failed to parse baseConfig.yaml:")
+	if !strings.HasPrefix(err.Error(), "failed to parse base.yaml:") {
+		t.Errorf("error = %q, want prefix %q", err.Error(), "failed to parse base.yaml:")
 	}
 }
 
@@ -377,7 +377,7 @@ aws:
   region: eu-central-1
 `
 	_, err := Load(newConfigDir(t, fixture))
-	want := "snowflake.org is required in baseConfig.yaml"
+	want := "snowflake.org is required in base.yaml"
 	if err == nil || err.Error() != want {
 		t.Errorf("error = %v, want %q", err, want)
 	}
@@ -396,7 +396,7 @@ aws:
   region: eu-central-1
 `
 	_, err := Load(newConfigDir(t, fixture))
-	want := "snowflake.org is required in baseConfig.yaml"
+	want := "snowflake.org is required in base.yaml"
 	if err == nil || err.Error() != want {
 		t.Errorf("error = %v, want %q", err, want)
 	}
@@ -411,7 +411,7 @@ aws:
   region: eu-central-1
 `
 	_, err := Load(newConfigDir(t, fixture))
-	want := "snowflake.orgAdminAccount is required in baseConfig.yaml"
+	want := "snowflake.orgAdminAccount is required in base.yaml"
 	if err == nil || err.Error() != want {
 		t.Errorf("error = %v, want %q", err, want)
 	}
@@ -430,7 +430,7 @@ aws:
   region: eu-central-1
 `
 	_, err := Load(newConfigDir(t, fixture))
-	want := "snowflake.orgAdminAccount is required in baseConfig.yaml"
+	want := "snowflake.orgAdminAccount is required in base.yaml"
 	if err == nil || err.Error() != want {
 		t.Errorf("error = %v, want %q", err, want)
 	}
@@ -484,7 +484,7 @@ aws:
   region: eu-central-1
 `
 	_, err := Load(newConfigDir(t, fixture))
-	want := "snowflake.orgAdminAccountLocator is required in baseConfig.yaml"
+	want := "snowflake.orgAdminAccountLocator is required in base.yaml"
 	if err == nil || err.Error() != want {
 		t.Errorf("error = %v, want %q", err, want)
 	}
@@ -505,7 +505,7 @@ aws:
   region: eu-central-1
 `
 	_, err := Load(newConfigDir(t, fixture))
-	want := "snowflake.orgAdminAccountLocator is required in baseConfig.yaml"
+	want := "snowflake.orgAdminAccountLocator is required in base.yaml"
 	if err == nil || err.Error() != want {
 		t.Errorf("error = %v, want %q", err, want)
 	}
@@ -522,7 +522,7 @@ aws:
   region: eu-central-1
 `
 	_, err := Load(newConfigDir(t, fixture))
-	want := "snowflake.orgAdminAccountRegion is required in baseConfig.yaml"
+	want := "snowflake.orgAdminAccountRegion is required in base.yaml"
 	if err == nil || err.Error() != want {
 		t.Errorf("error = %v, want %q", err, want)
 	}
@@ -543,7 +543,7 @@ aws:
   region: eu-central-1
 `
 	_, err := Load(newConfigDir(t, fixture))
-	want := "snowflake.orgAdminAccountRegion is required in baseConfig.yaml"
+	want := "snowflake.orgAdminAccountRegion is required in base.yaml"
 	if err == nil || err.Error() != want {
 		t.Errorf("error = %v, want %q", err, want)
 	}
@@ -644,7 +644,7 @@ snowflake:
   orgAdminAccount: my_org_admin_account_name
 `
 	_, err := Load(newConfigDir(t, fixture))
-	want := "baseConfig.yaml must contain one cloud section (one of: aws, azure, gcp)"
+	want := "base.yaml must contain one cloud section (one of: aws, azure, gcp)"
 	if err == nil || err.Error() != want {
 		t.Errorf("error = %v, want %q", err, want)
 	}
@@ -666,7 +666,7 @@ azure:
   foo: bar
 `
 	_, err := Load(newConfigDir(t, fixture))
-	want := "baseConfig.yaml contains several cloud sections (aws, azure); exactly one is allowed"
+	want := "base.yaml contains several cloud sections (aws, azure); exactly one is allowed"
 	if err == nil || err.Error() != want {
 		t.Errorf("error = %v, want %q", err, want)
 	}
@@ -685,7 +685,7 @@ aws:
   region: eu-central-1
 `
 	_, err := Load(newConfigDir(t, fixture))
-	want := "baseConfig.yaml contains several cloud sections (azure, aws); exactly one is allowed"
+	want := "base.yaml contains several cloud sections (azure, aws); exactly one is allowed"
 	if err == nil || err.Error() != want {
 		t.Errorf("error = %v, want %q", err, want)
 	}
@@ -705,7 +705,7 @@ gcp:
   foo: bar
 `
 	_, err := Load(newConfigDir(t, fixture))
-	want := "baseConfig.yaml contains several cloud sections (aws, azure, gcp); exactly one is allowed"
+	want := "base.yaml contains several cloud sections (aws, azure, gcp); exactly one is allowed"
 	if err == nil || err.Error() != want {
 		t.Errorf("error = %v, want %q", err, want)
 	}
@@ -1054,7 +1054,7 @@ aws:
 // Edge case: an empty file has no cloud section, surfacing that specific error.
 func TestLoad_EmptyFile(t *testing.T) {
 	_, err := Load(newConfigDir(t, ""))
-	want := "baseConfig.yaml must contain one cloud section (one of: aws, azure, gcp)"
+	want := "base.yaml must contain one cloud section (one of: aws, azure, gcp)"
 	if err == nil || err.Error() != want {
 		t.Errorf("error = %v, want %q", err, want)
 	}
@@ -1068,7 +1068,7 @@ func TestLoad_EmptyFile(t *testing.T) {
 // rather than a parse error.
 func TestLoad_NullDocument(t *testing.T) {
 	_, err := Load(newConfigDir(t, "~\n"))
-	want := "baseConfig.yaml must contain one cloud section (one of: aws, azure, gcp)"
+	want := "base.yaml must contain one cloud section (one of: aws, azure, gcp)"
 	if err == nil || err.Error() != want {
 		t.Errorf("error = %v, want %q", err, want)
 	}

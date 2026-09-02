@@ -88,7 +88,7 @@ type rawAllowlistEntry struct {
 // Load reads, parses, and validates "<configDir>/backplane.yaml".
 //
 // Parameters:
-//   - configDir: directory containing backplane.yaml (a sibling of baseConfig.yaml, 002)
+//   - configDir: directory containing backplane.yaml (a sibling of base.yaml, 002)
 //
 // Returns:
 //   - *Config: the validated configuration; never nil on a nil error

@@ -72,7 +72,7 @@ Recorded by `/yukimi.clarify 009`. `specs/009-account-pipeline.md` now carries t
 these points rest on.
 
 - **`Config` has no `identitySync` section yet, and 014 must add it.** Design 4.3 places
-  `identitySync.enabled` and `identitySync.timeout` in `baseConfig.yaml`, but 002 was written without
+  `identitySync.enabled` and `identitySync.timeout` in `base.yaml`, but 002 was written without
   them — `internal/config/base/base.go`'s `Config` carries only `Snowflake`, `AWS` and `Secrets`
   (verified against the code). 014 therefore extends `internal/config/base`, which no earlier spec does.
   Left open by the 009 clarification: decide and state what an absent or disabled `identitySync` means

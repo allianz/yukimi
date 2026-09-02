@@ -69,7 +69,7 @@ var _ secrets.Backend = (*Backend)(nil)
 func New(region, kmsKeyId string) (secrets.Backend, error) {
 	if region == "" {
 		return nil, errors.NewUserError(
-			"AWS region is required to construct the secrets backend (expected: aws.region in baseConfig.yaml)")
+			"AWS region is required to construct the secrets backend (expected: aws.region in base.yaml)")
 	}
 
 	cfg, err := config.LoadDefaultConfig(context.Background(), config.WithRegion(region))
