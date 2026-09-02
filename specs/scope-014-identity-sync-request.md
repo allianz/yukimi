@@ -73,8 +73,8 @@ these points rest on.
 
 - **`BaseConfig` has no `identitySync` section yet, and 014 must add it.** Design 4.3 places
   `identitySync.enabled` and `identitySync.timeout` in `baseConfig.yaml`, but 002 was written without
-  them — `internal/config/config.go`'s `BaseConfig` carries only `Snowflake`, `AWS` and `Secrets`
-  (verified against the code). 014 therefore extends `internal/config`, which no earlier spec does.
+  them — `internal/config/base/base.go`'s `BaseConfig` carries only `Snowflake`, `AWS` and `Secrets`
+  (verified against the code). 014 therefore extends `internal/config/base`, which no earlier spec does.
   Left open by the 009 clarification: decide and state what an absent or disabled `identitySync` means
   for the `IdentitySynced` condition.
 - **015 calls the emitter, not 018.** Emission of `IdentitySyncRequest` is owned by the identity

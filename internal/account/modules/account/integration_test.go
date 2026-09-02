@@ -31,7 +31,7 @@ import (
 
 	v1alpha1 "github.com/allianz/yukimi/apis/base/v1alpha1"
 	coreaccount "github.com/allianz/yukimi/internal/account"
-	"github.com/allianz/yukimi/internal/config"
+	"github.com/allianz/yukimi/internal/config/base"
 	"github.com/allianz/yukimi/internal/secrets"
 	secretsaws "github.com/allianz/yukimi/internal/secrets/aws"
 	"github.com/allianz/yukimi/internal/snowflake/pool"
@@ -100,8 +100,8 @@ func TestIntegration_Create(t *testing.T) {
 	backend := secrets.NewCachedBackend(awsBackend, 5*time.Minute)
 
 	org := os.Getenv("SNOWFLAKE_ORG")
-	cfg := &config.BaseConfig{
-		Snowflake: config.SnowflakeSettings{
+	cfg := &base.BaseConfig{
+		Snowflake: base.SnowflakeSettings{
 			Org:                    org,
 			OrgAdminAccount:        os.Getenv("SNOWFLAKE_ORG_ADMIN_ACCOUNT"),
 			OrgAdminAccountLocator: os.Getenv("SNOWFLAKE_ORG_ADMIN_ACCOUNT_LOCATOR"),

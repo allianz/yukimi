@@ -17,7 +17,7 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
 
 ## Roadmap's original scope notes
 
-- Package: `internal/guardrails/`. Covers design 3.3 and 3.4. Depends on: 001, 002, 006.
+- Package: `internal/config/guardrails/`. Covers design 3.3 and 3.4. Depends on: 001, 002, 006.
 - Concept: a gatekeeper that validates tenant input **before** anything reaches Snowflake. It
   applies exclusively to `SnowflakeAccount`; the other kinds validate themselves. It is a pure
   function over the CRD, the exceptions file, and the namespace's `department` label — no

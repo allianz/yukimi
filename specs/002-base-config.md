@@ -2,11 +2,11 @@
 
 ## Overview
 
-`internal/config/` loads the controller's base configuration — `baseConfig.yaml`, read from a mounted directory at startup — into an immutable `BaseConfig` struct. It carries the Snowflake organization identity plus exactly what's needed to reach the cloud provider the controller runs on and that provider's own secret manager. It is a plain file loader: no Kubernetes API calls, no CRD, no reconciliation. Failing fast here means a misconfigured deployment never reaches a reconcile loop.
+`internal/config/base/` loads the controller's base configuration — `baseConfig.yaml`, read from a mounted directory at startup — into an immutable `BaseConfig` struct. It carries the Snowflake organization identity plus exactly what's needed to reach the cloud provider the controller runs on and that provider's own secret manager. It is a plain file loader: no Kubernetes API calls, no CRD, no reconciliation. Failing fast here means a misconfigured deployment never reaches a reconcile loop.
 
 ## Scope
 
-This specification defines the `internal/config/` package that:
+This specification defines the `internal/config/base/` package that:
 - Loads `<configDir>/baseConfig.yaml` at startup, where `configDir` is a directory path resolved elsewhere (see Integration Points).
 - Exposes the parsed, validated result as an immutable `BaseConfig` struct.
 - Validates required fields, raising `errors.NewUserError` for missing or malformed values, so the process fails fast at startup rather than once per reconcile.
@@ -26,9 +26,9 @@ What this package checks is therefore limited to structure: **existence** (prese
 
 ## Key Concept: Shared `--configDir`, Duplicated Loaders
 
-`baseConfig.yaml` is one of several files this platform reads from a single mounted directory — sibling files will hold the Backplane Config (007) and the Guardrails / Approved Exceptions config (008). All of them are addressed through one directory path, conventionally supplied to `cmd/provider/main.go` via a `--configDir` flag; `internal/config` itself takes only the resolved directory string, not the flag.
+`baseConfig.yaml` is one of several files this platform reads from a single mounted directory — sibling files will hold the Backplane Config (007) and the Guardrails / Approved Exceptions config (008). All of them are addressed through one directory path, conventionally supplied to `cmd/provider/main.go` via a `--configDir` flag; `internal/config/base` itself takes only the resolved directory string, not the flag.
 
-Each of those packages reads its own well-known filename from that shared directory independently. `internal/config` defines no shared "multi-file config loader" interface, no common YAML-decoding helper, and no validation framework for the others to build on. Each loader's "open file → parse → validate" logic is fully duplicated across 002, 007, and 008. This is deliberate: the loaders are small, and their validation rules differ enough — different required fields, different failure modes — that a shared abstraction would cost more to maintain than the duplication it would remove.
+Each of those packages reads its own well-known filename from that shared directory independently. `internal/config/base` defines no shared "multi-file config loader" interface, no common YAML-decoding helper, and no validation framework for the others to build on. Each loader's "open file → parse → validate" logic is fully duplicated across 002, 007, and 008. This is deliberate: the loaders are small, and their validation rules differ enough — different required fields, different failure modes — that a shared abstraction would cost more to maintain than the duplication it would remove.
 
 ## Key Concept: Credentials Are Never a `BaseConfig` Field
 
@@ -137,9 +137,9 @@ Every field in `baseConfig.yaml` is freely editable and the whole file is reload
 ## Project Structure
 
 ```text
-internal/config/
-├── config.go        # BaseConfig, SnowflakeSettings, AWSSettings, Load()
-└── config_test.go   # Unit tests
+internal/config/base/
+├── base.go        # BaseConfig, SnowflakeSettings, AWSSettings, Load()
+└── base_test.go   # Unit tests
 ```
 
 ## Error Classification
@@ -178,18 +178,18 @@ internal/config/
 - **What if `orgAdminAccountLocator`/`orgAdminAccountRegion` is well-formed but not real (e.g. a locator that doesn't exist, or a region Snowflake doesn't offer)?** - `Load` accepts it. Shape is all this package can judge; realness can only be discovered on 004's first connection attempt.
 - **What happens if `aws.kmsKeyId` is omitted?** - `Load` accepts it; 003.a passes no `KmsKeyId` to AWS Secrets Manager, which falls back to its AWS-managed default key. The feature is opt-in.
 - **What if `aws.kmsKeyId` is malformed (e.g. `aws.kmsKeyId: "not a key!"`)?** - A user error at `Load`, exactly like a malformed `aws.region`. Whether a well-formed but non-existent or inaccessible key is rejected is 003.a's concern at first use, not this package's.
-- **What differs when the controller runs outside the cluster (local development)?** - Nothing in this package. `Load` reads and validates `baseConfig.yaml` identically either way; only the AWS SDK's underlying credential resolution differs beneath 003.a (see Key Concept above), and that difference is invisible to `internal/config`.
+- **What differs when the controller runs outside the cluster (local development)?** - Nothing in this package. `Load` reads and validates `baseConfig.yaml` identically either way; only the AWS SDK's underlying credential resolution differs beneath 003.a (see Key Concept above), and that difference is invisible to `internal/config/base`.
 
 ## Dependencies
 
-- **`internal/errors` (001)** - Used APIs: `errors.NewUserError()` - Contract: none; `internal/config` has no other internal dependency, making it a leaf package.
+- **`internal/errors` (001)** - Used APIs: `errors.NewUserError()` - Contract: none; `internal/config/base` has no other internal dependency, making it a leaf package.
 
 ## Integration Points
 
-- **`cmd/provider/main.go`** - Owns the `--configDir` flag and resolves it to a directory path. Calls `config.Load(configDir)` once at startup, then switches on `BaseConfig.CloudProvider()` to construct the matching secrets backend, fatally rejecting an unrecognized value by listing the cloud providers compiled in. Also reads `BaseConfig.Secrets.CacheTTL` and passes it to `secrets.NewCachedBackend(backend, cfg.Secrets.CacheTTL)` (003) — `internal/secrets` itself never imports `internal/config` - Key functions: `config.Load()`, `BaseConfig.CloudProvider()`.
+- **`cmd/provider/main.go`** - Owns the `--configDir` flag and resolves it to a directory path. Calls `base.Load(configDir)` once at startup, then switches on `BaseConfig.CloudProvider()` to construct the matching secrets backend, fatally rejecting an unrecognized value by listing the cloud providers compiled in. Also reads `BaseConfig.Secrets.CacheTTL` and passes it to `secrets.NewCachedBackend(backend, cfg.Secrets.CacheTTL)` (003) — `internal/secrets` itself never imports `internal/config/base` - Key functions: `base.Load()`, `BaseConfig.CloudProvider()`.
 - **`internal/secrets/aws` (003.a)** - Consumes `BaseConfig.AWS.Region` when constructed by `main.go`; rejects an empty region as a user error itself, since 002 does not validate it. Also optionally consumes `BaseConfig.AWS.KmsKeyId`, passing it through to `CreateSecret`'s `KmsKeyId` parameter when non-empty, so Secrets Manager encrypts/decrypts with the customer-managed key instead of its AWS-managed default - Notes: credentials come from the AWS SDK's default chain, never from `BaseConfig`.
 - **`internal/snowflake/pool` (004)** - Consumes `BaseConfig.Snowflake.Org`, `OrgAdminAccount`, `OrgAdminAccountLocator`, `OrgAdminAccountRegion`, `UsePrivateLink`, and `DisableOCSPChecks` for org-admin connection host/config construction (design.md 3.6, 3.11), plus `MaxConnectionPoolSize`, `MaxIdleConnections`, `ConnectionMaxLifetime`, `ConnectionMaxIdleTime`, and `ConnectionProbeTimeout` to tune every pooled `*sql.DB`.
-- **`internal/backplane` (007)** / **guardrails loader (008)** - Read their own sibling files (`backplane.yaml`, a guardrails/exceptions file) from the same `--configDir`, with independently implemented loading and validation logic — no code shared with `internal/config`.
+- **`internal/config/backplane` (007)** / **guardrails loader (008)** - Read their own sibling files (`backplane.yaml`, a guardrails/exceptions file) from the same `--configDir`, with independently implemented loading and validation logic — no code shared with `internal/config/base`.
 
 ## Success Criteria
 
@@ -206,7 +206,7 @@ internal/config/
 - **SC-010a**: `Load` returns a user error when `snowflake.org` or `snowflake.orgAdminAccount` contains characters outside the Snowflake identifier form (e.g. `my-org`).
 - **SC-011**: An unrecognized top-level YAML key does not cause `Load` to fail.
 - **SC-012**: The returned `*BaseConfig` is safe for concurrent read-only use by multiple goroutines after `Load` returns.
-- **SC-013**: `internal/config` imports only `internal/errors` among this repository's packages.
+- **SC-013**: `internal/config/base` imports only `internal/errors` among this repository's packages.
 - **SC-014**: Unit test coverage exceeds 95%.
 - **SC-015**: `Load` accepts an absent `aws.kmsKeyId`, accepts each well-formed KMS identifier form (bare key ID, `alias/<name>`, key ARN, alias ARN), and returns a user error for a malformed one.
 - **SC-016**: `Load` returns a user error when `snowflake.orgAdminAccountLocator` is empty or absent.
@@ -220,7 +220,7 @@ internal/config/
 
 ## References
 
-- **Config Package**: `internal/config/config.go` - `BaseConfig`, `SnowflakeSettings`, `AWSSettings`, `SecretsSettings`, `Load`
+- **Config Package**: `internal/config/base/base.go` - `BaseConfig`, `SnowflakeSettings`, `AWSSettings`, `SecretsSettings`, `Load`
 - **Design Doc**: `specs/design.md`, §3.11.1 - the AWS Secrets Manager path grammar that consumes `Snowflake.Org`
 
 <br/><br/><br/><br/><br/>
@@ -237,7 +237,7 @@ import (
     "fmt"
     "log"
 
-    "github.com/allianz/yukimi/internal/config"
+    "github.com/allianz/yukimi/internal/config/base"
     "github.com/allianz/yukimi/internal/secrets"
     secretsaws "github.com/allianz/yukimi/internal/secrets/aws"
 )
@@ -246,7 +246,7 @@ func main() {
     configDir := flag.String("configDir", "/etc/yukimi/config", "directory containing baseConfig.yaml and sibling config files")
     flag.Parse()
 
-    cfg, err := config.Load(*configDir)
+    cfg, err := base.Load(*configDir)
     if err != nil {
         log.Fatalf("failed to load base config: %v", err)
     }
@@ -295,4 +295,4 @@ aws:
 
 The `aws:` section is the only cloud section here, so `CloudProvider()` returns `"aws"` — nothing else in the file states the provider.
 
-In local development, this same file is materialized by the Makefile from `.env` values (out of scope for this spec) and read by the exact same `Load` call; in production it is a file inside a mounted ConfigMap volume. Neither `internal/config` nor `Load` can tell the difference.
+In local development, this same file is materialized by the Makefile from `.env` values (out of scope for this spec) and read by the exact same `Load` call; in production it is a file inside a mounted ConfigMap volume. Neither `internal/config/base` nor `Load` can tell the difference.

@@ -24,7 +24,7 @@ import (
 
 	"github.com/joho/godotenv"
 
-	"github.com/allianz/yukimi/internal/config"
+	"github.com/allianz/yukimi/internal/config/base"
 	"github.com/allianz/yukimi/internal/secrets"
 	secretsaws "github.com/allianz/yukimi/internal/secrets/aws"
 )
@@ -48,8 +48,8 @@ func TestIntegration_TenantAccount(t *testing.T) {
 	}
 	cached := secrets.NewCachedBackend(backend, 5*time.Minute)
 
-	cfg := &config.BaseConfig{
-		Snowflake: config.SnowflakeSettings{
+	cfg := &base.BaseConfig{
+		Snowflake: base.SnowflakeSettings{
 			Org:                    os.Getenv("SNOWFLAKE_ORG"),
 			UsePrivateLink:         os.Getenv("SNOWFLAKE_USE_PRIVATELINK") == "true",
 			DisableOCSPChecks:      os.Getenv("SNOWFLAKE_DISABLE_OCSP_CHECKS") == "true",
@@ -99,8 +99,8 @@ func TestIntegration_TenantAccount_RotatesStaleCredential(t *testing.T) {
 		t.Fatalf("secretsaws.New: %v", err)
 	}
 
-	cfg := &config.BaseConfig{
-		Snowflake: config.SnowflakeSettings{
+	cfg := &base.BaseConfig{
+		Snowflake: base.SnowflakeSettings{
 			Org:                    os.Getenv("SNOWFLAKE_ORG"),
 			UsePrivateLink:         os.Getenv("SNOWFLAKE_USE_PRIVATELINK") == "true",
 			DisableOCSPChecks:      os.Getenv("SNOWFLAKE_DISABLE_OCSP_CHECKS") == "true",
@@ -111,7 +111,7 @@ func TestIntegration_TenantAccount_RotatesStaleCredential(t *testing.T) {
 		// trick suggested in specs/004-connection-pooling.md's own
 		// rotation design, exercised here for real instead of against a
 		// fake connection.
-		Secrets: config.SecretsSettings{RotationInterval: time.Nanosecond},
+		Secrets: base.SecretsSettings{RotationInterval: time.Nanosecond},
 	}
 	p := New(backend, cfg)
 	t.Cleanup(func() { _ = p.Close() })

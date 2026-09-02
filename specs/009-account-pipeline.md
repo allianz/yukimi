@@ -313,7 +313,7 @@ empty — every other failure surfacing from `OrgAdminDB`/`TenantDB` is `interna
 - **`internal/tenant` (006)** - Used APIs: `tenant.ResolveName()`, `tenant.Department()`,
   `tenant.CostCenter()`, `tenant.CreditQuota()` - Contract: `NewModuleContext` resolves the account
   name once via `ResolveName`; modules read the label accessors from `NamespaceLabels()` themselves.
-- **`internal/backplane` (007)** - Used APIs: the `Region` type - Contract: the caller resolves the
+- **`internal/config/backplane` (007)** - Used APIs: the `Region` type - Contract: the caller resolves the
   region once and passes it into `NewModuleContext`; this package never looks a region up itself.
 
 No dependency on 008 (guardrails): guardrail admission is resolved by the controller as its own gate
@@ -382,7 +382,7 @@ before the pipeline is ever invoked, so this package neither imports nor referen
   phrasing followed here.
 - **Dependency code**: `internal/snowflake/pool/pool.go` (`OrgAdmin`, `TenantAccount`),
   `internal/tenant/` (`ResolveName`, `Department`, `CostCenter`, `CreditQuota`),
-  `internal/backplane/backplane.go` (`Region`), `internal/logger/logger.go` (`New`, `Handle`),
+  `internal/config/backplane/backplane.go` (`Region`), `internal/logger/logger.go` (`New`, `Handle`),
   `apis/base/v1alpha1/snowflakeaccount_types.go` (`SnowflakeAccountStatus`).
 - **Vendored behavior**: `crossplane-runtime/v2@v2.0.0` `pkg/reconciler/managed/reconciler.go` — the
   managed reconciler sets `Creating()`/`ReconcileSuccess()` after `Create` returns and after

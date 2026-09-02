@@ -14,9 +14,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package config loads the controller's base configuration from a mounted
+// Package base loads the controller's base configuration from a mounted
 // directory at startup into an immutable BaseConfig struct.
-package config
+package base
 
 import (
 	"fmt"

@@ -100,7 +100,7 @@ import (
     "database/sql"
     "time"
 
-    "github.com/allianz/yukimi/internal/config"
+    "github.com/allianz/yukimi/internal/config/base"
     "github.com/allianz/yukimi/internal/secrets"
 )
 
@@ -122,7 +122,7 @@ type Pool struct { /* unexported */ }
 //
 // Returns:
 //   - *Pool: never nil
-func New(backend secrets.Backend, cfg *config.BaseConfig) *Pool
+func New(backend secrets.Backend, cfg *base.BaseConfig) *Pool
 
 // OrgAdmin returns the single org-admin *sql.DB, used only for CREATE ACCOUNT
 // and DROP ACCOUNT (design.md 3.6, 6.3, 3.11 intro). The credential is read
@@ -198,9 +198,9 @@ internal/snowflake/pool/
 └── doc.go
 ```
 
-`internal/snowflake/host` imports only the standard library and `internal/errors` (001) — never `internal/config`, never `github.com/snowflakedb/gosnowflake`, never `internal/snowflake/pool`. That leaf position is what lets `internal/tenant` (006) build `status.accountUrl` from the same code without inheriting a driver, a secret store, or configuration.
+`internal/snowflake/host` imports only the standard library and `internal/errors` (001) — never `internal/config/base`, never `github.com/snowflakedb/gosnowflake`, never `internal/snowflake/pool`. That leaf position is what lets `internal/tenant` (006) build `status.accountUrl` from the same code without inheriting a driver, a secret store, or configuration.
 
-`internal/snowflake/pool` must never import `internal/snowflake/statement` (005) or `internal/secrets/aws` (003.a). The only imports outside the standard library are `internal/snowflake/host`, `internal/config` (002), `internal/secrets` (003), `internal/errors` (001), and `github.com/snowflakedb/gosnowflake`, pinned at **v1.18.1** — the version `specs/notes-snowflake-sql-mechanics.md`'s driver findings were verified against; an upgrade means re-verifying those findings before relying on them.
+`internal/snowflake/pool` must never import `internal/snowflake/statement` (005) or `internal/secrets/aws` (003.a). The only imports outside the standard library are `internal/snowflake/host`, `internal/config/base` (002), `internal/secrets` (003), `internal/errors` (001), and `github.com/snowflakedb/gosnowflake`, pinned at **v1.18.1** — the version `specs/notes-snowflake-sql-mechanics.md`'s driver findings were verified against; an upgrade means re-verifying those findings before relying on them.
 
 ## Error Classification
 
@@ -226,7 +226,7 @@ internal/snowflake/pool/
 - **Does the health probe run on every `OrgAdmin`/`TenantAccount` call, or only when a new connection is dialed?** - Only when a new connection is dialed (a cold cache, or after eviction/self-healing). A cache hit returns the already-cached `*sql.DB` with no probe and no other network call — probing on every call would defeat the point of caching.
 - **Why does session role scoping use a `Config` field instead of a runtime `USE ROLE` statement?** - The Snowflake Go driver accepts a `Role` at connection construction time, applied automatically to every physical connection the driver opens underneath the cached `*sql.DB` — this needs no SQL statement and therefore no dependency on 005's statement execution. If a future need arises for session setup `Config` cannot express, it is done with the raw driver (`db.ExecContext`) directly in this package — never via `internal/snowflake/statement` (005), which is exactly the dependency direction this package must not create (005 already depends on the connection this package hands it; the reverse would be a cycle).
 - **What if the region passed to `TenantAccount` is well-formed but the cloud prefix is one this package has never seen (say a future `gcp-`)?** - Accepted. `host.regionSegment`'s default case strips whatever prefix precedes the first `-` and reattaches it as a trailing segment — it has no allowlist of recognized clouds, only a named exception for `aws-eu-central-1`. Whether the resulting host is real is discovered on connect, exactly like an unverified region in 002.
-- **Why does `host` take a PrivateLink bool instead of reading `BaseConfig.Snowflake.UsePrivateLink` (002) itself?** - To stay reusable: 006 builds a tenant's `status.accountUrl` from the same host, and a configuration-free leaf can be imported by `internal/tenant` without dragging `internal/config` in with it. Callers pass the flag, so its origin can change without touching this package.
+- **Why does `host` take a PrivateLink bool instead of reading `BaseConfig.Snowflake.UsePrivateLink` (002) itself?** - To stay reusable: 006 builds a tenant's `status.accountUrl` from the same host, and a configuration-free leaf can be imported by `internal/tenant` without dragging `internal/config/base` in with it. Callers pass the flag, so its origin can change without touching this package.
 - **Does `host.URL` include a path such as `/console/login`?** - No. design.md 7.2 specifies `status.accountUrl` as scheme plus host, and Snowflake redirects a bare host to the login console on its own. If an explicit console link is ever wanted, it is a new exported function in `host` rather than a change to `URL`, so a tenant's status URL keeps the form 7.2 documents.
 - **What happens if a rotation attempt fails?** - The call still returns the already-valid `*sql.DB`; the credential's stored age is unchanged, so the same check retries on the next call. This package does not log or otherwise surface the failure in this version — an accepted gap, not a design goal.
 - **What if the second key slot was never used (an account only ever bootstrapped by 010)?** - Treated the same as a slot holding an old, superseded key: it doesn't match the current key's fingerprint either way, so it's still the correct rotation target.
@@ -234,7 +234,7 @@ internal/snowflake/pool/
 ## Dependencies
 
 - **`internal/errors` (001)** - Used APIs: `errors.NewUserError()` - Contract: used by both packages; in `host` for the one region-format validation above, in `pool` nowhere else.
-- **`internal/config` (002)** - Read by `pool` only; `host` never imports it - Used APIs: `config.BaseConfig`, `Snowflake.Org`, `Snowflake.OrgAdminAccount`, `Snowflake.OrgAdminAccountLocator`, `Snowflake.OrgAdminAccountRegion`, `Snowflake.UsePrivateLink`, `Snowflake.DisableOCSPChecks`, `Snowflake.MaxConnectionPoolSize`, `Snowflake.MaxIdleConnections`, `Snowflake.ConnectionMaxLifetime`, `Snowflake.ConnectionMaxIdleTime`, `Snowflake.ConnectionProbeTimeout` - Contract: `Pool` reads these once at construction and treats them as fixed for the process's life, matching `BaseConfig`'s own immutability.
+- **`internal/config/base` (002)** - Read by `pool` only; `host` never imports it - Used APIs: `base.BaseConfig`, `Snowflake.Org`, `Snowflake.OrgAdminAccount`, `Snowflake.OrgAdminAccountLocator`, `Snowflake.OrgAdminAccountRegion`, `Snowflake.UsePrivateLink`, `Snowflake.DisableOCSPChecks`, `Snowflake.MaxConnectionPoolSize`, `Snowflake.MaxIdleConnections`, `Snowflake.ConnectionMaxLifetime`, `Snowflake.ConnectionMaxIdleTime`, `Snowflake.ConnectionProbeTimeout` - Contract: `Pool` reads these once at construction and treats them as fixed for the process's life, matching `BaseConfig`'s own immutability.
 - **`internal/secrets` (003)** - Used APIs: `secrets.Backend`, `NewOrgAdminPath()`, `NewTenantPath()`, `UnmarshalCredentials()`, `GenerateKeyPair()` - Contract: takes a `secrets.Backend` as a constructor parameter, satisfied by whatever concrete backend `cmd/provider/main.go` wired up and wrapped in `secrets.NewCachedBackend`; never imports a concrete backend itself.
 - **`github.com/snowflakedb/gosnowflake` v1.18.1** - the only Snowflake driver dependency in the tree; this is the spec that adds it to `go.mod` (see Project Structure).
 
@@ -268,8 +268,8 @@ internal/snowflake/pool/
 - **SC-014**: `Close` closes every cached `*sql.DB` — org-admin, if opened, and every tenant entry — and returns a joined error if any individual close fails, without skipping the rest.
 - **SC-015**: The `gosnowflake.Config` built for `OrgAdmin` sets `Authenticator` to `AuthTypeJwt`, `User` and `PrivateKey` from the stored org-admin credential, `Role` to `GLOBALORGADMIN`, and `Account`/`Host` from `OrgAdminAccountLocator`/`OrgAdminAccountRegion`.
 - **SC-016**: The `gosnowflake.Config` built for `TenantAccount` sets `Role` to `ACCOUNTADMIN` and `Account`/`Host` from the caller-supplied `locator`/`region`.
-- **SC-017**: `internal/snowflake/pool` imports `internal/snowflake/host`, `internal/config`, `internal/secrets`, `internal/errors`, and `github.com/snowflakedb/gosnowflake` among dependencies with an `internal/` boundary or a new `go.mod` entry — never `internal/secrets/aws` and never `internal/snowflake/statement`, grep-provable.
-- **SC-017a**: `internal/snowflake/host` imports only the standard library and `internal/errors` — never `internal/config`, `internal/secrets`, `internal/snowflake/pool`, or `github.com/snowflakedb/gosnowflake`, grep-provable.
+- **SC-017**: `internal/snowflake/pool` imports `internal/snowflake/host`, `internal/config/base`, `internal/secrets`, `internal/errors`, and `github.com/snowflakedb/gosnowflake` among dependencies with an `internal/` boundary or a new `go.mod` entry — never `internal/secrets/aws` and never `internal/snowflake/statement`, grep-provable.
+- **SC-017a**: `internal/snowflake/host` imports only the standard library and `internal/errors` — never `internal/config/base`, `internal/secrets`, `internal/snowflake/pool`, or `github.com/snowflakedb/gosnowflake`, grep-provable.
 - **SC-018**: `go.mod` pins `github.com/snowflakedb/gosnowflake` at `v1.18.1`.
 - **SC-019**: The dial step is reachable through an unexported, swappable seam so unit tests exercise `Pool`'s caching, eviction, self-healing, and concurrency behavior without a real Snowflake account, a real network call, or the real driver.
 - **SC-020**: Unit test coverage exceeds 95% for both packages.
@@ -318,14 +318,14 @@ import (
     "log"
     "time"
 
-    "github.com/allianz/yukimi/internal/config"
+    "github.com/allianz/yukimi/internal/config/base"
     "github.com/allianz/yukimi/internal/secrets"
     secretsaws "github.com/allianz/yukimi/internal/secrets/aws"
     "github.com/allianz/yukimi/internal/snowflake/pool"
 )
 
 func main() {
-    cfg, err := config.Load(*configDirFlag)
+    cfg, err := base.Load(*configDirFlag)
     if err != nil {
         log.Fatalf("failed to load base config: %v", err)
     }

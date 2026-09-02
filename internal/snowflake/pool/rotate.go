@@ -33,7 +33,7 @@ const (
 )
 
 // credentialDue reports whether a credential last written at rotatedAt is
-// older than interval (config.BaseConfig's Secrets.RotationInterval, 002).
+// older than interval (base.BaseConfig's Secrets.RotationInterval, 002).
 func credentialDue(rotatedAt time.Time, interval time.Duration) bool {
 	return rotatedAt.Before(time.Now().Add(-interval))
 }

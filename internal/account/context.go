@@ -22,7 +22,7 @@ import (
 	"fmt"
 
 	v1alpha1 "github.com/allianz/yukimi/apis/base/v1alpha1"
-	"github.com/allianz/yukimi/internal/backplane"
+	"github.com/allianz/yukimi/internal/config/backplane"
 	"github.com/allianz/yukimi/internal/logger"
 	"github.com/allianz/yukimi/internal/snowflake/pool"
 	"github.com/allianz/yukimi/internal/tenant"

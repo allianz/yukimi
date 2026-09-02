@@ -14,7 +14,7 @@ few lookup and validation helpers that other packages call directly.
 
 ## Scope
 
-This specification defines the `internal/backplane/` package that:
+This specification defines the `internal/config/backplane/` package that:
 - Loads `<configDir>/backplane.yaml` at startup, where `configDir` is the same directory path
   `002` reads `baseConfig.yaml` from.
 - Exposes the parsed, validated result as an immutable `Config` struct.
@@ -147,7 +147,7 @@ next pod restart, exactly like `baseConfig.yaml` (002) — no Mutability column.
 ## Project Structure
 
 ```text
-internal/backplane/
+internal/config/backplane/
 ├── backplane.go        # Config, Region, Connection, AllowlistEntry, Load, Region(), Connection(), ContainsCIDR
 └── backplane_test.go   # Unit tests
 ```
@@ -194,7 +194,7 @@ a system error by default, since `Load` never wraps it in `errors.NewUserError`.
 ## Dependencies
 
 - **`internal/errors` (001)** - Used APIs: `errors.NewUserError()` - Contract: none;
-  `internal/backplane` has no other internal dependency and does **not** import `internal/config`
+  `internal/config/backplane` has no other internal dependency and does **not** import `internal/config/base`
   — the two loaders are independently duplicated, per 002's "Shared `--configDir`, Duplicated
   Loaders" key concept.
 
@@ -241,7 +241,7 @@ a system error by default, since `Load` never wraps it in `errors.NewUserError`.
   when it equals a range exactly), and `false` when it exceeds every range or matches none.
 - **SC-016**: `ContainsCIDR` returns a user error when candidate or any entry of ranges is not a
   valid CIDR.
-- **SC-017**: `internal/backplane` imports only `internal/errors` among this repository's packages.
+- **SC-017**: `internal/config/backplane` imports only `internal/errors` among this repository's packages.
 - **SC-018**: The returned `*Config` is safe for concurrent read-only use by multiple goroutines
   after `Load` returns.
 - **SC-019**: Unit test coverage exceeds 95%.
@@ -258,7 +258,7 @@ a system error by default, since `Load` never wraps it in `errors.NewUserError`.
 
 ## References
 
-- **Backplane Package**: `internal/backplane/backplane.go` - `Config`, `Region`, `Connection`,
+- **Backplane Package**: `internal/config/backplane/backplane.go` - `Config`, `Region`, `Connection`,
   `AllowlistEntry`, `Load`, `Region()`, `Connection()`, `ContainsCIDR()`
 - **Design Doc**: `specs/design.md`, §3.5 - Backplane Config concept, schema, and example
 - **Shape Reference**: `specs/002-base-config.md` - loader pattern this spec duplicates

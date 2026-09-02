@@ -26,7 +26,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/allianz/yukimi/internal/config"
+	"github.com/allianz/yukimi/internal/config/base"
 	"github.com/allianz/yukimi/internal/errors"
 	"github.com/allianz/yukimi/internal/secrets"
 	"github.com/allianz/yukimi/internal/snowflake/host"
@@ -128,9 +128,9 @@ func (f *fakeDialer) lastConfig() dialConfig {
 	return f.configs[len(f.configs)-1]
 }
 
-func testConfig() *config.BaseConfig {
-	return &config.BaseConfig{
-		Snowflake: config.SnowflakeSettings{
+func testConfig() *base.BaseConfig {
+	return &base.BaseConfig{
+		Snowflake: base.SnowflakeSettings{
 			Org:                    "my_org",
 			OrgAdminAccount:        "platform",
 			OrgAdminAccountLocator: "xc00000",
@@ -142,7 +142,7 @@ func testConfig() *config.BaseConfig {
 			ConnectionMaxIdleTime:  5 * time.Minute,
 			ConnectionProbeTimeout: 2 * time.Second,
 		},
-		Secrets: config.SecretsSettings{
+		Secrets: base.SecretsSettings{
 			RotationInterval: 6 * 30 * 24 * time.Hour,
 		},
 	}

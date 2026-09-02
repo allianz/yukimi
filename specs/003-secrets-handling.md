@@ -32,7 +32,7 @@ A `Backend` sees paths and opaque value strings, nothing else. It never parses a
 Paths are an opaque `Path` type, constructible only through the two constructors below, so an unvalidated path can never reach a store:
 
 - **Tenant path** (design.md 3.11.1): `snowflake/tenant/<org>/<namespace>/<accountName>/platform-credentials`. `<namespace>` comes from the runtime `metadata.namespace`, never a spec field; `<accountName>` is the CRD's `metadata.name`, **never** the resolved hash-suffixed account name (design.md 3.12). Every segment is a Kubernetes identifier — that is what makes the namespace the trust anchor design.md 3.11.1 requires.
-- **Org-admin path**: `snowflake/org/<org>/<orgAdminAccount>/org-admin-credentials`, from `BaseConfig.Snowflake` (002) resolved at the call site. This package takes plain strings and does not import `internal/config`.
+- **Org-admin path**: `snowflake/org/<org>/<orgAdminAccount>/org-admin-credentials`, from `BaseConfig.Snowflake` (002) resolved at the call site. This package takes plain strings and does not import `internal/config/base`.
 
 **Important**: both constructors re-validate every segment regardless of upstream validation — reject an empty segment, or one containing `/`, `.`, `..`, or a character outside `[A-Za-z0-9_-]` — so the isolation guarantee holds even on a flat key-value store with no hierarchical authorization of its own.
 
@@ -285,7 +285,7 @@ internal/secrets/
 
 - **Product design**: `specs/design.md`, §3.6 (the `platform` user and `ADMIN_RSA_PUBLIC_KEY`), §3.11 (org-admin vs. per-account access), §3.11.1 (tenant secret path, namespace as trust anchor), §3.12 (resolved vs. CRD account name), Appendix B X1 (the `platform` user re-key/drop gap).
 - **Error Handling (001)**: `internal/errors/errors.go` - `NewUserError()`, used to classify path-validation and not-found failures.
-- **Base Config (002)**: `internal/config/config.go` - `SnowflakeSettings.Org`, `SnowflakeSettings.OrgAdminAccount`, `CloudProvider()`; its own Example 1 already anticipates `secrets.Backend` and a `secretsaws.New(region)` constructor this spec's sibling (003.a) provides.
+- **Base Config (002)**: `internal/config/base/base.go` - `SnowflakeSettings.Org`, `SnowflakeSettings.OrgAdminAccount`, `CloudProvider()`; its own Example 1 already anticipates `secrets.Backend` and a `secretsaws.New(region)` constructor this spec's sibling (003.a) provides.
 
 <br/><br/><br/><br/><br/>
 
