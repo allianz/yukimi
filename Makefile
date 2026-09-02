@@ -99,8 +99,10 @@ dev: $(KIND) $(KUBECTL)
 	@set -a && source .env && set +a && $(KUBECTL) create namespace $${SAMPLE_CUSTOMER_NAMESPACE} --dry-run=client -o yaml | $(KUBECTL) apply -f - && $(KUBECTL) label namespace $${SAMPLE_CUSTOMER_NAMESPACE} department="az_tech" costcenter="121212" --overwrite
 	@$(INFO) Switching kubectl default namespace to tenant namespace
 	@set -a && source .env && set +a && $(KUBECTL) config set-context --current --namespace=$${SAMPLE_CUSTOMER_NAMESPACE}
+	@$(INFO) Generating local provider config from .env
+	@$(ROOT_DIR)/cluster/local/generate-local-config.sh
 	@$(INFO) Starting Yukimi controllers
-	@$(GO) run cmd/provider/main.go --debug
+	@$(GO) run cmd/provider/main.go --configDir=$(ROOT_DIR)/local/config --debug
 
 dev-clean: $(KIND) $(KUBECTL)
 	@$(INFO) Deleting kind cluster

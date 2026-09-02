@@ -291,7 +291,7 @@ func TestApply_FreshCreate_Success(t *testing.T) {
 	backend := secrets.NewFakeBackend()
 	backend.OnCreate = func(path secrets.Path) error {
 		storeCalled = true
-		stored, getErr := backend.Get(context.Background(), path)
+		stored, _, getErr := backend.Get(context.Background(), path)
 		if getErr == nil {
 			t.Errorf("Backend.Create stored, but the credential should not be readable via Get before Create returns: %v", stored)
 		}

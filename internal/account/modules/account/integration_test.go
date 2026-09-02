@@ -109,7 +109,25 @@ func TestIntegration_Create(t *testing.T) {
 			UsePrivateLink:         os.Getenv("SNOWFLAKE_USE_PRIVATELINK") == "true",
 			DisableOCSPChecks:      os.Getenv("SNOWFLAKE_DISABLE_OCSP_CHECKS") == "true",
 			ConnectionProbeTimeout: 5 * time.Second,
+			// Left at zero, MaxIdleConnections forces every query onto a
+			// fresh physical connection, and this test opens the org-admin
+			// connection twice in the same process (Apply, then the
+			// t.Cleanup drop below). 004's defaults keep both calls on the
+			// same physical connection.
+			MaxConnectionPoolSize: 10,
+			MaxIdleConnections:    2,
+			ConnectionMaxLifetime: 30 * time.Minute,
+			ConnectionMaxIdleTime: 5 * time.Minute,
 		},
+		// RotationInterval left at zero would make every OrgAdmin() call
+		// treat the credential as due for rotation. Two rotations in the
+		// same process is unsafe: the second one reads its "current key"
+		// from the secret store (already updated by the first) rather than
+		// from the connection's actual live credential, so it ends up
+		// overwriting the slot the live connection is still authenticated
+		// with, not the free one — confirmed against a live org while
+		// implementing 018's own integration test.
+		Secrets: config.SecretsSettings{RotationInterval: 24 * time.Hour},
 	}
 	p := pool.New(backend, cfg)
 	t.Cleanup(func() { _ = p.Close() })

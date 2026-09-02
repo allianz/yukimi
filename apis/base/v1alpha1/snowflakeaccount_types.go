@@ -192,6 +192,19 @@ type SnowflakeAccountList struct {
 	Items           []SnowflakeAccount `json:"items"`
 }
 
+// GetItems satisfies resource.ManagedList, for the same reason the four
+// methods above satisfy resource.Managed: angryjet's generator does not
+// recognize SnowflakeAccount as a managed resource, so this is hand-written
+// rather than generated into a zz_generated.managedlist.go. Used by the
+// controller's MR state metrics recorder (018).
+func (l *SnowflakeAccountList) GetItems() []resource.Managed {
+	items := make([]resource.Managed, len(l.Items))
+	for i := range l.Items {
+		items[i] = &l.Items[i]
+	}
+	return items
+}
+
 // SnowflakeAccount type metadata.
 var (
 	SnowflakeAccountKind             = reflect.TypeOf(SnowflakeAccount{}).Name()

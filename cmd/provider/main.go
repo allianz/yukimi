@@ -46,7 +46,15 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/allianz/yukimi/apis"
+	"github.com/allianz/yukimi/internal/account"
+	accountmodule "github.com/allianz/yukimi/internal/account/modules/account"
+	"github.com/allianz/yukimi/internal/backplane"
+	"github.com/allianz/yukimi/internal/config"
 	yukimi "github.com/allianz/yukimi/internal/controller"
+	"github.com/allianz/yukimi/internal/controller/snowflakeaccount"
+	"github.com/allianz/yukimi/internal/secrets"
+	secretsaws "github.com/allianz/yukimi/internal/secrets/aws"
+	"github.com/allianz/yukimi/internal/snowflake/pool"
 	"github.com/allianz/yukimi/internal/version"
 )
 
@@ -65,6 +73,8 @@ func main() {
 		enableManagementPolicies = app.Flag("enable-management-policies", "Enable support for Management Policies.").Default("true").Envar("ENABLE_MANAGEMENT_POLICIES").Bool()
 		enableChangeLogs         = app.Flag("enable-changelogs", "Enable support for capturing change logs during reconciliation.").Default("false").Envar("ENABLE_CHANGE_LOGS").Bool()
 		changelogsSocketPath     = app.Flag("changelogs-socket-path", "Path for changelogs socket (if enabled)").Default("/var/run/changelogs/changelogs.sock").Envar("CHANGELOGS_SOCKET_PATH").String()
+
+		configDir = app.Flag("configDir", "Directory containing baseConfig.yaml and sibling config files.").Default("/etc/yukimi/config").Envar("CONFIG_DIR").String()
 	)
 	kingpin.MustParse(app.Parse(os.Args[1:]))
 
@@ -149,7 +159,34 @@ func main() {
 		o.ChangeLogOptions = &clo
 	}
 
+	baseCfg, err := config.Load(*configDir)
+	kingpin.FatalIfError(err, "Cannot load base config")
+
+	bp, err := backplane.Load(*configDir)
+	kingpin.FatalIfError(err, "Cannot load backplane config")
+
+	backend, err := secretsaws.New(baseCfg.AWS.Region, baseCfg.AWS.KmsKeyId)
+	kingpin.FatalIfError(err, "Cannot construct secrets backend")
+	cachedBackend := secrets.NewCachedBackend(backend, baseCfg.Secrets.CacheTTL)
+
+	connPool := pool.New(cachedBackend, baseCfg)
+	defer connPool.Close()
+
+	pipeline := account.New(
+		accountmodule.New(cachedBackend, baseCfg.Snowflake.Org),
+		// 011-016 join this list as each lands; no other change here.
+	)
+
+	deps := yukimi.Dependencies{
+		SnowflakeAccount: snowflakeaccount.Dependencies{
+			Config:    baseCfg,
+			Backplane: bp,
+			Pipeline:  pipeline,
+			Pool:      connPool,
+		},
+	}
+
 	kingpin.FatalIfError(customresourcesgate.Setup(mgr, o), "Cannot setup CRD gate controller")
-	kingpin.FatalIfError(yukimi.SetupGated(mgr, o), "Cannot setup Yukimi controllers")
+	kingpin.FatalIfError(yukimi.SetupGated(mgr, o, deps), "Cannot setup Yukimi controllers")
 	kingpin.FatalIfError(mgr.Start(ctrl.SetupSignalHandler()), "Cannot start controller manager")
 }

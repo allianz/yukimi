@@ -20,15 +20,20 @@ package controller
 import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/controller"
 	ctrl "sigs.k8s.io/controller-runtime"
+
+	"github.com/allianz/yukimi/internal/controller/snowflakeaccount"
 )
+
+// Dependencies are the runtime collaborators cmd/provider/main.go constructs
+// once at startup and forwards, unchanged, into each resource type's own
+// Dependencies. Grows one field per additional resource type as later specs
+// land.
+type Dependencies struct {
+	SnowflakeAccount snowflakeaccount.Dependencies
+}
 
 // SetupGated creates all Yukimi controllers with safe-start support and adds them to
 // the supplied manager.
-func SetupGated(mgr ctrl.Manager, o controller.Options) error {
-	for _, setup := range []func(ctrl.Manager, controller.Options) error{} {
-		if err := setup(mgr, o); err != nil {
-			return err
-		}
-	}
-	return nil
+func SetupGated(mgr ctrl.Manager, o controller.Options, deps Dependencies) error {
+	return snowflakeaccount.SetupGated(mgr, o, deps.SnowflakeAccount)
 }

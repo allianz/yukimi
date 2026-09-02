@@ -1,0 +1,33 @@
+# Example SnowflakeAccount (specs/006-snowflake-account-crd.md, design.md §3.1).
+#
+# Apply into the SAMPLE_CUSTOMER_NAMESPACE namespace from .env (default: "test"), matching
+# local/config/backplane.yaml's one available region:
+#   kubectl apply -n test -f examples/base/snowflakeaccount.yaml
+#
+# Only account bootstrapping (010) is wired into the controller today (specs/018) — Guardrails,
+# quota admission, network/auth/identity modules, and deletion warrants don't exist yet, so
+# customNetworkRules/customAuthRules/identityIntegration.groups below are accepted but not yet
+# enforced or acted on. identityIntegration.roleBindings is required by the CRD schema itself
+# (must include ACCOUNTADMIN) even though nothing consumes it yet.
+apiVersion: base.snowflake.yukimi.io/v1alpha1
+kind: SnowflakeAccount
+metadata:
+  name: myfirstaccount # created in Snowflake as analytics_team_eu_<hash> (design.md 3.12)
+spec:
+  description: "Analytics team Snowflake environment for EU operations"
+  contacts:
+    - alice.smith@company.com
+    - team-analytics@company.com
+
+  region: aws-eu-central-1 # must be `available: true` in backplane.yaml (007)
+  environment: dev # dev | prod — required, immutable (3.11.3)
+
+  creditQuota: 500 # not yet enforced (016 doesn't exist)
+
+  identityIntegration:
+    groups:
+      giam:
+        - XYZ_DATA_ENGINEERS
+        - XYZ_ANALYSTS
+    roleBindings:
+      ACCOUNTADMIN: XYZ_DATA_ENGINEERS # required by the CRD schema; not yet acted on (015)
