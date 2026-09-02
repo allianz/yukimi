@@ -69,3 +69,23 @@ these points rest on.
   aborts the run on any non-`Done` outcome.
 - **Identity bindings are never pruned.** Only 012 and 013 prune, each by its own object-name prefix;
   015's group imports and role bindings are re-asserted but never enumerated or dropped.
+
+## Raised by the 018 clarification
+
+Recorded by `/yukimi.clarify 018`. The SnowflakeAccount controller (018) was implemented ahead of
+015: it wires `account.New(accountModule)` — a one-module pipeline containing only 010 — because 015
+does not exist yet. 018's `Ready` condition today is derived purely from 010's outcome
+(`Ready = Available()` iff the pipeline's `Observation.InSync` is true), with no `IdentitySynced`
+condition set to any value — true, false, or `Unknown` — since no registered module produces one.
+
+- **015's registration point is additive**, e.g.
+  `account.New(accountModule, parameterModule, networkModule, authModule, identityModule)`. No
+  change to 018's `Observe`/`Create`/`Update` bodies is needed for the registration itself.
+- **015 is the first module 018 registers that sets `Outcome.Condition`.** Once it lands, 018's
+  `Observe` needs the per-module condition-rendering loop described in 009's Appendix Example 2
+  (walk `Result.Outcomes`, call `cr.SetConditions(*mo.Outcome.Condition)` for any non-nil condition,
+  and apply 009's `GatesReady` table to compute `Ready`) — this loop does not exist in 018 yet because
+  nothing before 015 needs it. Adding 015 is therefore the point at which 018 must add that loop, not
+  a later, separate change.
+- **Today, `status.identitySyncStartedAt` (or whatever 015 names it) does not exist**, since nothing
+  writes it yet — 018 carries no logic related to identity sync timing at all.

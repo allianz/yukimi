@@ -53,3 +53,18 @@ these points rest on — see its "Key Concept: Overwrite Apply, Generation-Gated
   compensate for.
 - **Account parameters are never pruned.** Only 012 and 013 prune, each by its own object-name prefix;
   011's parameters are re-asserted but never enumerated or dropped.
+
+## Raised by the 018 clarification
+
+Recorded by `/yukimi.clarify 018`. The SnowflakeAccount controller (018) was implemented ahead of
+011: it wires `account.New(accountModule)` — a one-module pipeline containing only 010 — because 011
+does not exist yet.
+
+- **011's registration point is additive, not a rewrite.** When 011 lands, add it as the next
+  argument: `account.New(accountModule, parameterModule)`. 018's `Observe`/`Create`/`Update` bodies
+  call `pipeline.Observe`/`pipeline.Apply` generically over whatever modules the pipeline holds, so
+  no controller code changes — only the construction call in whichever `cmd/provider`/controller
+  setup file builds the pipeline.
+- **011 owns no condition of its own** (per its scope note, `Observe` returns `true, Done()` with no
+  `Outcome.Condition`), so registering it does not by itself require 018 to add any new
+  condition-rendering logic.

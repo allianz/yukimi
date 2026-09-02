@@ -98,3 +98,20 @@ a run.
   ever aborts the run; 012 never calls `.Aborting()` on its own outcome.
 - 012 implements `Observe(ctx, mc) (bool, Outcome)` returning `true, Done()` today, for the same reason
   011 does: the method exists so a real read-back can be added later without reopening the interface.
+
+## Raised by the 018 clarification
+
+Recorded by `/yukimi.clarify 018`. The SnowflakeAccount controller (018) was implemented ahead of
+012: it wires `account.New(accountModule)` — a one-module pipeline containing only 010 — because 012
+does not exist yet.
+
+- **012's registration point is additive.** When 012 lands, insert it into the constructor call in
+  registration order (010 → 011 → 012 → …), e.g.
+  `account.New(accountModule, parameterModule, networkModule)`. 018's `Observe`/`Create`/`Update`
+  bodies are generic over the pipeline's module list, so no controller code changes beyond that call.
+- **008 (guardrails) is also not wired into 018 yet** (see `scope-008-guardrails.md`'s own "Raised by
+  018" section) — so 012's assumption that "an entry with no `allowedIPs` only passed guardrails
+  because `\"full\"` was the applicable rule" does not currently hold: today, nothing rejects an entry
+  with no `allowedIPs` before it would reach 012. This is 008's gap to close, not something 012 needs
+  to defend against itself, but it means 012 cannot assume guardrails already ran until 008 actually
+  ships alongside or before it.

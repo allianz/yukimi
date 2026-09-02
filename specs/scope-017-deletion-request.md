@@ -60,3 +60,32 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
   schemas and behavior specifications this scope note was derived from.
 - **Shape reference**: `specs/001-error-and-logging.md` — the one spec written so far; follow its
   section skeleton (also given in `specs/000-template.md`).
+
+## Raised by the 018 clarification
+
+Recorded by `/yukimi.clarify 018`. The SnowflakeAccount controller (018) was implemented ahead of
+017, with a `Delete` that has no warrant concept at all: it always runs
+`DROP ACCOUNT IF EXISTS <resolvedName> GRACE_PERIOD_IN_DAYS = 3` over the org-admin connection (where
+`<resolvedName>` is `tenant.ResolveName`'s output, the same name 010 used to create the account),
+then lets Crossplane's own managed-resource finalizer release. There is no lookup of any warrant, no
+`Terminating` stall, and no `DeletionBlocked` event — deletion currently always succeeds if the SQL
+statement succeeds.
+
+- **017 must replace 018's `Delete` body outright, not extend it.** The target shape (design.md
+  §6.3 Phases 2–3, and this scope note's own "Open question" about the finalizer) is: query for an
+  Active `SnowflakeDeletionRequest` in the same namespace targeting this resource; if found, run the
+  drop, release the finalizer, and write the request's status to `Consumed`; if absent or expired,
+  return a user error from `Delete` (per CLAUDE.md's Create/Update/Delete error-handling pattern) so
+  Crossplane's finalizer is never released and the resource stalls in `Terminating` with `Ready=False`
+  — this confirms the scope note's own open question's answer (a `Delete` returning a user error is
+  the natural block, no second finalizer needed) by construction, since 018 already only has
+  Crossplane's own finalizer to work with.
+- **`GRACE_PERIOD_IN_DAYS` verified while researching 018** (docs.snowflake.com/en/sql-reference/sql/
+  drop-account): the clause is mandatory on `DROP ACCOUNT`, with a valid range of 3–90 days and no
+  zero/immediate option. 017's warrant-gated `Delete` should keep the same `GRACE_PERIOD_IN_DAYS = 3`
+  value 018 already uses (Snowflake's enforced minimum) unless design.md is revised to want a longer
+  window.
+- **018's `Delete` is already idempotent via `IF EXISTS` and an unconditional attempt** regardless of
+  whether `status.accountLocator` was ever set — 017's replacement should keep that property so a
+  retry after a crash mid-`Delete` (e.g. after the drop succeeded but before the warrant was marked
+  `Consumed`) is safe to re-run.

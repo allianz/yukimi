@@ -71,3 +71,15 @@ a run.
   rule (an entry naming neither method is a validation error).
 - 013 implements `Observe(ctx, mc) (bool, Outcome)` returning `true, Done()` today, for the same reason
   011 does: the method exists so a real read-back can be added later without reopening the interface.
+
+## Raised by the 018 clarification
+
+Recorded by `/yukimi.clarify 018`. The SnowflakeAccount controller (018) was implemented ahead of
+013: it wires `account.New(accountModule)` — a one-module pipeline containing only 010 — because 013
+does not exist yet.
+
+- **013's registration point is additive.** When 013 lands, insert it into the constructor call in
+  registration order (010 → 011 → 012 → 013 → …), e.g.
+  `account.New(accountModule, parameterModule, networkModule, authModule)`. 018's
+  `Observe`/`Create`/`Update` bodies are generic over the pipeline's module list, so no controller
+  code changes beyond that call.

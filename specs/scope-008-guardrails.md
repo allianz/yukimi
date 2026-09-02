@@ -102,3 +102,21 @@ what 010 does (SC-010, SC-011).
   `spec.contacts` is empty, but only as a defense-in-depth backstop. 008 must add a constraint
   requiring a non-empty `contacts[]` at admission — today (006) `contacts[]` is fully optional with no CEL
   constraint, so without this an account could otherwise reach 010 with nothing to put in `EMAIL`.
+
+## Raised by the 018 clarification
+
+Recorded by `/yukimi.clarify 018`. The SnowflakeAccount controller (018) was implemented ahead of
+008, deliberately: it depends only on already-written specs (001–007, 009, 010) and runs no
+guardrail check anywhere in `Observe`/`Create`/`Update`. Any CRD that would fail a guardrail
+constraint or lack an approved exception is currently accepted and proceeds straight to the account
+pipeline.
+
+- **008's insertion point in 018 is a single call, not a redesign.** 018's validation phase today is
+  just the backplane region "available" gate (007) plus CRD/CEL validation (006), run before
+  `pipeline.Apply`/`pipeline.Observe`. When 008 lands, add one call — guardrail evaluation, then the
+  approved-exceptions check on rejection — immediately before that pipeline call, in `Observe` (as a
+  read-only check) and in `Create`/`Update` (as an enforced check that returns a validation error
+  before the pipeline runs). No other part of 018 needs to change shape.
+- **This is a real, accepted gap in the meantime**, not an oversight discovered later: a tenant can
+  today create or update a `SnowflakeAccount` that would later fail an 008 constraint (naming
+  pattern, credit ceiling, network CIDR rule) with no gate rejecting it until 008 ships.

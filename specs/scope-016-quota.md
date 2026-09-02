@@ -78,3 +78,27 @@ module contract.
   `.Aborting()`; 016 never does).
 - 016 reads `creditQuota` from the ops-set namespace labels via the shared context, already resolved by
   018 (`tenant.CreditQuota`) — it does not re-read them.
+
+## Raised by the 018 clarification
+
+Recorded by `/yukimi.clarify 018`. The SnowflakeAccount controller (018) was implemented ahead of
+016: it wires `account.New(accountModule)` — a one-module pipeline containing only 010 — and its
+validation phase calls neither `Admit()` nor anything else quota-related. A tenant can currently
+create or update a `SnowflakeAccount` whose `creditQuota` would exceed the namespace's `credit-quota`
+label with nothing rejecting it.
+
+- **016's two entry points land at different places in 018.** `Apply()`/`Observe()` register into
+  the pipeline additively, e.g.
+  `account.New(accountModule, parameterModule, networkModule, authModule, identityModule, quotaModule)`
+  — no change to 018's `Observe`/`Create`/`Update` bodies for that half. `Admit()` is separate: it
+  must be added as a call in 018's validation phase (alongside guardrails, see
+  `scope-008-guardrails.md`'s "Raised by 018" section), before `pipeline.Apply` runs in `Create`/
+  `Update`.
+- **016 is (with 015) one of the two modules that first requires 018's per-module
+  condition-rendering loop** — see the fuller description of that gap in
+  `scope-015-identity-module.md`'s "Raised by 018" section; the same loop serves both
+  `QuotaAvailable` and `IdentitySynced`.
+- 018 already fetches the namespace and passes its labels into `ModuleContext` (D-007 of this
+  clarification's wip record), even though nothing reads `credit-quota` from it today — `tenant.
+  CreditQuota` is available on the context 016 will receive once registered; no change to how 018
+  constructs `ModuleContext` is needed to support 016.
