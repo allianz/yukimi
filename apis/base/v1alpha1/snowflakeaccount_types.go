@@ -133,7 +133,7 @@ type SnowflakeAccountStatus struct {
 	// +optional
 	AccountLocator string `json:"accountLocator,omitempty"`
 
-	// Built via internal/tenant.AccountURL (design.md 7.2).
+	// Built via internal/account/tenant.AccountURL (design.md 7.2).
 	// +optional
 	AccountURL string `json:"accountUrl,omitempty"`
 }

@@ -22,7 +22,7 @@ Snowflake at all — later specs read these fixed shapes, they don't extend them
   `ACCOUNTADMIN` entry (§3.7), and a `customAuthRules.exceptions` entry naming at least one of
   `rsaKeyAllowed`/`patAllowed` (§3.9).
 - The `status.accountName` / `accountLocator` / `accountUrl` / `conditions` shape (§7.2).
-- The `internal/tenant/` package: `ResolveName` (§3.12), the `Department`/`CostCenter`/
+- The `internal/account/tenant/` package: `ResolveName` (§3.12), the `Department`/`CostCenter`/
   `CreditQuota` namespace-label readers (chapter 2), and `AccountURL` (§7.2, built on spec 004's
   host package).
 
@@ -65,7 +65,7 @@ writes. Chapter 2's onboarding script labels that namespace with `department`, `
 fields: if they were CRD fields, a tenant could edit their own department or credit ceiling by
 committing a YAML change, which defeats the point of having ops set them out-of-band. `internal/
 tenant/labels.go` is the one place that reads them back out, as plain `map[string]string` label
-data rather than a Kubernetes API type — this is why `internal/tenant` needs no Kubernetes client
+data rather than a Kubernetes API type — this is why `internal/account/tenant` needs no Kubernetes client
 dependency at all. `Department` is read by Guardrails (008) for target matching; `CreditQuota` is
 read by quota admission (016); `CostCenter` has no consumer named anywhere in design.md yet, but
 the label exists and gets set on every namespace regardless, so its reader is added alongside the
@@ -206,14 +206,14 @@ type SnowflakeAccountStatus struct {
 	// +optional
 	AccountLocator string `json:"accountLocator,omitempty"`
 
-	// Built via internal/tenant.AccountURL (design.md 7.2).
+	// Built via internal/account/tenant.AccountURL (design.md 7.2).
 	// +optional
 	AccountURL string `json:"accountUrl,omitempty"`
 }
 ```
 
 ```go
-// Package tenant — internal/tenant
+// Package tenant — internal/account/tenant
 package tenant
 
 // ResolveName derives the Snowflake account name for a SnowflakeAccount CRD:
@@ -309,7 +309,7 @@ func AccountURL(locator, region string, usePrivateLink bool) (string, error)
 |---|---|---|---|---|
 | `accountName` | string | No | Controller-set | The resolved name (§3.12), not `metadata.name` |
 | `accountLocator` | string | No | Controller-set | Captured from `CREATE ACCOUNT` (010) |
-| `accountUrl` | string | No | Controller-set | Built via `internal/tenant.AccountURL` (§7.2) |
+| `accountUrl` | string | No | Controller-set | Built via `internal/account/tenant.AccountURL` (§7.2) |
 | `conditions[]` | Condition | No | Controller-set | Standard `Ready`/`Synced` per design.md §7.1 |
 
 ## Project Structure
@@ -323,7 +323,7 @@ apis/base/v1alpha1/
 ├── groupversion_info.go        # Group = base.snowflake.yukimi.io, Version = v1alpha1
 └── snowflakeaccount_types.go   # Spec/Status types, CEL markers, +kubebuilder:resource:scope=Namespaced
 
-internal/tenant/
+internal/account/tenant/
 ├── naming.go        # ResolveName (§3.12)
 ├── naming_test.go
 ├── labels.go         # Department, CostCenter, CreditQuota (chapter 2)
@@ -333,7 +333,7 @@ internal/tenant/
 └── doc.go
 ```
 
-`internal/tenant` imports nothing beyond the Go standard library, `internal/errors`, and
+`internal/account/tenant` imports nothing beyond the Go standard library, `internal/errors`, and
 `internal/snowflake/host` — no Kubernetes client, no Snowflake driver. The label readers take
 `map[string]string`, never a `corev1.Namespace`, specifically to keep that boundary intact; the
 caller (018) already has the namespace object from its own reconcile and passes its labels in.
@@ -351,8 +351,8 @@ caller (018) already has the namespace object from its own reconcile and passes 
   contact platform ops") directly onto the resource's condition, which is more useful to the
   tenant even though they can't act on it alone — and still tells them exactly who to loop in.
   `AccountURL`'s region-format error is a genuine, ordinary user error, constructed and classified
-  in spec 004 (`internal/snowflake/host`); `internal/tenant` only passes it through unchanged.
-- **System Errors**: none originate in `internal/tenant`.
+  in spec 004 (`internal/snowflake/host`); `internal/account/tenant` only passes it through unchanged.
+- **System Errors**: none originate in `internal/account/tenant`.
 
 ## Edge Cases
 
@@ -362,7 +362,7 @@ caller (018) already has the namespace object from its own reconcile and passes 
 - **A namespace is missing `department`/`cost-center`/`credit-quota` entirely — does the CRD fail
   validation?** No — these are namespace labels, not CRD fields, so nothing about the
   `SnowflakeAccount` resource itself is invalid. The failure surfaces only when a caller (008, 016)
-  invokes the corresponding `internal/tenant` reader and gets a user error back (see Error
+  invokes the corresponding `internal/account/tenant` reader and gets a user error back (see Error
   Classification for why this is a user error despite being ops-caused).
 - **Do the `region`/`environment` CEL rules block the first `CREATE`?** No — `oldSelf` doesn't
   exist yet on create, so both rules only evaluate (and can only fail) on `UPDATE`.
@@ -371,14 +371,14 @@ caller (018) already has the namespace object from its own reconcile and passes 
 
 ## Dependencies
 
-- **internal/errors (001)** - Used APIs: `errors.NewUserError` - Contract: `internal/tenant`
+- **internal/errors (001)** - Used APIs: `errors.NewUserError` - Contract: `internal/account/tenant`
   constructs a user error directly for every missing/malformed ops-owned label, prioritizing a
   readable message on the resource over the strict "tenant-fixable" framing CLAUDE.md otherwise
   uses for the user/system split (see Error Classification); it never constructs a system error
   itself, and only re-surfaces the user error `internal/snowflake/host` (004) already produces for
   `AccountURL`'s region-format failure.
 - **internal/snowflake/host (004)** - Used APIs: `host.URL(locator, region, usePrivateLink)` -
-  Contract: `internal/tenant/url.go` calls `host.URL` and appends `/console/login`; no validation
+  Contract: `internal/account/tenant/url.go` calls `host.URL` and appends `/console/login`; no validation
   of its own.
 
 ## Integration Points
@@ -395,8 +395,8 @@ caller (018) already has the namespace object from its own reconcile and passes 
   `tenant.CreditQuota` for the namespace ceiling - Key functions: `tenant.CreditQuota` - Notes:
   the admission math itself belongs to 016, not to this spec.
 - **SnowflakeAccount controller (018)** - wires the CRD into `managed.NewReconciler`, calls every
-  `internal/tenant` function, and sets `status.accountName`/`accountLocator`/`accountUrl` - Key
-  functions: all of `internal/tenant`'s public API - Notes: this spec defines the type and helpers
+  `internal/account/tenant` function, and sets `status.accountName`/`accountLocator`/`accountUrl` - Key
+  functions: all of `internal/account/tenant`'s public API - Notes: this spec defines the type and helpers
   only; 018 owns `Observe`/`Create`/`Update`/`Delete`.
 
 ## Success Criteria
@@ -427,9 +427,9 @@ caller (018) already has the namespace object from its own reconcile and passes 
   and the parsed `int` otherwise.
 - **SC-013**: `tenant.AccountURL`'s error path matches spec 004's `host.URL` error path exactly —
   verified by a shared test case, not a re-implementation.
-- **SC-014**: `internal/tenant` imports nothing beyond the Go standard library, `internal/errors`,
+- **SC-014**: `internal/account/tenant` imports nothing beyond the Go standard library, `internal/errors`,
   and `internal/snowflake/host` (grep-provable — no Kubernetes or Snowflake-driver import).
-- **SC-015**: unit test coverage exceeds 95% for `internal/tenant`.
+- **SC-015**: unit test coverage exceeds 95% for `internal/account/tenant`.
 - **SC-016**: `make generate` produces a valid CRD manifest and `make reviewable` passes.
 
 ## Security Considerations
@@ -450,7 +450,7 @@ caller (018) already has the namespace object from its own reconcile and passes 
 - **Shape reference**: `specs/001-error-and-logging.md` - the section skeleton this spec follows,
   per the (now superseded) scope note's own instruction.
 - **Host package contract**: `specs/004-connection-pooling.md` - defines
-  `internal/snowflake/host.URL`, which `internal/tenant.AccountURL` wraps unchanged.
+  `internal/snowflake/host.URL`, which `internal/account/tenant.AccountURL` wraps unchanged.
 - **crossplane-runtime v2**: `pkg/resource/interfaces.go`, `apis/common/v1/resource.go`,
   `apis/common/v2/resource.go` - confirms `managed.NewReconciler` requires only the base
   `resource.Managed` interface, not a provider-config reference.

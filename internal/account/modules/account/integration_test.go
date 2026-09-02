@@ -30,7 +30,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	v1alpha1 "github.com/allianz/yukimi/apis/base/v1alpha1"
-	coreaccount "github.com/allianz/yukimi/internal/account"
+	"github.com/allianz/yukimi/internal/account/pipeline"
 	"github.com/allianz/yukimi/internal/config/base"
 	"github.com/allianz/yukimi/internal/secrets"
 	secretsaws "github.com/allianz/yukimi/internal/secrets/aws"
@@ -147,7 +147,7 @@ func TestIntegration_Create(t *testing.T) {
 			t.Logf("cleanup: could not open org-admin connection to drop %s: %v", cr.Status.AccountLocator, err)
 			return
 		}
-		resolvedName := coreaccount.NewModuleContext(cr, namespace, nil, nil, nil, p).ResolvedAccountName()
+		resolvedName := pipeline.NewModuleContext(cr, namespace, nil, nil, nil, p).ResolvedAccountName()
 		// GRACE_PERIOD_IN_DAYS is required by current Snowflake versions; 3 is
 		// its minimum. This only starts the drop's grace period — the account
 		// is gone once the grace period elapses, not immediately.
@@ -157,7 +157,7 @@ func TestIntegration_Create(t *testing.T) {
 		}
 	})
 
-	mc1 := coreaccount.NewModuleContext(cr, namespace, nil, nil, nil, p)
+	mc1 := pipeline.NewModuleContext(cr, namespace, nil, nil, nil, p)
 
 	inSync, _ := m.Observe(ctx, mc1)
 	if inSync {
@@ -165,7 +165,7 @@ func TestIntegration_Create(t *testing.T) {
 	}
 
 	outcome := m.Apply(ctx, mc1)
-	if outcome.State != coreaccount.StateDone {
+	if outcome.State != pipeline.StateDone {
 		t.Fatalf("Apply (fresh create) = %+v, want Done()", outcome)
 	}
 	if mc1.Locator() == "" {

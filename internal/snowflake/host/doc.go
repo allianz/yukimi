@@ -17,7 +17,7 @@ limitations under the License.
 // Package host builds a Snowflake account's connection host and browser URL
 // from an account locator and a cloud-region string. It is a pure string
 // builder — no configuration, no credentials, no network — so that
-// internal/snowflake/pool and internal/tenant (006) can each build the exact
+// internal/snowflake/pool and internal/account/tenant (006) can each build the exact
 // same host/URL from the same inputs. See specs/004-connection-pooling.md for
 // the full specification.
 package host

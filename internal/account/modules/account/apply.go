@@ -22,7 +22,7 @@ import (
 	"fmt"
 	"strings"
 
-	coreaccount "github.com/allianz/yukimi/internal/account"
+	"github.com/allianz/yukimi/internal/account/pipeline"
 	internalerrors "github.com/allianz/yukimi/internal/errors"
 	"github.com/allianz/yukimi/internal/secrets"
 	"github.com/allianz/yukimi/internal/snowflake/statement"
@@ -39,13 +39,13 @@ const duplicateAccountSQLState = "42710"
 // the first reconcile, or re-confirm the platform can still reach it on every
 // later one. It never repeats a create once a locator is known — see Key
 // Concept: Create-Then-Verify Lifecycle, specs/010-account-module.md.
-func (m *module) Apply(ctx context.Context, mc *coreaccount.ModuleContext) coreaccount.Outcome {
+func (m *module) Apply(ctx context.Context, mc *pipeline.ModuleContext) pipeline.Outcome {
 	if mc.Locator() != "" {
 		if _, err := mc.TenantDB(ctx); err != nil {
-			return coreaccount.Failed(fmt.Errorf(
+			return pipeline.Failed(fmt.Errorf(
 				"platform connection failed for existing account locator %s: %w", mc.Locator(), err)).Aborting()
 		}
-		return coreaccount.Done()
+		return pipeline.Done()
 	}
 
 	return m.createAccount(ctx, mc)
@@ -55,11 +55,11 @@ func (m *module) Apply(ctx context.Context, mc *coreaccount.ModuleContext) corea
 // keypair create-only, issue CREATE ACCOUNT over the org-admin connection,
 // then capture the resulting locator onto mc. It never runs when a locator
 // is already known.
-func (m *module) createAccount(ctx context.Context, mc *coreaccount.ModuleContext) coreaccount.Outcome {
+func (m *module) createAccount(ctx context.Context, mc *pipeline.ModuleContext) pipeline.Outcome {
 	cr := mc.CR()
 
 	if len(cr.Spec.Contacts) == 0 {
-		return coreaccount.Rejected(internalerrors.NewUserError(
+		return pipeline.Rejected(internalerrors.NewUserError(
 			"spec.contacts must contain at least one address")).Aborting()
 	}
 
@@ -67,50 +67,50 @@ func (m *module) createAccount(ctx context.Context, mc *coreaccount.ModuleContex
 
 	creds, err := secrets.NewCredentials("platform")
 	if err != nil {
-		return coreaccount.Failed(fmt.Errorf("failed to generate platform keypair: %w", err)).Aborting()
+		return pipeline.Failed(fmt.Errorf("failed to generate platform keypair: %w", err)).Aborting()
 	}
 
 	marshaled, err := secrets.MarshalCredentials(creds)
 	if err != nil {
-		return coreaccount.Failed(fmt.Errorf("failed to marshal platform credentials: %w", err)).Aborting()
+		return pipeline.Failed(fmt.Errorf("failed to marshal platform credentials: %w", err)).Aborting()
 	}
 
 	path, err := secrets.NewTenantPath(m.org, cr.Namespace, cr.Name)
 	if err != nil {
-		return coreaccount.Failed(err).Aborting()
+		return pipeline.Failed(err).Aborting()
 	}
 
 	if err := m.backend.Create(ctx, path, marshaled); err != nil {
-		return coreaccount.Failed(fmt.Errorf("failed to store platform credentials: %w", err)).Aborting()
+		return pipeline.Failed(fmt.Errorf("failed to store platform credentials: %w", err)).Aborting()
 	}
 
 	orgAdminDB, err := mc.OrgAdminDB(ctx)
 	if err != nil {
-		return coreaccount.Failed(err).Aborting()
+		return pipeline.Failed(err).Aborting()
 	}
 	runner := statement.New(orgAdminDB)
 
 	locator, outcome := runCreateAccount(ctx, runner, resolvedName, cr.Spec.Region, cr.Spec.Contacts[0], cr.Spec.Description, creds.PublicKey)
-	if outcome.State != coreaccount.StateDone {
+	if outcome.State != pipeline.StateDone {
 		return outcome
 	}
 
 	mc.SetLocator(locator)
-	return coreaccount.Done()
+	return pipeline.Done()
 }
 
 // runCreateAccount renders and executes CREATE ACCOUNT over runner, then
 // looks up the locator Snowflake assigned. It is pure with respect to
 // ModuleContext — testable with a sqlmock-backed *statement.Runner alone.
-func runCreateAccount(ctx context.Context, runner *statement.Runner, resolvedName, region, email, description, publicKey string) (string, coreaccount.Outcome) {
+func runCreateAccount(ctx context.Context, runner *statement.Runner, resolvedName, region, email, description, publicKey string) (string, pipeline.Outcome) {
 	nameToken, err := statement.BareIdentifier(resolvedName)
 	if err != nil {
-		return "", coreaccount.Rejected(err).Aborting()
+		return "", pipeline.Rejected(err).Aborting()
 	}
 
 	regionToken, err := statement.BareIdentifier(strings.ToUpper(strings.ReplaceAll(region, "-", "_")))
 	if err != nil {
-		return "", coreaccount.Rejected(err).Aborting()
+		return "", pipeline.Rejected(err).Aborting()
 	}
 
 	sql := fmt.Sprintf(
@@ -128,17 +128,17 @@ func runCreateAccount(ctx context.Context, runner *statement.Runner, resolvedNam
 	if err := runner.Exec(ctx, "create account", sql); err != nil {
 		var stmtErr *statement.Error
 		if stderrors.As(err, &stmtErr) && stmtErr.SQLState == duplicateAccountSQLState {
-			return "", coreaccount.Rejected(internalerrors.NewUserError(fmt.Sprintf(
+			return "", pipeline.Rejected(internalerrors.NewUserError(fmt.Sprintf(
 				"account name '%s' is already in use by another account in the organization; rename this resource and try again", resolvedName))).Aborting()
 		}
-		return "", coreaccount.Failed(fmt.Errorf("failed to create account: %w", err)).Aborting()
+		return "", pipeline.Failed(fmt.Errorf("failed to create account: %w", err)).Aborting()
 	}
 
 	locator, err := locateCreatedAccount(ctx, runner, resolvedName)
 	if err != nil {
-		return "", coreaccount.Failed(err).Aborting()
+		return "", pipeline.Failed(err).Aborting()
 	}
-	return locator, coreaccount.Done()
+	return locator, pipeline.Done()
 }
 
 // locateCreatedAccount runs SHOW ACCOUNTS LIKE against the just-created

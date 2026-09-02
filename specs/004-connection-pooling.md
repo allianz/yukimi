@@ -55,7 +55,7 @@ The two packages have a one-way dependency: `internal/snowflake/pool` imports `i
 
 ### Package `internal/snowflake/host`
 
-Host and URL construction from an account locator and a cloud-region string. No configuration, no credentials, no network — a pure string builder, imported by `pool` here and by `internal/tenant` (006) for `status.accountUrl`.
+Host and URL construction from an account locator and a cloud-region string. No configuration, no credentials, no network — a pure string builder, imported by `pool` here and by `internal/account/tenant` (006) for `status.accountUrl`.
 
 ```go
 package host
@@ -198,7 +198,7 @@ internal/snowflake/pool/
 └── doc.go
 ```
 
-`internal/snowflake/host` imports only the standard library and `internal/errors` (001) — never `internal/config/base`, never `github.com/snowflakedb/gosnowflake`, never `internal/snowflake/pool`. That leaf position is what lets `internal/tenant` (006) build `status.accountUrl` from the same code without inheriting a driver, a secret store, or configuration.
+`internal/snowflake/host` imports only the standard library and `internal/errors` (001) — never `internal/config/base`, never `github.com/snowflakedb/gosnowflake`, never `internal/snowflake/pool`. That leaf position is what lets `internal/account/tenant` (006) build `status.accountUrl` from the same code without inheriting a driver, a secret store, or configuration.
 
 `internal/snowflake/pool` must never import `internal/snowflake/statement` (005) or `internal/secrets/aws` (003.a). The only imports outside the standard library are `internal/snowflake/host`, `internal/config/base` (002), `internal/secrets` (003), `internal/errors` (001), and `github.com/snowflakedb/gosnowflake`, pinned at **v1.18.1** — the version `specs/notes-snowflake-sql-mechanics.md`'s driver findings were verified against; an upgrade means re-verifying those findings before relying on them.
 
@@ -226,7 +226,7 @@ internal/snowflake/pool/
 - **Does the health probe run on every `OrgAdmin`/`TenantAccount` call, or only when a new connection is dialed?** - Only when a new connection is dialed (a cold cache, or after eviction/self-healing). A cache hit returns the already-cached `*sql.DB` with no probe and no other network call — probing on every call would defeat the point of caching.
 - **Why does session role scoping use a `Config` field instead of a runtime `USE ROLE` statement?** - The Snowflake Go driver accepts a `Role` at connection construction time, applied automatically to every physical connection the driver opens underneath the cached `*sql.DB` — this needs no SQL statement and therefore no dependency on 005's statement execution. If a future need arises for session setup `Config` cannot express, it is done with the raw driver (`db.ExecContext`) directly in this package — never via `internal/snowflake/statement` (005), which is exactly the dependency direction this package must not create (005 already depends on the connection this package hands it; the reverse would be a cycle).
 - **What if the region passed to `TenantAccount` is well-formed but the cloud prefix is one this package has never seen (say a future `gcp-`)?** - Accepted. `host.regionSegment`'s default case strips whatever prefix precedes the first `-` and reattaches it as a trailing segment — it has no allowlist of recognized clouds, only a named exception for `aws-eu-central-1`. Whether the resulting host is real is discovered on connect, exactly like an unverified region in 002.
-- **Why does `host` take a PrivateLink bool instead of reading `BaseConfig.Snowflake.UsePrivateLink` (002) itself?** - To stay reusable: 006 builds a tenant's `status.accountUrl` from the same host, and a configuration-free leaf can be imported by `internal/tenant` without dragging `internal/config/base` in with it. Callers pass the flag, so its origin can change without touching this package.
+- **Why does `host` take a PrivateLink bool instead of reading `BaseConfig.Snowflake.UsePrivateLink` (002) itself?** - To stay reusable: 006 builds a tenant's `status.accountUrl` from the same host, and a configuration-free leaf can be imported by `internal/account/tenant` without dragging `internal/config/base` in with it. Callers pass the flag, so its origin can change without touching this package.
 - **Does `host.URL` include a path such as `/console/login`?** - No. design.md 7.2 specifies `status.accountUrl` as scheme plus host, and Snowflake redirects a bare host to the login console on its own. If an explicit console link is ever wanted, it is a new exported function in `host` rather than a change to `URL`, so a tenant's status URL keeps the form 7.2 documents.
 - **What happens if a rotation attempt fails?** - The call still returns the already-valid `*sql.DB`; the credential's stored age is unchanged, so the same check retries on the next call. This package does not log or otherwise surface the failure in this version — an accepted gap, not a design goal.
 - **What if the second key slot was never used (an account only ever bootstrapped by 010)?** - Treated the same as a slot holding an old, superseded key: it doesn't match the current key's fingerprint either way, so it's still the correct rotation target.
@@ -245,7 +245,7 @@ internal/snowflake/pool/
 - **`internal/account/modules/account` (010, not yet written)** - Calls `Pool.OrgAdmin()` to run `CREATE ACCOUNT` and reads back its response's locator for status (design.md 3.6, 7.2) - Key functions: `Pool.OrgAdmin()`.
 - **Every other account module (011–013, 015) and the account pipeline/controller (009, 018, not yet written)** - Call `Pool.TenantAccount()` to reach an account's own connection for parameters, network rules, identity import, and auth rules - Key functions: `Pool.TenantAccount()`.
 - **`internal/deletion` (017, not yet written)** - Calls `Pool.OrgAdmin()` to run `DROP ACCOUNT` and `Pool.EvictTenant()` immediately afterward so the cache does not keep serving a connection to a dropped account - Key functions: `Pool.OrgAdmin()`, `Pool.EvictTenant()`.
-- **`internal/tenant` (006, not yet written)** - Calls `host.URL()` to build `status.accountUrl` (design.md 7.2), passing the locator 010 captures from `CREATE ACCOUNT`, the account's region, and the PrivateLink flag its caller (018) reads from `BaseConfig` (002). It never calls `Pool`, and `host` never imports `internal/tenant`, so the boundary holds from both sides - Key functions: `host.URL()`.
+- **`internal/account/tenant` (006, not yet written)** - Calls `host.URL()` to build `status.accountUrl` (design.md 7.2), passing the locator 010 captures from `CREATE ACCOUNT`, the account's region, and the PrivateLink flag its caller (018) reads from `BaseConfig` (002). It never calls `Pool`, and `host` never imports `internal/account/tenant`, so the boundary holds from both sides - Key functions: `host.URL()`.
 
 ## Success Criteria
 
@@ -298,7 +298,7 @@ internal/snowflake/pool/
 ## References
 
 - **Product design**: `specs/design.md`, §3.6 (`CREATE ACCOUNT`, the locator, PrivateLink), §3.11 (organization vs. account-level privilege step-down), §3.11.1 (the tenant secret path this package's cache key mirrors), §3.12 (CRD name vs. resolved Snowflake name), §6.3 (`DROP ACCOUNT`), §7.2 (`status.accountUrl`, the form `host.URL` produces), Appendix B X1 (the `platform` service user).
-- **SnowflakeAccount CRD (006, not yet written)**: `specs/scope-006-snowflake-account-crd.md` - `internal/tenant`, the second consumer of `internal/snowflake/host`, which builds `status.accountUrl` from `host.URL`.
+- **SnowflakeAccount CRD (006, not yet written)**: `specs/scope-006-snowflake-account-crd.md` - `internal/account/tenant`, the second consumer of `internal/snowflake/host`, which builds `status.accountUrl` from `host.URL`.
 - **Secrets Handling (003)**: `specs/003-secrets-handling.md` - `Backend`, `Path`, `NewOrgAdminPath()`, `NewTenantPath()`, `Credentials`, `UnmarshalCredentials()`.
 - **Base Config (002)**: `specs/002-base-config.md` - `SnowflakeSettings`, in particular `OrgAdminAccountLocator`, `OrgAdminAccountRegion`, `UsePrivateLink`.
 - **Snowflake SQL mechanics**: `specs/notes-snowflake-sql-mechanics.md` - the gosnowflake version (v1.18.1) this spec pins, and the reasoning 005 relies on for why it must consume this package's `*sql.DB` rather than construct its own.
@@ -415,7 +415,7 @@ func TestTenantAccount_CachesByKey(t *testing.T) {
 ### Example 4: Building `status.accountUrl` from the Same Host (006's Integration)
 
 ```go
-// In internal/tenant (006, not yet written). The locator comes from CREATE ACCOUNT
+// In internal/account/tenant (006, not yet written). The locator comes from CREATE ACCOUNT
 // (010, design.md 3.6); the PrivateLink flag from BaseConfig (002), passed down by
 // the controller (018). No pool, no driver, no configuration import.
 import "github.com/allianz/yukimi/internal/snowflake/host"
