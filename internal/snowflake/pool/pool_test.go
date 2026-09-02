@@ -128,8 +128,8 @@ func (f *fakeDialer) lastConfig() dialConfig {
 	return f.configs[len(f.configs)-1]
 }
 
-func testConfig() *base.BaseConfig {
-	return &base.BaseConfig{
+func testConfig() *base.Config {
+	return &base.Config{
 		Snowflake: base.SnowflakeSettings{
 			Org:                    "my_org",
 			OrgAdminAccount:        "platform",
@@ -871,7 +871,7 @@ func TestClose_ClosesEverythingAndJoinsErrors(t *testing.T) {
 // --- applyPoolSettings -------------------------------------------------------
 
 // SC-021: every *sql.DB this package dials has the four pool-tuning values
-// from BaseConfig.Snowflake applied.
+// from Config.Snowflake applied.
 func TestApplyPoolSettings_UsesConfig(t *testing.T) {
 	cfg := testConfig()
 	db, _ := newFakeDB(t, nil)

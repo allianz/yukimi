@@ -52,7 +52,7 @@ type Path struct {
 // snowflake/tenant/<org>/<namespace>/<accountName>/platform-credentials.
 //
 // Parameters:
-//   - org: Snowflake organization name (BaseConfig.Snowflake.Org, 002)
+//   - org: Snowflake organization name (Config.Snowflake.Org, 002)
 //   - namespace: Kubernetes namespace — MUST come from metadata.namespace at
 //     the call site, never a spec field (design.md 3.11.1)
 //   - accountName: the CRD's metadata.name — MUST NOT be the resolved,
@@ -78,8 +78,8 @@ func NewTenantPath(org, namespace, accountName string) (Path, error) {
 // snowflake/org/<org>/<orgAdminAccount>/org-admin-credentials.
 //
 // Parameters:
-//   - org: BaseConfig.Snowflake.Org (002)
-//   - orgAdminAccount: BaseConfig.Snowflake.OrgAdminAccount (002)
+//   - org: Config.Snowflake.Org (002)
+//   - orgAdminAccount: Config.Snowflake.OrgAdminAccount (002)
 //
 // Returns:
 //   - User error under the same validation rule as NewTenantPath

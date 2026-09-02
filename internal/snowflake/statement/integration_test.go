@@ -51,7 +51,7 @@ func TestIntegration_RunnerAgainstLiveSnowflake(t *testing.T) {
 	}
 	cached := secrets.NewCachedBackend(backend, 5*time.Minute)
 
-	cfg := &base.BaseConfig{
+	cfg := &base.Config{
 		Snowflake: base.SnowflakeSettings{
 			Org:                    os.Getenv("SNOWFLAKE_ORG"),
 			UsePrivateLink:         os.Getenv("SNOWFLAKE_USE_PRIVATELINK") == "true",

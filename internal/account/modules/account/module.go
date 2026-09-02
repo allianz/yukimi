@@ -37,7 +37,7 @@ type module struct {
 // Parameters:
 //   - backend: the secrets.Backend (003) the platform keypair is stored
 //     through, via Backend.Create only — this module never calls Update.
-//   - org: BaseConfig.Snowflake.Org (002), used to build the tenant secret
+//   - org: Config.Snowflake.Org (002), used to build the tenant secret
 //     path (003) exactly as internal/snowflake/pool does.
 //
 // Returns:

@@ -100,7 +100,7 @@ func TestIntegration_Create(t *testing.T) {
 	backend := secrets.NewCachedBackend(awsBackend, 5*time.Minute)
 
 	org := os.Getenv("SNOWFLAKE_ORG")
-	cfg := &base.BaseConfig{
+	cfg := &base.Config{
 		Snowflake: base.SnowflakeSettings{
 			Org:                    org,
 			OrgAdminAccount:        os.Getenv("SNOWFLAKE_ORG_ADMIN_ACCOUNT"),

@@ -128,7 +128,7 @@ what the module does and does not carry.
 - **018 computes `status.accountName`/`accountUrl`/`accountLocator` itself, directly from the
   `ModuleContext` it already built and holds** — `mc.ResolvedAccountName()`, `mc.Locator()` (readable
   after `Apply` returns), and `tenant.AccountURL(locator, region, usePrivateLink)` with `usePrivateLink`
-  from `BaseConfig.Snowflake.UsePrivateLink` (002) — never from a payload on any module's `Outcome`.
+  from `Config.Snowflake.UsePrivateLink` (002) — never from a payload on any module's `Outcome`.
   010's `Outcome` carries no string result; there is nothing to read off it for this purpose.
 - **Persist `status.accountLocator` as promptly as possible after `Apply` returns.** Every reconcile
   between a successful `CREATE ACCOUNT` and that persist is a crash window, and 010 has no way to

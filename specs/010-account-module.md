@@ -55,7 +55,7 @@ authenticates as the tenant's own account instead.
 // Parameters:
 //   - backend: the secrets.Backend (003) the platform keypair is stored through, via Backend.Create
 //     only — this module never calls Update.
-//   - org: BaseConfig.Snowflake.Org (002), used to build the tenant secret path (003) exactly as
+//   - org: Config.Snowflake.Org (002), used to build the tenant secret path (003) exactly as
 //     internal/snowflake/pool does.
 //
 // Returns:
@@ -138,7 +138,7 @@ internal/account/modules/account/
 
 ## Dependencies
 
-- **Base Configuration (002)** — Used APIs: `BaseConfig.Snowflake.Org` — Contract: passed to `New` as a
+- **Base Configuration (002)** — Used APIs: `Config.Snowflake.Org` — Contract: passed to `New` as a
   plain string; this module never loads the config file itself.
 - **Secrets Handling (003)** — Used APIs: `GenerateKeyPair()`/`NewCredentials()`, `MarshalCredentials()`,
   `NewTenantPath()`, `Backend.Create()` — Contract: `Backend.Create` only, never `Update`; the module
@@ -159,7 +159,7 @@ internal/account/modules/account/
 ## Integration Points
 
 - **SnowflakeAccount Controller (018)** — Registers this module first in the pipeline via
-  `account.New(...)`, alongside its `secrets.Backend` and `BaseConfig`. Seeds each reconcile's
+  `account.New(...)`, alongside its `secrets.Backend` and `Config`. Seeds each reconcile's
   `ModuleContext` from `status.accountLocator` when already set. After `Pipeline.Apply` returns, reads
   `ModuleContext.ResolvedAccountName()` and `.Locator()` directly — never from this module's `Outcome` —
   to render `status.accountName`, `status.accountLocator`, and (via `internal/account/tenant.AccountURL`)

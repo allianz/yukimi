@@ -50,14 +50,14 @@ aws:
   region: eu-central-1
 `
 
-// SC-001: Load returns a populated *BaseConfig for a well-formed baseConfig.yaml.
+// SC-001: Load returns a populated *Config for a well-formed baseConfig.yaml.
 func TestLoad_WellFormed(t *testing.T) {
 	cfg, err := Load(newConfigDir(t, wellFormedFixture))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if cfg == nil {
-		t.Fatal("expected non-nil BaseConfig")
+		t.Fatal("expected non-nil Config")
 	}
 	if cfg.Snowflake.Org != "my_org_name" {
 		t.Errorf("Snowflake.Org = %q, want %q", cfg.Snowflake.Org, "my_org_name")
@@ -1074,10 +1074,10 @@ func TestLoad_NullDocument(t *testing.T) {
 	}
 }
 
-// SC-012: BaseConfig contains only value fields (no pointers/maps/slices), so a loaded
-// *BaseConfig is safe for concurrent read-only use. This test documents that guarantee and
+// SC-012: Config contains only value fields (no pointers/maps/slices), so a loaded
+// *Config is safe for concurrent read-only use. This test documents that guarantee and
 // guards against a future regression; run with -race.
-func TestBaseConfig_ConcurrentReadOnlyUse(t *testing.T) {
+func TestConfig_ConcurrentReadOnlyUse(t *testing.T) {
 	cfg, err := Load(newConfigDir(t, wellFormedFixture))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

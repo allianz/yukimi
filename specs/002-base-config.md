@@ -2,20 +2,20 @@
 
 ## Overview
 
-`internal/config/base/` loads the controller's base configuration — `baseConfig.yaml`, read from a mounted directory at startup — into an immutable `BaseConfig` struct. It carries the Snowflake organization identity plus exactly what's needed to reach the cloud provider the controller runs on and that provider's own secret manager. It is a plain file loader: no Kubernetes API calls, no CRD, no reconciliation. Failing fast here means a misconfigured deployment never reaches a reconcile loop.
+`internal/config/base/` loads the controller's base configuration — `baseConfig.yaml`, read from a mounted directory at startup — into an immutable `Config` struct. It carries the Snowflake organization identity plus exactly what's needed to reach the cloud provider the controller runs on and that provider's own secret manager. It is a plain file loader: no Kubernetes API calls, no CRD, no reconciliation. Failing fast here means a misconfigured deployment never reaches a reconcile loop.
 
 ## Scope
 
 This specification defines the `internal/config/base/` package that:
 - Loads `<configDir>/baseConfig.yaml` at startup, where `configDir` is a directory path resolved elsewhere (see Integration Points).
-- Exposes the parsed, validated result as an immutable `BaseConfig` struct.
+- Exposes the parsed, validated result as an immutable `Config` struct.
 - Validates required fields, raising `errors.NewUserError` for missing or malformed values, so the process fails fast at startup rather than once per reconcile.
 
 **Out of Scope**:
 - No CRD, no controller, no reconciler, no Kubernetes watch. This is not a Crossplane `ProviderConfig`.
 - No interpretation of any field's meaning. Fields owned by other components are checked for existence and shape only; e.g. whether `aws.region` names a real region is 003.a's concern, never this package's.
 - No knowledge of environment variables, `.env`, or how a Makefile might materialize `baseConfig.yaml` for local development. `Load` only ever reads a file from disk.
-- No credential fields of any kind. Workload identity vs. local environment-variable/profile credentials is resolved entirely inside the cloud SDK's own default credential chain (003.a) — never modeled as a `BaseConfig` field or an explicit "auth mode" switch.
+- No credential fields of any kind. Workload identity vs. local environment-variable/profile credentials is resolved entirely inside the cloud SDK's own default credential chain (003.a) — never modeled as a `Config` field or an explicit "auth mode" switch.
 - No check of `CloudProvider()`'s result against the set of backends actually compiled into the binary. That check — and the fatal rejection of a cloud section with no backend — belongs to `cmd/provider/main.go`, not this package.
 
 ## Key Concept: Shared Settings, Structural Validation Only
@@ -30,20 +30,20 @@ What this package checks is therefore limited to structure: **existence** (prese
 
 Each of those packages reads its own well-known filename from that shared directory independently. `internal/config/base` defines no shared "multi-file config loader" interface, no common YAML-decoding helper, and no validation framework for the others to build on. Each loader's "open file → parse → validate" logic is fully duplicated across 002, 007, and 008. This is deliberate: the loaders are small, and their validation rules differ enough — different required fields, different failure modes — that a shared abstraction would cost more to maintain than the duplication it would remove.
 
-## Key Concept: Credentials Are Never a `BaseConfig` Field
+## Key Concept: Credentials Are Never a `Config` Field
 
-`Load` behaves identically regardless of where the controller runs — nothing in this package branches on environment. What differs between production and local development is how the cloud SDK resolves credentials underneath the secrets backend (003.a), entirely outside `BaseConfig`'s schema:
+`Load` behaves identically regardless of where the controller runs — nothing in this package branches on environment. What differs between production and local development is how the cloud SDK resolves credentials underneath the secrets backend (003.a), entirely outside `Config`'s schema:
 
 - **In-cluster (production)**: the controller runs as a pod with workload identity (IRSA for AWS). The AWS SDK's default credential provider chain picks up the projected service-account token automatically — no configuration from this package is involved.
 - **Local development**: the controller runs outside the Kubernetes cluster, so no workload identity exists. Credentials instead come from environment variables (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN`) or `AWS_PROFILE`. The *same* default credential chain simply falls through to them, since no IRSA metadata is present outside the cluster. How those environment variables are populated — including a Makefile copying `.env` values into `baseConfig.yaml` or the shell environment for local runs — is tooling, out of scope for this spec.
 
-Because both cases go through the same SDK-internal chain, the switch between workload identity and local credentials is never a setting anyone writes into `baseConfig.yaml`. `BaseConfig.AWS` carries only `Region` and the optional `KmsKeyId` reference described above — never credentials, never an explicit "auth mode" flag. 003.a's constructor calls the SDK's default chain and nothing else, so the identical code path resolves to workload identity or environment-variable credentials purely based on what the process finds at startup. This package's only responsibility is making sure `baseConfig.yaml` loads the same way no matter which environment the binary runs in.
+Because both cases go through the same SDK-internal chain, the switch between workload identity and local credentials is never a setting anyone writes into `baseConfig.yaml`. `Config.AWS` carries only `Region` and the optional `KmsKeyId` reference described above — never credentials, never an explicit "auth mode" flag. 003.a's constructor calls the SDK's default chain and nothing else, so the identical code path resolves to workload identity or environment-variable credentials purely based on what the process finds at startup. This package's only responsibility is making sure `baseConfig.yaml` loads the same way no matter which environment the binary runs in.
 
 ## Public API
 
 ```go
-// BaseConfig is the immutable, validated provider-wide configuration loaded at startup.
-type BaseConfig struct {
+// Config is the immutable, validated provider-wide configuration loaded at startup.
+type Config struct {
     Snowflake SnowflakeSettings // organization identity plus connection-affecting settings
     AWS       AWSSettings       // consumed by 003.a; checked here for shape only
     Secrets   SecretsSettings   // consumed by whoever wraps a Backend in secrets.NewCachedBackend (003)
@@ -55,7 +55,7 @@ type BaseConfig struct {
 // "gcp" — found by scanning the top-level keys in document order. There is no cloudProvider
 // key: an "aws:" section is itself the selection, so the two can never disagree. Resolved once
 // by Load, which requires exactly one cloud section, so the result is never empty.
-func (c *BaseConfig) CloudProvider() string
+func (c *Config) CloudProvider() string
 
 // SnowflakeSettings holds the Snowflake organization-level settings used across
 // account identifiers, secret paths, and connection host construction.
@@ -95,7 +95,7 @@ type SecretsSettings struct {
 //     its sibling config files for 007/008 — this package reads only its own file)
 //
 // Returns:
-//   - *BaseConfig: the validated configuration; never nil on a nil error
+//   - *Config: the validated configuration; never nil on a nil error
 //   - User error if the file is missing, unreadable, not valid YAML, a required field
 //     (Snowflake.Org, Snowflake.OrgAdminAccount, Snowflake.OrgAdminAccountLocator,
 //     Snowflake.OrgAdminAccountRegion) is empty, the file does not carry exactly
@@ -106,7 +106,7 @@ type SecretsSettings struct {
 //
 // Load walks the parsed YAML's top-level keys to find the cloud sections, so a section with
 // no Go struct yet (azure:, gcp:) is still recognized rather than silently dropped.
-func Load(configDir string) (*BaseConfig, error)
+func Load(configDir string) (*Config, error)
 ```
 
 ## Schema Specification
@@ -138,7 +138,7 @@ Every field in `baseConfig.yaml` is freely editable and the whole file is reload
 
 ```text
 internal/config/base/
-├── base.go        # BaseConfig, SnowflakeSettings, AWSSettings, Load()
+├── base.go        # Config, SnowflakeSettings, AWSSettings, Load()
 └── base_test.go   # Unit tests
 ```
 
@@ -186,14 +186,14 @@ internal/config/base/
 
 ## Integration Points
 
-- **`cmd/provider/main.go`** - Owns the `--configDir` flag and resolves it to a directory path. Calls `base.Load(configDir)` once at startup, then switches on `BaseConfig.CloudProvider()` to construct the matching secrets backend, fatally rejecting an unrecognized value by listing the cloud providers compiled in. Also reads `BaseConfig.Secrets.CacheTTL` and passes it to `secrets.NewCachedBackend(backend, cfg.Secrets.CacheTTL)` (003) — `internal/secrets` itself never imports `internal/config/base` - Key functions: `base.Load()`, `BaseConfig.CloudProvider()`.
-- **`internal/secrets/aws` (003.a)** - Consumes `BaseConfig.AWS.Region` when constructed by `main.go`; rejects an empty region as a user error itself, since 002 does not validate it. Also optionally consumes `BaseConfig.AWS.KmsKeyId`, passing it through to `CreateSecret`'s `KmsKeyId` parameter when non-empty, so Secrets Manager encrypts/decrypts with the customer-managed key instead of its AWS-managed default - Notes: credentials come from the AWS SDK's default chain, never from `BaseConfig`.
-- **`internal/snowflake/pool` (004)** - Consumes `BaseConfig.Snowflake.Org`, `OrgAdminAccount`, `OrgAdminAccountLocator`, `OrgAdminAccountRegion`, `UsePrivateLink`, and `DisableOCSPChecks` for org-admin connection host/config construction (design.md 3.6, 3.11), plus `MaxConnectionPoolSize`, `MaxIdleConnections`, `ConnectionMaxLifetime`, `ConnectionMaxIdleTime`, and `ConnectionProbeTimeout` to tune every pooled `*sql.DB`.
+- **`cmd/provider/main.go`** - Owns the `--configDir` flag and resolves it to a directory path. Calls `base.Load(configDir)` once at startup, then switches on `Config.CloudProvider()` to construct the matching secrets backend, fatally rejecting an unrecognized value by listing the cloud providers compiled in. Also reads `Config.Secrets.CacheTTL` and passes it to `secrets.NewCachedBackend(backend, cfg.Secrets.CacheTTL)` (003) — `internal/secrets` itself never imports `internal/config/base` - Key functions: `base.Load()`, `Config.CloudProvider()`.
+- **`internal/secrets/aws` (003.a)** - Consumes `Config.AWS.Region` when constructed by `main.go`; rejects an empty region as a user error itself, since 002 does not validate it. Also optionally consumes `Config.AWS.KmsKeyId`, passing it through to `CreateSecret`'s `KmsKeyId` parameter when non-empty, so Secrets Manager encrypts/decrypts with the customer-managed key instead of its AWS-managed default - Notes: credentials come from the AWS SDK's default chain, never from `Config`.
+- **`internal/snowflake/pool` (004)** - Consumes `Config.Snowflake.Org`, `OrgAdminAccount`, `OrgAdminAccountLocator`, `OrgAdminAccountRegion`, `UsePrivateLink`, and `DisableOCSPChecks` for org-admin connection host/config construction (design.md 3.6, 3.11), plus `MaxConnectionPoolSize`, `MaxIdleConnections`, `ConnectionMaxLifetime`, `ConnectionMaxIdleTime`, and `ConnectionProbeTimeout` to tune every pooled `*sql.DB`.
 - **`internal/config/backplane` (007)** / **guardrails loader (008)** - Read their own sibling files (`backplane.yaml`, a guardrails/exceptions file) from the same `--configDir`, with independently implemented loading and validation logic — no code shared with `internal/config/base`.
 
 ## Success Criteria
 
-- **SC-001**: `Load` returns a populated `*BaseConfig` for a well-formed `baseConfig.yaml`.
+- **SC-001**: `Load` returns a populated `*Config` for a well-formed `baseConfig.yaml`.
 - **SC-002**: `Load` returns a user error when `<configDir>/baseConfig.yaml` does not exist.
 - **SC-003**: `Load` returns a user error when the file is not valid YAML.
 - **SC-004**: `Load` returns a user error when `snowflake.org` is empty or absent.
@@ -205,7 +205,7 @@ internal/config/base/
 - **SC-010**: `Load` accepts an absent `aws.region`, accepts a well-formed but non-existent one (`xx-nowhere-9`), and returns a user error for a malformed one (`Frankfurt!`).
 - **SC-010a**: `Load` returns a user error when `snowflake.org` or `snowflake.orgAdminAccount` contains characters outside the Snowflake identifier form (e.g. `my-org`).
 - **SC-011**: An unrecognized top-level YAML key does not cause `Load` to fail.
-- **SC-012**: The returned `*BaseConfig` is safe for concurrent read-only use by multiple goroutines after `Load` returns.
+- **SC-012**: The returned `*Config` is safe for concurrent read-only use by multiple goroutines after `Load` returns.
 - **SC-013**: `internal/config/base` imports only `internal/errors` among this repository's packages.
 - **SC-014**: Unit test coverage exceeds 95%.
 - **SC-015**: `Load` accepts an absent `aws.kmsKeyId`, accepts each well-formed KMS identifier form (bare key ID, `alias/<name>`, key ARN, alias ARN), and returns a user error for a malformed one.
@@ -220,7 +220,7 @@ internal/config/base/
 
 ## References
 
-- **Config Package**: `internal/config/base/base.go` - `BaseConfig`, `SnowflakeSettings`, `AWSSettings`, `SecretsSettings`, `Load`
+- **Config Package**: `internal/config/base/base.go` - `Config`, `SnowflakeSettings`, `AWSSettings`, `SecretsSettings`, `Load`
 - **Design Doc**: `specs/design.md`, §3.11.1 - the AWS Secrets Manager path grammar that consumes `Snowflake.Org`
 
 <br/><br/><br/><br/><br/>

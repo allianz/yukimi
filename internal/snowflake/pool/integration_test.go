@@ -48,7 +48,7 @@ func TestIntegration_TenantAccount(t *testing.T) {
 	}
 	cached := secrets.NewCachedBackend(backend, 5*time.Minute)
 
-	cfg := &base.BaseConfig{
+	cfg := &base.Config{
 		Snowflake: base.SnowflakeSettings{
 			Org:                    os.Getenv("SNOWFLAKE_ORG"),
 			UsePrivateLink:         os.Getenv("SNOWFLAKE_USE_PRIVATELINK") == "true",
@@ -99,7 +99,7 @@ func TestIntegration_TenantAccount_RotatesStaleCredential(t *testing.T) {
 		t.Fatalf("secretsaws.New: %v", err)
 	}
 
-	cfg := &base.BaseConfig{
+	cfg := &base.Config{
 		Snowflake: base.SnowflakeSettings{
 			Org:                    os.Getenv("SNOWFLAKE_ORG"),
 			UsePrivateLink:         os.Getenv("SNOWFLAKE_USE_PRIVATELINK") == "true",
