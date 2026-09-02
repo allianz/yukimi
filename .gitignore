@@ -18,7 +18,6 @@ cover.out
 .env
 .env.*
 !.env.example
-.claude/skills
 
 # Test coverage
 coverage.out

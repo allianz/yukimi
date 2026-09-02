@@ -94,10 +94,11 @@ number implies.
 
 ## Raised by the 010 clarification
 
-Recorded by `/yukimi.clarify 010`; see `specs/wip-010-account-module.md` (D/O sections) for the full
-reasoning.
+Recorded by `/yukimi.clarify 010`. `specs/010-account-module.md` is now the authoritative statement of
+what 010 does (SC-010, SC-011).
 
-- **`CREATE ACCOUNT` requires `EMAIL`, and 010 sources it from `spec.contacts[0]`** (wip-010 D-011,
-  verified against Snowflake's own `CREATE ACCOUNT` reference). 008 must add a constraint requiring a
-  non-empty `contacts[]` at admission — today (006) `contacts[]` is fully optional with no CEL
+- **`CREATE ACCOUNT` requires `EMAIL`, and 010 sources it from `spec.contacts[0]`** (verified against
+  Snowflake's own `CREATE ACCOUNT` reference). 010 aborts with a user error on a fresh create when
+  `spec.contacts` is empty, but only as a defense-in-depth backstop. 008 must add a constraint
+  requiring a non-empty `contacts[]` at admission — today (006) `contacts[]` is fully optional with no CEL
   constraint, so without this an account could otherwise reach 010 with nothing to put in `EMAIL`.

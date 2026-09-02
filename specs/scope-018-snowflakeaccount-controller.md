@@ -66,13 +66,15 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
 
 ## Raised by the 009 clarification
 
-Recorded by `/yukimi.clarify 009`; see `specs/wip-009-account-pipeline.md` for the full reasoning.
-009 places more obligations on 018 than on any other spec.
+Recorded by `/yukimi.clarify 009`. `specs/009-account-pipeline.md` is now written and authoritative —
+its "Integration Points" section states 018's obligations directly, and its Appendix examples 1 and 2
+sketch the `Observe` and `Create`/`Update` bodies. 009 places more obligations on 018 than on any other
+spec.
 
 - **Two entry points, called from three methods.** `pipeline.Observe(ctx, mc)` from `Observe`;
   `pipeline.Apply(ctx, mc)` from **both** `Create` and `Update` — the two bodies are identical,
   because `Apply` is idempotent by construction. Nothing is threaded from an `Observe` call into the
-  following `Apply` (wip-009 D-001, D-011).
+  following `Apply`; `ModuleContext` is rebuilt per call and the two entry points share no state.
 - **018 builds one `*account.Context` per reconcile** and hands the same value to every module: the
   CRD (spec **and** status), the resolved account name (006), the region's `*backplane.Region` entry
   already admitted against `Available` (007), the ops-set namespace labels (006), and a
@@ -81,33 +83,34 @@ Recorded by `/yukimi.clarify 009`; see `specs/wip-009-account-pipeline.md` for t
   execution; the context carries nothing derived from them.
 - **Seed the account locator from `status.accountLocator`** when it is set. The context late-binds it;
   010 publishes it via `SetLocator` after `CREATE ACCOUNT`, so a fresh account is created and fully
-  configured inside one `Create` (wip-009 D-013).
+  configured inside one `Create`.
 - **`ResourceUpToDate` is generation-based**:
   `exists && cr.Status.ObservedGeneration == cr.Generation && allModulesInSync`. Advance the counter
   with `cr.Status.SetObservedGeneration(cr.Generation)` **only** when `result.AllDone()` — so a spec
   edit re-applies once, while an outstanding `Pending` or an uncorrected `Rejected` keeps re-applying
-  and keeps reporting (wip-009 D-009). Verified: `status.observedGeneration` already exists via
-  `xpv1.ResourceStatus`'s embedded `ObservedStatus`, and the managed reconciler in
-  `crossplane-runtime/v2@v2.0.0` never writes it — so no CRD schema change is needed and the field is
-  018's to own. Known cost: one persistently rejected module re-runs every module every poll interval
-  (wip-009 P-004, accepted).
+  and keeps reporting. Verified: `status.observedGeneration` already exists via `xpv1.ResourceStatus`'s
+  embedded `ObservedStatus`, and the managed reconciler in `crossplane-runtime/v2@v2.0.0` never writes
+  it — so no CRD schema change is needed and the field is 018's to own. Known cost, accepted: one
+  persistently rejected module re-runs every module every poll interval — a handful of idempotent
+  statements plus one enumeration query per pruning module, so cheap-but-unbounded rather than solved.
 - **Registration order is 010 → 011 → 012 → 013 → 015 → 016**, with 010 first in `New`'s ordered
   module list: `account.New(accountModule, parameterModule, networkModule, authModule,
-  identityModule, quotaModule)` (wip-009 D-003). Modules run sequentially in that order; there is no
-  parallelism and no per-module timeout (wip-009 D-004).
+  identityModule, quotaModule)`. Modules run sequentially in that order; there is no parallelism and no
+  per-module timeout.
 - **018 calls `logger.Handle` once per carried error** in the result — the pipeline classifies nothing
-  and handles nothing itself (wip-009 D-005, D-019).
+  and handles nothing itself.
 - **Modules absent from `Result` must be left alone.** When a module's outcome sets `Abort` (in
   practice, only 010's does) the run stops, and unrun modules are absent from `Result.Outcomes`
   entirely — not recorded as skipped or unknown. Leave any condition such a module owns exactly as the
-  previous reconcile left it: neither blanked nor set to `Unknown` (wip-009 D-006, D-007). "We did not
-  look" is not the same claim as "we looked and it is unknown".
+  previous reconcile left it: neither blanked nor set to `Unknown`. "We did not look" is not the same
+  claim as "we looked and it is unknown".
 - **Do not blank an existing `status.accountUrl` (or `accountName`/`accountLocator`) on an aborted or
   partially-failed run** — same reasoning as above.
 - **Render conditions from the pipeline's aggregate.** 009 owns the `QuotaAvailable` /
   `IdentitySynced` type constants and the static table saying which of them gates `Ready`; 018 renders
-  the aggregate onto the resource, plus messages and events (wip-009 D-016).
-- **Open question 018 must settle (wip-009 O-001):** the managed reconciler marks `xpv1.Creating()`
+  the aggregate onto the resource, plus messages and events.
+- **Open question 018 must settle**, left unresolved by the 009 clarification: the managed reconciler
+  marks `xpv1.Creating()`
   and `ReconcileSuccess()` and requeues *after* `Create` returns, so whatever 009 aggregated during
   that call is overwritten until the next `Observe`. Harmless if 018 re-aggregates on every `Observe`,
   but the spec must state it deliberately rather than leave it to be discovered. Related verified
@@ -115,21 +118,20 @@ Recorded by `/yukimi.clarify 009`; see `specs/wip-009-account-pipeline.md` for t
   (`pkg/reconciler/managed/reconciler.go:1428`), which is why `Synced` cannot be used to carry a
   drift or status message from `Observe`.
 - **Drift is not detected or repaired** anywhere in this pipeline until Snowflake ships Organization
-  Policies (wip-009 D-010, P-001). 018 should not add a repair path of its own.
+  Policies (design.md Appendix B). 018 should not add a repair path of its own.
 
 ## Raised by the 010 clarification
 
-Recorded by `/yukimi.clarify 010`; see `specs/wip-010-account-module.md` (D/O sections) for the full
-reasoning.
+Recorded by `/yukimi.clarify 010`. `specs/010-account-module.md` is now written and authoritative for
+what the module does and does not carry.
 
 - **018 computes `status.accountName`/`accountUrl`/`accountLocator` itself, directly from the
   `ModuleContext` it already built and holds** — `mc.ResolvedAccountName()`, `mc.Locator()` (readable
-  after `Apply` returns), and `tenant.AccountURL(locator, region, usePrivateLink)` with
-  `usePrivateLink` from `BaseConfig.Snowflake.UsePrivateLink` (002) — never from a payload on any
-  module's `Outcome` (wip-010 D-003, D-004). 010's `Outcome` carries no string result; there is nothing
-  to read off it for this purpose.
+  after `Apply` returns), and `tenant.AccountURL(locator, region, usePrivateLink)` with `usePrivateLink`
+  from `BaseConfig.Snowflake.UsePrivateLink` (002) — never from a payload on any module's `Outcome`.
+  010's `Outcome` carries no string result; there is nothing to read off it for this purpose.
 - **Persist `status.accountLocator` as promptly as possible after `Apply` returns.** Every reconcile
-  between a successful `CREATE ACCOUNT` and that persist is a crash window: 010 has no way to recover
-  from it automatically (wip-010 D-005, D-007), so a crash there permanently strands the resource in
-  `Failed(systemErr)` until an operator manually reconciles `status.accountLocator` or the underlying
-  Snowflake account. Minimizing how long that window stays open is 018's responsibility, not 010's.
+  between a successful `CREATE ACCOUNT` and that persist is a crash window, and 010 has no way to
+  recover from it automatically: a crash there permanently strands the resource in `Failed(systemErr)`
+  until an operator manually reconciles `status.accountLocator` or the underlying Snowflake account.
+  Minimizing how long that window stays open is 018's responsibility, not 010's.

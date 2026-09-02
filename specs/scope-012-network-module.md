@@ -69,7 +69,10 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
 
 ## Raised by the 009 clarification
 
-Recorded by `/yukimi.clarify 009`; see `specs/wip-009-account-pipeline.md` for the full reasoning.
+Recorded by `/yukimi.clarify 009`. `specs/009-account-pipeline.md` now carries the pipeline-wide rules
+these points rest on — see its "Key Concept: Overwrite Apply, Generation-Gated Re-Apply" for the
+overwrite-and-prune contract, and "Key Concept: Sequential Modules, One Abort Signal" for who may stop
+a run.
 
 - **Updates are a blunt overwrite, not a diff.** Re-assert the full desired state on every `Apply`
   (`CREATE OR REPLACE` plus re-bind), with no read-back of existing entries to compare against.
@@ -90,6 +93,8 @@ Recorded by `/yukimi.clarify 009`; see `specs/wip-009-account-pipeline.md` for t
   tenant's ability to create it: a `CUSTOM_` rule present in the CRD but missing in Snowflake is simply
   recreated by the overwrite, and nothing outside the `CUSTOM_` prefix is inspected at all.
 - **A rejected entry never stops the run.** 012 returning `Rejected(userErr)` leaves the account on
-  its baseline and the remaining modules still execute (wip-009 D-008, design 3.8/3.9). Only 010 ever
-  aborts the run; 012 never calls `.Aborting()` on its own outcome.
-- 012 implements `Observe(ctx, mc) (bool, Outcome)` returning `true, Done()` today (wip-009 D-002).
+  its baseline and the remaining modules still execute — design 3.8/3.9's "a rejected entry leaves the
+  account on its baseline" only holds if the modules after the rejecting one still get to run. Only 010
+  ever aborts the run; 012 never calls `.Aborting()` on its own outcome.
+- 012 implements `Observe(ctx, mc) (bool, Outcome)` returning `true, Done()` today, for the same reason
+  011 does: the method exists so a real read-back can be added later without reopening the interface.

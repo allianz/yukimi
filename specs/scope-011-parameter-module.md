@@ -36,16 +36,20 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
 
 ## Raised by the 009 clarification
 
-Recorded by `/yukimi.clarify 009`; see `specs/wip-009-account-pipeline.md` for the full reasoning.
+Recorded by `/yukimi.clarify 009`. `specs/009-account-pipeline.md` now carries the pipeline-wide rules
+these points rest on — see its "Key Concept: Overwrite Apply, Generation-Gated Re-Apply".
 
 - **Design's "read the parameters back and re-apply any that diverged" is deferred.** Drift detection
-  is switched off across the whole pipeline until Snowflake ships Organization Policies, because that
-  will make this state org-owned and tenant-unchangeable, and any read-back built now becomes dead
-  code (wip-009 D-010, P-001). For now: **re-apply all global and regional parameters unconditionally
+  is switched off across the whole pipeline until Snowflake ships Organization Policies (design.md
+  Appendix B), because that will make this state org-owned and tenant-unchangeable, and any read-back
+  built now becomes dead code. For now: **re-apply all global and regional parameters unconditionally
   on every `Apply`**, with no `SHOW PARAMETERS` and no comparison.
 - **011 still implements the full module contract**, including `Observe(ctx, mc) (bool, Outcome)`,
-  which returns `true, Done()` today (wip-009 D-002). The method exists so the real read-back can be
-  filled in later without reopening the interface — this spec should say so explicitly rather than
-  leaving the inert body looking like an oversight.
+  which returns `true, Done()` today. The method exists so the real read-back can be filled in later
+  without reopening the interface — this spec should say so explicitly rather than leaving the inert
+  body looking like an oversight.
 - Unconditional re-application is what makes the module crash-safe: a run interrupted halfway is
-  simply re-asserted in full on the next `Apply`, with no resume point to track (wip-009 D-011).
+  simply re-asserted in full on the next `Apply`, with no resume point to track and nothing to
+  compensate for.
+- **Account parameters are never pruned.** Only 012 and 013 prune, each by its own object-name prefix;
+  011's parameters are re-asserted but never enumerated or dropped.

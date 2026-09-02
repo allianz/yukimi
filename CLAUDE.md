@@ -33,7 +33,12 @@ Each `internal/` package has a corresponding numbered spec in `specs/`. The spec
 
 Specs are written and implemented one at a time in ascending order, so **a spec may depend only on specs numbered strictly below it** — the code for higher-numbered specs does not exist yet. For a spec not yet written, `specs/scope-NNN-<slug>.md` (if present) gives a starting-point idea of its intended scope — see that file's own header for how much weight to give it; `specs/design.md` is always the authoritative source. A letter suffix (`003.a`) marks a pluggable backend implementing an interface owned by its parent number; it sorts between `003` and `004`, and only `cmd/provider/main.go` may depend on one.
 
-A `specs/wip-NNN-<slug>.md` alongside a scope note is a clarification record produced by `/yukimi.clarify NNN`: decisions, problem areas and open questions settling what `specs/design.md` intentionally leaves out. It is not product design and not a spec — read it together with the scope note when writing `NNN-<slug>.md`, then delete both.
+A `specs/wip-NNN-<slug>.md` is a clarification record produced by `/yukimi.clarify NNN`: decisions, problem areas, open questions and the verified research behind them. It is not product design and not a spec. Read it together with the scope note when writing `NNN-<slug>.md`.
+
+The two transient documents are deleted at different points:
+
+- `scope-NNN-<slug>.md` — delete once `NNN-<slug>.md` is written.
+- `wip-NNN-<slug>.md` — keep until the code for `NNN` is implemented, then delete. It holds the detail the spec leaves out on purpose, so the spec can stay at the level of contracts and mental models instead of restating the research. Where a wip record and its spec disagree, the spec wins.
 
 | Spec | Package | Description |
 |------|---------|-------------|
