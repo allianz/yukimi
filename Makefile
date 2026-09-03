@@ -93,6 +93,8 @@ dev: $(KIND) $(KUBECTL) $(GOMPLATE)
 		$(INFO) "Using existing kind cluster $(PROJECT_NAME)-dev"; \
 	fi
 	@$(KUBECTL) cluster-info --context kind-$(PROJECT_NAME)-dev
+	@$(INFO) Installing Yukimi CRDs
+	@$(KUBECTL) apply -f $(ROOT_DIR)/package/crds/
 	@$(INFO) Generating local-dev config files from .env
 	@$(ROOT_DIR)/hack/dev/generate-config.sh
 	@$(INFO) Labeling tenant namespace for testing
