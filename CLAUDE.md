@@ -153,7 +153,6 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
 ### Package Organization Conventions
 - **No `types.go` files**: Type definitions live alongside their implementation in descriptively-named files
 - **No `_impl.go` files**: Interface and implementation belong together in the same file
-- **Add `loader.go`**: When the package needs to load CRDs or process CRD fields (unmarshaling, transformation, validation)
 
 ## Copyright Headers
 
@@ -233,10 +232,7 @@ All files matching `zz_generated.*` are auto-generated:
 
 
 ### E2E Tests
-```bash
-make e2e.automated  # Fully automated with kind cluster
-make e2e.manual     # Against running 'make dev' in another terminal
-```
+
 
 ## Resources & References
 

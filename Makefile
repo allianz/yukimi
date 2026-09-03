@@ -85,7 +85,7 @@ run: go.build
 
 # Run a local development cluster with kind and install the CRDs and run the controllers
 # locally. Useful for development.
-dev: $(KIND) $(KUBECTL)
+dev: $(KIND) $(KUBECTL) $(GOMPLATE)
 	@if ! $(KIND) get clusters | grep -q "$(PROJECT_NAME)-dev"; then \
 		$(INFO) "Creating kind cluster $(PROJECT_NAME)-dev"; \
 		$(KIND) create cluster --name=$(PROJECT_NAME)-dev; \
@@ -93,8 +93,10 @@ dev: $(KIND) $(KUBECTL)
 		$(INFO) "Using existing kind cluster $(PROJECT_NAME)-dev"; \
 	fi
 	@$(KUBECTL) cluster-info --context kind-$(PROJECT_NAME)-dev
-	@$(INFO) Setting up AWS credentials from local profile
-	@KUBECTL=$(KUBECTL) $(ROOT_DIR)/cluster/local/sync-aws-credentials.sh
+	@$(INFO) Installing Yukimi CRDs
+	@$(KUBECTL) apply -f $(ROOT_DIR)/package/crds/
+	@$(INFO) Generating local-dev config files from .env
+	@$(ROOT_DIR)/hack/dev/generate-config.sh
 	@$(INFO) Labeling tenant namespace for testing
 	@set -a && source .env && set +a && $(KUBECTL) create namespace $${SAMPLE_CUSTOMER_NAMESPACE} --dry-run=client -o yaml | $(KUBECTL) apply -f - && $(KUBECTL) label namespace $${SAMPLE_CUSTOMER_NAMESPACE} department="az_tech" costcenter="121212" --overwrite
 	@$(INFO) Switching kubectl default namespace to tenant namespace
