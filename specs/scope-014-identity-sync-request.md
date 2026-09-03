@@ -77,7 +77,7 @@ these points rest on.
   (verified against the code). 014 therefore extends `internal/config/base`, which no earlier spec does.
   Left open by the 009 clarification: decide and state what an absent or disabled `identitySync` means
   for the `IdentitySynced` condition.
-- **015 calls the emitter, not 018.** Emission of `IdentitySyncRequest` is owned by the identity
+- **015 calls the emitter, not 019.** Emission of `IdentitySyncRequest` is owned by the identity
   module, because emission and import are two halves of one concern and share the same
   `Pending`/timeout accounting. 014 owns the CRD contract and the emitter API; it must be callable from
   inside a pipeline module, i.e. from a module `Apply` holding only the shared context.

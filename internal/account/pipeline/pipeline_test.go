@@ -75,16 +75,20 @@ func TestApply_PreservesOrder(t *testing.T) {
 	}
 }
 
-// SC-002: Observation.Exists reflects only modules[0]'s Observe result,
-// regardless of what later modules report.
-func TestObserve_ExistsFromModule0Only(t *testing.T) {
+// SC-002: Observation.Exists reflects only the account module's
+// (Name() == AccountModuleName) Observe result, regardless of its position
+// in the registered list or what later modules report.
+func TestObserve_ExistsFromAccountModuleByName(t *testing.T) {
 	cases := []struct {
-		name       string
-		inSyncs    []bool
-		wantExists bool
+		name         string
+		accountIndex int // position of the AccountModuleName fake within inSyncs
+		inSyncs      []bool
+		wantExists   bool
 	}{
-		{"module0 true, later false", []bool{true, false, true}, true},
-		{"module0 false, later true", []bool{false, true, true}, false},
+		{"account module first, true; others false", 0, []bool{true, false, true}, true},
+		{"account module first, false; others true", 0, []bool{false, true, true}, false},
+		{"account module in the middle, true", 1, []bool{false, true, false}, true},
+		{"account module last, false", 2, []bool{true, true, false}, false},
 	}
 
 	for _, tc := range cases {
@@ -92,7 +96,11 @@ func TestObserve_ExistsFromModule0Only(t *testing.T) {
 			var order []string
 			var modules []Module
 			for i, inSync := range tc.inSyncs {
-				modules = append(modules, &fakeModule{name: string(rune('a' + i)), observeInSync: inSync, order: &order})
+				name := string(rune('a' + i))
+				if i == tc.accountIndex {
+					name = AccountModuleName
+				}
+				modules = append(modules, &fakeModule{name: name, observeInSync: inSync, order: &order})
 			}
 			p := New(modules...)
 			obs, err := p.Observe(context.Background(), nil)

@@ -122,9 +122,9 @@ func (c *ModuleContext) OrgAdminDB(ctx context.Context) (*sql.DB, error) {
 // resolved on first call and memoized for the rest of the run.
 //
 // Returns:
-//   - System error if Locator() is still empty — every module after 010
-//     needs a locator, and getting one is the whole point of running 010
-//     first.
+//   - System error if Locator() is still empty — every module calling
+//     TenantDB needs a locator, and getting one is the whole point of
+//     running the account module (010) before any such module.
 func (c *ModuleContext) TenantDB(ctx context.Context) (*sql.DB, error) {
 	if c.tenantDB != nil {
 		return c.tenantDB, nil

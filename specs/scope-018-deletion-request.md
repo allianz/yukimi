@@ -1,10 +1,10 @@
 > **Scope context only — not a specification.** This file was split out of the temporary
 > `roadmap.md` planning document used to work out how `specs/design.md` should be decomposed
-> into numbered specs. It exists only to give a starting-point idea of spec `017`'s intended
-> *scope*, not its content. When writing `017-deletion-request.md`, the sole sources of truth
+> into numbered specs. It exists only to give a starting-point idea of spec `018`'s intended
+> *scope*, not its content. When writing `018-deletion-request.md`, the sole sources of truth
 > are `specs/design.md` and the prompt given at spec-writing time — rework, restructure, or
 > discard anything below freely. Please keep this file up to date until
-> `017-deletion-request.md` has been written, then delete it.
+> `018-deletion-request.md` has been written, then delete it.
 
 ## Ordering rule (context for "Depends on" below)
 
@@ -32,9 +32,9 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
     timestamp, and set `status.state = Active`. Once `validUntil` passes unused the state becomes
     `Expired` and it no longer authorizes anything — a new request is required. **Time-boxing**
     prevents long-standing dangling permissions.
-  - The lookup used by 018: find an `Active` request in the same namespace targeting a specific
+  - The lookup used by 019: find an `Active` request in the same namespace targeting a specific
     resource.
-  - The status transition to `Consumed` after a successful deletion, which is written by 018.
+  - The status transition to `Consumed` after a successful deletion, which is written by 019.
   - **A durable audit trail**: the request outlives its target, linking the destruction to a reason
     and a timeframe for compliance.
   - Validate `targetRef.kind` against an explicit allowlist. Recommendation: **`SnowflakeAccount`
@@ -50,7 +50,7 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
 
 ## Cross-cutting context from the roadmap
 
-- **Why 017 sits below 018.** Per design 6.3 Phase 3 the account controller both reads the deletion
+- **Why 018 sits below 019.** Per design 6.3 Phase 3 the account controller both reads the deletion
   warrant and writes its `Consumed` status, so it imports `internal/deletion`. The dependency is
   one-way; no injected interface is needed.
 

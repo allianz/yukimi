@@ -65,14 +65,15 @@ func Rejected(err error) Outcome { return Outcome{State: StateRejected, Err: err
 func Failed(err error) Outcome { return Outcome{State: StateFailed, Err: err} }
 
 // Aborting returns a copy of o with Abort set true; every other field is
-// unchanged. Only the account module (010) calls this today, on any outcome
-// that is not Done.
+// unchanged. No module is privileged to call this — today the account
+// module (010) is the only one implemented that does, on any outcome that
+// is not Done.
 func (o Outcome) Aborting() Outcome {
 	o.Abort = true
 	return o
 }
 
-// Module is implemented by each pipeline stage (010, 011, 012, 013, 015, 016).
+// Module is implemented by each pipeline stage (010, 011, 012, 013, 015, 016, 017).
 type Module interface {
 	Name() string
 
@@ -84,3 +85,10 @@ type Module interface {
 	// other call in between.
 	Apply(ctx context.Context, mc *ModuleContext) Outcome
 }
+
+// AccountModuleName is the account module's (010) Name(). Pipeline.Observe
+// uses it to find which registered module's Observe result is
+// Observation.Exists, regardless of that module's position in the
+// registered list — a module needing no Snowflake connection (quota-check,
+// 016) may be registered ahead of the account module.
+const AccountModuleName = "account"

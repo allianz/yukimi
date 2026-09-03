@@ -168,7 +168,6 @@ flowchart LR
         CreateFlow["Account Bootstrapping (3.6)"] --> IdentityIntegration["Identity Integration (3.7)"]
         IdentityIntegration --> NetworkRules["Custom Network Rules (3.8)"]
         NetworkRules --> AuthRules["Custom Auth Rules (3.9)"]
-        AuthRules --> CreditQuota["Credit Quota (3.10)"]
     end
 
     style createFlowGroup fill:transparent
@@ -178,11 +177,11 @@ flowchart LR
 * **Guardrails (3.3):** OEs (Operating Entities) define the rules that gate the customer's SnowflakeAccount CRD input before it is ever applied to Snowflake.
 * **Approved Exceptions (3.4):** ISO approves one-off exceptions to what the guardrails would otherwise reject — e.g. opening a public-internet IP range.
 * **Backplane Config (3.5):** Once Ops has provisioned a region's network via Terraform and closed out the follow-up setup tickets, they record the resulting IDs and IP ranges in the Backplane Config for the controller to use.
+* **Credit Quota (3.10):** Before anything is created, the controller checks the share of credits the SnowflakeAccount CRD claims against the namespace allowance set at onboarding (2), and blocks the account outright if it doesn't fit. Once the account exists, the controller pushes the approved share into Snowflake as a resource monitor and a budget so consumption stops when it is used up.
 * **Account Bootstrapping (3.6):** The controller creates the Snowflake account and binds it to the regional backplane infrastructure from the Backplane Config.
 * **Identity Integration (3.7):** The controller imports the SnowflakeAccount CRD's referenced company groups into the new account, so their members can log in via SSO with their existing company roles carried over. Those groups must first exist in the central organization account; where the enterprise does not sync them there by default, the controller requests them via an `IdentitySyncRequest` (4).
 * **Custom Network Rules (3.8):** The controller turns the SnowflakeAccount CRD's `customNetworkRules` entries into Snowflake network rules and policies — a dedicated, deny-by-default policy per service user under `serviceUsers`, and account-wide additions for each entry under `accountWide`.
 * **Custom Auth Rules (3.9):** The controller turns the SnowflakeAccount CRD's `customAuthRules.exceptions` entries into per-user authentication policies, letting the named human users bypass the account's SSO-only baseline.
-* **Credit Quota (3.10):** The controller checks the share of credits the SnowflakeAccount CRD claims against the namespace allowance set at onboarding (2), then pushes that share into Snowflake as a resource monitor and a budget so consumption stops when it is used up.
 
 
 

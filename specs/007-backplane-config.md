@@ -28,7 +28,7 @@ This specification defines the `internal/config/backplane/` package that:
   `regionalParameters` is 011's job, and turning `inventory` / `regionalAllowlist` into network
   rules and policies is 012's.
 - Deciding what an unavailable or unknown region means for a given `SnowflakeAccount` request —
-  this package only reports what the file says; 009/018 own that admission decision.
+  this package only reports what the file says; 009/019 own that admission decision.
 - No CRD, no controller, no Kubernetes watch — this is a plain file loader, exactly like `002`.
 
 ## Key Concept: The Availability Gate
@@ -100,7 +100,7 @@ func Load(configDir string) (*Config, error)
 
 // Region looks up a region by name — typically a SnowflakeAccount's spec.region (design.md 3.1).
 // It reports only what the file says; it does not consult Available, leaving what an unavailable
-// or unknown region means for the caller's request to the caller (009, 018).
+// or unknown region means for the caller's request to the caller (009, 019).
 //
 // Returns:
 //   - User error if no region with this name exists in the loaded config
@@ -183,7 +183,7 @@ a system error by default, since `Load` never wraps it in `errors.NewUserError`.
   sound (e.g. nobody could log in) is an Ops discipline concern, not something `Load` enforces.
 - **What happens when a region is marked `available: false`?** - `Load` validates it exactly as
   strictly as an available one; nothing about validation depends on the flag. Only the caller
-  (009/018) decides whether to admit a `SnowflakeAccount` naming this region.
+  (009/019) decides whether to admit a `SnowflakeAccount` naming this region.
 - **What if a connection carries both a `vpceId` and `maxCidrs` (e.g. `agn`)?** - Accepted; the two
   are independent optional fields, never treated as mutually exclusive.
 - **What if the same connection name appears in two different regions?** - Accepted; connection
@@ -208,7 +208,7 @@ a system error by default, since `Load` never wraps it in `errors.NewUserError`.
   region's `RegionalParameters`.
 - **`internal/account/modules/network` (012)** - Consumes a region's `Inventory`, `Connection()`,
   and `ContainsCIDR()` to validate and apply `customNetworkRules` (design.md 3.8).
-- **`internal/account` (009) / `internal/controller/snowflakeaccount` (018)** - Calls
+- **`internal/account` (009) / `internal/controller/snowflakeaccount` (019)** - Calls
   `Config.Region()` and inspects `Region.Available` as part of admitting or rejecting a
   `SnowflakeAccount` naming that region.
 

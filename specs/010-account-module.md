@@ -3,12 +3,12 @@
 ## Overview
 
 This module creates a brand-new Snowflake account for a tenant and sets up the one service user the
-platform uses to manage it afterward. It solves the very first step of provisioning a tenant: nothing
-else in the pipeline can run until an account actually exists and the platform can log into it. It is
-needed because creating an account requires organization-wide privileges that no other part of the
-system should hold. The approach is simple: generate a fresh login key, save it safely first, ask
-Snowflake to create the account with that key, and then remember the account's unique ID so every later
-step can find it again.
+platform uses to manage it afterward. Nothing else in the pipeline that needs a live Snowflake
+connection can run until an account actually exists and the platform can log into it — a module needing
+no such connection (the quota-check admission gate, 016) may still run earlier. It is needed because
+creating an account requires organization-wide privileges that no other part of the system should hold.
+The approach is simple: generate a fresh login key, save it safely first, ask Snowflake to create the
+account with that key, and then remember the account's unique ID so every later step can find it again.
 
 ## Scope
 
@@ -19,11 +19,11 @@ This specification defines the account module that:
 - Publishes the resolved account name and locator onto the shared `ModuleContext` for every later module.
 
 **Out of Scope**:
-- `DROP ACCOUNT` and credential disposal (017/018).
+- `DROP ACCOUNT` and credential disposal (018/019).
 - `IdentitySyncRequest` emission (015).
 - Drift detection or repair of the account's own parameters or the `platform` key — not until Snowflake
   ships Organization Policies (design.md Appendix B).
-- Validating the region's `available` gate (018's validation phase).
+- Validating the region's `available` gate (019's validation phase).
 
 ## Key Concept: Create-Then-Verify Lifecycle
 
@@ -48,8 +48,9 @@ authenticates as the tenant's own account instead.
 ```go
 // package account // internal/account/modules/account
 
-// New constructs the account module — the pipeline's first module (design.md 3.6). It implements
-// internal/account/pipeline.Module's Observe/Apply contract; see Key Concept: Create-Then-Verify
+// New constructs the account module (design.md 3.6). It implements
+// internal/account/pipeline.Module's Observe/Apply contract, identified by
+// pipeline.AccountModuleName; see Key Concept: Create-Then-Verify
 // Lifecycle for what each method does.
 //
 // Parameters:
@@ -134,7 +135,7 @@ internal/account/modules/account/
   path to check existence rather than opening a more privileged one just to look.
 - **Does this module need anything from the Backplane Config (007)?** No. The region literal comes
   entirely from the CRD plus a fixed transform, and whether a region is open for new accounts at all is
-  checked earlier, during 018's validation phase — not here.
+  checked earlier, during 019's validation phase — not here.
 
 ## Dependencies
 
@@ -153,13 +154,15 @@ internal/account/modules/account/
   — Contract: read-only; this module never writes to the CRD's spec.
 - **Account Pipeline (009)** — Used APIs: `account.Module`, `Done()`/`Pending()`/`Rejected()`/`Failed()`,
   `Outcome.Aborting()`, `ModuleContext.ResolvedAccountName()`, `.Locator()`, `.SetLocator()`,
-  `.OrgAdminDB()`, `.TenantDB()` — Contract: registered as `modules[0]` in `account.New(...)`; calls
+  `.OrgAdminDB()`, `.TenantDB()` — Contract: `Name()` returns `pipeline.AccountModuleName`, which is how
+  `Pipeline.Observe` finds `Observation.Exists` regardless of registration position; calls
   `.Aborting()` on every outcome that is not `Done`.
 
 ## Integration Points
 
-- **SnowflakeAccount Controller (018)** — Registers this module first in the pipeline via
-  `account.New(...)`, alongside its `secrets.Backend` and `Config`. Seeds each reconcile's
+- **SnowflakeAccount Controller (019)** — Registers this module in the pipeline via
+  `account.New(...)`, after the quota-check module (016), alongside its `secrets.Backend` and `Config`.
+  Seeds each reconcile's
   `ModuleContext` from `status.accountLocator` when already set. After `Pipeline.Apply` returns, reads
   `ModuleContext.ResolvedAccountName()` and `.Locator()` directly — never from this module's `Outcome` —
   to render `status.accountName`, `status.accountLocator`, and (via `internal/account/tenant.AccountURL`)
@@ -245,7 +248,7 @@ internal/account/modules/account/
 
 ## Appendix: Usage Examples
 
-### Example 1: Wiring the module into the pipeline (018)
+### Example 1: Wiring the module into the pipeline (019)
 
 ```go
 import (
@@ -254,8 +257,9 @@ import (
 )
 
 pl := pipeline.New(
-    accountmodule.New(secretsBackend, baseConfig.Snowflake.Org),
-    // ... modules 011-016, in order
+    quotacheckmodule.New(...),                                   // 016, runs first, aborts before CREATE ACCOUNT
+    accountmodule.New(secretsBackend, baseConfig.Snowflake.Org), // 010
+    // ... modules 011-013, 015, 017, in order
 )
 ```
 
@@ -270,7 +274,7 @@ outcome := module.Apply(ctx, mc)       // generates keypair, stores it, issues C
                                         // calls mc.SetLocator(...), returns Done()
 
 // A later reconcile against the same resource, with status.accountLocator now seeded into a
-// fresh ModuleContext by 018:
+// fresh ModuleContext by 019:
 mc2 := pipeline.NewModuleContext(cr, "finance", nil, nsLabels, log, pool) // mc2.Locator() != ""
 inSync2, _ := module.Observe(ctx, mc2) // reconnects as platform; inSync2 == true
 outcome2 := module.Apply(ctx, mc2)     // reconnects again, no SQL issued, returns Done()

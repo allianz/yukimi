@@ -58,10 +58,11 @@ The two transient documents are deleted at different points:
 | `013-auth-module.md` | `internal/account/modules/auth/` | SSO-only baseline and per-user auth exceptions |
 | `014-identity-sync-request.md` | `apis/identity/v1alpha1/` + `internal/identitysync/` | IdentitySyncRequest contract and emitter |
 | `015-identity-module.md` | `internal/account/modules/identity/` | Group import and system role bindings |
-| `016-quota.md` | `internal/quota/` | Credit quota admission, resource monitors, exhaustion |
-| `017-deletion-request.md` | `apis/base/v1alpha1/` + `internal/deletion/` | Deletion warrants (positive control) |
-| `018-snowflakeaccount-controller.md` | `internal/controller/snowflakeaccount/` | Module wiring, validation phase, deletion gate, reporting |
-| `019-replication.md` | `apis/base/v1alpha1/` + `internal/replication/` | SnowflakeReplication setup, auto-repair, manual failover |
+| `016-quota-check.md` | `internal/account/modules/quotacheck/` | Admission check: claimed vs. namespace credit-quota allowance, aborts before account creation |
+| `017-quota-monitor.md` | `internal/account/modules/quotamonitor/` | Resource monitor/budget enforcement, credit-exhaustion condition |
+| `018-deletion-request.md` | `apis/base/v1alpha1/` + `internal/deletion/` | Deletion warrants (positive control) |
+| `019-snowflakeaccount-controller.md` | `internal/controller/snowflakeaccount/` | Module wiring, validation phase, deletion gate, reporting |
+| `020-replication.md` | `apis/base/v1alpha1/` + `internal/replication/` | SnowflakeReplication setup, auto-repair, manual failover |
 
 
 ## Crossplane Controller Types
