@@ -14,11 +14,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package account sequences the modules that provision a Snowflake account —
+// Package pipeline sequences the modules that provision a Snowflake account —
 // creation, parameters, network, auth, identity, quota — through two shared
 // entry points, Observe and Apply, so the SnowflakeAccount controller (018)
 // stays a thin caller. See specs/009-account-pipeline.md.
-package account
+package pipeline
 
 import (
 	"context"

@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package account
+package pipeline
 
 import (
 	"context"
@@ -22,10 +22,10 @@ import (
 	"fmt"
 
 	v1alpha1 "github.com/allianz/yukimi/apis/base/v1alpha1"
-	"github.com/allianz/yukimi/internal/backplane"
+	"github.com/allianz/yukimi/internal/account/tenant"
+	"github.com/allianz/yukimi/internal/config/backplane"
 	"github.com/allianz/yukimi/internal/logger"
 	"github.com/allianz/yukimi/internal/snowflake/pool"
-	"github.com/allianz/yukimi/internal/tenant"
 )
 
 // DBPool is the subset of *pool.Pool's API ModuleContext depends on, defined

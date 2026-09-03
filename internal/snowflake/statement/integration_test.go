@@ -26,7 +26,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/snowflakedb/gosnowflake"
 
-	"github.com/allianz/yukimi/internal/config"
+	"github.com/allianz/yukimi/internal/config/base"
 	"github.com/allianz/yukimi/internal/secrets"
 	secretsaws "github.com/allianz/yukimi/internal/secrets/aws"
 	"github.com/allianz/yukimi/internal/snowflake/pool"
@@ -51,8 +51,8 @@ func TestIntegration_RunnerAgainstLiveSnowflake(t *testing.T) {
 	}
 	cached := secrets.NewCachedBackend(backend, 5*time.Minute)
 
-	cfg := &config.BaseConfig{
-		Snowflake: config.SnowflakeSettings{
+	cfg := &base.Config{
+		Snowflake: base.SnowflakeSettings{
 			Org:                    os.Getenv("SNOWFLAKE_ORG"),
 			UsePrivateLink:         os.Getenv("SNOWFLAKE_USE_PRIVATELINK") == "true",
 			DisableOCSPChecks:      os.Getenv("SNOWFLAKE_DISABLE_OCSP_CHECKS") == "true",

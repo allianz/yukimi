@@ -93,7 +93,7 @@ identity bindings are untouched.
 ## Public API
 
 ```go
-package account
+package pipeline
 
 // Module is implemented by each pipeline stage (010, 011, 012, 013, 015, 016).
 type Module interface {
@@ -198,7 +198,7 @@ type ModuleContext struct{ /* unexported */ }
 // so ResolvedAccountName() is computed once, here, and no two callers can
 // disagree about it. namespaceLabels are the raw namespace labels set at
 // onboarding (design.md 2); Department/CostCenter/CreditQuota are read from
-// them the same way (internal/tenant, 006). If cr.Status.AccountLocator is
+// them the same way (internal/account/tenant, 006). If cr.Status.AccountLocator is
 // already set, it seeds Locator() immediately — callers never seed it
 // themselves; see SetLocator below for the only other way it changes.
 func NewModuleContext(
@@ -256,7 +256,7 @@ var GatesReady = map[xpv1.ConditionType]bool{
 ## Project Structure
 
 ```
-internal/account/
+internal/account/pipeline/
 ├── module.go       # Module interface, Outcome, State, Done/Pending/Rejected/Failed, Aborting
 ├── pipeline.go     # Pipeline, New, Observe, Apply, Observation, Result, ModuleOutcome, AllDone
 ├── context.go      # ModuleContext, NewModuleContext, Locator/SetLocator, OrgAdminDB/TenantDB
@@ -310,10 +310,10 @@ empty — every other failure surfacing from `OrgAdminDB`/`TenantDB` is `interna
   context calls `Handle` on a carried error, once per error.
 - **`internal/snowflake/pool` (004)** - Used APIs: `Pool.OrgAdmin()`, `Pool.TenantAccount()` - Contract:
   `ModuleContext.OrgAdminDB`/`TenantDB` wrap these; `TenantDB` additionally requires a locator.
-- **`internal/tenant` (006)** - Used APIs: `tenant.ResolveName()`, `tenant.Department()`,
+- **`internal/account/tenant` (006)** - Used APIs: `tenant.ResolveName()`, `tenant.Department()`,
   `tenant.CostCenter()`, `tenant.CreditQuota()` - Contract: `NewModuleContext` resolves the account
   name once via `ResolveName`; modules read the label accessors from `NamespaceLabels()` themselves.
-- **`internal/backplane` (007)** - Used APIs: the `Region` type - Contract: the caller resolves the
+- **`internal/config/backplane` (007)** - Used APIs: the `Region` type - Contract: the caller resolves the
   region once and passes it into `NewModuleContext`; this package never looks a region up itself.
 
 No dependency on 008 (guardrails): guardrail admission is resolved by the controller as its own gate
@@ -326,10 +326,10 @@ before the pipeline is ever invoked, so this package neither imports nor referen
   from the controller's own `Observe`, and `Pipeline.Apply` from both `Create` and `Update` with
   identical bodies. Registers modules in the fixed order 010 → 011 → 012 → 013 → 015 → 016. Owns
   rendering `Outcome.Condition` values, `GatesReady` aggregation, and advancing
-  `status.observedGeneration`. - Key functions: `account.New()`, `(*Pipeline).Observe`,
-  `(*Pipeline).Apply`, `account.NewModuleContext()`.
+  `status.observedGeneration`. - Key functions: `pipeline.New()`, `(*Pipeline).Observe`,
+  `(*Pipeline).Apply`, `pipeline.NewModuleContext()`.
 - **`internal/account/modules/{account,parameter,network,auth,identity}` (010–013, 015)** - Each
-  implements `Module` and is registered with `account.New()` by 018.
+  implements `Module` and is registered with `pipeline.New()` by 018.
 - **`internal/quota` (016)** - Implements `Module` for the pipeline's purposes, but its admission check
   (`Admit()`) lives outside this contract entirely and is called separately, by 018's own validation
   phase, before the pipeline runs.
@@ -381,8 +381,8 @@ before the pipeline is ever invoked, so this package neither imports nor referen
 - **Shape reference**: `specs/007-backplane-config.md` — Public API and Error Classification
   phrasing followed here.
 - **Dependency code**: `internal/snowflake/pool/pool.go` (`OrgAdmin`, `TenantAccount`),
-  `internal/tenant/` (`ResolveName`, `Department`, `CostCenter`, `CreditQuota`),
-  `internal/backplane/backplane.go` (`Region`), `internal/logger/logger.go` (`New`, `Handle`),
+  `internal/account/tenant/` (`ResolveName`, `Department`, `CostCenter`, `CreditQuota`),
+  `internal/config/backplane/backplane.go` (`Region`), `internal/logger/logger.go` (`New`, `Handle`),
   `apis/base/v1alpha1/snowflakeaccount_types.go` (`SnowflakeAccountStatus`).
 - **Vendored behavior**: `crossplane-runtime/v2@v2.0.0` `pkg/reconciler/managed/reconciler.go` — the
   managed reconciler sets `Creating()`/`ReconcileSuccess()` after `Create` returns and after
@@ -415,7 +415,7 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
         return managed.ExternalObservation{}, nil
     }
 
-    mc := account.NewModuleContext(cr, cr.Namespace, region, e.namespaceLabels(cr.Namespace), log)
+    mc := pipeline.NewModuleContext(cr, cr.Namespace, region, e.namespaceLabels(cr.Namespace), log)
 
     obs, err := e.pipeline.Observe(ctx, mc)
     if err != nil {
@@ -459,7 +459,7 @@ func (e *external) apply(ctx context.Context, mg resource.Managed) error {
         return log.Handle(err)
     }
 
-    mc := account.NewModuleContext(cr, cr.Namespace, region, e.namespaceLabels(cr.Namespace), log)
+    mc := pipeline.NewModuleContext(cr, cr.Namespace, region, e.namespaceLabels(cr.Namespace), log)
 
     result, err := e.pipeline.Apply(ctx, mc)
     if err != nil {
@@ -477,7 +477,7 @@ func (e *external) apply(ctx context.Context, mg resource.Managed) error {
             continue
         }
         cr.SetConditions(*mo.Outcome.Condition)
-        if gatesReady := account.GatesReady[mo.Outcome.Condition.Type]; gatesReady &&
+        if gatesReady := pipeline.GatesReady[mo.Outcome.Condition.Type]; gatesReady &&
             mo.Outcome.Condition.Status != xpv1.ConditionTrue {
             ready = false
         }
@@ -515,16 +515,16 @@ func (m *Module) Name() string { return "parameter" }
 
 // Observe never reads parameters back — drift detection is deferred (Key
 // Concept: Overwrite Apply) — so this module is always reported in sync.
-func (m *Module) Observe(ctx context.Context, mc *account.ModuleContext) (bool, account.Outcome) {
-    return true, account.Done()
+func (m *Module) Observe(ctx context.Context, mc *pipeline.ModuleContext) (bool, pipeline.Outcome) {
+    return true, pipeline.Done()
 }
 
 // Apply re-asserts every global and regional parameter unconditionally: no
 // SHOW PARAMETERS, no diff against current state.
-func (m *Module) Apply(ctx context.Context, mc *account.ModuleContext) account.Outcome {
+func (m *Module) Apply(ctx context.Context, mc *pipeline.ModuleContext) pipeline.Outcome {
     db, err := mc.TenantDB(ctx)
     if err != nil {
-        return account.Failed(fmt.Errorf("getting platform connection: %w", err))
+        return pipeline.Failed(fmt.Errorf("getting platform connection: %w", err))
     }
 
     params := m.backplane.GlobalParameters
@@ -533,15 +533,15 @@ func (m *Module) Apply(ctx context.Context, mc *account.ModuleContext) account.O
     }
     for name, value := range params {
         if _, err := db.ExecContext(ctx, fmt.Sprintf("ALTER ACCOUNT SET %s = %s", name, value)); err != nil {
-            return account.Failed(fmt.Errorf("setting %s: %w", name, err))
+            return pipeline.Failed(fmt.Errorf("setting %s: %w", name, err))
         }
     }
 
     // Contrast: the account module (010) calls outcome.Aborting() on any
     // outcome that is not Done — Pending and Rejected included, not just
     // Failed — because no later module can do anything useful without a live
-    // account. This module never does that: a failed parameter must not block
+    // pipeline. This module never does that: a failed parameter must not block
     // the network, auth, identity, or quota modules from still running.
-    return account.Done()
+    return pipeline.Done()
 }
 ```

@@ -14,9 +14,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package config loads the controller's base configuration from a mounted
-// directory at startup into an immutable BaseConfig struct.
-package config
+// Package base loads the controller's base configuration from a mounted
+// directory at startup into an immutable Config struct.
+package base
 
 import (
 	"fmt"
@@ -74,8 +74,8 @@ var (
 	cloudSectionKeys = map[string]bool{"aws": true, "azure": true, "gcp": true}
 )
 
-// BaseConfig is the immutable, validated provider-wide configuration loaded at startup.
-type BaseConfig struct {
+// Config is the immutable, validated provider-wide configuration loaded at startup.
+type Config struct {
 	Snowflake SnowflakeSettings // organization identity plus connection-affecting settings
 	AWS       AWSSettings       // consumed by 003.a; checked here for shape only
 	Secrets   SecretsSettings   // consumed by whoever wraps a Backend in secrets.NewCachedBackend (003)
@@ -87,7 +87,7 @@ type BaseConfig struct {
 // "gcp" — found by scanning the top-level keys in document order. There is no cloudProvider
 // key: an "aws:" section is itself the selection, so the two can never disagree. Resolved once
 // by Load, which requires exactly one cloud section, so the result is never empty.
-func (c *BaseConfig) CloudProvider() string {
+func (c *Config) CloudProvider() string {
 	return c.cloudProvider
 }
 
@@ -164,7 +164,7 @@ type rawSecrets struct {
 //     its sibling config files for 007/008 — this package reads only its own file)
 //
 // Returns:
-//   - *BaseConfig: the validated configuration; never nil on a nil error
+//   - *Config: the validated configuration; never nil on a nil error
 //   - User error if the file is missing, unreadable, not valid YAML, a required field
 //     (Snowflake.Org, Snowflake.OrgAdminAccount, Snowflake.OrgAdminAccountLocator,
 //     Snowflake.OrgAdminAccountRegion) is empty, the file does not carry exactly
@@ -175,7 +175,7 @@ type rawSecrets struct {
 //
 // Load walks the parsed YAML's top-level keys to find the cloud sections, so a section with
 // no Go struct yet (azure:, gcp:) is still recognized rather than silently dropped.
-func Load(configDir string) (*BaseConfig, error) {
+func Load(configDir string) (*Config, error) {
 	path := filepath.Join(configDir, "baseConfig.yaml")
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -306,7 +306,7 @@ func Load(configDir string) (*BaseConfig, error) {
 		return nil, err
 	}
 
-	return &BaseConfig{
+	return &Config{
 		Snowflake: SnowflakeSettings{
 			Org:                    raw.Snowflake.Org,
 			OrgAdminAccount:        raw.Snowflake.OrgAdminAccount,

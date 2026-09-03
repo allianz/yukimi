@@ -214,7 +214,8 @@ spec:
                   metadata.name.
                 type: string
               accountUrl:
-                description: Built via internal/tenant.AccountURL (design.md 7.2).
+                description: Built via internal/account/tenant.AccountURL (design.md
+                  7.2).
                 type: string
               conditions:
                 description: Conditions of the resource.

@@ -22,7 +22,7 @@ This specification defines the `internal/snowflake/pool/` and `internal/snowflak
 - Any concrete secrets backend — this package takes a `secrets.Backend` as a constructor parameter and never imports `internal/secrets/aws` or any other backend package.
 - Generating the keypair or defining the credential's JSON shape — still 003's job (`secrets.GenerateKeyPair`, `Credentials`); provisioning a tenant's *first* credential remains 010's job. This package only owns *when* a stored credential is due for rotation and pushing its replacement into Snowflake (see Key Concept below).
 - Anything about which SQL statements run once a connection is obtained — that is every downstream module's business (010–013, 015, 016, 019), never this package's.
-- Deciding *whether* PrivateLink is in use: callers pass that flag (today `BaseConfig.Snowflake.UsePrivateLink`, 002), and `internal/snowflake/host` never reads configuration itself.
+- Deciding *whether* PrivateLink is in use: callers pass that flag (today `Config.Snowflake.UsePrivateLink`, 002), and `internal/snowflake/host` never reads configuration itself.
 - The `SnowflakeAccount` status field `accountUrl` (006) — this spec builds the string; 006 owns the field, the CRD schema, and when it is written.
 
 ## Key Concept: Two Connection Scopes and the Privilege Step-Down
@@ -55,7 +55,7 @@ The two packages have a one-way dependency: `internal/snowflake/pool` imports `i
 
 ### Package `internal/snowflake/host`
 
-Host and URL construction from an account locator and a cloud-region string. No configuration, no credentials, no network — a pure string builder, imported by `pool` here and by `internal/tenant` (006) for `status.accountUrl`.
+Host and URL construction from an account locator and a cloud-region string. No configuration, no credentials, no network — a pure string builder, imported by `pool` here and by `internal/account/tenant` (006) for `status.accountUrl`.
 
 ```go
 package host
@@ -70,7 +70,7 @@ package host
 //     design.md 3.1)
 //   - usePrivateLink: selects the .privatelink.snowflakecomputing.com suffix
 //     over .snowflakecomputing.com; the caller decides (today from
-//     BaseConfig.Snowflake.UsePrivateLink, 002), never this package
+//     Config.Snowflake.UsePrivateLink, 002), never this package
 //
 // Returns:
 //   - the host, or an empty string and a user error if region does not match
@@ -100,7 +100,7 @@ import (
     "database/sql"
     "time"
 
-    "github.com/allianz/yukimi/internal/config"
+    "github.com/allianz/yukimi/internal/config/base"
     "github.com/allianz/yukimi/internal/secrets"
 )
 
@@ -115,14 +115,14 @@ type Pool struct { /* unexported */ }
 // Parameters:
 //   - backend: the secrets.Backend (003) credentials are read through; never
 //     a concrete backend package
-//   - cfg: BaseConfig (002) — Snowflake.Org, OrgAdminAccount,
+//   - cfg: Config (002) — Snowflake.Org, OrgAdminAccount,
 //     OrgAdminAccountLocator, OrgAdminAccountRegion, UsePrivateLink,
 //     DisableOCSPChecks, MaxConnectionPoolSize, MaxIdleConnections,
 //     ConnectionMaxLifetime, ConnectionMaxIdleTime, ConnectionProbeTimeout
 //
 // Returns:
 //   - *Pool: never nil
-func New(backend secrets.Backend, cfg *config.BaseConfig) *Pool
+func New(backend secrets.Backend, cfg *base.Config) *Pool
 
 // OrgAdmin returns the single org-admin *sql.DB, used only for CREATE ACCOUNT
 // and DROP ACCOUNT (design.md 3.6, 6.3, 3.11 intro). The credential is read
@@ -198,9 +198,9 @@ internal/snowflake/pool/
 └── doc.go
 ```
 
-`internal/snowflake/host` imports only the standard library and `internal/errors` (001) — never `internal/config`, never `github.com/snowflakedb/gosnowflake`, never `internal/snowflake/pool`. That leaf position is what lets `internal/tenant` (006) build `status.accountUrl` from the same code without inheriting a driver, a secret store, or configuration.
+`internal/snowflake/host` imports only the standard library and `internal/errors` (001) — never `internal/config/base`, never `github.com/snowflakedb/gosnowflake`, never `internal/snowflake/pool`. That leaf position is what lets `internal/account/tenant` (006) build `status.accountUrl` from the same code without inheriting a driver, a secret store, or configuration.
 
-`internal/snowflake/pool` must never import `internal/snowflake/statement` (005) or `internal/secrets/aws` (003.a). The only imports outside the standard library are `internal/snowflake/host`, `internal/config` (002), `internal/secrets` (003), `internal/errors` (001), and `github.com/snowflakedb/gosnowflake`, pinned at **v1.18.1** — the version `specs/notes-snowflake-sql-mechanics.md`'s driver findings were verified against; an upgrade means re-verifying those findings before relying on them.
+`internal/snowflake/pool` must never import `internal/snowflake/statement` (005) or `internal/secrets/aws` (003.a). The only imports outside the standard library are `internal/snowflake/host`, `internal/config/base` (002), `internal/secrets` (003), `internal/errors` (001), and `github.com/snowflakedb/gosnowflake`, pinned at **v1.18.1** — the version `specs/notes-snowflake-sql-mechanics.md`'s driver findings were verified against; an upgrade means re-verifying those findings before relying on them.
 
 ## Error Classification
 
@@ -222,11 +222,11 @@ internal/snowflake/pool/
 - **What happens if two goroutines call `TenantAccount` for the same key at the same time on a cold cache?** - Both block behind that key's own lock, acquired per-key rather than pool-wide; the first to acquire it dials and caches, the second observes the now-populated cache and returns the same `*sql.DB` without dialing a second time. A cold dial for a *different* key never waits on this — see Edge Cases below on running at a few thousand accounts.
 - **Does a pool-wide lock serialize connecting a few thousand accounts, e.g. right after the process starts?** - No — the lock is per key, so cold dials for different accounts proceed concurrently; only two callers racing for the *same* account's first connection serialize. A shared pool-wide lock would have made a cold start across thousands of accounts take minutes of pure lock contention instead of running them in parallel, so this is a hard design requirement, not an implementation detail. The map holding thousands of cached entries costs a small, fixed amount of memory per entry (map slot plus an idle `*sql.DB`) — negligible at this scale. What ops must size for instead is the pod's open-file-descriptor limit: with per-account idle-connection limits set (see below), a few thousand actively-reconciled accounts can hold a correspondingly large number of idle TCP connections at once, all to different Snowflake accounts rather than concentrated on one, so no single account's own connection limit is at risk.
 - **What happens when an account is dropped and later recreated under the same CRD name and namespace?** - See Key Concept: Self-Healing. The new locator no longer matches the cached entry, so the stale connection is closed and a fresh one dialed automatically, without requiring 017 to call `EvictTenant` first — though 017 calls it anyway, immediately after `DROP ACCOUNT`, so the cache never briefly serves a connection to an account already gone.
-- **What tunes the underlying `*sql.DB`'s own connection limits, idle timeout, and maximum lifetime?** - `BaseConfig.Snowflake` (002): `MaxConnectionPoolSize`, `MaxIdleConnections`, `ConnectionMaxLifetime`, `ConnectionMaxIdleTime`, each with a documented default when omitted from `baseConfig.yaml`. `New` reads them once and applies them via `SetMaxOpenConns`/`SetMaxIdleConns`/`SetConnMaxLifetime`/`SetConnMaxIdleTime` to every `*sql.DB` this package dials.
+- **What tunes the underlying `*sql.DB`'s own connection limits, idle timeout, and maximum lifetime?** - `Config.Snowflake` (002): `MaxConnectionPoolSize`, `MaxIdleConnections`, `ConnectionMaxLifetime`, `ConnectionMaxIdleTime`, each with a documented default when omitted from `baseConfig.yaml`. `New` reads them once and applies them via `SetMaxOpenConns`/`SetMaxIdleConns`/`SetConnMaxLifetime`/`SetConnMaxIdleTime` to every `*sql.DB` this package dials.
 - **Does the health probe run on every `OrgAdmin`/`TenantAccount` call, or only when a new connection is dialed?** - Only when a new connection is dialed (a cold cache, or after eviction/self-healing). A cache hit returns the already-cached `*sql.DB` with no probe and no other network call — probing on every call would defeat the point of caching.
 - **Why does session role scoping use a `Config` field instead of a runtime `USE ROLE` statement?** - The Snowflake Go driver accepts a `Role` at connection construction time, applied automatically to every physical connection the driver opens underneath the cached `*sql.DB` — this needs no SQL statement and therefore no dependency on 005's statement execution. If a future need arises for session setup `Config` cannot express, it is done with the raw driver (`db.ExecContext`) directly in this package — never via `internal/snowflake/statement` (005), which is exactly the dependency direction this package must not create (005 already depends on the connection this package hands it; the reverse would be a cycle).
 - **What if the region passed to `TenantAccount` is well-formed but the cloud prefix is one this package has never seen (say a future `gcp-`)?** - Accepted. `host.regionSegment`'s default case strips whatever prefix precedes the first `-` and reattaches it as a trailing segment — it has no allowlist of recognized clouds, only a named exception for `aws-eu-central-1`. Whether the resulting host is real is discovered on connect, exactly like an unverified region in 002.
-- **Why does `host` take a PrivateLink bool instead of reading `BaseConfig.Snowflake.UsePrivateLink` (002) itself?** - To stay reusable: 006 builds a tenant's `status.accountUrl` from the same host, and a configuration-free leaf can be imported by `internal/tenant` without dragging `internal/config` in with it. Callers pass the flag, so its origin can change without touching this package.
+- **Why does `host` take a PrivateLink bool instead of reading `Config.Snowflake.UsePrivateLink` (002) itself?** - To stay reusable: 006 builds a tenant's `status.accountUrl` from the same host, and a configuration-free leaf can be imported by `internal/account/tenant` without dragging `internal/config/base` in with it. Callers pass the flag, so its origin can change without touching this package.
 - **Does `host.URL` include a path such as `/console/login`?** - No. design.md 7.2 specifies `status.accountUrl` as scheme plus host, and Snowflake redirects a bare host to the login console on its own. If an explicit console link is ever wanted, it is a new exported function in `host` rather than a change to `URL`, so a tenant's status URL keeps the form 7.2 documents.
 - **What happens if a rotation attempt fails?** - The call still returns the already-valid `*sql.DB`; the credential's stored age is unchanged, so the same check retries on the next call. This package does not log or otherwise surface the failure in this version — an accepted gap, not a design goal.
 - **What if the second key slot was never used (an account only ever bootstrapped by 010)?** - Treated the same as a slot holding an old, superseded key: it doesn't match the current key's fingerprint either way, so it's still the correct rotation target.
@@ -234,25 +234,25 @@ internal/snowflake/pool/
 ## Dependencies
 
 - **`internal/errors` (001)** - Used APIs: `errors.NewUserError()` - Contract: used by both packages; in `host` for the one region-format validation above, in `pool` nowhere else.
-- **`internal/config` (002)** - Read by `pool` only; `host` never imports it - Used APIs: `config.BaseConfig`, `Snowflake.Org`, `Snowflake.OrgAdminAccount`, `Snowflake.OrgAdminAccountLocator`, `Snowflake.OrgAdminAccountRegion`, `Snowflake.UsePrivateLink`, `Snowflake.DisableOCSPChecks`, `Snowflake.MaxConnectionPoolSize`, `Snowflake.MaxIdleConnections`, `Snowflake.ConnectionMaxLifetime`, `Snowflake.ConnectionMaxIdleTime`, `Snowflake.ConnectionProbeTimeout` - Contract: `Pool` reads these once at construction and treats them as fixed for the process's life, matching `BaseConfig`'s own immutability.
+- **`internal/config/base` (002)** - Read by `pool` only; `host` never imports it - Used APIs: `base.Config`, `Snowflake.Org`, `Snowflake.OrgAdminAccount`, `Snowflake.OrgAdminAccountLocator`, `Snowflake.OrgAdminAccountRegion`, `Snowflake.UsePrivateLink`, `Snowflake.DisableOCSPChecks`, `Snowflake.MaxConnectionPoolSize`, `Snowflake.MaxIdleConnections`, `Snowflake.ConnectionMaxLifetime`, `Snowflake.ConnectionMaxIdleTime`, `Snowflake.ConnectionProbeTimeout` - Contract: `Pool` reads these once at construction and treats them as fixed for the process's life, matching `Config`'s own immutability.
 - **`internal/secrets` (003)** - Used APIs: `secrets.Backend`, `NewOrgAdminPath()`, `NewTenantPath()`, `UnmarshalCredentials()`, `GenerateKeyPair()` - Contract: takes a `secrets.Backend` as a constructor parameter, satisfied by whatever concrete backend `cmd/provider/main.go` wired up and wrapped in `secrets.NewCachedBackend`; never imports a concrete backend itself.
 - **`github.com/snowflakedb/gosnowflake` v1.18.1** - the only Snowflake driver dependency in the tree; this is the spec that adds it to `go.mod` (see Project Structure).
 
 ## Integration Points
 
-- **`cmd/provider/main.go`** - Constructs the `Pool` once via `pool.New(cachedBackend, cfg)` after building the secrets backend (003.a) and loading `BaseConfig` (002), and calls `Pool.Close()` on shutdown - Key functions: `pool.New()`, `Pool.Close()`.
+- **`cmd/provider/main.go`** - Constructs the `Pool` once via `pool.New(cachedBackend, cfg)` after building the secrets backend (003.a) and loading `Config` (002), and calls `Pool.Close()` on shutdown - Key functions: `pool.New()`, `Pool.Close()`.
 - **`internal/snowflake/statement` (005, not yet written)** - Takes the `*sql.DB` this package returns as its injected executor and never imports this package directly; this package never imports it either, so the two-way avoidance is enforced from both sides.
 - **`internal/account/modules/account` (010, not yet written)** - Calls `Pool.OrgAdmin()` to run `CREATE ACCOUNT` and reads back its response's locator for status (design.md 3.6, 7.2) - Key functions: `Pool.OrgAdmin()`.
 - **Every other account module (011–013, 015) and the account pipeline/controller (009, 018, not yet written)** - Call `Pool.TenantAccount()` to reach an account's own connection for parameters, network rules, identity import, and auth rules - Key functions: `Pool.TenantAccount()`.
 - **`internal/deletion` (017, not yet written)** - Calls `Pool.OrgAdmin()` to run `DROP ACCOUNT` and `Pool.EvictTenant()` immediately afterward so the cache does not keep serving a connection to a dropped account - Key functions: `Pool.OrgAdmin()`, `Pool.EvictTenant()`.
-- **`internal/tenant` (006, not yet written)** - Calls `host.URL()` to build `status.accountUrl` (design.md 7.2), passing the locator 010 captures from `CREATE ACCOUNT`, the account's region, and the PrivateLink flag its caller (018) reads from `BaseConfig` (002). It never calls `Pool`, and `host` never imports `internal/tenant`, so the boundary holds from both sides - Key functions: `host.URL()`.
+- **`internal/account/tenant` (006, not yet written)** - Calls `host.URL()` to build `status.accountUrl` (design.md 7.2), passing the locator 010 captures from `CREATE ACCOUNT`, the account's region, and the PrivateLink flag its caller (018) reads from `Config` (002). It never calls `Pool`, and `host` never imports `internal/account/tenant`, so the boundary holds from both sides - Key functions: `host.URL()`.
 
 ## Success Criteria
 
 - **SC-001**: `New` returns a non-nil `*Pool` and makes no network call.
 - **SC-002**: `OrgAdmin`'s first call reads the org-admin credential via `secrets.Backend.Get`/`NewOrgAdminPath`, builds the host from `OrgAdminAccountLocator`/`OrgAdminAccountRegion`/`UsePrivateLink`, and returns a `*sql.DB`.
 - **SC-003**: Every later `OrgAdmin` call returns the identical `*sql.DB` pointer from the first call, without re-reading the credential or dialing again.
-- **SC-004**: `TenantAccount` builds its secret path via `NewTenantPath(org, namespace, accountName)`, using `BaseConfig.Snowflake.Org` and the caller-supplied `namespace`/`accountName`.
+- **SC-004**: `TenantAccount` builds its secret path via `NewTenantPath(org, namespace, accountName)`, using `Config.Snowflake.Org` and the caller-supplied `namespace`/`accountName`.
 - **SC-005**: Two `TenantAccount` calls with identical `namespace`/`accountName`/`locator`/`region` return the identical `*sql.DB` pointer; a call with a different `namespace` or `accountName` returns a distinct one.
 - **SC-006**: `host.regionSegment("aws-eu-central-1")` returns `"eu-central-1"`; `host.regionSegment("aws-eu-west-3")` returns `"eu-west-3.aws"`.
 - **SC-007**: `host.Hostname` appends `.privatelink.snowflakecomputing.com` when `usePrivateLink` is true and `.snowflakecomputing.com` when false, and the locator forms the leading label in both.
@@ -268,8 +268,8 @@ internal/snowflake/pool/
 - **SC-014**: `Close` closes every cached `*sql.DB` — org-admin, if opened, and every tenant entry — and returns a joined error if any individual close fails, without skipping the rest.
 - **SC-015**: The `gosnowflake.Config` built for `OrgAdmin` sets `Authenticator` to `AuthTypeJwt`, `User` and `PrivateKey` from the stored org-admin credential, `Role` to `GLOBALORGADMIN`, and `Account`/`Host` from `OrgAdminAccountLocator`/`OrgAdminAccountRegion`.
 - **SC-016**: The `gosnowflake.Config` built for `TenantAccount` sets `Role` to `ACCOUNTADMIN` and `Account`/`Host` from the caller-supplied `locator`/`region`.
-- **SC-017**: `internal/snowflake/pool` imports `internal/snowflake/host`, `internal/config`, `internal/secrets`, `internal/errors`, and `github.com/snowflakedb/gosnowflake` among dependencies with an `internal/` boundary or a new `go.mod` entry — never `internal/secrets/aws` and never `internal/snowflake/statement`, grep-provable.
-- **SC-017a**: `internal/snowflake/host` imports only the standard library and `internal/errors` — never `internal/config`, `internal/secrets`, `internal/snowflake/pool`, or `github.com/snowflakedb/gosnowflake`, grep-provable.
+- **SC-017**: `internal/snowflake/pool` imports `internal/snowflake/host`, `internal/config/base`, `internal/secrets`, `internal/errors`, and `github.com/snowflakedb/gosnowflake` among dependencies with an `internal/` boundary or a new `go.mod` entry — never `internal/secrets/aws` and never `internal/snowflake/statement`, grep-provable.
+- **SC-017a**: `internal/snowflake/host` imports only the standard library and `internal/errors` — never `internal/config/base`, `internal/secrets`, `internal/snowflake/pool`, or `github.com/snowflakedb/gosnowflake`, grep-provable.
 - **SC-018**: `go.mod` pins `github.com/snowflakedb/gosnowflake` at `v1.18.1`.
 - **SC-019**: The dial step is reachable through an unexported, swappable seam so unit tests exercise `Pool`'s caching, eviction, self-healing, and concurrency behavior without a real Snowflake account, a real network call, or the real driver.
 - **SC-020**: Unit test coverage exceeds 95% for both packages.
@@ -291,14 +291,14 @@ internal/snowflake/pool/
 ## Performance Considerations
 
 - One dial and one health probe per distinct connection target for the life of the process — not per reconcile — regardless of whether the calling cadence for that target is minutes apart in steady state or sub-second during exponential backoff.
-- The underlying `*sql.DB`'s own connection limits, idle timeout, and maximum lifetime are set explicitly (`BaseConfig.Snowflake`, see Edge Cases) rather than left at the standard library's unbounded defaults, so a process managing many tenant accounts at once has a bounded number of idle physical connections per account rather than an unbounded one.
+- The underlying `*sql.DB`'s own connection limits, idle timeout, and maximum lifetime are set explicitly (`Config.Snowflake`, see Edge Cases) rather than left at the standard library's unbounded defaults, so a process managing many tenant accounts at once has a bounded number of idle physical connections per account rather than an unbounded one.
 - Cache lookups for an already-dialed key are lock-protected map reads with no network call. Locking is per key, never pool-wide: a network operation (a cold dial or a self-healing redial) blocks only other callers asking for that same key, so connecting a few thousand distinct accounts proceeds in parallel rather than serializing behind one lock.
-- At a few thousand managed accounts, the cache itself (one map entry per account) costs a small, fixed amount of memory per entry — not a scaling concern on its own. The real capacity-planning input is the pod's open-file-descriptor limit, since each account's idle connection allowance (`BaseConfig.Snowflake.MaxIdleConnections`, see Edge Cases) multiplies by the number of actively-reconciled accounts.
+- At a few thousand managed accounts, the cache itself (one map entry per account) costs a small, fixed amount of memory per entry — not a scaling concern on its own. The real capacity-planning input is the pod's open-file-descriptor limit, since each account's idle connection allowance (`Config.Snowflake.MaxIdleConnections`, see Edge Cases) multiplies by the number of actively-reconciled accounts.
 
 ## References
 
 - **Product design**: `specs/design.md`, §3.6 (`CREATE ACCOUNT`, the locator, PrivateLink), §3.11 (organization vs. account-level privilege step-down), §3.11.1 (the tenant secret path this package's cache key mirrors), §3.12 (CRD name vs. resolved Snowflake name), §6.3 (`DROP ACCOUNT`), §7.2 (`status.accountUrl`, the form `host.URL` produces), Appendix B X1 (the `platform` service user).
-- **SnowflakeAccount CRD (006, not yet written)**: `specs/scope-006-snowflake-account-crd.md` - `internal/tenant`, the second consumer of `internal/snowflake/host`, which builds `status.accountUrl` from `host.URL`.
+- **SnowflakeAccount CRD (006, not yet written)**: `specs/scope-006-snowflake-account-crd.md` - `internal/account/tenant`, the second consumer of `internal/snowflake/host`, which builds `status.accountUrl` from `host.URL`.
 - **Secrets Handling (003)**: `specs/003-secrets-handling.md` - `Backend`, `Path`, `NewOrgAdminPath()`, `NewTenantPath()`, `Credentials`, `UnmarshalCredentials()`.
 - **Base Config (002)**: `specs/002-base-config.md` - `SnowflakeSettings`, in particular `OrgAdminAccountLocator`, `OrgAdminAccountRegion`, `UsePrivateLink`.
 - **Snowflake SQL mechanics**: `specs/notes-snowflake-sql-mechanics.md` - the gosnowflake version (v1.18.1) this spec pins, and the reasoning 005 relies on for why it must consume this package's `*sql.DB` rather than construct its own.
@@ -318,14 +318,14 @@ import (
     "log"
     "time"
 
-    "github.com/allianz/yukimi/internal/config"
+    "github.com/allianz/yukimi/internal/config/base"
     "github.com/allianz/yukimi/internal/secrets"
     secretsaws "github.com/allianz/yukimi/internal/secrets/aws"
     "github.com/allianz/yukimi/internal/snowflake/pool"
 )
 
 func main() {
-    cfg, err := config.Load(*configDirFlag)
+    cfg, err := base.Load(*configDirFlag)
     if err != nil {
         log.Fatalf("failed to load base config: %v", err)
     }
@@ -415,8 +415,8 @@ func TestTenantAccount_CachesByKey(t *testing.T) {
 ### Example 4: Building `status.accountUrl` from the Same Host (006's Integration)
 
 ```go
-// In internal/tenant (006, not yet written). The locator comes from CREATE ACCOUNT
-// (010, design.md 3.6); the PrivateLink flag from BaseConfig (002), passed down by
+// In internal/account/tenant (006, not yet written). The locator comes from CREATE ACCOUNT
+// (010, design.md 3.6); the PrivateLink flag from Config (002), passed down by
 // the controller (018). No pool, no driver, no configuration import.
 import "github.com/allianz/yukimi/internal/snowflake/host"
 

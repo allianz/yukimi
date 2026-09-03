@@ -67,7 +67,7 @@ func regionSegment(region string) (string, error) {
 //     design.md 3.1)
 //   - usePrivateLink: selects the .privatelink.snowflakecomputing.com suffix
 //     over .snowflakecomputing.com; the caller decides (today from
-//     BaseConfig.Snowflake.UsePrivateLink, 002), never this package
+//     Config.Snowflake.UsePrivateLink, 002), never this package
 //
 // Returns:
 //   - the host, or an empty string and a user error if region does not match

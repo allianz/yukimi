@@ -25,12 +25,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	v1alpha1 "github.com/allianz/yukimi/apis/base/v1alpha1"
-	coreaccount "github.com/allianz/yukimi/internal/account"
+	"github.com/allianz/yukimi/internal/account/pipeline"
 	internalerrors "github.com/allianz/yukimi/internal/errors"
 )
 
-// fakeDBPool implements coreaccount.DBPool for this package's own tests,
-// letting Observe/Apply be exercised through a real *coreaccount.ModuleContext
+// fakeDBPool implements pipeline.DBPool for this package's own tests,
+// letting Observe/Apply be exercised through a real *pipeline.ModuleContext
 // without a live Snowflake connection.
 type fakeDBPool struct {
 	t           *testing.T
@@ -81,7 +81,7 @@ func newTestCR(name, namespace, region, locator string, contacts []string, descr
 // locator is known.
 func TestObserve_NoLocator_NoConnectionAttempt(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", []string{"a@b.com"}, "")
-	mc := coreaccount.NewModuleContext(cr, "ns", nil, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
+	mc := pipeline.NewModuleContext(cr, "ns", nil, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
 
 	m := &module{}
 	inSync, outcome := m.Observe(context.Background(), mc)
@@ -89,7 +89,7 @@ func TestObserve_NoLocator_NoConnectionAttempt(t *testing.T) {
 	if inSync {
 		t.Error("inSync = true, want false")
 	}
-	if outcome != (coreaccount.Outcome{}) {
+	if outcome != (pipeline.Outcome{}) {
 		t.Errorf("outcome = %+v, want the zero-value Outcome", outcome)
 	}
 }
@@ -99,7 +99,7 @@ func TestObserve_NoLocator_NoConnectionAttempt(t *testing.T) {
 func TestObserve_KnownLocator_ConnectionSucceeds(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345", []string{"a@b.com"}, "")
 	fake := &fakeDBPool{}
-	mc := coreaccount.NewModuleContext(cr, "ns", nil, nil, nil, fake)
+	mc := pipeline.NewModuleContext(cr, "ns", nil, nil, nil, fake)
 
 	m := &module{}
 	inSync, outcome := m.Observe(context.Background(), mc)
@@ -107,7 +107,7 @@ func TestObserve_KnownLocator_ConnectionSucceeds(t *testing.T) {
 	if !inSync {
 		t.Error("inSync = false, want true")
 	}
-	if outcome.State != coreaccount.StateDone {
+	if outcome.State != pipeline.StateDone {
 		t.Errorf("outcome.State = %v, want StateDone", outcome.State)
 	}
 	if fake.tenantCalls != 1 {
@@ -120,7 +120,7 @@ func TestObserve_KnownLocator_ConnectionSucceeds(t *testing.T) {
 func TestObserve_KnownLocator_ConnectionFails(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345", []string{"a@b.com"}, "")
 	wantErr := errors.New("dial failed")
-	mc := coreaccount.NewModuleContext(cr, "ns", nil, nil, nil, &fakeDBPool{tenantErr: wantErr})
+	mc := pipeline.NewModuleContext(cr, "ns", nil, nil, nil, &fakeDBPool{tenantErr: wantErr})
 
 	m := &module{}
 	inSync, outcome := m.Observe(context.Background(), mc)
@@ -128,7 +128,7 @@ func TestObserve_KnownLocator_ConnectionFails(t *testing.T) {
 	if inSync {
 		t.Error("inSync = true, want false")
 	}
-	if outcome.State != coreaccount.StateFailed {
+	if outcome.State != pipeline.StateFailed {
 		t.Errorf("outcome.State = %v, want StateFailed", outcome.State)
 	}
 	if internalerrors.IsUserError(outcome.Err) {

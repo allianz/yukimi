@@ -23,7 +23,7 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
   module (010–013, 015) or in quota (016), and validation lives in 007 and 008.
 - Scope:
   - **Module registration and ordering.** This is where the concrete modules are wired, which is what
-    keeps `internal/account` free of any import of `modules/`. The order follows the 3.2 create flow:
+    keeps `internal/account/pipeline` free of any import of `modules/`. The order follows the 3.2 create flow:
     account bootstrapping (010) → parameters (011) → network (012) → auth (013) → identity (015) →
     quota (016). Note that 3.2's diagram shows identity before network; identity requests are emitted
     early and are non-blocking, so the import step's position is flexible while request emission
@@ -128,7 +128,7 @@ what the module does and does not carry.
 - **018 computes `status.accountName`/`accountUrl`/`accountLocator` itself, directly from the
   `ModuleContext` it already built and holds** — `mc.ResolvedAccountName()`, `mc.Locator()` (readable
   after `Apply` returns), and `tenant.AccountURL(locator, region, usePrivateLink)` with `usePrivateLink`
-  from `BaseConfig.Snowflake.UsePrivateLink` (002) — never from a payload on any module's `Outcome`.
+  from `Config.Snowflake.UsePrivateLink` (002) — never from a payload on any module's `Outcome`.
   010's `Outcome` carries no string result; there is nothing to read off it for this purpose.
 - **Persist `status.accountLocator` as promptly as possible after `Apply` returns.** Every reconcile
   between a successful `CREATE ACCOUNT` and that persist is a crash window, and 010 has no way to

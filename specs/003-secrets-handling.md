@@ -18,7 +18,7 @@ This specification defines the `internal/secrets/` package that:
 
 **Out of Scope**:
 - Any concrete store or vendor SDK. `go.mod` gains no AWS dependency from this spec — that is `003.a-aws-secrets-backend.md`.
-- Constructing or selecting a `Backend`. That is `cmd/provider/main.go`'s job, switching on `BaseConfig.CloudProvider()` (002).
+- Constructing or selecting a `Backend`. That is `cmd/provider/main.go`'s job, switching on `Config.CloudProvider()` (002).
 - A singleton or `Initialize`/`GetInstance` access pattern. Every function takes a `Backend` explicitly; `main.go` owns the only instance.
 - Reconciling an occupied path against the world outside the store — a credential whose Snowflake account was never created, or one inherited from a deleted account whose name a new one reuses. `Create` reports the collision and stops; this package cannot see the account behind a path.
 - Credential rotation, including pushing a rotated public key into Snowflake (`ALTER USER ... SET RSA_PUBLIC_KEY`). That is the connection pool's job (004), calling this package's key generation and `Backend.Update` directly rather than a rotation primitive here.
@@ -32,7 +32,7 @@ A `Backend` sees paths and opaque value strings, nothing else. It never parses a
 Paths are an opaque `Path` type, constructible only through the two constructors below, so an unvalidated path can never reach a store:
 
 - **Tenant path** (design.md 3.11.1): `snowflake/tenant/<org>/<namespace>/<accountName>/platform-credentials`. `<namespace>` comes from the runtime `metadata.namespace`, never a spec field; `<accountName>` is the CRD's `metadata.name`, **never** the resolved hash-suffixed account name (design.md 3.12). Every segment is a Kubernetes identifier — that is what makes the namespace the trust anchor design.md 3.11.1 requires.
-- **Org-admin path**: `snowflake/org/<org>/<orgAdminAccount>/org-admin-credentials`, from `BaseConfig.Snowflake` (002) resolved at the call site. This package takes plain strings and does not import `internal/config`.
+- **Org-admin path**: `snowflake/org/<org>/<orgAdminAccount>/org-admin-credentials`, from `Config.Snowflake` (002) resolved at the call site. This package takes plain strings and does not import `internal/config/base`.
 
 **Important**: both constructors re-validate every segment regardless of upstream validation — reject an empty segment, or one containing `/`, `.`, `..`, or a character outside `[A-Za-z0-9_-]` — so the isolation guarantee holds even on a flat key-value store with no hierarchical authorization of its own.
 
@@ -99,7 +99,7 @@ type Path struct{ /* unexported */ }
 // snowflake/tenant/<org>/<namespace>/<accountName>/platform-credentials.
 //
 // Parameters:
-//   - org: Snowflake organization name (BaseConfig.Snowflake.Org, 002)
+//   - org: Snowflake organization name (Config.Snowflake.Org, 002)
 //   - namespace: Kubernetes namespace — MUST come from metadata.namespace at
 //     the call site, never a spec field (design.md 3.11.1)
 //   - accountName: the CRD's metadata.name — MUST NOT be the resolved,
@@ -114,8 +114,8 @@ func NewTenantPath(org, namespace, accountName string) (Path, error)
 // snowflake/org/<org>/<orgAdminAccount>/org-admin-credentials.
 //
 // Parameters:
-//   - org: BaseConfig.Snowflake.Org (002)
-//   - orgAdminAccount: BaseConfig.Snowflake.OrgAdminAccount (002)
+//   - org: Config.Snowflake.Org (002)
+//   - orgAdminAccount: Config.Snowflake.OrgAdminAccount (002)
 //
 // Returns:
 //   - User error under the same validation rule as NewTenantPath
@@ -244,7 +244,7 @@ internal/secrets/
 ## Integration Points
 
 - **`internal/secrets/aws` (003.a)** - Implements `Backend` against AWS Secrets Manager, carrying the value string as a `SecretString` and reporting AWS API failures as plainly worded errors satisfying this interface's per-method contracts - Key functions: implements `secrets.Backend` - Notes: the only place an AWS SDK enters `go.mod`; never imported by anything above 003.
-- **`cmd/provider/main.go`** - Constructs the concrete `Backend` selected by `BaseConfig.CloudProvider()` (002), wraps it exactly once in `NewCachedBackend(backend, cfg.Secrets.CacheTTL)` — the TTL comes from `BaseConfig.Secrets.CacheTTL` (002), not a literal — and passes the wrapped result to every consumer below - Key functions: `secrets.NewCachedBackend()`.
+- **`cmd/provider/main.go`** - Constructs the concrete `Backend` selected by `Config.CloudProvider()` (002), wraps it exactly once in `NewCachedBackend(backend, cfg.Secrets.CacheTTL)` — the TTL comes from `Config.Secrets.CacheTTL` (002), not a literal — and passes the wrapped result to every consumer below - Key functions: `secrets.NewCachedBackend()`.
 - **`internal/snowflake/pool` (004)** - Reads org-admin and per-tenant credentials through the `Backend` interface, keyed by the same `(org, namespace, account)` tuple as the tenant path - Key functions: `Backend.Get()`, `UnmarshalCredentials()`, `NewOrgAdminPath()`, `NewTenantPath()` - Notes: unit tests run against `FakeBackend`, never a real store.
 - **`internal/account/modules/account` (010)** - Generates a keypair and stores it with `Backend.Create` — never `Update` — before running `CREATE ACCOUNT`, using the generated public key in the SQL statement and never persisting the private key anywhere but the store - Key functions: `NewCredentials()`, `MarshalCredentials()`, `Backend.Create()`, `NewTenantPath()`.
 - **`internal/deletion` (017, not yet written)** - Calls `Backend.Delete()` on the tenant path when `DROP ACCOUNT` executes - Key functions: `Backend.Delete()`.
@@ -285,7 +285,7 @@ internal/secrets/
 
 - **Product design**: `specs/design.md`, §3.6 (the `platform` user and `ADMIN_RSA_PUBLIC_KEY`), §3.11 (org-admin vs. per-account access), §3.11.1 (tenant secret path, namespace as trust anchor), §3.12 (resolved vs. CRD account name), Appendix B X1 (the `platform` user re-key/drop gap).
 - **Error Handling (001)**: `internal/errors/errors.go` - `NewUserError()`, used to classify path-validation and not-found failures.
-- **Base Config (002)**: `internal/config/config.go` - `SnowflakeSettings.Org`, `SnowflakeSettings.OrgAdminAccount`, `CloudProvider()`; its own Example 1 already anticipates `secrets.Backend` and a `secretsaws.New(region)` constructor this spec's sibling (003.a) provides.
+- **Base Config (002)**: `internal/config/base/base.go` - `SnowflakeSettings.Org`, `SnowflakeSettings.OrgAdminAccount`, `CloudProvider()`; its own Example 1 already anticipates `secrets.Backend` and a `secretsaws.New(region)` constructor this spec's sibling (003.a) provides.
 
 <br/><br/><br/><br/><br/>
 
@@ -358,7 +358,7 @@ func (p *Pool) orgAdminCredentials(ctx context.Context, cached secrets.Backend, 
 
 // Wired once at startup:
 // backend := secretsaws.New(cfg.AWS.Region)                     // 003.a
-// cached := secrets.NewCachedBackend(backend, cfg.Secrets.CacheTTL) // TTL from BaseConfig (002)
+// cached := secrets.NewCachedBackend(backend, cfg.Secrets.CacheTTL) // TTL from Config (002)
 // pool := pool.New(cached, ...)                                  // 004 depends only on secrets.Backend
 ```
 

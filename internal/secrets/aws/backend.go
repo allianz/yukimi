@@ -54,9 +54,9 @@ var _ secrets.Backend = (*Backend)(nil)
 // credentials surfaces on the first real Get/Create/Update/Delete, not here.
 //
 // Parameters:
-//   - region: AWS region secrets are stored in (BaseConfig.AWS.Region, 002)
+//   - region: AWS region secrets are stored in (Config.AWS.Region, 002)
 //   - kmsKeyId: optional customer-managed KMS key id, alias, or ARN
-//     (BaseConfig.AWS.KmsKeyId, 002); passed to CreateSecret's KmsKeyId only
+//     (Config.AWS.KmsKeyId, 002); passed to CreateSecret's KmsKeyId only
 //     when non-empty — otherwise Secrets Manager's AWS-managed default key
 //     encrypts the secret
 //

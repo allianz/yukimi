@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package account
+package pipeline
 
 import (
 	"context"
@@ -26,8 +26,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	v1alpha1 "github.com/allianz/yukimi/apis/base/v1alpha1"
+	"github.com/allianz/yukimi/internal/account/tenant"
 	internalerrors "github.com/allianz/yukimi/internal/errors"
-	"github.com/allianz/yukimi/internal/tenant"
 )
 
 // tenantArgs captures one call to fakeDBPool.TenantAccount.

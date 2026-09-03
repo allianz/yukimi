@@ -20,7 +20,7 @@ import (
 	"context"
 	"fmt"
 
-	coreaccount "github.com/allianz/yukimi/internal/account"
+	"github.com/allianz/yukimi/internal/account/pipeline"
 )
 
 // Observe reports whether the account exists (a known locator) and, if so,
@@ -28,15 +28,15 @@ import (
 // over the org-admin connection (see Key Concept: Create-Then-Verify
 // Lifecycle, specs/010-account-module.md), since every module downstream of
 // this one already needs the same platform-authenticated connection.
-func (m *module) Observe(ctx context.Context, mc *coreaccount.ModuleContext) (bool, coreaccount.Outcome) {
+func (m *module) Observe(ctx context.Context, mc *pipeline.ModuleContext) (bool, pipeline.Outcome) {
 	if mc.Locator() == "" {
-		return false, coreaccount.Outcome{}
+		return false, pipeline.Outcome{}
 	}
 
 	if _, err := mc.TenantDB(ctx); err != nil {
-		return false, coreaccount.Failed(fmt.Errorf(
+		return false, pipeline.Failed(fmt.Errorf(
 			"platform connection failed for existing account locator %s: %w", mc.Locator(), err))
 	}
 
-	return true, coreaccount.Done()
+	return true, pipeline.Done()
 }

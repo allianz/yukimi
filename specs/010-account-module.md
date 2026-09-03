@@ -47,24 +47,20 @@ authenticates as the tenant's own account instead.
 
 ```go
 // package account // internal/account/modules/account
-//
-// The package name deliberately collides with internal/account's own; the two nest the same way
-// design.md's own module list does. Callers alias one side, e.g.:
-//   accountmodule "github.com/allianz/yukimi/internal/account/modules/account"
 
 // New constructs the account module — the pipeline's first module (design.md 3.6). It implements
-// internal/account.Module's Observe/Apply contract; see Key Concept: Create-Then-Verify Lifecycle
-// for what each method does.
+// internal/account/pipeline.Module's Observe/Apply contract; see Key Concept: Create-Then-Verify
+// Lifecycle for what each method does.
 //
 // Parameters:
 //   - backend: the secrets.Backend (003) the platform keypair is stored through, via Backend.Create
 //     only — this module never calls Update.
-//   - org: BaseConfig.Snowflake.Org (002), used to build the tenant secret path (003) exactly as
+//   - org: Config.Snowflake.Org (002), used to build the tenant secret path (003) exactly as
 //     internal/snowflake/pool does.
 //
 // Returns:
-//   - coreaccount.Module: never nil.
-func New(backend secrets.Backend, org string) coreaccount.Module
+//   - pipeline.Module: never nil.
+func New(backend secrets.Backend, org string) pipeline.Module
 ```
 
 `Observe` and `Apply` themselves are unexported methods on the value `New` returns — nothing outside
@@ -142,7 +138,7 @@ internal/account/modules/account/
 
 ## Dependencies
 
-- **Base Configuration (002)** — Used APIs: `BaseConfig.Snowflake.Org` — Contract: passed to `New` as a
+- **Base Configuration (002)** — Used APIs: `Config.Snowflake.Org` — Contract: passed to `New` as a
   plain string; this module never loads the config file itself.
 - **Secrets Handling (003)** — Used APIs: `GenerateKeyPair()`/`NewCredentials()`, `MarshalCredentials()`,
   `NewTenantPath()`, `Backend.Create()` — Contract: `Backend.Create` only, never `Update`; the module
@@ -163,10 +159,10 @@ internal/account/modules/account/
 ## Integration Points
 
 - **SnowflakeAccount Controller (018)** — Registers this module first in the pipeline via
-  `account.New(...)`, alongside its `secrets.Backend` and `BaseConfig`. Seeds each reconcile's
+  `account.New(...)`, alongside its `secrets.Backend` and `Config`. Seeds each reconcile's
   `ModuleContext` from `status.accountLocator` when already set. After `Pipeline.Apply` returns, reads
   `ModuleContext.ResolvedAccountName()` and `.Locator()` directly — never from this module's `Outcome` —
-  to render `status.accountName`, `status.accountLocator`, and (via `internal/tenant.AccountURL`)
+  to render `status.accountName`, `status.accountLocator`, and (via `internal/account/tenant.AccountURL`)
   `status.accountUrl`. Should persist `status.accountLocator` as promptly as possible after `Apply`
   returns, since every reconcile between a successful `CREATE ACCOUNT` and that persist is the crash
   window described above.
@@ -234,7 +230,7 @@ internal/account/modules/account/
 ## References
 
 - **Product design**: `specs/design.md` §3.2, §3.6, §3.11, §3.11.1, §3.12, Appendix B (X1).
-- **Account Pipeline**: `internal/account/module.go`, `context.go`, `pipeline.go` — the `Module`
+- **Account Pipeline**: `internal/account/pipeline/module.go`, `context.go`, `pipeline.go` — the `Module`
   interface, `Outcome` vocabulary, and shared `ModuleContext` this module implements against.
 - **Secrets Handling**: `internal/secrets/backend.go`, `path.go`, `credentials.go`.
 - **Statement Execution**: `internal/snowflake/statement/statement.go`, `render.go`, `errors.go`.
@@ -254,10 +250,10 @@ internal/account/modules/account/
 ```go
 import (
     accountmodule "github.com/allianz/yukimi/internal/account/modules/account"
-    "github.com/allianz/yukimi/internal/account"
+    "github.com/allianz/yukimi/internal/account/pipeline"
 )
 
-pipeline := account.New(
+pl := pipeline.New(
     accountmodule.New(secretsBackend, baseConfig.Snowflake.Org),
     // ... modules 011-016, in order
 )
@@ -266,7 +262,7 @@ pipeline := account.New(
 ### Example 2: First reconcile creates, second only reconnects
 
 ```go
-mc := account.NewModuleContext(cr, "finance", nil, nsLabels, log, pool)
+mc := pipeline.NewModuleContext(cr, "finance", nil, nsLabels, log, pool)
 
 // First reconcile: no locator yet.
 inSync, _ := module.Observe(ctx, mc)   // inSync == false, nothing has been touched yet
@@ -275,7 +271,7 @@ outcome := module.Apply(ctx, mc)       // generates keypair, stores it, issues C
 
 // A later reconcile against the same resource, with status.accountLocator now seeded into a
 // fresh ModuleContext by 018:
-mc2 := account.NewModuleContext(cr, "finance", nil, nsLabels, log, pool) // mc2.Locator() != ""
+mc2 := pipeline.NewModuleContext(cr, "finance", nil, nsLabels, log, pool) // mc2.Locator() != ""
 inSync2, _ := module.Observe(ctx, mc2) // reconnects as platform; inSync2 == true
 outcome2 := module.Apply(ctx, mc2)     // reconnects again, no SQL issued, returns Done()
 ```

@@ -23,7 +23,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/allianz/yukimi/internal/config"
+	"github.com/allianz/yukimi/internal/config/base"
 	"github.com/allianz/yukimi/internal/secrets"
 	"github.com/allianz/yukimi/internal/snowflake/host"
 )
@@ -51,7 +51,7 @@ type tenantEntry struct {
 // explicit eviction — never after ordinary use.
 type Pool struct {
 	backend secrets.Backend
-	cfg     *config.BaseConfig
+	cfg     *base.Config
 	dial    dialFunc
 
 	orgAdminMu sync.Mutex
@@ -70,7 +70,7 @@ type Pool struct {
 // Parameters:
 //   - backend: the secrets.Backend (003) credentials are read through; never
 //     a concrete backend package
-//   - cfg: BaseConfig (002) — Snowflake.Org, OrgAdminAccount,
+//   - cfg: Config (002) — Snowflake.Org, OrgAdminAccount,
 //     OrgAdminAccountLocator, OrgAdminAccountRegion, UsePrivateLink,
 //     DisableOCSPChecks, MaxConnectionPoolSize, MaxIdleConnections,
 //     ConnectionMaxLifetime, ConnectionMaxIdleTime, ConnectionProbeTimeout,
@@ -78,7 +78,7 @@ type Pool struct {
 //
 // Returns:
 //   - *Pool: never nil
-func New(backend secrets.Backend, cfg *config.BaseConfig) *Pool {
+func New(backend secrets.Backend, cfg *base.Config) *Pool {
 	return &Pool{
 		backend:  backend,
 		cfg:      cfg,
@@ -309,10 +309,10 @@ func (p *Pool) Close() error {
 	return stderrors.Join(errs...)
 }
 
-// applyPoolSettings applies BaseConfig.Snowflake's connection-pool tuning to
+// applyPoolSettings applies Config.Snowflake's connection-pool tuning to
 // db — the underlying *sql.DB's own limits, idle timeout, and maximum
 // lifetime, applied identically to every *sql.DB this package dials.
-func applyPoolSettings(db *sql.DB, cfg *config.BaseConfig) {
+func applyPoolSettings(db *sql.DB, cfg *base.Config) {
 	sf := &cfg.Snowflake
 	db.SetMaxOpenConns(sf.MaxConnectionPoolSize)
 	db.SetMaxIdleConns(sf.MaxIdleConnections)

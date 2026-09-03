@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package account
+package pipeline
 
 import xpv1 "github.com/crossplane/crossplane-runtime/v2/apis/common/v1"
 

@@ -26,7 +26,7 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
   - **`Admit()` — the admission/validation phase**: on every create or update, list all
     `SnowflakeAccount` resources in the namespace, sum their claimed `creditQuota`, and compare the
     total against the namespace's `credit-quota` label (set by ops at onboarding and read through
-    `internal/tenant`). Exceeding the allowance is rejected with a validation error. The label is the
+    `internal/account/tenant`). Exceeding the allowance is rejected with a validation error. The label is the
     trust anchor: it lives outside the tenant's Git repository, so teams cannot raise it themselves.
   - **First-come-first-served on reductions**: if ops lowers the namespace allowance, existing
     accounts are **never retroactively suspended**, but future creates and updates are blocked until

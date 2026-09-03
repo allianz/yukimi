@@ -15,13 +15,12 @@ limitations under the License.
 */
 
 // Package account creates a tenant's Snowflake account and bootstraps the
-// platform service user, the pipeline's first module (design.md 3.6). The
-// package name deliberately collides with internal/account's own — callers
-// alias one side. See specs/010-account-module.md.
+// platform service user, the pipeline's first module (design.md 3.6). See
+// specs/010-account-module.md.
 package account
 
 import (
-	coreaccount "github.com/allianz/yukimi/internal/account"
+	"github.com/allianz/yukimi/internal/account/pipeline"
 	"github.com/allianz/yukimi/internal/secrets"
 )
 
@@ -38,12 +37,12 @@ type module struct {
 // Parameters:
 //   - backend: the secrets.Backend (003) the platform keypair is stored
 //     through, via Backend.Create only — this module never calls Update.
-//   - org: BaseConfig.Snowflake.Org (002), used to build the tenant secret
+//   - org: Config.Snowflake.Org (002), used to build the tenant secret
 //     path (003) exactly as internal/snowflake/pool does.
 //
 // Returns:
-//   - coreaccount.Module: never nil.
-func New(backend secrets.Backend, org string) coreaccount.Module {
+//   - pipeline.Module: never nil.
+func New(backend secrets.Backend, org string) pipeline.Module {
 	return &module{backend: backend, org: org}
 }
 
