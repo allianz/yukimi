@@ -77,7 +77,7 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
 
 ## Relationship to the account pipeline (009)
 
-Guardrails run in full, once, inside 018's validation phase — strictly before the account pipeline
+Guardrails run in full, once, inside 019's validation phase — strictly before the account pipeline
 (009) is ever invoked. Its only output is accept-or-reject (a validation error on rejection). No
 guardrail type or result crosses into `internal/account`'s pipeline context, and no module reads
 anything guardrail-owned:
@@ -88,7 +88,7 @@ anything guardrail-owned:
 - **013 (auth module)** has no guardrail dependency at all: design.md's guardrails section (3.3)
   never constrains `customAuthRules`.
 
-Because of this, 008 has no dependency relationship with 009, 010–013, 015, or 016 in either
+Because of this, 008 has no dependency relationship with 009, 010–013, 015, 016, or 017 in either
 direction, and can be written and implemented in normal ascending order — before 009, as its
 number implies.
 

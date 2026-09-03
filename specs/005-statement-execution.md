@@ -2,7 +2,7 @@
 
 ## Overview
 
-This specification defines `internal/snowflake/statement/`, the shared mechanics every account-provisioning module (010–013, 015, 016, 019) uses to talk to Snowflake: running one SQL statement at a time against an injected connection, materializing whatever rows come back, and decorating a failure with the driver's own diagnostic fields. It binds values and object names wherever Snowflake accepts a bind, and owns the handful of rendering primitives needed for the few positions that require literal SQL text instead — so escaping is solved once, here, rather than five times over in the modules that actually decide what SQL to emit.
+This specification defines `internal/snowflake/statement/`, the shared mechanics every account-provisioning module (010–013, 015, 017, 020) uses to talk to Snowflake: running one SQL statement at a time against an injected connection, materializing whatever rows come back, and decorating a failure with the driver's own diagnostic fields. It binds values and object names wherever Snowflake accepts a bind, and owns the handful of rendering primitives needed for the few positions that require literal SQL text instead — so escaping is solved once, here, rather than five times over in the modules that actually decide what SQL to emit.
 
 ## Scope
 
@@ -15,7 +15,7 @@ This specification defines the `internal/snowflake/statement/` package that:
 - **Decorates a failure with structured fields only**: a caller-supplied label, the statement text, and — when the underlying error is a `*gosnowflake.SnowflakeError` — its `Number`, `SQLState`, and `QueryID`. Never the bound arguments.
 
 **Out of Scope**:
-- **Which SQL to emit, and in what order, for any given operation.** That is every downstream module's business (010–013, 015, 016, 019), not this package's.
+- **Which SQL to emit, and in what order, for any given operation.** That is every downstream module's business (010–013, 015, 017, 020), not this package's.
 - **Whether `IDENTIFIER(?)` binding works at a given statement position.** `notes-snowflake-sql-mechanics.md` §7 marks several of these positions "Unconfirmed" — the account name in `CREATE ACCOUNT` (3.6), and the policy-name value in `ALTER USER ... SET NETWORK_POLICY` (3.8) and `ALTER USER ... SET AUTHENTICATION_POLICY` (3.9). This package does not adjudicate those questions. It supplies the rendering primitives and the bind-first policy; the module that actually emits each statement (006, and the network/auth modules of 012/013) decides, at its own spec-writing time, whether to attempt a bind there or go straight to a renderer — including a live check against a real account if it chooses to attempt the bind first. This division is deliberate, not an oversight left for later.
 - **Accessor or coercion helpers** on the materialized `Result` beyond a caller's own comma-ok type assertion.
 - **Retries.** No retry logic lives in this package or anywhere in this codebase's business logic; a failure is returned as-is and the caller (ultimately Kubernetes/Crossplane, per project-wide policy) decides whether to try again.
@@ -206,7 +206,7 @@ Production code here depends only on `internal/errors` (001) and never imports `
 ## Integration Points
 
 - **Connection Pool (004)** - `Pool.OrgAdmin`/`Pool.TenantAccount` hand back the `*sql.DB` this package wraps as an `Executor` - Key functions: `statement.New` - Notes: no import in either direction from production code; 004 documents this same rule from its side. `integration_test.go` imports 004 (and 003.a, for the `secrets.Backend` `Pool.TenantAccount` needs) to obtain that real `*sql.DB` under test — a test-only exception, not a production dependency.
-- **Account Modules (010–013, 015, 016, 019 — not yet written)** - Call `statement.New` once per connection, then `Exec`/`Query` per statement, reaching for a renderer only at the specific positions their own spec identifies as unbindable - Key functions: `Runner.Exec`, `Runner.Query`, `QuoteIdentifier`, `QuoteLiteral`, `BareIdentifier`.
+- **Account Modules (010–013, 015, 017, 020 — not yet written)** - Call `statement.New` once per connection, then `Exec`/`Query` per statement, reaching for a renderer only at the specific positions their own spec identifies as unbindable - Key functions: `Runner.Exec`, `Runner.Query`, `QuoteIdentifier`, `QuoteLiteral`, `BareIdentifier`.
 - **Error Handling (001)** - `logger.Handle`, at the controller layer, classifies and logs whatever this package returns; this package never logs anything itself.
 - **Testing** - Module test suites drive the real `statement.New(db)` over `DATA-DOG/go-sqlmock` (`sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual)` for exact statement matching, `.WithArgs(...)` for bind assertions, `mock.ExpectationsWereMet()` for ordering) rather than a hand-rolled fake, exercising the real materializer, renderers and error decoration. `integration_test.go` additionally exercises `Exec`/`Query` against a real `Pool.TenantAccount` connection from the sample tenant account `.env` describes (see `internal/snowflake/pool/integration_test.go` for the same wiring), confirming real `*gosnowflake.SnowflakeError` decoration and real row materialization end to end — skipped under `-short`, run via `make test-integration`.
 

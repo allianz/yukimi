@@ -23,17 +23,22 @@ type Pipeline struct {
 	modules []Module
 }
 
-// New builds a pipeline from an ordered module list. modules[0] must be the
-// account module (010): its Observe result is the sole source of
-// Observation.Exists, and every later module depends on the connection it
-// establishes.
+// New builds a pipeline from an ordered module list. Registration order is
+// execution order for both Observe and Apply. Exactly one module must be the
+// account module, identified by Name() == AccountModuleName: its Observe
+// result is the sole source of Observation.Exists, and every module that
+// calls ModuleContext.TenantDB must be registered after it, since TenantDB
+// requires the locator only its Apply sets. The account module need not be
+// registered first overall — a module needing no Snowflake connection (for
+// example, a quota-check admission gate that must abort before the account
+// is ever created) may run earlier.
 func New(modules ...Module) *Pipeline {
 	return &Pipeline{modules: modules}
 }
 
 // Observation is Pipeline.Observe's result.
 type Observation struct {
-	Exists bool // from modules[0]'s Observe alone; no other module contributes to it
+	Exists bool // from the account module's Observe alone (Name() == AccountModuleName); no other module contributes to it
 	InSync bool // true iff every module's Observe reported inSync == true
 }
 
@@ -46,9 +51,9 @@ type Observation struct {
 //     a module reports already lives in its own Outcome.
 func (p *Pipeline) Observe(ctx context.Context, mc *ModuleContext) (Observation, error) {
 	obs := Observation{InSync: true}
-	for i, m := range p.modules {
+	for _, m := range p.modules {
 		inSync, _ := m.Observe(ctx, mc)
-		if i == 0 {
+		if m.Name() == AccountModuleName {
 			obs.Exists = inSync
 		}
 		if !inSync {

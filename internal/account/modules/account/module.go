@@ -15,7 +15,9 @@ limitations under the License.
 */
 
 // Package account creates a tenant's Snowflake account and bootstraps the
-// platform service user, the pipeline's first module (design.md 3.6). See
+// platform service user (design.md 3.6). Every module that needs a live
+// Snowflake connection must be registered after it in the pipeline, but it
+// need not be registered first overall — see pipeline.AccountModuleName. See
 // specs/010-account-module.md.
 package account
 
@@ -46,4 +48,4 @@ func New(backend secrets.Backend, org string) pipeline.Module {
 	return &module{backend: backend, org: org}
 }
 
-func (m *module) Name() string { return "account" }
+func (m *module) Name() string { return pipeline.AccountModuleName }

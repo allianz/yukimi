@@ -25,15 +25,16 @@ happened into Kubernetes conditions without understanding what any individual mo
   conditions forces the resource's aggregate `Ready` to `False`.
 
 **Out of Scope**:
-- Executing any SQL itself. Every statement belongs to a module (010–013, 015); this package only
-  sequences calls into them.
+- Executing any SQL itself. Every statement belongs to a module (010–013, 015, 017); this package only
+  sequences calls into them. quota-check (016) executes no SQL at all — it never opens a Snowflake
+  connection, which is what lets it run ahead of the account module.
 - Classifying any error as a user or system error. Each module is the only code that knows why its
   own call failed, so each module classifies its own failures before reporting an `Outcome`.
 - Detecting or repairing drift. No module reads Snowflake state back to compare and repair it;
   Organization Policies will make that state org-owned, so the work would not survive to be used. The
   one read-back sanctioned here is a pruning module's enumeration of objects the CRD no longer lists —
   it drops, it never repairs (see Key Concept below).
-- Any teardown. Deletion is a single `DROP ACCOUNT` plus finalizer release owned by 017/018 and
+- Any teardown. Deletion is a single `DROP ACCOUNT` plus finalizer release owned by 018/019 and
   cascades to every object inside the account — there is no per-module teardown to sequence.
 - Guardrail admission (008). That runs as its own gate inside the controller, entirely *before* the
   pipeline is ever invoked — no module, and no field on the shared context, ever carries a guardrail
@@ -45,9 +46,14 @@ happened into Kubernetes conditions without understanding what any individual mo
 ## Key Concept: Sequential Modules, One Abort Signal
 
 Modules run one after another, strictly in the order they were registered, never in parallel and
-never calling one another. The first module registered is always the account module (010): its
-`Observe` result is the only source of whether the account exists at all, and every later module
-needs the live connection only it can establish.
+never calling one another. The account module (010) is identified by name — `Name() ==
+AccountModuleName` — not by registration position: its `Observe` result is the only source of
+whether the account exists at all. Every module that calls `ModuleContext.TenantDB` needs the live
+connection only the account module's `Apply` establishes, so it must be registered after it — but the
+account module itself need not be registered first overall. A module that needs no Snowflake
+connection may run earlier and abort the pipeline before the account is ever created; the quota-check
+module (016) is the concrete case, registered ahead of the account module so it can block
+`CREATE ACCOUNT` outright when the tenant's claimed quota doesn't fit.
 
 A module's outcome can carry a generic signal that stops the run: if set, no later module runs on
 this pass. Nothing about the pipeline or the module contract privileges any particular module for
@@ -95,7 +101,7 @@ identity bindings are untouched.
 ```go
 package pipeline
 
-// Module is implemented by each pipeline stage (010, 011, 012, 013, 015, 016).
+// Module is implemented by each pipeline stage (010, 011, 012, 013, 015, 016, 017).
 type Module interface {
     Name() string
 
@@ -108,13 +114,23 @@ type Module interface {
     Apply(ctx context.Context, mc *ModuleContext) Outcome
 }
 
+// AccountModuleName is the account module's (010) Name(). Pipeline.Observe
+// uses it to find which module's Observe result is Observation.Exists,
+// regardless of that module's position in the registered list.
+const AccountModuleName = "account"
+
 // Pipeline runs an ordered list of modules against one ModuleContext per call.
 type Pipeline struct{ /* unexported */ }
 
-// New builds a pipeline from an ordered module list. modules[0] must be the
-// account module (010): its Observe result is the sole source of
-// Observation.Exists, and every later module depends on the connection it
-// establishes.
+// New builds a pipeline from an ordered module list. Registration order is
+// execution order for both Observe and Apply. Exactly one module must be the
+// account module, identified by Name() == AccountModuleName: its Observe
+// result is the sole source of Observation.Exists, and every module that
+// calls ModuleContext.TenantDB must be registered after it, since TenantDB
+// requires the locator only its Apply sets. The account module need not be
+// registered first overall — a module needing no Snowflake connection (for
+// example, a quota-check admission gate that must abort before the account
+// is ever created) may run earlier.
 func New(modules ...Module) *Pipeline
 
 // Observe calls every module's Observe in order and aggregates the result. It
@@ -137,7 +153,7 @@ func (p *Pipeline) Apply(ctx context.Context, mc *ModuleContext) (Result, error)
 
 // Observation is Pipeline.Observe's result.
 type Observation struct {
-    Exists bool // from modules[0]'s Observe alone; no other module contributes to it
+    Exists bool // from the account module's Observe alone (Name() == AccountModuleName); no other module contributes to it
     InSync bool // true iff every module's Observe reported inSync == true
 }
 
@@ -240,7 +256,7 @@ func (c *ModuleContext) TenantDB(ctx context.Context) (*sql.DB, error)
 
 // Custom condition types this package defines, plus the static table deciding
 // which of them forces the resource's aggregate Ready to False. A module
-// attaches its own condition to its Outcome (above); 018 collects and renders
+// attaches its own condition to its Outcome (above); 019 collects and renders
 // them, applying this table when aggregating Ready.
 const (
     TypeQuotaAvailable xpv1.ConditionType = "QuotaAvailable" // design.md 3.10
@@ -290,8 +306,9 @@ empty — every other failure surfacing from `OrgAdminDB`/`TenantDB` is `interna
   moment that module reports `Done` instead.
 - **What happens on the very first reconcile, before `CREATE ACCOUNT` has ever returned a locator?** -
   `ModuleContext.Locator()` returns `""`. Only the account module (010) can proceed without one; every
-  later module's first call to `TenantDB` fails with a system error until 010 has called
-  `SetLocator`, which is why 010 must run first and must abort on anything but `Done`.
+  module that calls `TenantDB` fails with a system error until 010 has called `SetLocator`, which is
+  why 010 must run before any such module, and must abort on anything but `Done`. A module that never
+  calls `TenantDB` (quota-check, 016) has no such constraint and may be registered ahead of 010.
 - **A module returns `Pending` — who decides when the pipeline is retried?** - Nobody, at this layer.
   `Pending` carries only its reason string, no requeue hint; the controller's own poll interval governs
   when the next reconcile happens.
@@ -321,25 +338,28 @@ before the pipeline is ever invoked, so this package neither imports nor referen
 
 ## Integration Points
 
-- **`internal/controller/snowflakeaccount` (018)** - Runs guardrail admission (008) as its own gate,
+- **`internal/controller/snowflakeaccount` (019)** - Runs guardrail admission (008) as its own gate,
   entirely before building a `ModuleContext` or calling the pipeline at all. Calls `Pipeline.Observe`
   from the controller's own `Observe`, and `Pipeline.Apply` from both `Create` and `Update` with
-  identical bodies. Registers modules in the fixed order 010 → 011 → 012 → 013 → 015 → 016. Owns
-  rendering `Outcome.Condition` values, `GatesReady` aggregation, and advancing
-  `status.observedGeneration`. - Key functions: `pipeline.New()`, `(*Pipeline).Observe`,
-  `(*Pipeline).Apply`, `pipeline.NewModuleContext()`.
-- **`internal/account/modules/{account,parameter,network,auth,identity}` (010–013, 015)** - Each
-  implements `Module` and is registered with `pipeline.New()` by 018.
-- **`internal/quota` (016)** - Implements `Module` for the pipeline's purposes, but its admission check
-  (`Admit()`) lives outside this contract entirely and is called separately, by 018's own validation
-  phase, before the pipeline runs.
+  identical bodies. Registers modules in the fixed order 016 → 010 → 011 → 012 → 013 → 015 → 017 — the
+  quota-check module (016) first, ahead of the account module, since it needs no Snowflake connection
+  and must abort before `CREATE ACCOUNT` when the claimed quota doesn't fit. Owns rendering
+  `Outcome.Condition` values, `GatesReady` aggregation, and advancing `status.observedGeneration`. -
+  Key functions: `pipeline.New()`, `(*Pipeline).Observe`, `(*Pipeline).Apply`,
+  `pipeline.NewModuleContext()`.
+- **`internal/account/modules/{account,parameter,network,auth,identity,quotacheck,quotamonitor}`
+  (010–013, 015–017)** - Each implements `Module` in full and is registered with `pipeline.New()` by
+  019; none has any out-of-band entry point outside the `Module` contract. quota-check (016) is the
+  admission check, registered ahead of the account module; quota-monitor (017) is the resource-monitor
+  enforcement and exhaustion condition, registered after it in the position the earlier single-module
+  quota plan used to occupy.
 
 ## Success Criteria
 
 1. **SC-001**: `New(modules...)` preserves registration order; `Pipeline.Apply` calls each module's
    `Apply` in that exact order.
-2. **SC-002**: `Observation.Exists` reflects only `modules[0]`'s `Observe` result, regardless of what
-   later modules report.
+2. **SC-002**: `Observation.Exists` reflects only the account module's (`Name() == AccountModuleName`)
+   `Observe` result, regardless of its position in the registered list or what later modules report.
 3. **SC-003**: `Observation.InSync` is true iff every module's `Observe` returned `inSync == true`.
 4. **SC-004**: An `Outcome` with `Abort == true` stops `Pipeline.Apply` immediately after that module;
    `Result.Aborted` is true and `Result.Outcomes` contains no entry for any later module.
@@ -386,7 +406,7 @@ before the pipeline is ever invoked, so this package neither imports nor referen
   `apis/base/v1alpha1/snowflakeaccount_types.go` (`SnowflakeAccountStatus`).
 - **Vendored behavior**: `crossplane-runtime/v2@v2.0.0` `pkg/reconciler/managed/reconciler.go` — the
   managed reconciler sets `Creating()`/`ReconcileSuccess()` after `Create` returns and after
-  `Observe` returns on the up-to-date path, so 018 must re-aggregate `Ready` on every `Observe` rather
+  `Observe` returns on the up-to-date path, so 019 must re-aggregate `Ready` on every `Observe` rather
   than relying on what a prior `Apply` set.
 
 <br/><br/><br/><br/><br/>
@@ -395,7 +415,7 @@ before the pipeline is ever invoked, so this package neither imports nor referen
 ## Appendix: Usage Examples
 
 The Go examples below illustrate call shape and sequencing, not exact compilable code — the precise
-condition-rendering and `Ready` aggregation logic belongs to 018, which is not yet written.
+condition-rendering and `Ready` aggregation logic belongs to 019, which is not yet written.
 
 ### Example 1: The Controller's `Observe`
 

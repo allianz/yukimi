@@ -21,7 +21,7 @@ This specification defines the `internal/snowflake/pool/` and `internal/snowflak
 - SQL statement semantics, safe rendering, and error decoration — that is 005's job. This package hands 005 a plain `*sql.DB`; it never imports `internal/snowflake/statement`, and 005 never imports this package (see Key Concept below).
 - Any concrete secrets backend — this package takes a `secrets.Backend` as a constructor parameter and never imports `internal/secrets/aws` or any other backend package.
 - Generating the keypair or defining the credential's JSON shape — still 003's job (`secrets.GenerateKeyPair`, `Credentials`); provisioning a tenant's *first* credential remains 010's job. This package only owns *when* a stored credential is due for rotation and pushing its replacement into Snowflake (see Key Concept below).
-- Anything about which SQL statements run once a connection is obtained — that is every downstream module's business (010–013, 015, 016, 019), never this package's.
+- Anything about which SQL statements run once a connection is obtained — that is every downstream module's business (010–013, 015, 017, 020), never this package's.
 - Deciding *whether* PrivateLink is in use: callers pass that flag (today `Config.Snowflake.UsePrivateLink`, 002), and `internal/snowflake/host` never reads configuration itself.
 - The `SnowflakeAccount` status field `accountUrl` (006) — this spec builds the string; 006 owns the field, the CRD schema, and when it is written.
 
@@ -33,7 +33,7 @@ A `Pool` never exposes more than two kinds of connection, matching design.md 3.1
 
 ## Key Concept: Open Lazily, Never Close Until Shutdown or Eviction
 
-A `*sql.DB` is already a connection pool — the standard library multiplexes physical connections underneath one handle and recycles them on its own schedule (idle-time limit, maximum lifetime), configured once at creation. This package's `Pool` type just caches one `*sql.DB` per target and hands back the same one on every call, so the JWT handshake is paid once per target rather than on every reconcile. `Close` is only ever called on eviction or process shutdown — never after ordinary use. Eviction's primary trigger is account deletion: once an account is dropped (design.md 6.3, 017 not yet written), 017 calls `EvictTenant` so that entry is closed and removed rather than left open forever. The same primitive also covers a subtler, automatic case below.
+A `*sql.DB` is already a connection pool — the standard library multiplexes physical connections underneath one handle and recycles them on its own schedule (idle-time limit, maximum lifetime), configured once at creation. This package's `Pool` type just caches one `*sql.DB` per target and hands back the same one on every call, so the JWT handshake is paid once per target rather than on every reconcile. `Close` is only ever called on eviction or process shutdown — never after ordinary use. Eviction's primary trigger is account deletion: once an account is dropped (design.md 6.3, 018 not yet written), 018 calls `EvictTenant` so that entry is closed and removed rather than left open forever. The same primitive also covers a subtler, automatic case below.
 
 ## Key Concept: Self-Healing on a Locator Change
 
@@ -165,7 +165,7 @@ func (p *Pool) OrgAdmin(ctx context.Context) (*sql.DB, error)
 func (p *Pool) TenantAccount(ctx context.Context, namespace, accountName, locator, region string) (*sql.DB, error)
 
 // EvictTenant closes and removes the cached *sql.DB for (namespace,
-// accountName), if one exists. Called once an account is dropped (017, not
+// accountName), if one exists. Called once an account is dropped (018, not
 // yet written) so a deleted tenant's connection does not linger for the rest
 // of the process's life. A key never dialed is a no-op, not an error.
 func (p *Pool) EvictTenant(namespace, accountName string)
@@ -221,7 +221,7 @@ internal/snowflake/pool/
 - **What happens on the very first call for a key that fails to connect?** - Nothing is cached. `OrgAdmin`/`TenantAccount` returns the error, and the next call retries the credential read and dial from scratch — mirroring 003's rule that a failed `Get` is never cached.
 - **What happens if two goroutines call `TenantAccount` for the same key at the same time on a cold cache?** - Both block behind that key's own lock, acquired per-key rather than pool-wide; the first to acquire it dials and caches, the second observes the now-populated cache and returns the same `*sql.DB` without dialing a second time. A cold dial for a *different* key never waits on this — see Edge Cases below on running at a few thousand accounts.
 - **Does a pool-wide lock serialize connecting a few thousand accounts, e.g. right after the process starts?** - No — the lock is per key, so cold dials for different accounts proceed concurrently; only two callers racing for the *same* account's first connection serialize. A shared pool-wide lock would have made a cold start across thousands of accounts take minutes of pure lock contention instead of running them in parallel, so this is a hard design requirement, not an implementation detail. The map holding thousands of cached entries costs a small, fixed amount of memory per entry (map slot plus an idle `*sql.DB`) — negligible at this scale. What ops must size for instead is the pod's open-file-descriptor limit: with per-account idle-connection limits set (see below), a few thousand actively-reconciled accounts can hold a correspondingly large number of idle TCP connections at once, all to different Snowflake accounts rather than concentrated on one, so no single account's own connection limit is at risk.
-- **What happens when an account is dropped and later recreated under the same CRD name and namespace?** - See Key Concept: Self-Healing. The new locator no longer matches the cached entry, so the stale connection is closed and a fresh one dialed automatically, without requiring 017 to call `EvictTenant` first — though 017 calls it anyway, immediately after `DROP ACCOUNT`, so the cache never briefly serves a connection to an account already gone.
+- **What happens when an account is dropped and later recreated under the same CRD name and namespace?** - See Key Concept: Self-Healing. The new locator no longer matches the cached entry, so the stale connection is closed and a fresh one dialed automatically, without requiring 018 to call `EvictTenant` first — though 018 calls it anyway, immediately after `DROP ACCOUNT`, so the cache never briefly serves a connection to an account already gone.
 - **What tunes the underlying `*sql.DB`'s own connection limits, idle timeout, and maximum lifetime?** - `Config.Snowflake` (002): `MaxConnectionPoolSize`, `MaxIdleConnections`, `ConnectionMaxLifetime`, `ConnectionMaxIdleTime`, each with a documented default when omitted from `base.yaml`. `New` reads them once and applies them via `SetMaxOpenConns`/`SetMaxIdleConns`/`SetConnMaxLifetime`/`SetConnMaxIdleTime` to every `*sql.DB` this package dials.
 - **Does the health probe run on every `OrgAdmin`/`TenantAccount` call, or only when a new connection is dialed?** - Only when a new connection is dialed (a cold cache, or after eviction/self-healing). A cache hit returns the already-cached `*sql.DB` with no probe and no other network call — probing on every call would defeat the point of caching.
 - **Why does session role scoping use a `Config` field instead of a runtime `USE ROLE` statement?** - The Snowflake Go driver accepts a `Role` at connection construction time, applied automatically to every physical connection the driver opens underneath the cached `*sql.DB` — this needs no SQL statement and therefore no dependency on 005's statement execution. If a future need arises for session setup `Config` cannot express, it is done with the raw driver (`db.ExecContext`) directly in this package — never via `internal/snowflake/statement` (005), which is exactly the dependency direction this package must not create (005 already depends on the connection this package hands it; the reverse would be a cycle).
@@ -243,9 +243,9 @@ internal/snowflake/pool/
 - **`cmd/provider/main.go`** - Constructs the `Pool` once via `pool.New(cachedBackend, cfg)` after building the secrets backend (003.a) and loading `Config` (002), and calls `Pool.Close()` on shutdown - Key functions: `pool.New()`, `Pool.Close()`.
 - **`internal/snowflake/statement` (005, not yet written)** - Takes the `*sql.DB` this package returns as its injected executor and never imports this package directly; this package never imports it either, so the two-way avoidance is enforced from both sides.
 - **`internal/account/modules/account` (010, not yet written)** - Calls `Pool.OrgAdmin()` to run `CREATE ACCOUNT` and reads back its response's locator for status (design.md 3.6, 7.2) - Key functions: `Pool.OrgAdmin()`.
-- **Every other account module (011–013, 015) and the account pipeline/controller (009, 018, not yet written)** - Call `Pool.TenantAccount()` to reach an account's own connection for parameters, network rules, identity import, and auth rules - Key functions: `Pool.TenantAccount()`.
-- **`internal/deletion` (017, not yet written)** - Calls `Pool.OrgAdmin()` to run `DROP ACCOUNT` and `Pool.EvictTenant()` immediately afterward so the cache does not keep serving a connection to a dropped account - Key functions: `Pool.OrgAdmin()`, `Pool.EvictTenant()`.
-- **`internal/account/tenant` (006, not yet written)** - Calls `host.URL()` to build `status.accountUrl` (design.md 7.2), passing the locator 010 captures from `CREATE ACCOUNT`, the account's region, and the PrivateLink flag its caller (018) reads from `Config` (002). It never calls `Pool`, and `host` never imports `internal/account/tenant`, so the boundary holds from both sides - Key functions: `host.URL()`.
+- **Every other account module (011–013, 015) and the account pipeline/controller (009, 019, not yet written)** - Call `Pool.TenantAccount()` to reach an account's own connection for parameters, network rules, identity import, and auth rules - Key functions: `Pool.TenantAccount()`.
+- **`internal/deletion` (018, not yet written)** - Calls `Pool.OrgAdmin()` to run `DROP ACCOUNT` and `Pool.EvictTenant()` immediately afterward so the cache does not keep serving a connection to a dropped account - Key functions: `Pool.OrgAdmin()`, `Pool.EvictTenant()`.
+- **`internal/account/tenant` (006, not yet written)** - Calls `host.URL()` to build `status.accountUrl` (design.md 7.2), passing the locator 010 captures from `CREATE ACCOUNT`, the account's region, and the PrivateLink flag its caller (019) reads from `Config` (002). It never calls `Pool`, and `host` never imports `internal/account/tenant`, so the boundary holds from both sides - Key functions: `host.URL()`.
 
 ## Success Criteria
 
@@ -353,10 +353,10 @@ func main() {
 }
 ```
 
-### Example 2: Evicting a Dropped Account's Connection (017's Integration)
+### Example 2: Evicting a Dropped Account's Connection (018's Integration)
 
 ```go
-// In internal/deletion (017, not yet written), immediately after DROP ACCOUNT succeeds
+// In internal/deletion (018, not yet written), immediately after DROP ACCOUNT succeeds
 import "github.com/allianz/yukimi/internal/snowflake/pool"
 
 func (m *Module) dropAccount(ctx context.Context, p *pool.Pool, orgAdminDB *sql.DB, namespace, accountName, resolvedName string) error {
@@ -417,7 +417,7 @@ func TestTenantAccount_CachesByKey(t *testing.T) {
 ```go
 // In internal/account/tenant (006, not yet written). The locator comes from CREATE ACCOUNT
 // (010, design.md 3.6); the PrivateLink flag from Config (002), passed down by
-// the controller (018). No pool, no driver, no configuration import.
+// the controller (019). No pool, no driver, no configuration import.
 import "github.com/allianz/yukimi/internal/snowflake/host"
 
 func accountURL(locator, region string, usePrivateLink bool) (string, error) {

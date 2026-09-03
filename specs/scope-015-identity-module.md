@@ -61,7 +61,7 @@ these points rest on.
   (`account.TypeIdentitySynced`) and the static `Ready`-gating table; 015 attaches the condition to its
   outcome and the pipeline applies the table. Do not restate the gating rule here and do not decide it
   per module.
-- **Re-application is driven by generation, so `Pending` self-retries.** 018 advances
+- **Re-application is driven by generation, so `Pending` self-retries.** 019 advances
   `status.observedGeneration` only after a run in which every module returned `Done`, so an outstanding
   sync keeps the resource out-of-date and keeps `Apply` running until the sync lands or times out. 015
   needs no retry loop of its own.
