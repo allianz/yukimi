@@ -741,7 +741,7 @@ spec:
 
 To prevent catastrophic data loss via accidental Git operations, the platform enforces a Positive Control model. A resource cannot be destroyed simply by removing its definition file. Instead, deletion is treated as a privileged operation that requires a dedicated "Deletion Warrant."
 
-  * **The Lock:** Every critical resource is protected by a Kubernetes Finalizer (`snowflake.finalizer`) that blocks deletion by default.
+  * **The Lock:** Every critical resource is protected by the finalizer Crossplane's managed-resource reconciler already places on it; the controller's `Delete()` blocks by default and the finalizer is not removed until deletion is authorized.
   * **The Key:** The `SnowflakeDeletionRequest` acts as the temporary key that authorizes the controller to unlock and destroy the specific target resource.
 
 #### Time-Boxed Maintenance Windows
