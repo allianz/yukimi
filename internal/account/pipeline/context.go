@@ -42,7 +42,7 @@ var _ DBPool = (*pool.Pool)(nil)
 
 // ModuleContext is built once per reconcile and handed unchanged to every
 // module. Everything on it is either immutable for the run or, in the case of
-// the account locator, mutated by exactly one module (010).
+// the account locator, mutated by exactly one module (012).
 type ModuleContext struct {
 	cr              *v1alpha1.SnowflakeAccount
 	namespace       string
@@ -109,11 +109,11 @@ func (c *ModuleContext) Locator() string { return c.locator }
 
 // SetLocator records the locator immediately after CREATE ACCOUNT returns it,
 // for the one reconcile where the account did not exist before this call.
-// Only the account module (010) calls this.
+// Only the account module (012) calls this.
 func (c *ModuleContext) SetLocator(locator string) { c.locator = locator }
 
 // OrgAdminDB returns an org-admin-scoped connection. Only the account module
-// (010) needs this scope.
+// (012) needs this scope.
 func (c *ModuleContext) OrgAdminDB(ctx context.Context) (*sql.DB, error) {
 	return c.pool.OrgAdmin(ctx)
 }
@@ -124,7 +124,7 @@ func (c *ModuleContext) OrgAdminDB(ctx context.Context) (*sql.DB, error) {
 // Returns:
 //   - System error if Locator() is still empty — every module calling
 //     TenantDB needs a locator, and getting one is the whole point of
-//     running the account module (010) before any such module.
+//     running the account module (012) before any such module.
 func (c *ModuleContext) TenantDB(ctx context.Context) (*sql.DB, error) {
 	if c.tenantDB != nil {
 		return c.tenantDB, nil

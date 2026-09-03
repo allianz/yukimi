@@ -16,7 +16,7 @@ limitations under the License.
 
 // Package pipeline sequences the modules that provision a Snowflake account —
 // creation, parameters, network, auth, identity, quota — through two shared
-// entry points, Observe and Apply, so the SnowflakeAccount controller (018)
+// entry points, Observe and Apply, so the SnowflakeAccount controller (020)
 // stays a thin caller. See specs/009-account-pipeline.md.
 package pipeline
 
@@ -66,14 +66,14 @@ func Failed(err error) Outcome { return Outcome{State: StateFailed, Err: err} }
 
 // Aborting returns a copy of o with Abort set true; every other field is
 // unchanged. No module is privileged to call this — today the account
-// module (010) is the only one implemented that does, on any outcome that
+// module (012) is the only one implemented that does, on any outcome that
 // is not Done.
 func (o Outcome) Aborting() Outcome {
 	o.Abort = true
 	return o
 }
 
-// Module is implemented by each pipeline stage (010, 011, 012, 013, 015, 016, 017).
+// Module is implemented by each pipeline stage (010, 011, 012, 013, 014, 015, 017, 018).
 type Module interface {
 	Name() string
 
@@ -86,9 +86,9 @@ type Module interface {
 	Apply(ctx context.Context, mc *ModuleContext) Outcome
 }
 
-// AccountModuleName is the account module's (010) Name(). Pipeline.Observe
+// AccountModuleName is the account module's (012) Name(). Pipeline.Observe
 // uses it to find which registered module's Observe result is
 // Observation.Exists, regardless of that module's position in the
-// registered list — a module needing no Snowflake connection (quota-check,
-// 016) may be registered ahead of the account module.
+// registered list — a module needing no Snowflake connection (guardrail-check,
+// 010, or quota-check, 011) may be registered ahead of the account module.
 const AccountModuleName = "account"

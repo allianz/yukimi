@@ -18,7 +18,7 @@ limitations under the License.
 // platform service user (design.md 3.6). Every module that needs a live
 // Snowflake connection must be registered after it in the pipeline, but it
 // need not be registered first overall — see pipeline.AccountModuleName. See
-// specs/010-account-module.md.
+// specs/012-account-module.md.
 package account
 
 import (

@@ -36,7 +36,7 @@ type Backend interface {
 
 	// Create stores value at path. It fails if path is already occupied, and
 	// leaves the occupying value untouched when it does — this is the
-	// atomicity 010 depends on to never silently overwrite a live account's
+	// atomicity 012 depends on to never silently overwrite a live account's
 	// credential on a retried request.
 	Create(ctx context.Context, path Path, value string) error
 

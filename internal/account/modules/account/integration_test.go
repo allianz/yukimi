@@ -66,7 +66,7 @@ func forceDeleteForTest(ctx context.Context, t *testing.T, path secrets.Path) {
 // TestIntegration_Create only runs via `make test-integration` (skipped
 // whenever tests run with -short). It creates a brand-new Snowflake account
 // in the live organization .env describes — the one genuinely destructive
-// integration test in this codebase, since 010 is the first module that
+// integration test in this codebase, since 012 is the first module that
 // ever mutates organization-wide state — and confirms Apply captures a
 // locator (SC-018's create half).
 //
@@ -121,7 +121,7 @@ func TestIntegration_Create(t *testing.T) {
 		Spec: v1alpha1.SnowflakeAccountSpec{
 			Region:      os.Getenv("SAMPLE_CUSTOMER_ACCOUNT_REGION"),
 			Contacts:    []string{"yukimi-integration-test@example.com"},
-			Description: "yukimi 010 integration test — safe to drop",
+			Description: "yukimi 012 integration test — safe to drop",
 		},
 	}
 
@@ -172,7 +172,7 @@ func TestIntegration_Create(t *testing.T) {
 		t.Fatal("Apply succeeded but ModuleContext has no locator")
 	}
 
-	// A real 018 would persist status.accountLocator right after Apply
+	// A real 020 would persist status.accountLocator right after Apply
 	// returns; set it so the drop-account cleanup above can resolve the
 	// account it needs to remove.
 	cr.Status.AccountLocator = mc1.Locator()

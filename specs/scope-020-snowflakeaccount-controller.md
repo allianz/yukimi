@@ -1,10 +1,10 @@
 > **Scope context only — not a specification.** This file was split out of the temporary
 > `roadmap.md` planning document used to work out how `specs/design.md` should be decomposed
-> into numbered specs. It exists only to give a starting-point idea of spec `019`'s intended
-> *scope*, not its content. When writing `019-snowflakeaccount-controller.md`, the sole
+> into numbered specs. It exists only to give a starting-point idea of spec `020`'s intended
+> *scope*, not its content. When writing `020-snowflakeaccount-controller.md`, the sole
 > sources of truth are `specs/design.md` and the prompt given at spec-writing time — rework,
 > restructure, or discard anything below freely. Please keep this file up to date until
-> `019-snowflakeaccount-controller.md` has been written, then delete it.
+> `020-snowflakeaccount-controller.md` has been written, then delete it.
 
 ## Ordering rule (context for "Depends on" below)
 
@@ -18,27 +18,33 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
 ## Roadmap's original scope notes
 
 - Package: `internal/controller/snowflakeaccount/`. Covers design 3.2, the 3.3–3.4 enforcement
-  points, 6.3 Phases 2–3, and chapter 7. Depends on: 002, 005–018.
+  points, 6.3 Phases 2–3, and chapter 7. Depends on: 002, 005–019.
 - **Thin orchestration only** — no business logic of its own. Every Snowflake interaction lives in a
-  module (010–013, 015–017), and validation lives in 007 and 008.
+  module (012–015, 017–018), and validation lives in 007 (the region's `available` gate, checked here
+  directly) and 008 (guardrails, checked via the guardrail-check module inside the pipeline — not a
+  separate controller step; see below).
 - Scope:
   - **Module registration and ordering.** This is where the concrete modules are wired, which is what
     keeps `internal/account/pipeline` free of any import of `modules/`. The order is
-    `account.New(quotaCheckModule, accountModule, parameterModule, networkModule, authModule,
-    identityModule, quotaMonitorModule)` — i.e. quota-check (016) → account bootstrapping (010) →
-    parameters (011) → network (012) → auth (013) → identity (015) → quota-monitor (017). Quota-check
-    runs first because it needs no Snowflake connection and must abort before `CREATE ACCOUNT` when the
-    claimed `creditQuota` doesn't fit; quota-monitor stays last because it needs `TenantDB`, same as the
-    old single-module quota plan. Note that 3.2's diagram shows identity before network; identity
-    requests are emitted early and are non-blocking, so the import step's position is flexible while
-    request emission happens alongside bootstrapping per 4.3.
+    `account.New(guardrailCheckModule, quotaCheckModule, accountModule, parameterModule, networkModule,
+    authModule, identityModule, quotaMonitorModule)` — i.e. guardrail-check (010) → quota-check (011) →
+    account bootstrapping (012) → parameters (013) → network (014) → auth (015) → identity (017) →
+    quota-monitor (018). Guardrail-check runs first because it needs no Snowflake connection and should
+    reject structurally invalid input before anything else does any work; quota-check runs second, for
+    the same no-connection reason, aborting before `CREATE ACCOUNT` when the claimed `creditQuota`
+    doesn't fit; quota-monitor stays last because it needs `TenantDB`, same as the old single-module
+    quota plan. Note that 3.2's diagram shows identity before network; identity requests are emitted
+    early and are non-blocking, so the import step's position is flexible while request emission
+    happens alongside bootstrapping per 4.3.
   - Not here: the secret backend. It is constructed in `cmd/provider/main.go` from 002's
     `secretsBackend` before any controller is set up, and injected. This spec wires
     modules, not infrastructure.
-  - **The validation phase**, in order: guardrails (008) → approved exceptions on rejection (008) →
-    the region's `available` gate (007) → immutability, which is mostly enforced by CEL in 006. Quota
-    admission is **not** a validation-phase step anymore — it runs inside the pipeline as quota-check
-    (016)'s `Apply`, ahead of every other module.
+  - **The validation phase**, in order: the region's `available` gate (007) → immutability, which is
+    mostly enforced by CEL in 006. Neither guardrail admission nor quota admission is a validation-phase
+    step anymore — both run inside the pipeline, as guardrail-check (010)'s `Apply` and quota-check
+    (011)'s `Apply` respectively, ahead of every other module. Approved exceptions (008) are still
+    consulted on a guardrail rejection, but as part of guardrail-check's own evaluation call, not a
+    separate controller step.
   - Pipeline execution via 009, then reporting: the aggregated `Ready` and `Synced`, the custom
     `QuotaAvailable` and `IdentitySynced` conditions, `status.accountName` and `status.accountUrl`,
     and the warning events (`QuotaExhausted`, `SyncTimeout`, `DeletionBlocked`) via
@@ -60,7 +66,7 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
   sets `Ready` and `Synced` itself. Every custom condition (`QuotaAvailable` from 3.10, `IdentitySynced`
   from 4.3) and every custom event (`DeletionBlocked` from 6.3, `QuotaExhausted` from 3.10, `SyncTimeout`
   from 4.3) is SnowflakeAccount-specific. Aggregation rules live in spec 009; reporting lives here in
-  spec 019.
+  spec 020.
 
 ## References
 
@@ -72,22 +78,24 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
 ## Raised by the 009 clarification
 
 Recorded by `/yukimi.clarify 009`. `specs/009-account-pipeline.md` is now written and authoritative —
-its "Integration Points" section states 019's obligations directly, and its Appendix examples 1 and 2
-sketch the `Observe` and `Create`/`Update` bodies. 009 places more obligations on 019 than on any other
+its "Integration Points" section states 020's obligations directly, and its Appendix examples 1 and 2
+sketch the `Observe` and `Create`/`Update` bodies. 009 places more obligations on 020 than on any other
 spec.
 
 - **Two entry points, called from three methods.** `pipeline.Observe(ctx, mc)` from `Observe`;
   `pipeline.Apply(ctx, mc)` from **both** `Create` and `Update` — the two bodies are identical,
   because `Apply` is idempotent by construction. Nothing is threaded from an `Observe` call into the
   following `Apply`; `ModuleContext` is rebuilt per call and the two entry points share no state.
-- **019 builds one `*account.Context` per reconcile** and hands the same value to every module: the
+- **020 builds one `*account.Context` per reconcile** and hands the same value to every module: the
   CRD (spec **and** status), the resolved account name (006), the region's `*backplane.Region` entry
   already admitted against `Available` (007), the ops-set namespace labels (006), and a
   `*logger.Logger` with the operation already scoped. Resolve once, pass down — no module re-runs
-  the region lookup. Guardrails (008) run earlier, in the validation phase, strictly before pipeline
-  execution; the context carries nothing derived from them.
+  the region lookup. Guardrails (008) now run *inside* the pipeline, as guardrail-check (010)'s
+  `Apply`, not before it; the context still carries nothing guardrail-specific — that module reads the
+  CRD and namespace labels already on `ModuleContext` directly, plus the loaded 008 config/exceptions
+  instance injected into its own constructor.
 - **Seed the account locator from `status.accountLocator`** when it is set. The context late-binds it;
-  010 publishes it via `SetLocator` after `CREATE ACCOUNT`, so a fresh account is created and fully
+  012 publishes it via `SetLocator` after `CREATE ACCOUNT`, so a fresh account is created and fully
   configured inside one `Create`.
 - **`ResourceUpToDate` is generation-based**:
   `exists && cr.Status.ObservedGeneration == cr.Generation && allModulesInSync`. Advance the counter
@@ -95,50 +103,69 @@ spec.
   edit re-applies once, while an outstanding `Pending` or an uncorrected `Rejected` keeps re-applying
   and keeps reporting. Verified: `status.observedGeneration` already exists via `xpv1.ResourceStatus`'s
   embedded `ObservedStatus`, and the managed reconciler in `crossplane-runtime/v2@v2.0.0` never writes
-  it — so no CRD schema change is needed and the field is 019's to own. Known cost, accepted: one
+  it — so no CRD schema change is needed and the field is 020's to own. Known cost, accepted: one
   persistently rejected module re-runs every module every poll interval — a handful of idempotent
   statements plus one enumeration query per pruning module, so cheap-but-unbounded rather than solved.
-- **Registration order is 016 → 010 → 011 → 012 → 013 → 015 → 017**, with quota-check (016) first — not
-  the account module (010) — in `New`'s ordered module list: `account.New(quotaCheckModule,
-  accountModule, parameterModule, networkModule, authModule, identityModule, quotaMonitorModule)`.
+- **Registration order is 010 → 011 → 012 → 013 → 014 → 015 → 017 → 018**, with guardrail-check (010)
+  first and quota-check (011) second — neither is the account module (012) — in `New`'s ordered module
+  list: `account.New(guardrailCheckModule, quotaCheckModule, accountModule, parameterModule,
+  networkModule, authModule, identityModule, quotaMonitorModule)`.
   `internal/account/pipeline` no longer assumes the first-registered module is the account module; it
   identifies it by `Name() == pipeline.AccountModuleName` instead (see 009). Modules run sequentially in
   registration order; there is no parallelism and no per-module timeout.
-- **019 calls `logger.Handle` once per carried error** in the result — the pipeline classifies nothing
+- **020 calls `logger.Handle` once per carried error** in the result — the pipeline classifies nothing
   and handles nothing itself.
 - **Modules absent from `Result` must be left alone.** When a module's outcome sets `Abort` (in
-  practice, only 010's does) the run stops, and unrun modules are absent from `Result.Outcomes`
+  practice, only the admission modules — guardrail-check (010), quota-check (011) — and the account
+  module (012) do) the run stops, and unrun modules are absent from `Result.Outcomes`
   entirely — not recorded as skipped or unknown. Leave any condition such a module owns exactly as the
   previous reconcile left it: neither blanked nor set to `Unknown`. "We did not look" is not the same
   claim as "we looked and it is unknown".
 - **Do not blank an existing `status.accountUrl` (or `accountName`/`accountLocator`) on an aborted or
   partially-failed run** — same reasoning as above.
 - **Render conditions from the pipeline's aggregate.** 009 owns the `QuotaAvailable` /
-  `IdentitySynced` type constants and the static table saying which of them gates `Ready`; 019 renders
+  `IdentitySynced` type constants and the static table saying which of them gates `Ready`; 020 renders
   the aggregate onto the resource, plus messages and events.
-- **Open question 019 must settle**, left unresolved by the 009 clarification: the managed reconciler
+- **Open question 020 must settle**, left unresolved by the 009 clarification: the managed reconciler
   marks `xpv1.Creating()`
   and `ReconcileSuccess()` and requeues *after* `Create` returns, so whatever 009 aggregated during
-  that call is overwritten until the next `Observe`. Harmless if 019 re-aggregates on every `Observe`,
+  that call is overwritten until the next `Observe`. Harmless if 020 re-aggregates on every `Observe`,
   but the spec must state it deliberately rather than leave it to be discovered. Related verified
   behaviour: on the up-to-date path the reconciler sets `ReconcileSuccess()` *after* `Observe` returns
   (`pkg/reconciler/managed/reconciler.go:1428`), which is why `Synced` cannot be used to carry a
   drift or status message from `Observe`.
 - **Drift is not detected or repaired** anywhere in this pipeline until Snowflake ships Organization
-  Policies (design.md Appendix B). 019 should not add a repair path of its own.
+  Policies (design.md Appendix B). 020 should not add a repair path of its own.
 
-## Raised by the 010 clarification
+## Raised by the 012 clarification
 
-Recorded by `/yukimi.clarify 010`. `specs/010-account-module.md` is now written and authoritative for
-what the module does and does not carry.
+Recorded by `/yukimi.clarify 010` (spec later renumbered to 012). `specs/012-account-module.md` is now
+written and authoritative for what the module does and does not carry.
 
-- **019 computes `status.accountName`/`accountUrl`/`accountLocator` itself, directly from the
+- **020 computes `status.accountName`/`accountUrl`/`accountLocator` itself, directly from the
   `ModuleContext` it already built and holds** — `mc.ResolvedAccountName()`, `mc.Locator()` (readable
   after `Apply` returns), and `tenant.AccountURL(locator, region, usePrivateLink)` with `usePrivateLink`
   from `Config.Snowflake.UsePrivateLink` (002) — never from a payload on any module's `Outcome`.
-  010's `Outcome` carries no string result; there is nothing to read off it for this purpose.
+  012's `Outcome` carries no string result; there is nothing to read off it for this purpose.
 - **Persist `status.accountLocator` as promptly as possible after `Apply` returns.** Every reconcile
-  between a successful `CREATE ACCOUNT` and that persist is a crash window, and 010 has no way to
+  between a successful `CREATE ACCOUNT` and that persist is a crash window, and 012 has no way to
   recover from it automatically: a crash there permanently strands the resource in `Failed(systemErr)`
   until an operator manually reconciles `status.accountLocator` or the underlying Snowflake account.
-  Minimizing how long that window stays open is 019's responsibility, not 010's.
+  Minimizing how long that window stays open is 020's responsibility, not 012's.
+
+## Raised by the guardrail-check design conversation
+
+Recorded from a direct conversation (no `/yukimi.clarify` run) that gave guardrail admission the same
+pipeline-module treatment quota admission already has — see `specs/scope-010-guardrail-check.md` for
+the module's own scope, and `specs/scope-008-guardrails.md`'s "Relationship to the account pipeline"
+section for why 008 itself is unaffected.
+
+- **This controller no longer runs a separate guardrail gate before the pipeline.** Every earlier
+  version of this file (and of `specs/009-account-pipeline.md`) described guardrails as running "in
+  full, once, inside 020's validation phase, strictly before the account pipeline is ever invoked."
+  That framing is gone: 020 now calls `Pipeline.Observe`/`Apply` uniformly, and guardrail rejection
+  surfaces exactly like a quota-check rejection already does — as an aborted, `Rejected` pipeline run.
+- **What's left of "the validation phase"** is narrower than it used to be: only the backplane
+  region's `available` gate (007) and the CEL-enforced immutability checks (006) — both structural,
+  both cheap, both still meaningfully separate from anything a pipeline module could do, since neither
+  needs the CRD to already be guardrail-clean.

@@ -52,17 +52,18 @@ The two transient documents are deleted at different points:
 | `007-backplane-config.md` | `internal/config/backplane/` | Per-region backplane inventory, parameters, allowlist |
 | `008-guardrails.md` | `internal/config/guardrails/` | Tenant input constraints, approved exceptions |
 | `009-account-pipeline.md` | `internal/account/pipeline/` | Module interface, outcomes, condition aggregation |
-| `010-account-module.md` | `internal/account/modules/account/` | `CREATE ACCOUNT` and platform user bootstrapping |
-| `011-parameter-module.md` | `internal/account/modules/parameter/` | Global and regional account parameter enforcement |
-| `012-network-module.md` | `internal/account/modules/network/` | Network rules and policies, baseline plus custom |
-| `013-auth-module.md` | `internal/account/modules/auth/` | SSO-only baseline and per-user auth exceptions |
-| `014-identity-sync-request.md` | `apis/identity/v1alpha1/` + `internal/identitysync/` | IdentitySyncRequest contract and emitter |
-| `015-identity-module.md` | `internal/account/modules/identity/` | Group import and system role bindings |
-| `016-quota-check.md` | `internal/account/modules/quotacheck/` | Admission check: claimed vs. namespace credit-quota allowance, aborts before account creation |
-| `017-quota-monitor.md` | `internal/account/modules/quotamonitor/` | Resource monitor/budget enforcement, credit-exhaustion condition |
-| `018-deletion-request.md` | `apis/base/v1alpha1/` + `internal/deletion/` | Deletion warrants (positive control) |
-| `019-snowflakeaccount-controller.md` | `internal/controller/snowflakeaccount/` | Module wiring, validation phase, deletion gate, reporting |
-| `020-replication.md` | `apis/base/v1alpha1/` + `internal/replication/` | SnowflakeReplication setup, auto-repair, manual failover |
+| `010-guardrail-check.md` | `internal/account/modules/guardrailcheck/` | Admission check: guardrails (008) evaluation as a pipeline module, aborts before account creation |
+| `011-quota-check.md` | `internal/account/modules/quotacheck/` | Admission check: claimed vs. namespace credit-quota allowance, aborts before account creation |
+| `012-account-module.md` | `internal/account/modules/account/` | `CREATE ACCOUNT` and platform user bootstrapping |
+| `013-parameter-module.md` | `internal/account/modules/parameter/` | Global and regional account parameter enforcement |
+| `014-network-module.md` | `internal/account/modules/network/` | Network rules and policies, baseline plus custom |
+| `015-auth-module.md` | `internal/account/modules/auth/` | SSO-only baseline and per-user auth exceptions |
+| `016-identity-sync-request.md` | `apis/identity/v1alpha1/` + `internal/identitysync/` | IdentitySyncRequest contract and emitter |
+| `017-identity-module.md` | `internal/account/modules/identity/` | Group import and system role bindings |
+| `018-quota-monitor.md` | `internal/account/modules/quotamonitor/` | Resource monitor/budget enforcement, credit-exhaustion condition |
+| `019-deletion-request.md` | `apis/base/v1alpha1/` + `internal/deletion/` | Deletion warrants (positive control) |
+| `020-snowflakeaccount-controller.md` | `internal/controller/snowflakeaccount/` | Module wiring, validation phase, deletion gate, reporting |
+| `021-replication.md` | `apis/base/v1alpha1/` + `internal/replication/` | SnowflakeReplication setup, auto-repair, manual failover |
 
 
 ## Crossplane Controller Types

@@ -31,16 +31,16 @@ Snowflake at all — later specs read these fixed shapes, they don't extend them
 - Guardrails constraint/preset enforcement (naming patterns, credit ceilings, network CIDR
   limits, allowed regions) — spec 008.
 - Backplane Config lookups and any bootstrapping, network, or auth SQL (§3.6, §3.8, §3.9) — specs
-  007, 010, 012, 013.
+  007, 012, 014, 015.
 - Controller reconciliation: `Observe`/`Create`/`Update`/`Delete`, condition-setting, finalizers —
-  spec 019.
-- Quota admission math (016), quota enforcement (017), identity sync (014/015), deletion warrants
-  (018), replication (020).
+  spec 020.
+- Quota admission math (011), quota enforcement (018), identity sync (016/017), deletion warrants
+  (019), replication (021).
 - Duplicate-connection detection within `customNetworkRules` (§3.8). Expressing "no repeated
   connection name in this list" in CEL is disproportionately complex for a check that's simple to
-  make once a Go module exists to call it; deferred to the network module (012).
+  make once a Go module exists to call it; deferred to the network module (014).
 - Cross-referencing `identityIntegration.roleBindings` values against `identityIntegration.groups`
-  entries — deferred to the identity module (015), which is the first module that actually needs
+  entries — deferred to the identity module (017), which is the first module that actually needs
   both sides of that mapping to be true.
 
 ## Key Concept: Immutable Identity
@@ -68,7 +68,7 @@ committing a YAML change, which defeats the point of having ops set them out-of-
 tenant/labels.go` is the one place that reads them back out, as plain `map[string]string` label
 data rather than a Kubernetes API type — this is why `internal/account/tenant` needs no Kubernetes client
 dependency at all. `Department` is read by Guardrails (008) for target matching; `CreditQuota` is
-read by quota-check (016) for admission and quota-monitor (017) for enforcement; `CostCenter` has
+read by quota-check (011) for admission and quota-monitor (018) for enforcement; `CostCenter` has
 no consumer named anywhere in design.md yet, but
 the label exists and gets set on every namespace regardless, so its reader is added alongside the
 other two now rather than being bolted onto whichever spec first needs it.
@@ -94,7 +94,7 @@ interface — a Kubernetes object that can report `ManagementPolicies` and `Cond
 provider-config reference. So `SnowflakeAccountSpec` carries exactly one field sourced from
 crossplane-runtime — `managementPolicies` — and nothing else; `SnowflakeAccountStatus` embeds
 `xpv1.ResourceStatus` for conditions, which likewise carries no provider-config field. This is the
-minimum needed for the type to compile against `resource.Managed` when spec 019 wires up the
+minimum needed for the type to compile against `resource.Managed` when spec 020 wires up the
 controller, with zero provider-config surface for a tenant to ever set.
 
 ## Public API
@@ -125,7 +125,7 @@ type SnowflakeAccountSpec struct {
 	Environment string `json:"environment"`
 
 	// This account's share of the namespace's monthly credit allowance
-	// (design.md 3.10). Ceiling enforcement is Guardrails'/Quota's job (008/016).
+	// (design.md 3.10). Ceiling enforcement is Guardrails'/Quota's job (008/011).
 	// +optional
 	CreditQuota int32 `json:"creditQuota,omitempty"`
 
@@ -204,7 +204,7 @@ type SnowflakeAccountStatus struct {
 	// +optional
 	AccountName string `json:"accountName,omitempty"`
 
-	// Captured from CREATE ACCOUNT's result (010).
+	// Captured from CREATE ACCOUNT's result (012).
 	// +optional
 	AccountLocator string `json:"accountLocator,omitempty"`
 
@@ -262,7 +262,7 @@ func CreditQuota(labels map[string]string) (int, error)
 // AccountURL returns the SnowflakeAccount's status.accountUrl (design.md
 // 7.2): the account's login URL — host.URL's bare host plus
 // "/console/login" — built from the locator Snowflake assigned at CREATE
-// ACCOUNT (010) and the CRD's region. It never derives from the resolved
+// ACCOUNT (012) and the CRD's region. It never derives from the resolved
 // account name, which has no relationship to the locator. Wraps
 // internal/snowflake/host.URL (004); adds no validation beyond that call.
 //
@@ -270,7 +270,7 @@ func CreditQuota(labels map[string]string) (int, error)
 //   - locator: the account locator returned by CREATE ACCOUNT (e.g. "xc19114").
 //   - region: the CRD's spec.region (e.g. "aws-eu-central-1").
 //   - usePrivateLink: from the controller's base config (002), supplied by
-//     the caller (019) — not read from the Backplane Config, which carries
+//     the caller (020) — not read from the Backplane Config, which carries
 //     no such field.
 //
 // Returns: User error if region does not match the expected
@@ -288,13 +288,13 @@ func AccountURL(locator, region string, usePrivateLink bool) (string, error)
 | `contacts[]` | string | No | Mutable | — |
 | `region` | string | Yes | Immutable | Format/allowlist enforced by Guardrails (008), not here |
 | `environment` | string | Yes | Immutable | Enum: `dev`, `prod` |
-| `creditQuota` | int32 | No | Mutable | Ceiling enforced by Guardrails/Quota (008/016), not here |
+| `creditQuota` | int32 | No | Mutable | Ceiling enforced by Guardrails/Quota (008/011), not here |
 | `identityIntegration` | object | Yes | Mutable | — |
 | `identityIntegration.groups` | map[string][]string | No | Mutable | Key is free-form (not schema); `giam` is the only integration configured today |
 | `identityIntegration.roleBindings` | map[string]string | Yes | Mutable | Must contain an `ACCOUNTADMIN` key (CEL) |
 | `customNetworkRules` | object | No | Mutable | — |
-| `customNetworkRules.serviceUsers` | map[string][]NetworkRule | No | Mutable | Duplicate connections within a user's list: out of scope, see 012 |
-| `customNetworkRules.accountWide[]` | NetworkRule | No | Mutable | Duplicate connections: out of scope, see 012 |
+| `customNetworkRules.serviceUsers` | map[string][]NetworkRule | No | Mutable | Duplicate connections within a user's list: out of scope, see 014 |
+| `customNetworkRules.accountWide[]` | NetworkRule | No | Mutable | Duplicate connections: out of scope, see 014 |
 | `customNetworkRules.*.connection` | string | Yes | Mutable | Resolved against Backplane Config inventory (007), not validated here |
 | `customNetworkRules.*.allowedIPs[]` | string | No | Mutable | CIDR containment enforced by Guardrails (008), not here |
 | `customAuthRules` | object | No | Mutable | — |
@@ -310,7 +310,7 @@ func AccountURL(locator, region string, usePrivateLink bool) (string, error)
 | Field Path | Type | Required | Mutability | Validation/Constraints |
 |---|---|---|---|---|
 | `accountName` | string | No | Controller-set | The resolved name (§3.12), not `metadata.name` |
-| `accountLocator` | string | No | Controller-set | Captured from `CREATE ACCOUNT` (010) |
+| `accountLocator` | string | No | Controller-set | Captured from `CREATE ACCOUNT` (012) |
 | `accountUrl` | string | No | Controller-set | Built via `internal/account/tenant.AccountURL` (§7.2) |
 | `conditions[]` | Condition | No | Controller-set | Standard `Ready`/`Synced` per design.md §7.1 |
 
@@ -338,7 +338,7 @@ internal/account/tenant/
 `internal/account/tenant` imports nothing beyond the Go standard library, `internal/errors`, and
 `internal/snowflake/host` — no Kubernetes client, no Snowflake driver. The label readers take
 `map[string]string`, never a `corev1.Namespace`, specifically to keep that boundary intact; the
-caller (019) already has the namespace object from its own reconcile and passes its labels in.
+caller (020) already has the namespace object from its own reconcile and passes its labels in.
 
 ## Error Classification
 
@@ -363,8 +363,8 @@ caller (019) already has the namespace object from its own reconcile and passes 
   `dev` in `finance` and `dev` in `analytics` resolve to different Snowflake names.
 - **A namespace is missing `department`/`cost-center`/`credit-quota` entirely — does the CRD fail
   validation?** No — these are namespace labels, not CRD fields, so nothing about the
-  `SnowflakeAccount` resource itself is invalid. The failure surfaces only when a caller (008, 016,
-  017) invokes the corresponding `internal/account/tenant` reader and gets a user error back (see Error
+  `SnowflakeAccount` resource itself is invalid. The failure surfaces only when a caller (008, 011,
+  018) invokes the corresponding `internal/account/tenant` reader and gets a user error back (see Error
   Classification for why this is a user error despite being ops-caused).
 - **Do the `region`/`environment` CEL rules block the first `CREATE`?** No — `oldSelf` doesn't
   exist yet on create, so both rules only evaluate (and can only fail) on `UPDATE`.
@@ -389,20 +389,20 @@ caller (019) already has the namespace object from its own reconcile and passes 
   `tenant.Department` to select which guardrail rules target an account (design.md §3.3) - Key
   functions: `tenant.Department` - Notes: depends on 006 for both the CRD fields and the label
   reader.
-- **Account & Identity modules (009/010/015)** - call `tenant.ResolveName` to build the
+- **Account & Identity modules (009/012/017)** - call `tenant.ResolveName` to build the
   `CREATE ACCOUNT` statement's account name and to import/bind groups - Key functions:
   `tenant.ResolveName` - Notes: called fresh on every reconcile; it's pure and cheap, so nothing
   caches it.
-- **Quota-check (016)** - reads `spec.creditQuota` across every `SnowflakeAccount` in a namespace
+- **Quota-check (011)** - reads `spec.creditQuota` across every `SnowflakeAccount` in a namespace
   and `tenant.CreditQuota` for the namespace ceiling - Key functions: `tenant.CreditQuota` - Notes:
-  the admission math itself belongs to 016, not to this spec.
-- **Quota-monitor (017)** - reads `spec.creditQuota` and `tenant.CreditQuota` to size the Snowflake
+  the admission math itself belongs to 011, not to this spec.
+- **Quota-monitor (018)** - reads `spec.creditQuota` and `tenant.CreditQuota` to size the Snowflake
   resource monitor for this account - Key functions: `tenant.CreditQuota` - Notes: the resource-monitor
-  arithmetic itself belongs to 017, not to this spec.
-- **SnowflakeAccount controller (019)** - wires the CRD into `managed.NewReconciler`, calls every
+  arithmetic itself belongs to 018, not to this spec.
+- **SnowflakeAccount controller (020)** - wires the CRD into `managed.NewReconciler`, calls every
   `internal/account/tenant` function, and sets `status.accountName`/`accountLocator`/`accountUrl` - Key
   functions: all of `internal/account/tenant`'s public API - Notes: this spec defines the type and helpers
-  only; 019 owns `Observe`/`Create`/`Update`/`Delete`.
+  only; 020 owns `Observe`/`Create`/`Update`/`Delete`.
 
 ## Success Criteria
 

@@ -1,10 +1,10 @@
 > **Scope context only — not a specification.** This file was split out of the temporary
 > `roadmap.md` planning document used to work out how `specs/design.md` should be decomposed
-> into numbered specs. It exists only to give a starting-point idea of spec `014`'s intended
-> *scope*, not its content. When writing `014-identity-sync-request.md`, the sole sources of
+> into numbered specs. It exists only to give a starting-point idea of spec `016`'s intended
+> *scope*, not its content. When writing `016-identity-sync-request.md`, the sole sources of
 > truth are `specs/design.md` and the prompt given at spec-writing time — rework, restructure,
 > or discard anything below freely. Please keep this file up to date until
-> `014-identity-sync-request.md` has been written, then delete it.
+> `016-identity-sync-request.md` has been written, then delete it.
 
 ## Ordering rule (context for "Depends on" below)
 
@@ -55,7 +55,7 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
 
 ## Cross-cutting context from the roadmap
 
-- **Why 014 sits directly below 015, its only consumer.** Nothing in specs 009–013 touches it, so
+- **Why 016 sits directly below 017, its only consumer.** Nothing in specs 009–015 touches it, so
   deferring it keeps the identity concern contiguous (emit → wait on `Ready` → import) and avoids
   building an emitter before its consumer exists.
 
@@ -71,17 +71,17 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
 Recorded by `/yukimi.clarify 009`. `specs/009-account-pipeline.md` now carries the pipeline-wide rules
 these points rest on.
 
-- **`Config` has no `identitySync` section yet, and 014 must add it.** Design 4.3 places
+- **`Config` has no `identitySync` section yet, and 016 must add it.** Design 4.3 places
   `identitySync.enabled` and `identitySync.timeout` in `base.yaml`, but 002 was written without
   them — `internal/config/base/base.go`'s `Config` carries only `Snowflake`, `AWS` and `Secrets`
-  (verified against the code). 014 therefore extends `internal/config/base`, which no earlier spec does.
+  (verified against the code). 016 therefore extends `internal/config/base`, which no earlier spec does.
   Left open by the 009 clarification: decide and state what an absent or disabled `identitySync` means
   for the `IdentitySynced` condition.
-- **015 calls the emitter, not 019.** Emission of `IdentitySyncRequest` is owned by the identity
+- **017 calls the emitter, not 020.** Emission of `IdentitySyncRequest` is owned by the identity
   module, because emission and import are two halves of one concern and share the same
-  `Pending`/timeout accounting. 014 owns the CRD contract and the emitter API; it must be callable from
+  `Pending`/timeout accounting. 016 owns the CRD contract and the emitter API; it must be callable from
   inside a pipeline module, i.e. from a module `Apply` holding only the shared context.
-- **Worth confirming with whoever fulfils the request**: because 015 runs after 010 and 010 aborts the
+- **Worth confirming with whoever fulfils the request**: because 017 runs after 012 and 012 aborts the
   run on any non-`Done` outcome, nothing is emitted while `CREATE ACCOUNT` keeps failing. If a request
   naming a not-yet-existing account is harmless to the fulfilling controller, emission could move
   earlier cheaply; if it is not, the current ordering is required rather than merely accepted.

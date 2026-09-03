@@ -19,16 +19,16 @@ This specification defines the `internal/config/backplane/` package that:
   `002` reads `base.yaml` from.
 - Exposes the parsed, validated result as an immutable `Config` struct.
 - Looks up a region by name, and a connection by name within a region's inventory.
-- Provides a CIDR-containment helper reused by the network module (012).
+- Provides a CIDR-containment helper reused by the network module (014).
 - Validates the file's internal consistency at load time: allowlist entries reference real
   connections, and every CIDR is well-formed and falls within its declared ceiling.
 
 **Out of Scope**:
 - Applying any of this configuration to Snowflake — pushing `globalParameters` /
-  `regionalParameters` is 011's job, and turning `inventory` / `regionalAllowlist` into network
-  rules and policies is 012's.
+  `regionalParameters` is 013's job, and turning `inventory` / `regionalAllowlist` into network
+  rules and policies is 014's.
 - Deciding what an unavailable or unknown region means for a given `SnowflakeAccount` request —
-  this package only reports what the file says; 009/019 own that admission decision.
+  this package only reports what the file says; 009/020 own that admission decision.
 - No CRD, no controller, no Kubernetes watch — this is a plain file loader, exactly like `002`.
 
 ## Key Concept: The Availability Gate
@@ -43,13 +43,13 @@ region ahead of time and keep it unofferable until it's ready. Defaults to `fals
 
 Every ingress path (`connection`) in a region's `inventory` carries `maxCidrs`: the widest IP
 range that connection may ever be opened to. `regionalAllowlist` entries — and, later, a tenant's
-own `customNetworkRules` (012) — narrow that range with their own `allowedIPs`, but can never
+own `customNetworkRules` (014) — narrow that range with their own `allowedIPs`, but can never
 exceed it.
 
 "Contained" means every address a narrower CIDR covers also falls inside at least one of the
 wider ranges — equivalently, the narrower CIDR's prefix is at least as long and its network
 address sits inside one of the wider blocks. `Load` applies this rule itself when validating
-`regionalAllowlist`, using the exact same `ContainsCIDR` helper that 012 will call later for
+`regionalAllowlist`, using the exact same `ContainsCIDR` helper that 014 will call later for
 `customNetworkRules`, so both places agree on what "fits inside the ceiling" means without
 duplicating the comparison logic.
 
@@ -58,7 +58,7 @@ duplicating the comparison logic.
 ```go
 // Config is the immutable, validated Backplane Config loaded at startup.
 type Config struct {
-    GlobalParameters map[string]string // org-wide Snowflake account parameters applied to every account (011)
+    GlobalParameters map[string]string // org-wide Snowflake account parameters applied to every account (013)
     Regions          map[string]Region // keyed by region name, e.g. "aws-eu-central-1"
 }
 
@@ -66,7 +66,7 @@ type Config struct {
 type Region struct {
     Available          bool              // controller-side gate, no Snowflake counterpart; false when omitted
     Inventory          []Connection      // catalog of physical ingress paths for this region
-    RegionalParameters map[string]string // region-specific Snowflake account parameters (011)
+    RegionalParameters map[string]string // region-specific Snowflake account parameters (013)
     RegionalAllowlist  []AllowlistEntry  // baseline network access applied to every account in this region
 }
 
@@ -100,7 +100,7 @@ func Load(configDir string) (*Config, error)
 
 // Region looks up a region by name — typically a SnowflakeAccount's spec.region (design.md 3.1).
 // It reports only what the file says; it does not consult Available, leaving what an unavailable
-// or unknown region means for the caller's request to the caller (009, 019).
+// or unknown region means for the caller's request to the caller (009, 020).
 //
 // Returns:
 //   - User error if no region with this name exists in the loaded config
@@ -113,7 +113,7 @@ func (c *Config) Region(name string) (*Region, error)
 func (r *Region) Connection(name string) (*Connection, bool)
 
 // ContainsCIDR reports whether candidate is fully contained within at least one entry of ranges.
-// Pure comparison, no I/O; reused by 012 to validate customNetworkRules allowedIPs entries
+// Pure comparison, no I/O; reused by 014 to validate customNetworkRules allowedIPs entries
 // against a connection's MaxCidrs, applying the identical containment rule Load itself uses for
 // regionalAllowlist.
 //
@@ -131,7 +131,7 @@ next pod restart, exactly like `base.yaml` (002) — no Mutability column.
 
 | Field Path | Type | Required | Validation / Constraints |
 | ---------- | ---- | -------- | ------------------------ |
-| `globalParameters` | map[string]string | No | Free-form Snowflake account parameters applied to every account (011). Default: empty map. |
+| `globalParameters` | map[string]string | No | Free-form Snowflake account parameters applied to every account (013). Default: empty map. |
 | `regions` | map[string]object | No | Keyed by region name (e.g. `aws-eu-central-1`); the key is a free-form string, not checked against any fixed list. Default: empty map. |
 | `regions.<region>.available` | bool | No | Controller-side gate with no Snowflake counterpart (design.md 3.5). Default: `false` when omitted. |
 | `regions.<region>.inventory` | []object | No | Catalog of physical ingress paths for this region. Default: empty list. |
@@ -139,7 +139,7 @@ next pod restart, exactly like `base.yaml` (002) — no Mutability column.
 | `regions.<region>.inventory[].type` | string | **Yes** | Non-empty; free-form (e.g. `AWSVPCEID`, `IPV4`) — meaning is not interpreted by this package. |
 | `regions.<region>.inventory[].vpceId` | string | No | Set for VPCE-typed connections; not cross-checked against `type`. |
 | `regions.<region>.inventory[].maxCidrs` | []string | No | Widest range(s) this connection may ever carry. Each entry must be a valid CIDR. Empty for VPCE-only connections with nothing to narrow. |
-| `regions.<region>.regionalParameters` | map[string]string | No | Region-specific Snowflake account parameters (011). Default: empty map. |
+| `regions.<region>.regionalParameters` | map[string]string | No | Region-specific Snowflake account parameters (013). Default: empty map. |
 | `regions.<region>.regionalAllowlist` | []object | No | Baseline network access applied to every account in the region. Default: empty list. |
 | `regions.<region>.regionalAllowlist[].connection` | string | **Yes** | Must name a connection present in this region's `inventory`. |
 | `regions.<region>.regionalAllowlist[].allowedIPs` | []string | No\* | Each entry must be a valid CIDR fully contained within the named connection's `maxCidrs`. Omitted or empty inherits the connection's full `maxCidrs`. <br>*Must be empty if the connection has no `maxCidrs`.* |
@@ -176,14 +176,14 @@ a system error by default, since `Load` never wraps it in `errors.NewUserError`.
 - **What happens if `globalParameters` is omitted?** - Defaults to an empty map; no accounts get
   any org-wide parameter from this source until Ops adds entries.
 - **What happens if a region's `inventory` is empty?** - Accepted. That region simply has no
-  connection any `regionalAllowlist` entry or, later, `customNetworkRules` entry (012) can
+  connection any `regionalAllowlist` entry or, later, `customNetworkRules` entry (014) can
   reference — any attempt to do so fails as "unknown connection".
 - **What happens if a region's `regionalAllowlist` is empty or omitted?** - Accepted; this package
   does not require an available region to grant any baseline access. Whether that is operationally
   sound (e.g. nobody could log in) is an Ops discipline concern, not something `Load` enforces.
 - **What happens when a region is marked `available: false`?** - `Load` validates it exactly as
   strictly as an available one; nothing about validation depends on the flag. Only the caller
-  (009/019) decides whether to admit a `SnowflakeAccount` naming this region.
+  (009/020) decides whether to admit a `SnowflakeAccount` naming this region.
 - **What if a connection carries both a `vpceId` and `maxCidrs` (e.g. `agn`)?** - Accepted; the two
   are independent optional fields, never treated as mutually exclusive.
 - **What if the same connection name appears in two different regions?** - Accepted; connection
@@ -202,13 +202,13 @@ a system error by default, since `Load` never wraps it in `errors.NewUserError`.
 
 - **`cmd/provider/main.go`** - Calls `backplane.Load(configDir)` once at startup, alongside (and
   independently of) `config.Load(configDir)` - Key functions: `backplane.Load()`.
-- **`internal/account/modules/account` (010)** - Consumes a region's `Inventory` and
+- **`internal/account/modules/account` (012)** - Consumes a region's `Inventory` and
   `RegionalAllowlist` during account bootstrapping (design.md 3.6).
-- **`internal/account/modules/parameter` (011)** - Consumes `Config.GlobalParameters` and a
+- **`internal/account/modules/parameter` (013)** - Consumes `Config.GlobalParameters` and a
   region's `RegionalParameters`.
-- **`internal/account/modules/network` (012)** - Consumes a region's `Inventory`, `Connection()`,
+- **`internal/account/modules/network` (014)** - Consumes a region's `Inventory`, `Connection()`,
   and `ContainsCIDR()` to validate and apply `customNetworkRules` (design.md 3.8).
-- **`internal/account` (009) / `internal/controller/snowflakeaccount` (019)** - Calls
+- **`internal/account` (009) / `internal/controller/snowflakeaccount` (020)** - Calls
   `Config.Region()` and inspects `Region.Available` as part of admitting or rejecting a
   `SnowflakeAccount` naming that region.
 
@@ -251,7 +251,7 @@ a system error by default, since `Load` never wraps it in `errors.NewUserError`.
 - `maxCidrs` is an absolute ceiling enforced structurally: `Load` rejects any `allowedIPs` entry
   that is not fully contained within it, so a malformed `backplane.yaml` can never itself grant
   wider network access than the ceiling Ops recorded.
-- `ContainsCIDR` is a pure, I/O-free comparison with no side effects — reusing it from 012
+- `ContainsCIDR` is a pure, I/O-free comparison with no side effects — reusing it from 014
   guarantees the containment rule applied to `customNetworkRules.*.allowedIPs` is bit-for-bit the
   same rule `Load` already applies to `regionalAllowlist`, rather than a second implementation that
   could silently drift apart.
@@ -286,7 +286,7 @@ if err != nil {
 }
 ```
 
-### Example 2: Region and Connection Lookup (010, 011, 012)
+### Example 2: Region and Connection Lookup (012, 013, 014)
 
 ```go
 region, err := bp.Region(cr.Spec.Region)
@@ -306,7 +306,7 @@ for _, entry := range region.RegionalAllowlist {
 }
 ```
 
-### Example 3: CIDR Containment Reused by 012
+### Example 3: CIDR Containment Reused by 014
 
 ```go
 ok, err := backplane.ContainsCIDR(conn.MaxCidrs, requestedCIDR)

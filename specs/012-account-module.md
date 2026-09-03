@@ -1,11 +1,11 @@
-# Specification: Account Module (010)
+# Specification: Account Module (012)
 
 ## Overview
 
 This module creates a brand-new Snowflake account for a tenant and sets up the one service user the
 platform uses to manage it afterward. Nothing else in the pipeline that needs a live Snowflake
 connection can run until an account actually exists and the platform can log into it — a module needing
-no such connection (the quota-check admission gate, 016) may still run earlier. It is needed because
+no such connection (the quota-check admission gate, 011) may still run earlier. It is needed because
 creating an account requires organization-wide privileges that no other part of the system should hold.
 The approach is simple: generate a fresh login key, save it safely first, ask Snowflake to create the
 account with that key, and then remember the account's unique ID so every later step can find it again.
@@ -19,11 +19,11 @@ This specification defines the account module that:
 - Publishes the resolved account name and locator onto the shared `ModuleContext` for every later module.
 
 **Out of Scope**:
-- `DROP ACCOUNT` and credential disposal (018/019).
-- `IdentitySyncRequest` emission (015).
+- `DROP ACCOUNT` and credential disposal (019/020).
+- `IdentitySyncRequest` emission (017).
 - Drift detection or repair of the account's own parameters or the `platform` key — not until Snowflake
   ships Organization Policies (design.md Appendix B).
-- Validating the region's `available` gate (019's validation phase).
+- Validating the region's `available` gate (020's validation phase).
 
 ## Key Concept: Create-Then-Verify Lifecycle
 
@@ -135,7 +135,7 @@ internal/account/modules/account/
   path to check existence rather than opening a more privileged one just to look.
 - **Does this module need anything from the Backplane Config (007)?** No. The region literal comes
   entirely from the CRD plus a fixed transform, and whether a region is open for new accounts at all is
-  checked earlier, during 019's validation phase — not here.
+  checked earlier, during 020's validation phase — not here.
 
 ## Dependencies
 
@@ -160,8 +160,9 @@ internal/account/modules/account/
 
 ## Integration Points
 
-- **SnowflakeAccount Controller (019)** — Registers this module in the pipeline via
-  `account.New(...)`, after the quota-check module (016), alongside its `secrets.Backend` and `Config`.
+- **SnowflakeAccount Controller (020)** — Registers this module in the pipeline via
+  `account.New(...)`, after the guardrail-check (010) and quota-check (011) modules, alongside its
+  `secrets.Backend` and `Config`.
   Seeds each reconcile's
   `ModuleContext` from `status.accountLocator` when already set. After `Pipeline.Apply` returns, reads
   `ModuleContext.ResolvedAccountName()` and `.Locator()` directly — never from this module's `Outcome` —
@@ -248,7 +249,7 @@ internal/account/modules/account/
 
 ## Appendix: Usage Examples
 
-### Example 1: Wiring the module into the pipeline (019)
+### Example 1: Wiring the module into the pipeline (020)
 
 ```go
 import (
@@ -257,9 +258,10 @@ import (
 )
 
 pl := pipeline.New(
-    quotacheckmodule.New(...),                                   // 016, runs first, aborts before CREATE ACCOUNT
-    accountmodule.New(secretsBackend, baseConfig.Snowflake.Org), // 010
-    // ... modules 011-013, 015, 017, in order
+    guardrailcheckmodule.New(...),                                // 010, runs first, aborts before anything else
+    quotacheckmodule.New(...),                                    // 011, runs second, aborts before CREATE ACCOUNT
+    accountmodule.New(secretsBackend, baseConfig.Snowflake.Org),  // 012
+    // ... modules 013-015, 017, 018, in order
 )
 ```
 
@@ -274,7 +276,7 @@ outcome := module.Apply(ctx, mc)       // generates keypair, stores it, issues C
                                         // calls mc.SetLocator(...), returns Done()
 
 // A later reconcile against the same resource, with status.accountLocator now seeded into a
-// fresh ModuleContext by 019:
+// fresh ModuleContext by 020:
 mc2 := pipeline.NewModuleContext(cr, "finance", nil, nsLabels, log, pool) // mc2.Locator() != ""
 inSync2, _ := module.Observe(ctx, mc2) // reconnects as platform; inSync2 == true
 outcome2 := module.Apply(ctx, mc2)     // reconnects again, no SQL issued, returns Done()

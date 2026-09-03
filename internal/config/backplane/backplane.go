@@ -32,7 +32,7 @@ import (
 
 // Config is the immutable, validated Backplane Config loaded at startup.
 type Config struct {
-	GlobalParameters map[string]string // org-wide Snowflake account parameters applied to every account (011)
+	GlobalParameters map[string]string // org-wide Snowflake account parameters applied to every account (013)
 	Regions          map[string]Region // keyed by region name, e.g. "aws-eu-central-1"
 }
 
@@ -40,7 +40,7 @@ type Config struct {
 type Region struct {
 	Available          bool              // controller-side gate, no Snowflake counterpart; false when omitted
 	Inventory          []Connection      // catalog of physical ingress paths for this region
-	RegionalParameters map[string]string // region-specific Snowflake account parameters (011)
+	RegionalParameters map[string]string // region-specific Snowflake account parameters (013)
 	RegionalAllowlist  []AllowlistEntry  // baseline network access applied to every account in this region
 }
 
@@ -237,7 +237,7 @@ func loadRegion(regionName string, rr rawRegion) (*Region, error) {
 
 // Region looks up a region by name — typically a SnowflakeAccount's spec.region (design.md 3.1).
 // It reports only what the file says; it does not consult Available, leaving what an unavailable
-// or unknown region means for the caller's request to the caller (009, 018).
+// or unknown region means for the caller's request to the caller (009, 020).
 //
 // Returns:
 //   - User error if no region with this name exists in the loaded config
@@ -263,7 +263,7 @@ func (r *Region) Connection(name string) (*Connection, bool) {
 }
 
 // ContainsCIDR reports whether candidate is fully contained within at least one entry of ranges.
-// Pure comparison, no I/O; reused by 012 to validate customNetworkRules allowedIPs entries
+// Pure comparison, no I/O; reused by 014 to validate customNetworkRules allowedIPs entries
 // against a connection's MaxCidrs, applying the identical containment rule Load itself uses for
 // regionalAllowlist.
 //
