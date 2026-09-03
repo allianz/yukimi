@@ -45,27 +45,22 @@ happened into Kubernetes conditions without understanding what any individual mo
 
 ## Key Concept: Sequential Modules, One Abort Signal
 
-Modules run one after another, strictly in the order they were registered, never in parallel and
-never calling one another. The account module (010) is identified by name — `Name() ==
-AccountModuleName` — not by registration position: its `Observe` result is the only source of
-whether the account exists at all. Every module that calls `ModuleContext.TenantDB` needs the live
-connection only the account module's `Apply` establishes, so it must be registered after it — but the
-account module itself need not be registered first overall. A module that needs no Snowflake
-connection may run earlier and abort the pipeline before the account is ever created; the quota-check
-module (016) is the concrete case, registered ahead of the account module so it can block
-`CREATE ACCOUNT` outright when the tenant's claimed quota doesn't fit.
+Modules run strictly one at a time, in registration order — never in parallel, never calling one
+another. One module plays a distinguished role: the account module (010). It alone determines whether
+the account exists at all, and every module that needs a live connection to it can only run once the
+account module has succeeded. That dependency is about *capability*, not *position* — a module needing
+no Snowflake connection of its own can still be registered ahead of the account module. Quota-check
+(016) is the concrete case: it can reject and stop the whole run before the account is ever created.
 
-A module's outcome can carry a generic signal that stops the run: if set, no later module runs on
-this pass. Nothing about the pipeline or the module contract privileges any particular module for
-this — any module's outcome can carry it. In practice, only the account module uses it today, because
-it is the only module whose failure makes every later statement meaningless: an account that failed to
-create, was rejected outright, or is not yet ready to accept a connection leaves nothing for a network
-rule, an auth exception, or a quota to attach to.
+A module's outcome can carry a signal that stops the pipeline for the rest of that pass. The mechanism
+belongs to no module in particular — any module can use it. It exists for the rare module whose own
+failure makes the rest of the run pointless: either because later modules depend on something only this
+one establishes (the account module's case), or because this module's whole job is deciding whether the
+run should happen at all (quota-check's case).
 
-**Important**: every other module's outcome, however it turns out, never stops the modules after it.
-A rejected network-rule entry must not prevent the auth module, the identity module, or the quota
-module from running on the same pass — design's rule that a rejected entry simply leaves the account
-on its baseline (§3.8/§3.9) only holds if the modules after the rejecting one still get to run.
+**Important**: every other module's failure must never stop the pipeline — a rejected network rule, a
+failed auth exception, a pending identity sync all let later modules keep running. That's what makes
+design's "leaves the account on its baseline" guarantee (§3.8/§3.9) hold.
 
 ## Key Concept: Overwrite Apply, Generation-Gated Re-Apply
 
@@ -183,8 +178,9 @@ func Pending(reason string) Outcome // StatePending
 func Rejected(err error) Outcome    // StateRejected; err built with errors.NewUserError
 func Failed(err error) Outcome      // StateFailed; err wrapped with fmt.Errorf
 
-// Aborting returns o with Abort set true; every other field is unchanged. Only
-// the account module (010) calls this today, on any outcome that is not Done.
+// Aborting returns o with Abort set true; every other field is unchanged. No
+// module is privileged to call this — today the account module (010) and
+// quota-check (016) both do, each on any outcome that is not Done.
 func (o Outcome) Aborting() Outcome
 
 // Result is Pipeline.Apply's result.

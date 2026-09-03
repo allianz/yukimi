@@ -65,8 +65,9 @@ func Rejected(err error) Outcome { return Outcome{State: StateRejected, Err: err
 func Failed(err error) Outcome { return Outcome{State: StateFailed, Err: err} }
 
 // Aborting returns a copy of o with Abort set true; every other field is
-// unchanged. Only the account module (010) calls this today, on any outcome
-// that is not Done.
+// unchanged. No module is privileged to call this — today the account
+// module (010) is the only one implemented that does, on any outcome that
+// is not Done.
 func (o Outcome) Aborting() Outcome {
 	o.Abort = true
 	return o
