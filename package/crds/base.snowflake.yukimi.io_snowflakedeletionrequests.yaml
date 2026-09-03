@@ -1,0 +1,189 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.18.0
+  name: snowflakedeletionrequests.base.snowflake.yukimi.io
+spec:
+  group: base.snowflake.yukimi.io
+  names:
+    kind: SnowflakeDeletionRequest
+    listKind: SnowflakeDeletionRequestList
+    plural: snowflakedeletionrequests
+    singular: snowflakedeletionrequest
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.state
+      name: STATE
+      type: string
+    - jsonPath: .status.validUntil
+      name: VALID-UNTIL
+      type: string
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: READY
+      type: string
+    - jsonPath: .status.conditions[?(@.type=='Synced')].status
+      name: SYNCED
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: AGE
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          A SnowflakeDeletionRequest is the one way to authorize destroying a
+          SnowflakeAccount (design.md 6.1-6.3).
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              SnowflakeDeletionRequestSpec is the deletion warrant a tenant creates to
+              authorize destroying one specific target (design.md 6.1). Nothing here is
+              immutable after creation (see Security Considerations in
+              specs/019-deletion-request.md).
+            properties:
+              duration:
+                description: Maintenance window length, capped at 8h on every write.
+                type: string
+                x-kubernetes-validations:
+                - message: duration must be greater than 0 and at most 8h
+                  rule: self > duration('0s') && self <= duration('8h')
+              managementPolicies:
+                default:
+                - '*'
+                description: |-
+                  The only crossplane-runtime managed-resource field this type carries.
+                  No ProviderConfigReference, no WriteConnectionSecretToReference.
+                items:
+                  description: |-
+                    A ManagementAction represents an action that the Crossplane controllers
+                    can take on an external resource.
+                  enum:
+                  - Observe
+                  - Create
+                  - Update
+                  - Delete
+                  - LateInitialize
+                  - '*'
+                  type: string
+                type: array
+              reason:
+                description: 'Audit trail: why this destruction is authorized (design.md
+                  6.2).'
+                minLength: 1
+                type: string
+              targetRef:
+                description: |-
+                  TargetRef names the one resource this warrant authorizes destroying. Name
+                  is the CRD name, not the resolved Snowflake account name.
+                properties:
+                  kind:
+                    enum:
+                    - SnowflakeAccount
+                    type: string
+                  name:
+                    type: string
+                required:
+                - kind
+                - name
+                type: object
+            required:
+            - duration
+            - reason
+            - targetRef
+            type: object
+          status:
+            description: |-
+              SnowflakeDeletionRequestStatus reports this warrant's time-boxed
+              lifecycle. Written only by internal/controller/snowflakedeletionrequest
+              and internal/deletion.MarkConsumed.
+            properties:
+              conditions:
+                description: Conditions of the resource.
+                items:
+                  description: A Condition that may apply to a resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        LastTransitionTime is the last time this condition transitioned from one
+                        status to another.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        A Message containing details about this condition's last transition from
+                        one status to another, if any.
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        ObservedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      type: integer
+                    reason:
+                      description: A Reason for this condition's last transition from
+                        one status to another.
+                      type: string
+                    status:
+                      description: Status of this condition; is it currently True,
+                        False, or Unknown?
+                      type: string
+                    type:
+                      description: |-
+                        Type of this condition. At most one of each condition type may apply to
+                        a resource at any point in time.
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              observedGeneration:
+                description: |-
+                  ObservedGeneration is the latest metadata.generation
+                  which resulted in either a ready state, or stalled due to error
+                  it can not recover from without human intervention.
+                format: int64
+                type: integer
+              state:
+                enum:
+                - Active
+                - Expired
+                - Consumed
+                type: string
+              validUntil:
+                format: date-time
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
