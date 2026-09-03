@@ -1,14 +1,19 @@
-> **Scope context only — not a specification.** This file gives a starting-point idea of spec `016`'s
-> intended *scope*, not its content. When writing `016-quota-check.md`, the sole sources of truth are
+> **Scope context only — not a specification.** This file gives a starting-point idea of spec `011`'s
+> intended *scope*, not its content. When writing `011-quota-check.md`, the sole sources of truth are
 > `specs/design.md` and the prompt given at spec-writing time — rework, restructure, or discard
-> anything below freely. Please keep this file up to date until `016-quota-check.md` has been written,
+> anything below freely. Please keep this file up to date until `011-quota-check.md` has been written,
 > then delete it.
 >
-> This file, together with `specs/scope-017-quota-monitor.md`, supersedes the earlier
+> This file, together with `specs/scope-018-quota-monitor.md`, supersedes the earlier
 > `specs/scope-016-quota.md`, which planned quota as a single spec with three entry points
-> (`Admit`/`Apply`/`Observe`), `Admit` called out-of-band by the controller's (019) validation phase. A design
+> (`Admit`/`Apply`/`Observe`), `Admit` called out-of-band by the controller's (020) validation phase. A design
 > conversation split that plan in two: this file covers the admission half, folded into the pipeline
 > itself as its own module rather than an out-of-band call.
+>
+> This file was itself later relocated from spec 016 to spec 011, in the same conversation that
+> introduced its sibling `specs/scope-010-guardrail-check.md` — both admission-only modules now sit
+> directly after the pipeline spec (009) and before the account module, matching the order they
+> actually run in.
 
 ## Ordering rule (context for "Depends on" below)
 
@@ -19,9 +24,10 @@ pluggable backend implementing an interface owned by the bare number; a letter s
 parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `004`), so
 "strictly below" still holds unchanged and no exception is needed.
 
-Spec numbers track dependency/write order, not pipeline runtime order — see the "Decisions from
-design conversation" section below for why this module runs *before* the account module (010) in the
-pipeline despite carrying a higher spec number.
+Spec numbers track dependency/write order, not pipeline runtime order — but for this module and its
+sibling guardrail-check (010), the two now coincide: both need no Snowflake connection, both can abort
+the run before the account module (012) ever creates anything, and both are numbered accordingly,
+directly after the pipeline spec (009) they depend on.
 
 ## Scope
 
@@ -33,10 +39,10 @@ pipeline despite carrying a higher spec number.
   (the namespace's `credit-quota` label, set by ops at onboarding — see design 2 and 3.10). Exceeding the
   allowance is `Rejected(err).Aborting()` — `Rejected` because it's the tenant's own input being refused,
   `Aborting` because nothing after this module should run when it doesn't fit.
-- **Registered first**, ahead of the account module (010), in 019's pipeline module list. This is what
-  makes the abort meaningful: a create never reaches `CREATE ACCOUNT`, and an update that raises
-  `creditQuota` beyond the allowance never reaches any other module's `Apply`, when the claim doesn't
-  fit.
+- **Registered second**, immediately after guardrail-check (010) and ahead of the account module (012),
+  in 020's pipeline module list. This is what makes the abort meaningful: a create never reaches
+  `CREATE ACCOUNT`, and an update that raises `creditQuota` beyond the allowance never reaches any other
+  module's `Apply`, when the claim doesn't fit.
 - **`Observe` is a no-op**: always `true, Done()`. No read-back, no drift detection — this module only
   ever acts at `Apply` time, on create or on a spec change that moves the generation counter.
 - **First-come-first-served on reductions**: if ops lowers the namespace allowance, existing accounts
@@ -54,7 +60,7 @@ spec-writing time:
 - Add a small lister interface to `ModuleContext` alongside `DBPool`, mirroring how `DBPool` is defined
   narrowly in `pipeline` rather than imported wholesale from `internal/snowflake/pool`.
 - Give this module's own constructor a k8s client directly, the way the account module's constructor
-  takes `secrets.Backend` and `Config.Snowflake.Org` (010) — keeping the pipeline package itself free of
+  takes `secrets.Backend` and `Config.Snowflake.Org` (012) — keeping the pipeline package itself free of
   any k8s-client-listing concern.
 
 ## Decisions from design conversation
@@ -64,11 +70,11 @@ and ordered, before `specs/scope-016-quota.md` had been formally clarified.
 
 - **Quota becomes two ordinary pipeline modules, not one module plus an out-of-band `Admit()`.** The old
   scope note kept `Admit()` outside the `Module` contract specifically because it was called from two
-  phases (019's validation phase, and the pipeline). Once admission is itself a pipeline module, that
+  phases (020's validation phase, and the pipeline). Once admission is itself a pipeline module, that
   reason no longer applies, so it also moves out of `internal/quota/` into
   `internal/account/modules/quotacheck/`, alongside the other Snowflake-facing modules — even though it
   never touches Snowflake itself.
-- **The account module (010) is identified by name, not position.** `internal/account/pipeline` (009,
+- **The account module (012) is identified by name, not position.** `internal/account/pipeline` (009,
   already implemented) used to hardcode `modules[0]` as the account module for `Observation.Exists`.
   That invariant is being changed (as part of this same conversation) to identify the account module via
   `Name() == pipeline.AccountModuleName`, specifically so this module can be registered ahead of it
@@ -79,7 +85,10 @@ and ordered, before `specs/scope-016-quota.md` had been formally clarified.
 - **Only the admission check aborts.** The exhaustion condition (`QuotaAvailable=False` once credits run
   out mid-lifecycle) must never abort the pipeline or affect `Ready` — design.md §3.10 is explicit that
   the account stays intact and only warehouses suspend. That behavior belongs entirely to
-  `specs/scope-017-quota-monitor.md`; this module never touches it.
+  `specs/scope-018-quota-monitor.md`; this module never touches it.
+- **Relocated from 016 to 011** in a later conversation that gave guardrail-check (010) the same
+  pipeline-module treatment this file already describes — see `specs/scope-010-guardrail-check.md`.
+  Spec numbers for both admission modules now match the order they run in.
 
 ## References
 
@@ -87,5 +96,7 @@ and ordered, before `specs/scope-016-quota.md` had been formally clarified.
   note was derived from.
 - **Shape reference**: `specs/001-error-and-logging.md` — the one spec written so far; follow its
   section skeleton (also given in `specs/000-template.md`).
-- **Sibling scope note**: `specs/scope-017-quota-monitor.md` — the enforcement half this module never
+- **Sibling scope note**: `specs/scope-018-quota-monitor.md` — the enforcement half this module never
   performs.
+- **Sibling scope note**: `specs/scope-010-guardrail-check.md` — the guardrail admission module
+  registered immediately ahead of this one.

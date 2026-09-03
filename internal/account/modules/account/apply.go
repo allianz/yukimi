@@ -38,7 +38,7 @@ const duplicateAccountSQLState = "42710"
 // Apply re-asserts the account module's desired state: create the account on
 // the first reconcile, or re-confirm the platform can still reach it on every
 // later one. It never repeats a create once a locator is known — see Key
-// Concept: Create-Then-Verify Lifecycle, specs/010-account-module.md.
+// Concept: Create-Then-Verify Lifecycle, specs/012-account-module.md.
 func (m *module) Apply(ctx context.Context, mc *pipeline.ModuleContext) pipeline.Outcome {
 	if mc.Locator() != "" {
 		if _, err := mc.TenantDB(ctx); err != nil {
@@ -145,7 +145,7 @@ func runCreateAccount(ctx context.Context, runner *statement.Runner, resolvedNam
 // account's resolved name and returns its locator. The LIKE pattern is a
 // coarse pre-filter only — every underscore in resolvedName is a wildcard to
 // LIKE, so it discards any row that is not an exact, case-insensitive match
-// on the account name before trusting its locator (specs/010-account-module.md,
+// on the account name before trusting its locator (specs/012-account-module.md,
 // Edge Cases).
 func locateCreatedAccount(ctx context.Context, runner *statement.Runner, resolvedName string) (string, error) {
 	result, err := runner.Query(ctx, "locate created account", "SHOW ACCOUNTS LIKE "+statement.QuoteLiteral(resolvedName))

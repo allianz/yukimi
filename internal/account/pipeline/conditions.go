@@ -20,7 +20,7 @@ import xpv1 "github.com/crossplane/crossplane-runtime/v2/apis/common/v1"
 
 // Custom condition types this package defines, plus the static table
 // deciding which of them forces the resource's aggregate Ready to False. A
-// module attaches its own condition to its Outcome; 018 collects and renders
+// module attaches its own condition to its Outcome; 020 collects and renders
 // them, applying this table when aggregating Ready.
 const (
 	TypeQuotaAvailable xpv1.ConditionType = "QuotaAvailable" // design.md 3.10

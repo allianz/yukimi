@@ -22,7 +22,7 @@ const loginPath = "/console/login"
 
 // AccountURL returns the SnowflakeAccount's status.accountUrl (design.md
 // 7.2): the account's login URL, built from the locator Snowflake assigned
-// at CREATE ACCOUNT (010) and the CRD's region. It never derives from the
+// at CREATE ACCOUNT (012) and the CRD's region. It never derives from the
 // resolved account name, which has no relationship to the locator. Wraps
 // internal/snowflake/host.URL (004); adds no validation beyond that call.
 //
@@ -30,7 +30,7 @@ const loginPath = "/console/login"
 //   - locator: the account locator returned by CREATE ACCOUNT (e.g. "xc19114").
 //   - region: the CRD's spec.region (e.g. "aws-eu-central-1").
 //   - usePrivateLink: from the controller's base config (002), supplied by
-//     the caller (018) — not read from the Backplane Config, which carries
+//     the caller (020) — not read from the Backplane Config, which carries
 //     no such field.
 //
 // Returns: User error if region does not match the expected

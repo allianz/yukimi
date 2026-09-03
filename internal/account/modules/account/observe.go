@@ -26,7 +26,7 @@ import (
 // Observe reports whether the account exists (a known locator) and, if so,
 // re-confirms the platform can still log in — it never looks accounts up
 // over the org-admin connection (see Key Concept: Create-Then-Verify
-// Lifecycle, specs/010-account-module.md), since every module downstream of
+// Lifecycle, specs/012-account-module.md), since every module downstream of
 // this one already needs the same platform-authenticated connection.
 func (m *module) Observe(ctx context.Context, mc *pipeline.ModuleContext) (bool, pipeline.Outcome) {
 	if mc.Locator() == "" {

@@ -1,10 +1,10 @@
 > **Scope context only — not a specification.** This file was split out of the temporary
 > `roadmap.md` planning document used to work out how `specs/design.md` should be decomposed
-> into numbered specs. It exists only to give a starting-point idea of spec `015`'s intended
-> *scope*, not its content. When writing `015-identity-module.md`, the sole sources of truth
+> into numbered specs. It exists only to give a starting-point idea of spec `017`'s intended
+> *scope*, not its content. When writing `017-identity-module.md`, the sole sources of truth
 > are `specs/design.md` and the prompt given at spec-writing time — rework, restructure, or
 > discard anything below freely. Please keep this file up to date until
-> `015-identity-module.md` has been written, then delete it.
+> `017-identity-module.md` has been written, then delete it.
 
 ## Ordering rule (context for "Depends on" below)
 
@@ -18,7 +18,7 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
 ## Roadmap's original scope notes
 
 - Package: `internal/account/modules/identity/`. Covers design 3.7 and the 4.3 waiting rules.
-  Depends on: 005, 007, 009, 014.
+  Depends on: 005, 007, 009, 016.
 - Scope:
   - `ALTER ACCOUNT ADD ORGANIZATION USER GROUP '<group>'` per group under
     `identityIntegration.groups`, then `GRANT ROLE <system-role> TO ROLE "<group>"` per `roleBindings`
@@ -45,11 +45,11 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
 Recorded by `/yukimi.clarify 009`. `specs/009-account-pipeline.md` now carries the pipeline-wide rules
 these points rest on.
 
-- **015 owns emission of `IdentitySyncRequest`**, closing the question of who calls 014's emitter — no
+- **017 owns emission of `IdentitySyncRequest`**, closing the question of who calls 016's emitter — no
   spec claimed it before. On each `Apply`: emit the request if one is not already outstanding, stamp
   its start time, then import whatever groups are already `Ready=True`. Emission and import live in one
   module because they share the same `Pending`/timeout accounting.
-- **015 may add its own explicit `status` field.** 009 adds no CRD field, but that binds the pipeline,
+- **017 may add its own explicit `status` field.** 009 adds no CRD field, but that binds the pipeline,
   not the modules: an `identitySyncStartedAt` (or equivalently named) field on `SnowflakeAccountStatus`
   is expected, since design 4.3's timeout cannot be computed without a start timestamp and there is
   nowhere else to keep it. Name it explicitly; do not introduce a generic per-module state blob.
@@ -58,14 +58,14 @@ these points rest on.
   requeue hint — the controller's poll interval governs timing, which is fine because the sync horizon
   is tens of minutes.
 - **`IdentitySynced=False` forces `Ready=False`.** 009 owns the condition type constant
-  (`account.TypeIdentitySynced`) and the static `Ready`-gating table; 015 attaches the condition to its
+  (`account.TypeIdentitySynced`) and the static `Ready`-gating table; 017 attaches the condition to its
   outcome and the pipeline applies the table. Do not restate the gating rule here and do not decide it
   per module.
-- **Re-application is driven by generation, so `Pending` self-retries.** 019 advances
+- **Re-application is driven by generation, so `Pending` self-retries.** 020 advances
   `status.observedGeneration` only after a run in which every module returned `Done`, so an outstanding
-  sync keeps the resource out-of-date and keeps `Apply` running until the sync lands or times out. 015
+  sync keeps the resource out-of-date and keeps `Apply` running until the sync lands or times out. 017
   needs no retry loop of its own.
-- Known consequence: nothing is emitted while 010 keeps failing, because 015 runs after it, and 010
+- Known consequence: nothing is emitted while 012 keeps failing, because 017 runs after it, and 012
   aborts the run on any non-`Done` outcome.
-- **Identity bindings are never pruned.** Only 012 and 013 prune, each by its own object-name prefix;
-  015's group imports and role bindings are re-asserted but never enumerated or dropped.
+- **Identity bindings are never pruned.** Only 014 and 015 prune, each by its own object-name prefix;
+  017's group imports and role bindings are re-asserted but never enumerated or dropped.

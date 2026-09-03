@@ -47,9 +47,9 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
     platform (customer → ISO → ops edits the file); the file is simply the durable record.
 - Deliberately **not** importing 007: guardrails constrain prefix width while the backplane
   constrains containment, and neither subsumes the other. For the `"full"` rule this spec only checks
-  that `allowedIPs` is absent; resolving it to concrete CIDRs is 012's job.
+  that `allowedIPs` is absent; resolving it to concrete CIDRs is 014's job.
 - Also out of scope: cross-artifact consistency, such as a guardrail naming a connection absent from
-  a region's inventory. That surfaces as a rule-creation failure in 012.
+  a region's inventory. That surfaces as a rule-creation failure in 014.
 - Note for the spec: because tenants set `environment` themselves, they can choose `dev` and receive
   its looser constraints. The platform does not verify that a `dev` account is really used for
   development; a team running production workloads there carries that risk themselves.
@@ -66,7 +66,7 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
   prefix *width*, while a backplane `maxCidrs: ["172.16.0.0/12"]` constrains *containment*.
   `10.0.0.0/16` passes the first and fails the second, so neither subsumes the other. For the
   `"full"` rule spec 008 only checks that `allowedIPs` is *absent*; resolving `full` into concrete
-  CIDRs is deferred to 012, which already holds the region entry.
+  CIDRs is deferred to 014, which already holds the region entry.
 
 ## References
 
@@ -77,28 +77,34 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
 
 ## Relationship to the account pipeline (009)
 
-Guardrails run in full, once, inside 019's validation phase — strictly before the account pipeline
-(009) is ever invoked. Its only output is accept-or-reject (a validation error on rejection). No
-guardrail type or result crosses into `internal/account`'s pipeline context, and no module reads
-anything guardrail-owned:
+Guardrails no longer run as a separate controller gate ahead of the pipeline. A later design
+conversation (recorded in `specs/scope-010-guardrail-check.md`) turned admission into an ordinary
+pipeline module — guardrail-check (010) — that calls this package's evaluator from its own `Apply`,
+`Rejected(err).Aborting()` on failure, mirroring how quota-check (011) already handles the
+credit-quota check. 008 itself is untouched by that change: it remains a pure ConfigMap loader,
+top-down merge, and evaluation function (plus the approved-exceptions fallback), with no dependency
+on 009 or any module. No guardrail type or result crosses into `internal/account`'s pipeline context
+beyond guardrail-check's own call, and no other module reads anything guardrail-owned:
 
-- **012 (network module)** resolves the `"full"` connection rule purely from the CRD's own shape —
+- **014 (network module)** resolves the `"full"` connection rule purely from the CRD's own shape —
   an entry with no `allowedIPs` only passed guardrails because `"full"` was the applicable rule, so
-  012 infers that case directly rather than consulting guardrails.
-- **013 (auth module)** has no guardrail dependency at all: design.md's guardrails section (3.3)
+  014 infers that case directly rather than consulting guardrails.
+- **015 (auth module)** has no guardrail dependency at all: design.md's guardrails section (3.3)
   never constrains `customAuthRules`.
 
-Because of this, 008 has no dependency relationship with 009, 010–013, 015, 016, or 017 in either
+Because of this, 008 itself has no dependency relationship with 009, 011–015, 017, or 018 in either
 direction, and can be written and implemented in normal ascending order — before 009, as its
-number implies.
+number implies. The one exception is guardrail-check (010): that module depends on 008's evaluator,
+but the relationship is one-way — 008 never imports or references the pipeline or any module,
+exactly as quota-check (011) already relates to 006/009 without either of *them* depending on it.
 
-## Raised by the 010 clarification
+## Raised by the 012 clarification
 
-Recorded by `/yukimi.clarify 010`. `specs/010-account-module.md` is now the authoritative statement of
-what 010 does (SC-010, SC-011).
+Recorded by `/yukimi.clarify 010` (that spec was later renumbered to 012).
+`specs/012-account-module.md` is now the authoritative statement of what 012 does (SC-010, SC-011).
 
-- **`CREATE ACCOUNT` requires `EMAIL`, and 010 sources it from `spec.contacts[0]`** (verified against
-  Snowflake's own `CREATE ACCOUNT` reference). 010 aborts with a user error on a fresh create when
+- **`CREATE ACCOUNT` requires `EMAIL`, and 012 sources it from `spec.contacts[0]`** (verified against
+  Snowflake's own `CREATE ACCOUNT` reference). 012 aborts with a user error on a fresh create when
   `spec.contacts` is empty, but only as a defense-in-depth backstop. 008 must add a constraint
   requiring a non-empty `contacts[]` at admission — today (006) `contacts[]` is fully optional with no CEL
-  constraint, so without this an account could otherwise reach 010 with nothing to put in `EMAIL`.
+  constraint, so without this an account could otherwise reach 012 with nothing to put in `EMAIL`.

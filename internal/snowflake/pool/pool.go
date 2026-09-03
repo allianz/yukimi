@@ -258,7 +258,7 @@ func (p *Pool) cachedTenant(key tenantKey, locator, region string) (*sql.DB, boo
 }
 
 // EvictTenant closes and removes the cached *sql.DB for (namespace,
-// accountName), if one exists. Called once an account is dropped (017, not
+// accountName), if one exists. Called once an account is dropped (019, not
 // yet written) so a deleted tenant's connection does not linger for the rest
 // of the process's life. A key never dialed is a no-op, not an error.
 func (p *Pool) EvictTenant(namespace, accountName string) {

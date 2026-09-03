@@ -30,7 +30,7 @@ type fakeEntry struct {
 }
 
 // FakeBackend is an in-memory Backend for tests, exported (not a _test.go
-// file) so 004, 010, and every other consumer can depend on it without a real
+// file) so 004, 012, and every other consumer can depend on it without a real
 // store. Each hook, if set and returning a non-nil error, short-circuits the
 // call before any state mutation — this lets a test flip behavior mid-run
 // (e.g. "OnCreate fails once, then is cleared") in a way a construction-time

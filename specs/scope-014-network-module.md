@@ -1,10 +1,10 @@
 > **Scope context only — not a specification.** This file was split out of the temporary
 > `roadmap.md` planning document used to work out how `specs/design.md` should be decomposed
-> into numbered specs. It exists only to give a starting-point idea of spec `012`'s intended
-> *scope*, not its content. When writing `012-network-module.md`, the sole sources of truth
+> into numbered specs. It exists only to give a starting-point idea of spec `014`'s intended
+> *scope*, not its content. When writing `014-network-module.md`, the sole sources of truth
 > are `specs/design.md` and the prompt given at spec-writing time — rework, restructure, or
 > discard anything below freely. Please keep this file up to date until
-> `012-network-module.md` has been written, then delete it.
+> `014-network-module.md` has been written, then delete it.
 
 ## Ordering rule (context for "Depends on" below)
 
@@ -92,9 +92,9 @@ a run.
 - **Drift is still neither detected nor repaired**, because Organization Policies will take away the
   tenant's ability to create it: a `CUSTOM_` rule present in the CRD but missing in Snowflake is simply
   recreated by the overwrite, and nothing outside the `CUSTOM_` prefix is inspected at all.
-- **A rejected entry never stops the run.** 012 returning `Rejected(userErr)` leaves the account on
+- **A rejected entry never stops the run.** 014 returning `Rejected(userErr)` leaves the account on
   its baseline and the remaining modules still execute — design 3.8/3.9's "a rejected entry leaves the
-  account on its baseline" only holds if the modules after the rejecting one still get to run. Only 010
-  ever aborts the run; 012 never calls `.Aborting()` on its own outcome.
-- 012 implements `Observe(ctx, mc) (bool, Outcome)` returning `true, Done()` today, for the same reason
-  011 does: the method exists so a real read-back can be added later without reopening the interface.
+  account on its baseline" only holds if the modules after the rejecting one still get to run. Only 012
+  ever aborts the run; 014 never calls `.Aborting()` on its own outcome.
+- 014 implements `Observe(ctx, mc) (bool, Outcome)` returning `true, Done()` today, for the same reason
+  013 does: the method exists so a real read-back can be added later without reopening the interface.

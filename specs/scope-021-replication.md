@@ -1,9 +1,9 @@
 > **Scope context only — not a specification.** This file was split out of the temporary
 > `roadmap.md` planning document used to work out how `specs/design.md` should be decomposed
-> into numbered specs. It exists only to give a starting-point idea of spec `020`'s intended
-> *scope*, not its content. When writing `020-replication.md`, the sole sources of truth are
+> into numbered specs. It exists only to give a starting-point idea of spec `021`'s intended
+> *scope*, not its content. When writing `021-replication.md`, the sole sources of truth are
 > `specs/design.md` and the prompt given at spec-writing time — rework, restructure, or
-> discard anything below freely. Please keep this file up to date until `020-replication.md`
+> discard anything below freely. Please keep this file up to date until `021-replication.md`
 > has been written, then delete it.
 
 ## Ordering rule (context for "Depends on" below)

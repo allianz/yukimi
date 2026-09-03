@@ -50,7 +50,7 @@ type SnowflakeAccountSpec struct {
 	Environment string `json:"environment"`
 
 	// This account's share of the namespace's monthly credit allowance
-	// (design.md 3.10). Ceiling enforcement is Guardrails'/Quota's job (008/016).
+	// (design.md 3.10). Ceiling enforcement is Guardrails'/Quota's job (008/011).
 	// +optional
 	CreditQuota int32 `json:"creditQuota,omitempty"`
 
@@ -129,7 +129,7 @@ type SnowflakeAccountStatus struct {
 	// +optional
 	AccountName string `json:"accountName,omitempty"`
 
-	// Captured from CREATE ACCOUNT's result (010).
+	// Captured from CREATE ACCOUNT's result (012).
 	// +optional
 	AccountLocator string `json:"accountLocator,omitempty"`
 
