@@ -41,8 +41,8 @@ type DBPool interface {
 var _ DBPool = (*pool.Pool)(nil)
 
 // ModuleContext is built once per reconcile and handed unchanged to every
-// module. Everything on it is either immutable for the run or, in the case of
-// the account locator, mutated by exactly one module (012).
+// module. Everything on it is immutable for the run — the account locator
+// lives on the CRD's own status, reached via CR(), not cached here.
 type ModuleContext struct {
 	cr              *v1alpha1.SnowflakeAccount
 	namespace       string
@@ -52,8 +52,6 @@ type ModuleContext struct {
 	log             *logger.Logger
 
 	pool DBPool
-
-	locator string
 
 	tenantDB *sql.DB
 }
@@ -65,11 +63,10 @@ type ModuleContext struct {
 // ResolvedAccountName() is computed once, here, and no two callers can
 // disagree about it. namespaceLabels are the raw namespace labels set at
 // onboarding; Department/CostCenter/CreditQuota are read from them by each
-// module itself, not by this constructor. If cr.Status.AccountLocator is
-// already set, it seeds Locator() immediately — callers never seed it
-// themselves; see SetLocator for the only other way it changes. p is
-// DBPool, not the concrete *pool.Pool, so a module package's own tests can
-// pass a fake.
+// module itself, not by this constructor. The account locator lives on
+// cr.Status.AccountLocator directly — every module reads and writes it
+// through CR(), not through a ModuleContext accessor. p is DBPool, not the
+// concrete *pool.Pool, so a module package's own tests can pass a fake.
 func NewModuleContext(
 	cr *v1alpha1.SnowflakeAccount,
 	namespace string,
@@ -86,7 +83,6 @@ func NewModuleContext(
 		namespaceLabels: namespaceLabels,
 		log:             log,
 		pool:            p,
-		locator:         cr.Status.AccountLocator,
 	}
 }
 
@@ -101,17 +97,6 @@ func (c *ModuleContext) NamespaceLabels() map[string]string { return c.namespace
 
 func (c *ModuleContext) Logger() *logger.Logger { return c.log }
 
-// Locator returns the account locator, or "" if the account does not exist
-// yet on this reconcile. Seeded by NewModuleContext from
-// cr.Status.AccountLocator when already set; see SetLocator for the only way
-// it changes afterward.
-func (c *ModuleContext) Locator() string { return c.locator }
-
-// SetLocator records the locator immediately after CREATE ACCOUNT returns it,
-// for the one reconcile where the account did not exist before this call.
-// Only the account module (012) calls this.
-func (c *ModuleContext) SetLocator(locator string) { c.locator = locator }
-
 // OrgAdminDB returns an org-admin-scoped connection. Only the account module
 // (012) needs this scope.
 func (c *ModuleContext) OrgAdminDB(ctx context.Context) (*sql.DB, error) {
@@ -122,18 +107,19 @@ func (c *ModuleContext) OrgAdminDB(ctx context.Context) (*sql.DB, error) {
 // resolved on first call and memoized for the rest of the run.
 //
 // Returns:
-//   - System error if Locator() is still empty — every module calling
-//     TenantDB needs a locator, and getting one is the whole point of
-//     running the account module (012) before any such module.
+//   - System error if CR().Status.AccountLocator is still empty — every
+//     module calling TenantDB needs a locator, and getting one is the whole
+//     point of running the account module (012) before any such module.
 func (c *ModuleContext) TenantDB(ctx context.Context) (*sql.DB, error) {
 	if c.tenantDB != nil {
 		return c.tenantDB, nil
 	}
-	if c.locator == "" {
+	locator := c.cr.Status.AccountLocator
+	if locator == "" {
 		return nil, fmt.Errorf("cannot resolve tenant connection: account locator is not yet known for %s/%s", c.namespace, c.cr.Name)
 	}
 
-	db, err := c.pool.TenantAccount(ctx, c.namespace, c.cr.Name, c.locator, c.cr.Spec.Region)
+	db, err := c.pool.TenantAccount(ctx, c.namespace, c.cr.Name, locator, c.cr.Spec.Region)
 	if err != nil {
 		return nil, err
 	}

@@ -133,6 +133,12 @@ type SnowflakeAccountStatus struct {
 	// +optional
 	AccountLocator string `json:"accountLocator,omitempty"`
 
+	// Set once, on the reconcile that first creates the account (012);
+	// anchors the grace period before the first post-create connection
+	// attempt.
+	// +optional
+	AccountCreatedAt *metav1.Time `json:"accountCreatedAt,omitempty"`
+
 	// Built via internal/account/tenant.AccountURL (design.md 7.2).
 	// +optional
 	AccountURL string `json:"accountUrl,omitempty"`

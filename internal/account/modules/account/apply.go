@@ -21,7 +21,11 @@ import (
 	stderrors "errors"
 	"fmt"
 	"strings"
+	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	v1alpha1 "github.com/allianz/yukimi/apis/base/v1alpha1"
 	"github.com/allianz/yukimi/internal/account/pipeline"
 	internalerrors "github.com/allianz/yukimi/internal/errors"
 	"github.com/allianz/yukimi/internal/secrets"
@@ -35,15 +39,30 @@ import (
 // mistake) apart from every other CREATE ACCOUNT failure (a system error).
 const duplicateAccountSQLState = "42710"
 
+// withinGracePeriod reports whether cr's account was created recently enough
+// that a connection attempt should be skipped rather than tried and left to
+// fail — Snowflake accounts take minutes to become reachable after CREATE
+// ACCOUNT returns. A nil AccountCreatedAt (an account that already existed
+// before this field was introduced) is treated as "the grace period has
+// already elapsed", so nothing changes for pre-existing accounts.
+func withinGracePeriod(cr *v1alpha1.SnowflakeAccount, gracePeriod time.Duration) bool {
+	createdAt := cr.Status.AccountCreatedAt
+	return createdAt != nil && time.Since(createdAt.Time) < gracePeriod
+}
+
 // Apply re-asserts the account module's desired state: create the account on
 // the first reconcile, or re-confirm the platform can still reach it on every
 // later one. It never repeats a create once a locator is known — see Key
 // Concept: Create-Then-Verify Lifecycle, specs/012-account-module.md.
 func (m *module) Apply(ctx context.Context, mc *pipeline.ModuleContext) pipeline.Outcome {
-	if mc.Locator() != "" {
+	cr := mc.CR()
+	if cr.Status.AccountLocator != "" {
+		if withinGracePeriod(cr, m.gracePeriod) {
+			return pipeline.Pending("waiting for the account to finish provisioning before attempting to connect").Aborting()
+		}
 		if _, err := mc.TenantDB(ctx); err != nil {
 			return pipeline.Failed(fmt.Errorf(
-				"platform connection failed for existing account locator %s: %w", mc.Locator(), err)).Aborting()
+				"platform connection failed for existing account locator %s: %w", cr.Status.AccountLocator, err)).Aborting()
 		}
 		return pipeline.Done()
 	}
@@ -53,8 +72,10 @@ func (m *module) Apply(ctx context.Context, mc *pipeline.ModuleContext) pipeline
 
 // createAccount runs the fresh-create path: generate and store the platform
 // keypair create-only, issue CREATE ACCOUNT over the org-admin connection,
-// then capture the resulting locator onto mc. It never runs when a locator
-// is already known.
+// then record the resulting locator and creation time directly on the CRD's
+// status. It never runs when a locator is already known, and it never
+// verifies reachability itself — that is deferred to a later reconcile, once
+// the grace period has elapsed (Key Concept: Create-Then-Verify Lifecycle).
 func (m *module) createAccount(ctx context.Context, mc *pipeline.ModuleContext) pipeline.Outcome {
 	cr := mc.CR()
 
@@ -95,8 +116,9 @@ func (m *module) createAccount(ctx context.Context, mc *pipeline.ModuleContext) 
 		return outcome
 	}
 
-	mc.SetLocator(locator)
-	return pipeline.Done()
+	cr.Status.AccountLocator = locator
+	cr.Status.AccountCreatedAt = &metav1.Time{Time: time.Now()}
+	return pipeline.Pending("account created; waiting for it to become reachable before continuing").Aborting()
 }
 
 // runCreateAccount renders and executes CREATE ACCOUNT over runner, then

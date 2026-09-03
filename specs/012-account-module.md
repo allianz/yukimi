@@ -34,6 +34,36 @@ gone missing or become unreachable outside the platform's own deletion flow is r
 treated as a reason to try creating it again: doing so could orphan a live account or replace a key it
 still depends on.
 
+`Done()` means "verified reachable," not merely "the SQL succeeded." A fresh `CREATE ACCOUNT` therefore
+never verifies reachability inline: a Snowflake account takes minutes to become connectable after
+`CREATE ACCOUNT` returns, so trying to connect in the same pass — which is what would happen next, since
+every later pipeline module needs `TenantDB` — would just produce a predictable string of connection
+failures. Instead, a fresh create records the locator and the moment of creation directly on the CRD's
+status and returns `Pending(...).Aborting()`, stopping the pipeline for this pass and deferring the first
+reachability check to a later reconcile. Both `Observe` and `Apply`'s reconnect path skip attempting a
+connection entirely while the account is within its post-create grace period, rather than trying and
+leaving a failure in the log — see Key Concept: Post-Create Grace Period.
+
+## Key Concept: Post-Create Grace Period
+
+Every module after this one in the pipeline needs a live connection to the account, so nothing about a
+reconcile landing inside the grace period is special to this module alone — it exists to keep every
+downstream module from being asked to connect to an account before it's plausibly ready. The anchor is
+`status.accountCreatedAt`, a field this module owns and sets exactly once, at the moment `CREATE ACCOUNT`
+succeeds — the same "a module may add its own named status field" allowance spec 009 documents for 017's
+`identitySyncStartedAt`. Neither the CRD's own `metadata.creationTimestamp` nor a live re-query of
+Snowflake's `SHOW ACCOUNTS` `created_on` column can substitute for it: guardrail-check (010) and
+quota-check (011) run ahead of this module and can abort the whole pipeline before `CREATE ACCOUNT` ever
+runs, so `creationTimestamp` can predate the real creation moment by an unbounded amount whenever
+admission was delayed; and re-querying Snowflake would mean reopening the org-admin connection on every
+reconcile during the grace window, against this module's own confinement of that connection to the single
+`CREATE ACCOUNT` moment (Key Concept: The Only Module With Organization-Wide Privileges).
+
+The grace period's length is `Config.Snowflake.AccountCreationGracePeriod` (002), passed into `New` as a
+plain `time.Duration`. A `nil` `status.accountCreatedAt` — an account created before this field existed —
+is treated as "the grace period has already elapsed," so a connection is attempted as usual; nothing
+changes for accounts that predate this mechanism.
+
 ## Key Concept: The Only Module With Organization-Wide Privileges
 
 Creating a Snowflake account needs privileges that span the whole Snowflake organization, not just one
@@ -51,22 +81,28 @@ authenticates as the tenant's own account instead.
 // New constructs the account module (design.md 3.6). It implements
 // internal/account/pipeline.Module's Observe/Apply contract, identified by
 // pipeline.AccountModuleName; see Key Concept: Create-Then-Verify
-// Lifecycle for what each method does.
+// Lifecycle and Key Concept: Post-Create Grace Period for what each method
+// does.
 //
 // Parameters:
 //   - backend: the secrets.Backend (003) the platform keypair is stored through, via Backend.Create
 //     only — this module never calls Update.
 //   - org: Config.Snowflake.Org (002), used to build the tenant secret path (003) exactly as
 //     internal/snowflake/pool does.
+//   - gracePeriod: Config.Snowflake.AccountCreationGracePeriod (002) — how long a fresh account is
+//     given to become reachable before the first post-create connection attempt.
 //
 // Returns:
 //   - pipeline.Module: never nil.
-func New(backend secrets.Backend, org string) pipeline.Module
+func New(backend secrets.Backend, org string, gracePeriod time.Duration) pipeline.Module
 ```
 
 `Observe` and `Apply` themselves are unexported methods on the value `New` returns — nothing outside
 this module's own tests calls them directly, so their behavior is documented under Key Concept:
-Create-Then-Verify Lifecycle above rather than here.
+Create-Then-Verify Lifecycle and Key Concept: Post-Create Grace Period above rather than here. Both
+read and write `status.accountLocator`/`status.accountCreatedAt` directly through
+`ModuleContext.CR()`, not through any `ModuleContext` accessor — `internal/account/pipeline` (009)
+defines none for either field.
 
 **Note**: whether `CREATE ACCOUNT` additionally accepts bind parameters for any of its positions (rather
 than rendered text, see Security Considerations) is an unverified vendor fact — not needed to build this
@@ -139,8 +175,8 @@ internal/account/modules/account/
 
 ## Dependencies
 
-- **Base Configuration (002)** — Used APIs: `Config.Snowflake.Org` — Contract: passed to `New` as a
-  plain string; this module never loads the config file itself.
+- **Base Configuration (002)** — Used APIs: `Config.Snowflake.Org`, `Config.Snowflake.AccountCreationGracePeriod`
+  — Contract: both passed to `New` as plain values; this module never loads the config file itself.
 - **Secrets Handling (003)** — Used APIs: `GenerateKeyPair()`/`NewCredentials()`, `MarshalCredentials()`,
   `NewTenantPath()`, `Backend.Create()` — Contract: `Backend.Create` only, never `Update`; the module
   never reads a credential back.
@@ -150,26 +186,29 @@ internal/account/modules/account/
 - **Statement Execution (005)** — Used APIs: `statement.New()`, `Runner.Exec()`, `Runner.Query()`,
   `QuoteLiteral()`, `BareIdentifier()`, `*statement.Error` — Contract: every tenant-influenced value is
   rendered through one of these, never concatenated raw.
-- **SnowflakeAccount CRD (006)** — Used APIs: `SnowflakeAccountSpec.Description`, `.Contacts`, `.Region`
-  — Contract: read-only; this module never writes to the CRD's spec.
+- **SnowflakeAccount CRD (006)** — Used APIs: `SnowflakeAccountSpec.Description`, `.Contacts`, `.Region`,
+  `SnowflakeAccountStatus.AccountLocator`, `.AccountCreatedAt` — Contract: reads the spec fields
+  read-only; writes `AccountLocator`/`AccountCreatedAt` directly on `ModuleContext.CR().Status` — the
+  only two status fields this module ever sets.
 - **Account Pipeline (009)** — Used APIs: `account.Module`, `Done()`/`Pending()`/`Rejected()`/`Failed()`,
-  `Outcome.Aborting()`, `ModuleContext.ResolvedAccountName()`, `.Locator()`, `.SetLocator()`,
-  `.OrgAdminDB()`, `.TenantDB()` — Contract: `Name()` returns `pipeline.AccountModuleName`, which is how
-  `Pipeline.Observe` finds `Observation.Exists` regardless of registration position; calls
-  `.Aborting()` on every outcome that is not `Done`.
+  `Outcome.Aborting()`, `ModuleContext.CR()`, `.ResolvedAccountName()`, `.OrgAdminDB()`, `.TenantDB()` —
+  Contract: `Name()` returns `pipeline.AccountModuleName`, which is how `Pipeline.Observe` finds
+  `Observation.Exists` regardless of registration position; calls `.Aborting()` on every outcome that is
+  not `Done`.
 
 ## Integration Points
 
 - **SnowflakeAccount Controller (020)** — Registers this module in the pipeline via
-  `account.New(...)`, after the guardrail-check (010) and quota-check (011) modules, alongside its
-  `secrets.Backend` and `Config`.
-  Seeds each reconcile's
-  `ModuleContext` from `status.accountLocator` when already set. After `Pipeline.Apply` returns, reads
-  `ModuleContext.ResolvedAccountName()` and `.Locator()` directly — never from this module's `Outcome` —
-  to render `status.accountName`, `status.accountLocator`, and (via `internal/account/tenant.AccountURL`)
-  `status.accountUrl`. Should persist `status.accountLocator` as promptly as possible after `Apply`
-  returns, since every reconcile between a successful `CREATE ACCOUNT` and that persist is the crash
-  window described above.
+  `account.New(secretsBackend, baseConfig.Snowflake.Org, baseConfig.Snowflake.AccountCreationGracePeriod)`,
+  after the guardrail-check (010) and quota-check (011) modules. After `Pipeline.Apply` returns, reads
+  `ModuleContext.ResolvedAccountName()` directly — never from this module's `Outcome` — plus
+  `cr.Status.AccountLocator`, which this module has already set directly on the CRD, to render
+  `status.accountName` and (via `internal/account/tenant.AccountURL`) `status.accountUrl`.
+  `status.accountLocator` and `status.accountCreatedAt` need no separate persist step: this module writes
+  them straight onto the same `*v1alpha1.SnowflakeAccount` the controller already holds and will persist
+  when the reconcile returns. Minimizing how long that persist is deferred is still 020's responsibility,
+  since every reconcile between a successful `CREATE ACCOUNT` and the actual API-server write is the
+  crash window described above.
 
 ## Success Criteria
 
@@ -178,9 +217,10 @@ internal/account/modules/account/
 - **SC-003**: `Observe` returns not-in-sync, with a system error, when a known locator's platform
   connection fails.
 - **SC-004**: `Apply` returns `Done()` without touching the credential store or issuing `CREATE ACCOUNT`
-  when a locator is already known and the platform connection succeeds.
-- **SC-005**: `Apply` aborts with a system error, and issues no SQL, when a locator is already known but
-  the platform connection fails.
+  when a locator is already known, the grace period (if any) has elapsed, and the platform connection
+  succeeds.
+- **SC-005**: `Apply` aborts with a system error, and issues no SQL, when a locator is already known, the
+  grace period (if any) has elapsed, but the platform connection fails.
 - **SC-006**: A fresh create generates a keypair, stores it create-only, then issues `CREATE ACCOUNT` —
   in that order, and only in that order.
 - **SC-007**: A fresh create aborts with a system error, generating no keypair and issuing no SQL, when
@@ -197,12 +237,21 @@ internal/account/modules/account/
   case-insensitive match to the resolved name, even when the lookup's own pattern matching returns it.
 - **SC-014**: A fresh create aborts with a system error when the post-create locator lookup finds no
   matching row.
-- **SC-015**: A successful fresh create calls `SetLocator` with the looked-up locator before returning
-  `Done()`.
+- **SC-015**: A successful fresh create sets `cr.Status.AccountLocator` to the looked-up locator and
+  `cr.Status.AccountCreatedAt` to the current time, directly on the CRD, before returning
+  `Pending(...).Aborting()` — never `Done()`.
 - **SC-016**: Every outcome other than `Done()` carries `Abort == true`.
 - **SC-017**: Unit test coverage exceeds 95%.
 - **SC-018**: Integration test coverage includes a full create-then-reconnect round trip against a live
   Snowflake organization and a live secrets backend.
+- **SC-019**: Both `Observe` and `Apply`'s reconnect path attempt no platform connection, and issue no
+  error, while `time.Since(cr.Status.AccountCreatedAt) < gracePeriod`; `Apply` reports `Pending(...).Aborting()`
+  and `Observe` reports not-in-sync with no outcome error.
+- **SC-020**: `cr.Status.AccountCreatedAt` is set exactly once, on the reconcile that first creates the
+  account, and is never touched again on any later reconcile — including one that lands inside the grace
+  period.
+- **SC-021**: A `nil` `cr.Status.AccountCreatedAt` with a known locator is treated as past the grace
+  period: `Observe`/`Apply` attempt a connection exactly as they did before this field existed.
 
 ## Security Considerations
 
@@ -260,12 +309,12 @@ import (
 pl := pipeline.New(
     guardrailcheckmodule.New(...),                                // 010, runs first, aborts before anything else
     quotacheckmodule.New(...),                                    // 011, runs second, aborts before CREATE ACCOUNT
-    accountmodule.New(secretsBackend, baseConfig.Snowflake.Org),  // 012
+    accountmodule.New(secretsBackend, baseConfig.Snowflake.Org, baseConfig.Snowflake.AccountCreationGracePeriod), // 012
     // ... modules 013-015, 017, 018, in order
 )
 ```
 
-### Example 2: First reconcile creates, second only reconnects
+### Example 2: Create, wait out the grace period, then reconnect
 
 ```go
 mc := pipeline.NewModuleContext(cr, "finance", nil, nsLabels, log, pool)
@@ -273,11 +322,17 @@ mc := pipeline.NewModuleContext(cr, "finance", nil, nsLabels, log, pool)
 // First reconcile: no locator yet.
 inSync, _ := module.Observe(ctx, mc)   // inSync == false, nothing has been touched yet
 outcome := module.Apply(ctx, mc)       // generates keypair, stores it, issues CREATE ACCOUNT,
-                                        // calls mc.SetLocator(...), returns Done()
+                                        // sets cr.Status.AccountLocator/.AccountCreatedAt directly,
+                                        // returns Pending(...).Aborting() — the pipeline stops here
 
-// A later reconcile against the same resource, with status.accountLocator now seeded into a
-// fresh ModuleContext by 020:
-mc2 := pipeline.NewModuleContext(cr, "finance", nil, nsLabels, log, pool) // mc2.Locator() != ""
-inSync2, _ := module.Observe(ctx, mc2) // reconnects as platform; inSync2 == true
-outcome2 := module.Apply(ctx, mc2)     // reconnects again, no SQL issued, returns Done()
+// A reconcile landing inside the grace period, against the same cr (status.accountLocator and
+// status.accountCreatedAt already set by the pass above):
+mc2 := pipeline.NewModuleContext(cr, "finance", nil, nsLabels, log, pool)
+inSync2, outcome2 := module.Observe(ctx, mc2) // inSync2 == false, StatePending — no connection attempted
+_ = module.Apply(ctx, mc2)                    // same skip; Pending(...).Aborting(), no connection attempted
+
+// A later reconcile, once the grace period has elapsed:
+mc3 := pipeline.NewModuleContext(cr, "finance", nil, nsLabels, log, pool)
+inSync3, _ := module.Observe(ctx, mc3) // reconnects as platform; inSync3 == true
+outcome3 := module.Apply(ctx, mc3)     // reconnects again, no SQL issued, returns Done()
 ```

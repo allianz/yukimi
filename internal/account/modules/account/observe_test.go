@@ -21,6 +21,7 @@ import (
 	"database/sql"
 	"errors"
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -136,5 +137,44 @@ func TestObserve_KnownLocator_ConnectionFails(t *testing.T) {
 	}
 	if !errors.Is(outcome.Err, wantErr) {
 		t.Errorf("outcome.Err = %v, want it to wrap %v", outcome.Err, wantErr)
+	}
+}
+
+// Observe never attempts a connection while the account is within its
+// post-create grace period.
+func TestObserve_WithinGracePeriod_NoConnectionAttempt(t *testing.T) {
+	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345", []string{"a@b.com"}, "")
+	cr.Status.AccountCreatedAt = &metav1.Time{Time: time.Now()}
+	mc := pipeline.NewModuleContext(cr, "ns", nil, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
+
+	m := &module{gracePeriod: 5 * time.Minute}
+	inSync, outcome := m.Observe(context.Background(), mc)
+
+	if inSync {
+		t.Error("inSync = true, want false")
+	}
+	if outcome.State != pipeline.StatePending {
+		t.Errorf("outcome.State = %v, want StatePending", outcome.State)
+	}
+}
+
+// Observe attempts a connection as usual once the grace period has elapsed.
+func TestObserve_PastGracePeriod_ConnectionAttempted(t *testing.T) {
+	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345", []string{"a@b.com"}, "")
+	cr.Status.AccountCreatedAt = &metav1.Time{Time: time.Now().Add(-10 * time.Minute)}
+	fake := &fakeDBPool{}
+	mc := pipeline.NewModuleContext(cr, "ns", nil, nil, nil, fake)
+
+	m := &module{gracePeriod: 5 * time.Minute}
+	inSync, outcome := m.Observe(context.Background(), mc)
+
+	if !inSync {
+		t.Error("inSync = false, want true")
+	}
+	if outcome.State != pipeline.StateDone {
+		t.Errorf("outcome.State = %v, want StateDone", outcome.State)
+	}
+	if fake.tenantCalls != 1 {
+		t.Errorf("TenantAccount called %d times, want 1", fake.tenantCalls)
 	}
 }

@@ -18,12 +18,13 @@ package account
 
 import (
 	"testing"
+	"time"
 
 	"github.com/allianz/yukimi/internal/secrets"
 )
 
 func TestNew(t *testing.T) {
-	m := New(secrets.NewFakeBackend(), "myorg")
+	m := New(secrets.NewFakeBackend(), "myorg", 5*time.Minute)
 	if m == nil {
 		t.Fatal("New() = nil, want non-nil")
 	}
