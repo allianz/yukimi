@@ -94,20 +94,16 @@ identity bindings are untouched.
 
 Destroying an account walks the same module list backwards. Each module removes only the state that
 does not die with the account itself — most remove nothing at all, because dropping the account takes
-every object inside it along. The account's own drop therefore comes after every module that depends on
-the account existing, and the first error stops the run: nothing further is destroyed while an earlier
-step is unresolved. Every teardown must be safe to re-run, since a destruction interrupted anywhere is
-retried from the beginning.
+every object inside it along. The account's own drop therefore comes last, and the first error stops the
+run: nothing further is destroyed while an earlier step is unresolved. Every teardown must be safe to
+re-run, since a destruction interrupted anywhere is retried from the beginning.
 
 **Important**: a teardown reaches for the org-admin connection or for no connection at all. Objects
 inside the tenant's own account never need removing — they go with it.
 
-A successful `Destroy` means every teardown reported success, not that the external state is gone. Some
-vendors answer a destruction by starting a clock instead of erasing anything: the account stays restorable
-for its grace period and keeps its name reserved, and the platform credential stays restorable for the
-window the secret store derived from that same grace period (012, 003). Nothing in this package models
-those clocks, and no `Destroy` result reports them — the caller (020) records the deadlines on the consumed
-deletion request (019). What this package guarantees is only ordering and idempotence.
+A successful `Destroy` means every teardown reported success, not that the external state is gone: a drop
+may only start a grace period, during which the account and its platform credential stay restorable
+(012, 003). What it guarantees is ordering and idempotence.
 
 ## Public API
 

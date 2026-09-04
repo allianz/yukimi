@@ -48,23 +48,14 @@ leaving a failure in the log — see Key Concept: Post-Create Grace Period.
 
 ## Key Concept: Post-Create Grace Period
 
-Every module after this one in the pipeline needs a live connection to the account, so nothing about a
-reconcile landing inside the grace period is special to this module alone — it exists to keep every
-downstream module from being asked to connect to an account before it's plausibly ready. The anchor is
-`status.accountCreatedAt`, a field this module owns and sets exactly once, at the moment `CREATE ACCOUNT`
-succeeds — the same "a module may add its own named status field" allowance spec 009 documents for 017's
-`identitySyncStartedAt`. Neither the CRD's own `metadata.creationTimestamp` nor a live re-query of
-Snowflake's `SHOW ACCOUNTS` `created_on` column can substitute for it: guardrail-check (010) and
-quota-check (011) run ahead of this module and can abort the whole pipeline before `CREATE ACCOUNT` ever
-runs, so `creationTimestamp` can predate the real creation moment by an unbounded amount whenever
-admission was delayed; and re-querying Snowflake would mean reopening the org-admin connection on every
-reconcile during the grace window, against this module's own confinement of that connection to the single
-`CREATE ACCOUNT` moment (Key Concept: The Only Module With Organization-Wide Privileges).
+A brand-new account is not reachable right away. So for a configured period (002) after creation, the
+pipeline waits instead of trying to connect. Every module after this one needs that connection, so the wait
+protects all of them, not just this one.
 
-The grace period's length is `Config.Snowflake.AccountCreationGracePeriod` (002), passed into `New` as a
-plain `time.Duration`. A `nil` `status.accountCreatedAt` — an account created before this field existed —
-is treated as "the grace period has already elapsed," so a connection is attempted as usual; nothing
-changes for accounts that predate this mechanism.
+The wait is measured from `status.accountCreatedAt`, which this module sets once, when `CREATE ACCOUNT`
+succeeds. Only this module knows when the account was really created: the resource can be admitted long
+before that, and asking Snowflake would mean reopening the org-admin connection on every reconcile. If the
+field is absent, the wait counts as already over.
 
 ## Key Concept: The Only Module With Organization-Wide Privileges
 
@@ -78,42 +69,14 @@ instead.
 
 ## Key Concept: Two Restore Windows
 
-Dropping an account does not erase it. Snowflake keeps it restorable for a grace period, during which the
-resolved name stays taken — so re-creating the same resource inside that window collides on the name
-instead of getting a fresh account. The credential is deleted as soon as the drop succeeds, and the secret
-store holds its own recovery window on that deletion (003.a). The two windows are tied together by one
-ops-owned setting, `deletion.gracePeriodDays` (002, default 30, minimum 7): this module renders it
-verbatim as `DROP ACCOUNT`'s `GRACE_PERIOD_IN_DAYS`, and the secrets backend caps its own recovery
-window at the same number, never exceeding it (003, 003.a).
+Teardown does not erase a tenant. It leaves two remnants behind: the account, and the credential that
+connects to it. Each one stays recoverable for a while. A tenant can only be restored while both are still
+there.
 
-The tie is one-directional on purpose. A credential window *shorter* than the account's leaves a band of
-days on which `UNDROP ACCOUNT` succeeds but the platform credential is already gone — degraded, and
-repairable by hand (see below). A credential window *longer* than the account's would be worse than
-useless: the account is unrecoverable by then, so nothing can be recovered into the path, while the path
-itself stays occupied and blocks re-provisioning under the same `metadata.name`. So the credential window
-is as long as the store can represent without ever outliving the grace period, and the binding constraint
-on re-provisioning is always Snowflake's grace period alone.
-
-At the default of 30 the two windows coincide exactly — AWS Secrets Manager's ceiling is 30 days — so
-there is no repair band at all. Raising `deletion.gracePeriodDays` above 30 opens one. 002's own floor (7)
-matches Secrets Manager's minimum, so the credential window can never be forced to zero on the AWS backend
-— every grace period this module can ever render still leaves the credential recoverable for at least 7
-days.
-
-### Manual repair, when the credential is already gone
-
-Restoring an account whose credential is no longer recoverable takes three operator steps, in order:
-
-1. `UNDROP ACCOUNT <name>` over an org-admin connection, inside the account's grace period.
-2. Re-key the account's `platform` user: generate a fresh RSA keypair and
-   `ALTER USER platform SET RSA_PUBLIC_KEY = '<new public key>'` from inside the restored account.
-3. Store the new credential at the tenant secret path (003), so the next reconcile connects normally.
-
-**Residual risk**: step 2 needs a login to the restored account, and the only human identities that have
-one are the GIAM `ACCOUNTADMIN` groups (017). If those groups were de-provisioned along with the tenant,
-nobody can perform the re-key and the account cannot be recovered at all — the exposure already recorded
-as design.md Appendix B (X1). Nothing in this module mitigates it; it is the reason the default grace
-period is set where the credential window can match it exactly.
+So both windows come from the same ops-owned setting, `deletion.gracePeriodDays` (002). The credential's
+window may end earlier than the account's, but never later. Later is the bad direction: the leftover
+credential keeps the tenant's name unusable after the account itself is gone for good. Earlier only means
+an operator has to restore the credential by hand.
 
 ## Public API
 
