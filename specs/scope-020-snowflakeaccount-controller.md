@@ -49,7 +49,7 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
     `QuotaAvailable` and `IdentitySynced` conditions, `status.accountName` and `status.accountUrl`,
     and the warning events (`QuotaExhausted`, `SyncTimeout`, `DeletionBlocked`) via
     crossplane-runtime's injected `event.Recorder`.
-  - **The deletion gate (6.3 Phases 2–3)**: on `deletionTimestamp`, query for an Active warrant in
+  - **The deletion gate (6.3 Phases 2–3)**: on `deletionTimestamp`, query for an Active request in
     the same namespace targeting this resource. If one is found, run `DROP ACCOUNT` over the
     org-admin connection, release the finalizer, and mark the request `Consumed`. If it is absent or
     expired, refuse: stall in `Terminating`, emit `Warning: DeletionBlocked`, and set `Ready=False`
@@ -173,3 +173,34 @@ section for why 008 itself is unaffected.
   region's `available` gate (007) and the CEL-enforced immutability checks (006) — both structural,
   both cheap, both still meaningfully separate from anything a pipeline module could do, since neither
   needs the CRD to already be guardrail-clean.
+
+## Raised by the 019 clarification
+
+Recorded by `/yukimi.clarify 019`. This finalizes the exact API for the deletion gate this file
+already describes in prose (Phase 2/3), so 020 has a concrete contract to call rather than needing to
+work one out itself.
+
+- **The lookup and consume calls are**:
+  ```go
+  func FindActiveRequest(ctx context.Context, c client.Client, namespace, targetKind, targetName string) (*v1alpha1.SnowflakeDeletionRequest, error)
+  func MarkConsumed(ctx context.Context, c client.Client, req *v1alpha1.SnowflakeDeletionRequest) error
+  ```
+  Both live in `internal/deletion` and take a `sigs.k8s.io/controller-runtime` `client.Client`
+  directly (the manager's client is available via `mgr.GetClient()` in 020's own setup). 020 should
+  call these rather than hand-rolling its own `client.List`/`client.Status().Update` against
+  `SnowflakeDeletionRequest` — that logic, including how ties are broken, belongs to 019's package.
+- **020 does not need to re-check `validUntil` itself.** `FindActiveRequest` trusts the target's
+  persisted `status.state` field as authoritative and returns only genuinely `Active` candidates;
+  it performs no separate live-time comparison, and 020 doesn't need to add one either. The
+  accepted staleness bound is roughly one reconciler poll interval (~1 minute at the default
+  `--poll` setting), which is small against the 8-hour maximum window a request can ever authorize.
+- **020 does not need to handle multiple concurrently-Active requests targeting the same
+  resource itself.** Nothing prevents two `Active` requests from targeting the same
+  `SnowflakeAccount` at once (no admission-webhook infrastructure exists in this platform to enforce
+  cross-object uniqueness). `FindActiveRequest` already resolves this deterministically (earliest
+  `creationTimestamp` wins) before returning, so 020's Phase 2/3 logic can treat the result as a
+  single candidate or `nil`, nothing more.
+- **`SnowflakeDeletionRequest` has its own controller and finalizer-free lifecycle**, registered
+  separately from 020's own controller registration. 020 only ever reads (`FindActiveRequest`) and
+  writes (`MarkConsumed`) it as a sibling object — it does not own or drive that CRD's own
+  `Observe`/`Create`/`Update`/`Delete`.

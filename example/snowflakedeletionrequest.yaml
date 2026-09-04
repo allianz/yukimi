@@ -1,0 +1,10 @@
+apiVersion: base.snowflake.yukimi.io/v1alpha1
+kind: SnowflakeDeletionRequest
+metadata:
+  name: decommission-analytics-prod
+spec:
+  targetRef:
+    kind: SnowflakeAccount
+    name: analytics-team-eu2   # CRD name, not the resolved Snowflake name
+  duration: 4h                # Maintenance window (max: 8h)
+  reason: "Ticket OPS-1234: Project sunsetting, data archived."

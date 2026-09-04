@@ -61,7 +61,7 @@ The two transient documents are deleted at different points:
 | `016-identity-sync-request.md` | `apis/identity/v1alpha1/` + `internal/identitysync/` | IdentitySyncRequest contract and emitter |
 | `017-identity-module.md` | `internal/account/modules/identity/` | Group import and system role bindings |
 | `018-quota-monitor.md` | `internal/account/modules/quotamonitor/` | Resource monitor/budget enforcement, credit-exhaustion condition |
-| `019-deletion-request.md` | `apis/base/v1alpha1/` + `internal/deletion/` | Deletion warrants (positive control) |
+| `019-deletion-request.md` | `apis/base/v1alpha1/` + `internal/deletion/` | Deletion requests (positive control) |
 | `020-snowflakeaccount-controller.md` | `internal/controller/snowflakeaccount/` | Module wiring, validation phase, deletion gate, reporting |
 | `021-replication.md` | `apis/base/v1alpha1/` + `internal/replication/` | SnowflakeReplication setup, auto-repair, manual failover |
 
