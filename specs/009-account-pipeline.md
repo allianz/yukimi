@@ -102,6 +102,13 @@ retried from the beginning.
 **Important**: a teardown reaches for the org-admin connection or for no connection at all. Objects
 inside the tenant's own account never need removing — they go with it.
 
+A successful `Destroy` means every teardown reported success, not that the external state is gone. Some
+vendors answer a destruction by starting a clock instead of erasing anything: the account stays restorable
+for its grace period and keeps its name reserved, and the platform credential stays restorable for the
+window the secret store derived from that same grace period (012, 003). Nothing in this package models
+those clocks, and no `Destroy` result reports them — the caller (020) records the deadlines on the consumed
+deletion request (019). What this package guarantees is only ordering and idempotence.
+
 ## Public API
 
 ```go
@@ -124,6 +131,11 @@ type Module interface {
     // modules have none and return nil. It uses OrgAdminDB or no connection at
     // all — never TenantDB — and must be safe to call repeatedly (Key Concept:
     // Reverse-Order Teardown).
+    //
+    // A nil error means the removal was accepted, not necessarily that the
+    // object is gone: a vendor may keep it restorable, and its name reserved,
+    // for a grace period. There is no channel here to report such a deadline,
+    // deliberately — a module that has one logs it (012).
     Teardown(ctx context.Context, mc *ModuleContext) error
 }
 
@@ -167,6 +179,10 @@ func (p *Pipeline) Apply(ctx context.Context, mc *ModuleContext) (Result, error)
 // Destroy calls every module's Teardown in reverse registration order, so
 // every module registered after the account module tears down before the
 // account itself is dropped (Key Concept: Reverse-Order Teardown).
+//
+// A nil return means every teardown was accepted. It does not mean the
+// external state is gone: the account and its credential may both still be
+// inside their restore windows (Key Concept: Reverse-Order Teardown).
 //
 // Returns:
 //   - error: the first Teardown error, returned unchanged and already
@@ -353,7 +369,15 @@ classify. `Destroy` likewise returns a module's `Teardown` error exactly as that
   finalizer. A resource an admission gate refused is still deletable.
 - **`Destroy` fails halfway — is what already ran compensated for?** - No. The error stops the run and
   the next attempt walks the whole list again from the end; every teardown is safe to re-run, so the
-  steps that already completed simply report success a second time.
+  steps that already completed simply report success a second time. A half-failed run can leave a genuinely
+  mixed state — the account dropped but still restorable while its credential is already inside its own
+  recovery window, or the reverse — and that is fine: both clocks were started by the same configured grace
+  period and neither outlives it, so the state converges without intervention. Re-running is still what
+  clears the *retryable* part of it.
+- **Does a successful `Destroy` mean the caller can safely re-create the same resource immediately?** - No,
+  and nothing here promises it. The resolved account name stays reserved for the account's grace period
+  (012), so a re-create inside that window collides on the name. `Destroy`'s contract is ordering and
+  idempotence, not erasure.
 
 ## Dependencies
 
@@ -425,6 +449,9 @@ directly.
 14. **SC-014**: `ModuleContext.EvictTenant` calls the pool with the same namespace and account name
     `TenantDB` resolves its connection under.
 15. **SC-015**: Unit test coverage of `internal/account` is at least 95%.
+16. **SC-016**: `Destroy` returns nil once every `Teardown` returned nil, and reports nothing else — no
+    restore deadline, no partial-erasure signal — so a successful run cannot be mistaken for the external
+    state having been erased.
 
 ## Security Considerations
 

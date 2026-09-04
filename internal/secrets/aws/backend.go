@@ -39,12 +39,22 @@ type client interface {
 	DeleteSecret(ctx context.Context, in *secretsmanager.DeleteSecretInput, opts ...func(*secretsmanager.Options)) (*secretsmanager.DeleteSecretOutput, error)
 }
 
+// Secrets Manager's DeleteSecret accepts a RecoveryWindowInDays between these two values
+// inclusive; anything outside the band has to be expressed as ForceDeleteWithoutRecovery
+// instead, which the API refuses to accept in the same call as a window.
+const (
+	minRecoveryWindowDays = 7
+	maxRecoveryWindowDays = 30
+)
+
 // Backend implements secrets.Backend (003) against AWS Secrets Manager.
-// Each method is exactly one AWS API call; the struct holds only the client
-// and the KMS key id carried through to every Create.
+// Each method is exactly one AWS API call; the struct holds only the client,
+// the KMS key id carried through to every Create, and the recovery window
+// derived once for every Delete.
 type Backend struct {
-	client   client
-	kmsKeyId string
+	client         client
+	kmsKeyId       string
+	recoveryWindow secrets.RecoveryWindow
 }
 
 var _ secrets.Backend = (*Backend)(nil)
@@ -59,14 +69,19 @@ var _ secrets.Backend = (*Backend)(nil)
 //     (Config.AWS.KmsKeyId, 002); passed to CreateSecret's KmsKeyId only
 //     when non-empty — otherwise Secrets Manager's AWS-managed default key
 //     encrypts the secret
+//   - gracePeriodDays: the account grace period (Config.Deletion.GracePeriodDays,
+//     002) the recovery window is derived from, once, here — every Delete then
+//     uses that one window
 //
 // Returns:
-//   - secrets.Backend: never nil on a nil error
+//   - *Backend: never nil on a nil error. Returned concretely rather than as
+//     secrets.Backend so main.go can reach RecoveryWindow() without a type
+//     assertion; every other consumer takes the interface.
 //   - User error if region is empty
 //   - System error if the AWS SDK's own local config/credential loading
 //     fails (e.g. a malformed shared config file) — this is not a network
 //     call and not specific to Secrets Manager
-func New(region, kmsKeyId string) (secrets.Backend, error) {
+func New(region, kmsKeyId string, gracePeriodDays int) (*Backend, error) {
 	if region == "" {
 		return nil, errors.NewUserError(
 			"AWS region is required to construct the secrets backend (expected: aws.region in base.yaml)")
@@ -80,7 +95,16 @@ func New(region, kmsKeyId string) (secrets.Backend, error) {
 	return &Backend{
 		client:   secretsmanager.NewFromConfig(cfg),
 		kmsKeyId: kmsKeyId,
+		recoveryWindow: secrets.DeriveRecoveryWindow(
+			gracePeriodDays, minRecoveryWindowDays, maxRecoveryWindowDays),
 	}, nil
+}
+
+// RecoveryWindow returns the window this backend derived at construction, so main.go can log
+// its Describe() once at startup — the gap between it and the account grace period, if any, is
+// worth knowing before someone needs a restore rather than during one.
+func (b *Backend) RecoveryWindow() secrets.RecoveryWindow {
+	return b.recoveryWindow
 }
 
 // Get reads the value and CreatedDate stored at path via GetSecretValue.
@@ -134,19 +158,36 @@ func (b *Backend) Update(ctx context.Context, path secrets.Path, value string) e
 	return nil
 }
 
-// Delete removes path via DeleteSecret, leaving AWS's default recovery
-// window in place. Never calls RestoreSecret or ForceDeleteWithoutRecovery.
+// Delete removes path via DeleteSecret, scheduling it for the window derived at construction
+// rather than accepting AWS's own 30-day default, which could outlive a shorter account grace
+// period. When the derived window is zero — a grace period below Secrets Manager's 7-day
+// minimum — it sets ForceDeleteWithoutRecovery instead; the two inputs are mutually exclusive
+// in one call. Never calls RestoreSecret.
 //
 // Returns:
+//   - time.Time: AWS's own DeletionDate, the moment the value stops being restorable; the zero
+//     time when it was force-deleted and so is already gone
 //   - System error if the call fails, including on an already-absent path
 //     (AWS's ResourceNotFoundException) — unlike 003's FakeBackend.Delete,
 //     this is not idempotent (see Edge Cases)
-func (b *Backend) Delete(ctx context.Context, path secrets.Path) error {
-	_, err := b.client.DeleteSecret(ctx, &secretsmanager.DeleteSecretInput{
+func (b *Backend) Delete(ctx context.Context, path secrets.Path) (time.Time, error) {
+	in := &secretsmanager.DeleteSecretInput{
 		SecretId: aws.String(path.String()),
-	})
-	if err != nil {
-		return fmt.Errorf("failed to delete secret at %s: %w", path, err)
 	}
-	return nil
+	if b.recoveryWindow.Immediate() {
+		in.ForceDeleteWithoutRecovery = aws.Bool(true)
+	} else {
+		in.RecoveryWindowInDays = aws.Int64(int64(b.recoveryWindow.Days()))
+	}
+
+	out, err := b.client.DeleteSecret(ctx, in)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("failed to delete secret at %s: %w", path, err)
+	}
+	if b.recoveryWindow.Immediate() {
+		// AWS still reports a DeletionDate on a forced delete; the value is gone, so
+		// reporting a restorable-until deadline for it would be a lie.
+		return time.Time{}, nil
+	}
+	return aws.ToTime(out.DeletionDate), nil
 }

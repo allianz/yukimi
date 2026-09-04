@@ -89,7 +89,22 @@ func (f *fakeClient) DeleteSecret(_ context.Context, in *secretsmanager.DeleteSe
 	if f.deleteErr != nil {
 		return nil, f.deleteErr
 	}
-	return &secretsmanager.DeleteSecretOutput{}, nil
+	return &secretsmanager.DeleteSecretOutput{DeletionDate: aws.Time(fakeDeletionDate)}, nil
+}
+
+// fakeDeletionDate is what fakeClient.DeleteSecret reports as the moment the secret stops
+// being restorable, so TestDelete can assert Delete reads it through unchanged instead of
+// recomputing it from the window.
+var fakeDeletionDate = time.Date(2026, 10, 4, 9, 30, 0, 0, time.UTC)
+
+// newTestBackend builds a Backend whose recovery window is derived from gracePeriodDays
+// exactly as New derives it, without the SDK config load New performs.
+func newTestBackend(fake *fakeClient, gracePeriodDays int) *Backend {
+	return &Backend{
+		client: fake,
+		recoveryWindow: secrets.DeriveRecoveryWindow(
+			gracePeriodDays, minRecoveryWindowDays, maxRecoveryWindowDays),
+	}
 }
 
 func testPath(t *testing.T) secrets.Path {
@@ -103,7 +118,7 @@ func testPath(t *testing.T) secrets.Path {
 
 func TestNew(t *testing.T) {
 	t.Run("empty region is a user error", func(t *testing.T) {
-		backend, err := New("", "")
+		backend, err := New("", "", 30)
 		if err == nil {
 			t.Fatal("expected an error for empty region")
 		}
@@ -116,12 +131,16 @@ func TestNew(t *testing.T) {
 	})
 
 	t.Run("non-empty region succeeds and makes no AWS call", func(t *testing.T) {
-		backend, err := New("eu-central-1", "")
+		backend, err := New("eu-central-1", "", 30)
 		if err != nil {
 			t.Fatalf("New: %v", err)
 		}
 		if backend == nil {
 			t.Fatal("expected a non-nil Backend")
+		}
+		// SC-019: the window is derived once, here, from the account grace period.
+		if got := backend.RecoveryWindow().Days(); got != 30 {
+			t.Fatalf("RecoveryWindow().Days() = %d, want 30", got)
 		}
 	})
 
@@ -134,7 +153,7 @@ func TestNew(t *testing.T) {
 		t.Setenv("AWS_CONFIG_FILE", configPath)
 		t.Setenv("AWS_PROFILE", "broken")
 
-		backend, err := New("eu-central-1", "")
+		backend, err := New("eu-central-1", "", 30)
 		if err == nil {
 			t.Fatal("expected a config-load error")
 		}
@@ -313,30 +332,75 @@ func TestUpdate(t *testing.T) {
 func TestDelete(t *testing.T) {
 	path := testPath(t)
 
-	t.Run("success calls DeleteSecret with no recovery-bypass flags", func(t *testing.T) {
-		fake := &fakeClient{}
-		backend := &Backend{client: fake}
+	// SC-020, SC-021: the derived window is what Delete sends, never AWS's own 30-day default,
+	// and a grace period the band cannot represent becomes a forced delete rather than a window
+	// that would outlive the account.
+	t.Run("the window sent is derived from the grace period", func(t *testing.T) {
+		for _, tc := range []struct {
+			name            string
+			gracePeriodDays int
+			wantWindowDays  int64 // 0 means "expect ForceDeleteWithoutRecovery instead"
+		}{
+			{"grace period above the band's ceiling is capped", 90, 30},
+			{"grace period at the band's ceiling matches exactly", 30, 30},
+			{"grace period inside the band is used verbatim", 14, 14},
+			{"grace period at the band's floor is used verbatim", 7, 7},
+			{"grace period below the band's floor forces an irreversible delete", 3, 0},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				fake := &fakeClient{}
+				backend := newTestBackend(fake, tc.gracePeriodDays)
 
-		if err := backend.Delete(context.Background(), path); err != nil {
-			t.Fatalf("Delete: %v", err)
-		}
-		if !fake.deleteCalled {
-			t.Fatal("expected DeleteSecret to be called")
-		}
-		if aws.ToString(fake.deleteInput.SecretId) != path.String() {
-			t.Fatalf("SecretId = %q, want %q", aws.ToString(fake.deleteInput.SecretId), path.String())
-		}
-		if fake.deleteInput.ForceDeleteWithoutRecovery != nil {
-			t.Fatal("Delete must never set ForceDeleteWithoutRecovery")
+				restorableUntil, err := backend.Delete(context.Background(), path)
+				if err != nil {
+					t.Fatalf("Delete: %v", err)
+				}
+				if !fake.deleteCalled {
+					t.Fatal("expected DeleteSecret to be called")
+				}
+				if aws.ToString(fake.deleteInput.SecretId) != path.String() {
+					t.Fatalf("SecretId = %q, want %q", aws.ToString(fake.deleteInput.SecretId), path.String())
+				}
+
+				if tc.wantWindowDays == 0 {
+					if !aws.ToBool(fake.deleteInput.ForceDeleteWithoutRecovery) {
+						t.Error("expected ForceDeleteWithoutRecovery to be set")
+					}
+					// The two inputs are mutually exclusive; AWS rejects a call carrying both.
+					if fake.deleteInput.RecoveryWindowInDays != nil {
+						t.Errorf("RecoveryWindowInDays = %d, want unset alongside ForceDeleteWithoutRecovery",
+							aws.ToInt64(fake.deleteInput.RecoveryWindowInDays))
+					}
+					// SC-022: nothing is restorable, so no deadline is reported.
+					if !restorableUntil.IsZero() {
+						t.Errorf("restorableUntil = %v, want the zero time on a forced delete", restorableUntil)
+					}
+					return
+				}
+
+				if got := aws.ToInt64(fake.deleteInput.RecoveryWindowInDays); got != tc.wantWindowDays {
+					t.Errorf("RecoveryWindowInDays = %d, want %d", got, tc.wantWindowDays)
+				}
+				if fake.deleteInput.ForceDeleteWithoutRecovery != nil {
+					t.Error("Delete must not set ForceDeleteWithoutRecovery alongside a window")
+				}
+				// SC-022: the deadline is AWS's own DeletionDate, read through unchanged.
+				if !restorableUntil.Equal(fakeDeletionDate) {
+					t.Errorf("restorableUntil = %v, want %v", restorableUntil, fakeDeletionDate)
+				}
+			})
 		}
 	})
 
 	t.Run("failure on an already-absent path is wrapped, not swallowed", func(t *testing.T) {
 		underlying := errors.New("ResourceNotFoundException: secret not found")
 		fake := &fakeClient{deleteErr: underlying}
-		backend := &Backend{client: fake}
+		backend := newTestBackend(fake, 30)
 
-		err := backend.Delete(context.Background(), path)
+		restorableUntil, err := backend.Delete(context.Background(), path)
+		if !restorableUntil.IsZero() {
+			t.Errorf("restorableUntil = %v, want the zero time on error", restorableUntil)
+		}
 		if err == nil {
 			t.Fatal("expected Delete on an already-absent path to fail (not idempotent)")
 		}

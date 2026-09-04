@@ -84,12 +84,13 @@ func (c *CachedBackend) Update(ctx context.Context, path Path, value string) err
 	return nil
 }
 
-func (c *CachedBackend) Delete(ctx context.Context, path Path) error {
-	if err := c.backend.Delete(ctx, path); err != nil {
-		return err
+func (c *CachedBackend) Delete(ctx context.Context, path Path) (time.Time, error) {
+	restorableUntil, err := c.backend.Delete(ctx, path)
+	if err != nil {
+		return time.Time{}, err
 	}
 	c.Invalidate(path)
-	return nil
+	return restorableUntil, nil
 }
 
 // Invalidate clears path's cache entry without touching the underlying

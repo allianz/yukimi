@@ -45,7 +45,9 @@ func TestIntegration_RunnerAgainstLiveSnowflake(t *testing.T) {
 	// (internal/snowflake/statement), so the repo-root .env is 3 levels up.
 	_ = godotenv.Load("../../../.env")
 
-	backend, err := secretsaws.New(os.Getenv("AWS_REGION"), "")
+	// 30 is base.Config's default deletion grace period (002), which the backend derives its
+	// recovery window from; nothing here deletes a secret.
+	backend, err := secretsaws.New(os.Getenv("AWS_REGION"), "", 30)
 	if err != nil {
 		t.Fatalf("secretsaws.New: %v", err)
 	}

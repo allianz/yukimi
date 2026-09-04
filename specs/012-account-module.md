@@ -81,11 +81,37 @@ instead.
 Dropping an account does not erase it. Snowflake keeps it restorable for a grace period, during which the
 resolved name stays taken — so re-creating the same resource inside that window collides on the name
 instead of getting a fresh account. The credential is deleted as soon as the drop succeeds, and the secret
-store holds its own recovery window on that deletion (003.a). The two windows have to agree: a restored
-account whose credential is already unrecoverable cannot be managed again.
+store holds its own recovery window on that deletion (003.a). The two windows are tied together by one
+ops-owned setting, `deletion.gracePeriodDays` (002, default 30): this module renders it verbatim as
+`DROP ACCOUNT`'s `GRACE_PERIOD_IN_DAYS`, and the secrets backend derives its own recovery window from the
+same number, never exceeding it (003).
 
-**TODO**: the drop's `GRACE_PERIOD_IN_DAYS` is a constant `3` — Snowflake's minimum — and the credential
-is deleted immediately. Both must be made consistent with the secret store's recovery window.
+The tie is one-directional on purpose. A credential window *shorter* than the account's leaves a band of
+days on which `UNDROP ACCOUNT` succeeds but the platform credential is already gone — degraded, and
+repairable by hand (see below). A credential window *longer* than the account's would be worse than
+useless: the account is unrecoverable by then, so nothing can be recovered into the path, while the path
+itself stays occupied and blocks re-provisioning under the same `metadata.name`. So the derived window is
+as long as the store can represent without ever outliving the grace period, and the binding constraint on
+re-provisioning is always Snowflake's grace period alone.
+
+At the default of 30 the two windows coincide exactly — AWS Secrets Manager's ceiling is 30 days — so
+there is no repair band at all. Raising `deletion.gracePeriodDays` above 30 opens one; lowering it below 7
+closes the credential window entirely, and the credential is destroyed with the drop.
+
+### Manual repair, when the credential is already gone
+
+Restoring an account whose credential is no longer recoverable takes three operator steps, in order:
+
+1. `UNDROP ACCOUNT <name>` over an org-admin connection, inside the account's grace period.
+2. Re-key the account's `platform` user: generate a fresh RSA keypair and
+   `ALTER USER platform SET RSA_PUBLIC_KEY = '<new public key>'` from inside the restored account.
+3. Store the new credential at the tenant secret path (003), so the next reconcile connects normally.
+
+**Residual risk**: step 2 needs a login to the restored account, and the only human identities that have
+one are the GIAM `ACCOUNTADMIN` groups (017). If those groups were de-provisioned along with the tenant,
+nobody can perform the re-key and the account cannot be recovered at all — the exposure already recorded
+as design.md Appendix B (X1). Nothing in this module mitigates it; it is the reason the default grace
+period is set where the credential window can match it exactly.
 
 ## Public API
 
@@ -105,10 +131,15 @@ is deleted immediately. Both must be made consistent with the secret store's rec
 //     internal/snowflake/pool does.
 //   - gracePeriod: Config.Snowflake.AccountCreationGracePeriod (002) — how long a fresh account is
 //     given to become reachable before the first post-create connection attempt.
+//   - deletionGracePeriodDays: Config.Deletion.GracePeriodDays (002) — rendered verbatim as
+//     DROP ACCOUNT's GRACE_PERIOD_IN_DAYS on teardown. Not to be confused with gracePeriod
+//     above, which is a post-create reachability delay and has nothing to do with deletion.
+//     Already bounded to Snowflake's own 3-90 by 002's loader, so this module does not
+//     re-validate it.
 //
 // Returns:
 //   - pipeline.Module: never nil.
-func New(backend secrets.Backend, org string, gracePeriod time.Duration) pipeline.Module
+func New(backend secrets.Backend, org string, gracePeriod time.Duration, deletionGracePeriodDays int) pipeline.Module
 ```
 
 `Observe`, `Apply` and `Teardown` themselves are unexported methods on the value `New` returns — nothing
@@ -117,10 +148,19 @@ Create-Then-Verify Lifecycle and Key Concept: Post-Create Grace Period above rat
 read `status.accountLocator`/`status.accountCreatedAt` directly through `ModuleContext.CR()`, not through
 any `ModuleContext` accessor — `internal/account/pipeline` (009) defines none for either field.
 
-`Teardown` runs three steps in a fixed order: `DROP ACCOUNT` over the org-admin connection, then
-`ModuleContext.EvictTenant()` so no stale pooled connection to a dropped account survives, then
-`Backend.Delete` on the tenant secret path. Each step runs only once the one before it succeeded, and a
-step whose object is already absent counts as success, so the whole sequence is safe to re-run.
+`Teardown` runs three steps in a fixed order: `DROP ACCOUNT ... GRACE_PERIOD_IN_DAYS = <configured>` over
+the org-admin connection, then `ModuleContext.EvictTenant()` so no stale pooled connection to a dropped
+account survives, then `Backend.Delete` on the tenant secret path. Each step runs only once the one before
+it succeeded, and a step whose object is already absent counts as success, so the whole sequence is safe to
+re-run.
+
+`Backend.Delete` returns the moment the credential stops being restorable — the zero time when the store
+destroyed it outright (003). `Teardown` logs that timestamp and returns nothing but an error, since
+`pipeline.Module` gives it no other channel. That is enough: the deadline recorded durably on the consumed
+deletion request (019's `credentialRestorableUntil`) is derived from the same configured grace period, so
+020 computes it without needing anything back out of this module. The log exists for the one case the
+derivation cannot see — a store whose actual deadline differs from the derived window, e.g. after someone
+changed the store's settings underneath the provider.
 
 **Note**: whether `CREATE ACCOUNT` additionally accepts bind parameters for any of its positions (rather
 than rendered text, see Security Considerations) is an unverified vendor fact — not needed to build this
@@ -199,6 +239,18 @@ internal/account/modules/account/
   credential is deleted. That clears the stray secret a crashed create leaves behind (see above); if an
   account really was created and its locator never persisted, dropping it stays the manual operator job
   that case already describes.
+- **The credential path is scheduled for deletion but not yet gone — what does the next reconcile see?**
+  Neither present nor absent. A path inside its recovery window cannot be read and cannot be re-created
+  (003), so `Observe` cannot treat it as a live credential and `Apply`'s fresh-create path cannot claim it
+  either: the create-only write fails on an occupied path exactly as it does for a live credential, and the
+  failure is a system error like any other store fault. There is nothing for this module to do about it —
+  the state is self-clearing, bounded by the account's own grace period, and re-provisioning under the same
+  `metadata.name` was already blocked by the account name for at least as long.
+- **Why render the configured grace period rather than Snowflake's minimum of 3?** Because 3 is the value
+  that makes recovery least likely to work: it is below the 7-day floor AWS Secrets Manager can represent,
+  so the credential would be destroyed outright on every deletion and every restore would need the manual
+  repair above. The configured default of 30 is instead the largest value the reference store matches
+  exactly.
 - **The account, or the secret path, is already gone — does `Teardown` fail?** No. Both count as
   success, so a destruction retried after a partial failure — or after an operator cleaned up by
   hand — converges instead of stalling. The backends do not agree on this themselves (AWS's `Delete`
@@ -207,11 +259,15 @@ internal/account/modules/account/
 
 ## Dependencies
 
-- **Base Configuration (002)** — Used APIs: `Config.Snowflake.Org`, `Config.Snowflake.AccountCreationGracePeriod`
-  — Contract: both passed to `New` as plain values; this module never loads the config file itself.
+- **Base Configuration (002)** — Used APIs: `Config.Snowflake.Org`, `Config.Snowflake.AccountCreationGracePeriod`,
+  `Config.Deletion.GracePeriodDays` — Contract: all three passed to `New` as plain values; this module never
+  loads the config file itself, and never re-validates `GracePeriodDays`, which 002's loader has already
+  bounded to Snowflake's documented 3-90.
 - **Secrets Handling (003)** — Used APIs: `GenerateKeyPair()`/`NewCredentials()`, `MarshalCredentials()`,
   `NewTenantPath()`, `Backend.Create()`, `Backend.Delete()` — Contract: `Create` and `Delete` only,
-  never `Update`; the module never reads a credential back.
+  never `Update`; the module never reads a credential back. `Delete`'s recovery window is the backend's own
+  business — this module passes no window and cannot choose one; it only observes the deadline `Delete`
+  reports.
 - **Connection Pooling (004)** — Used APIs: `ModuleContext.OrgAdminDB()`, `ModuleContext.TenantDB()`,
   `ModuleContext.EvictTenant()` — Contract: reached only through `ModuleContext`; this module never
   imports `internal/snowflake/pool` or `internal/snowflake/host` directly.
@@ -232,7 +288,8 @@ internal/account/modules/account/
 ## Integration Points
 
 - **SnowflakeAccount Controller (020)** — Registers this module in the pipeline via
-  `account.New(secretsBackend, baseConfig.Snowflake.Org, baseConfig.Snowflake.AccountCreationGracePeriod)`,
+  `account.New(secretsBackend, baseConfig.Snowflake.Org, baseConfig.Snowflake.AccountCreationGracePeriod,
+  baseConfig.Deletion.GracePeriodDays)`,
   after the guardrail-check (010) and quota-check (011) modules. After `Pipeline.Apply` returns, reads
   `ModuleContext.ResolvedAccountName()` directly — never from this module's `Outcome` — plus
   `cr.Status.AccountLocator`, which this module has already set directly on the CRD, to render
@@ -287,13 +344,19 @@ internal/account/modules/account/
 - **SC-021**: A `nil` `cr.Status.AccountCreatedAt` with a known locator is treated as past the grace
   period: `Observe`/`Apply` attempt a connection exactly as they did before this field existed.
 - **SC-022**: `Teardown` renders the resolved account name as a bare identifier and always includes a
-  `GRACE_PERIOD_IN_DAYS` clause.
+  `GRACE_PERIOD_IN_DAYS` clause carrying the value `New` was given, unchanged and unclamped.
 - **SC-023**: `Teardown` issues no SQL and evicts nothing when `cr.Status.AccountLocator` is empty, and
   still deletes the credential.
 - **SC-024**: `Teardown` returns nil when the account is already absent, and when the secret path is
   already absent.
 - **SC-025**: `Teardown` drops the account, then evicts the pooled connection, then deletes the
   credential — in that order, and performs no later step once one has failed.
+- **SC-026**: `Teardown` passes `Config.Deletion.GracePeriodDays` straight into the rendered
+  `GRACE_PERIOD_IN_DAYS` for every value 002 admits (3 and 90 at the bounds), and derives no window of its
+  own for the credential.
+- **SC-027**: `Teardown` logs the restorable-until time `Backend.Delete` returned, including the case where
+  it is the zero time because the store destroyed the credential outright, and reports it nowhere else —
+  `Teardown`'s return value stays a plain error.
 
 ## Security Considerations
 
@@ -326,8 +389,10 @@ internal/account/modules/account/
   | `COMMENT` | `spec.description` (tenant free text); clause omitted if empty | quoted literal |
 
 - **`DROP ACCOUNT` rendering.** Its only two positions are the resolved account name, rendered as a bare
-  identifier, and `GRACE_PERIOD_IN_DAYS`, a controller constant. No tenant-supplied text reaches this
-  statement at all.
+  identifier, and `GRACE_PERIOD_IN_DAYS`, an `int` from ops-owned provider configuration (002) that 002's
+  loader has already bounded to 3-90. No tenant-supplied text reaches this statement at all, and no tenant
+  can influence the grace period — deletion protection would be worthless if the party being protected
+  from could shorten the window it is protected by.
 
 ## References
 
@@ -342,8 +407,12 @@ internal/account/modules/account/
 - **Snowflake `SHOW ACCOUNTS` reference**: https://docs.snowflake.com/en/sql-reference/sql/show-accounts
   — the `account_locator`/`account_name` columns, and `LIKE`'s wildcard-only, case-insensitive matching.
 - **Snowflake `DROP ACCOUNT` reference**: https://docs.snowflake.com/en/sql-reference/sql/drop-account
-  — `GRACE_PERIOD_IN_DAYS` being required, its minimum of 3, and the account staying restorable (and its
+  — `GRACE_PERIOD_IN_DAYS` being required, its range of 3-90, and the account staying restorable (and its
   name taken) for that period.
+- **Base Configuration**: `specs/002-base-config.md` — `deletion.gracePeriodDays`, the single setting both
+  windows derive from.
+- **Secrets Handling**: `specs/003-secrets-handling.md` — Key Concept: A Credential May Not Outlive Its
+  Account, and `DeriveRecoveryWindow`.
 
 <br/><br/><br/><br/><br/>
 
@@ -362,7 +431,14 @@ import (
 pl := pipeline.New(
     guardrailcheckmodule.New(...),                                // 010, runs first, aborts before anything else
     quotacheckmodule.New(...),                                    // 011, runs second, aborts before CREATE ACCOUNT
-    accountmodule.New(secretsBackend, baseConfig.Snowflake.Org, baseConfig.Snowflake.AccountCreationGracePeriod), // 012
+    // 012 — the two grace periods are unrelated: the duration is a post-create
+    // reachability delay, the int is DROP ACCOUNT's GRACE_PERIOD_IN_DAYS.
+    accountmodule.New(
+        secretsBackend,
+        baseConfig.Snowflake.Org,
+        baseConfig.Snowflake.AccountCreationGracePeriod,
+        baseConfig.Deletion.GracePeriodDays,
+    ),
     // ... modules 013-015, 017, 018, in order
 )
 ```
@@ -390,6 +466,7 @@ inSync3, _ := module.Observe(ctx, mc3) // reconnects as platform; inSync3 == tru
 outcome3 := module.Apply(ctx, mc3)     // reconnects again, no SQL issued, returns Done()
 
 // Deletion, reached through Pipeline.Destroy once a deletion request (019) has authorized it:
-err := module.Teardown(ctx, mc3)       // DROP ACCOUNT, evicts the pooled connection,
-                                        // deletes the stored credential
+err := module.Teardown(ctx, mc3)       // DROP ACCOUNT ... GRACE_PERIOD_IN_DAYS = 30, evicts the
+                                        // pooled connection, deletes the stored credential — which
+                                        // the store keeps restorable for 30 days too, never longer
 ```

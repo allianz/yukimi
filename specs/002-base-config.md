@@ -47,6 +47,7 @@ type Config struct {
     Snowflake SnowflakeSettings // organization identity plus connection-affecting settings
     AWS       AWSSettings       // consumed by 003.a; checked here for shape only
     Secrets   SecretsSettings   // consumed by whoever wraps a Backend in secrets.NewCachedBackend (003)
+    Deletion  DeletionSettings  // the single deletion window every store derives its own from (003, 012)
 
     cloudProvider string // resolved by Load from the cloud section present; read via CloudProvider()
 }
@@ -90,6 +91,20 @@ type SecretsSettings struct {
     RotationInterval time.Duration // age past which OrgAdmin/TenantAccount rotate a stored credential inline (004); defaults to 4320h (~6 months) when omitted
 }
 
+// DeletionSettings holds the one operator-owned deletion window. Both stores that reserve a
+// tenant's deterministic identifier derive their own clock from it: 012 renders it as DROP
+// ACCOUNT's GRACE_PERIOD_IN_DAYS, and each secrets backend derives from it the longest recovery
+// window it can represent that does not outlive the account (secrets.DeriveRecoveryWindow, 003).
+// A credential must never outlive its account — that would leave the secret path occupied for a
+// value nothing can be recovered into.
+//
+// This is unrelated to SnowflakeSettings.AccountCreationGracePeriod, which is how long a freshly
+// created account is given to become reachable. Despite the similar name, that one is about
+// creation and is a Duration; this one is about deletion and is a count of days.
+type DeletionSettings struct {
+    GracePeriodDays int // days a dropped account and its credential stay restorable (003, 012); defaults to 30 when omitted, allowed range 3-90
+}
+
 // Load reads, parses, and validates "<configDir>/base.yaml".
 //
 // Parameters:
@@ -102,7 +117,8 @@ type SecretsSettings struct {
 //     (Snowflake.Org, Snowflake.OrgAdminAccount, Snowflake.OrgAdminAccountLocator,
 //     Snowflake.OrgAdminAccountRegion) is empty, the file does not carry exactly
 //     one cloud section, a field's value does not match its documented format, a pool-tuning
-//     integer (MaxConnectionPoolSize, MaxIdleConnections) is out of range, or a duration field
+//     integer (MaxConnectionPoolSize, MaxIdleConnections) is out of range,
+//     Deletion.GracePeriodDays is outside Snowflake's documented 3-90 range, or a duration field
 //     (ConnectionMaxLifetime, ConnectionMaxIdleTime, ConnectionProbeTimeout,
 //     AccountCreationGracePeriod, Secrets.CacheTTL, Secrets.RotationInterval) does not parse as a
 //     positive Go duration
@@ -137,6 +153,7 @@ Every field in `base.yaml` is freely editable and the whole file is reloaded who
 | `aws.kmsKeyId` | string | No | Optional reference to a customer-managed KMS key (key ID, alias, or ARN) used by 003.a when creating/reading secrets in AWS Secrets Manager, in place of the AWS-managed default. Not required here; if non-empty, must match one of the documented KMS identifier forms (bare key ID, `alias/<name>`, key ARN, or alias ARN). Whether the key exists or is usable is 003.a's concern, never this package's. |
 | `secrets.cacheTtl` | string (duration) | No | TTL for the in-memory secrets cache (003), applied by whichever code wraps a `Backend` in `secrets.NewCachedBackend` (`cmd/provider/main.go`). Must be a positive Go duration string if set. Default: `5m` when omitted. |
 | `secrets.rotationInterval` | string (duration) | No | Age past which 004 rotates a stored Snowflake credential inline. Must be a positive Go duration string if set (e.g. `1s` for tests). Default: `4320h` (~6 months) when omitted. |
+| `deletion.gracePeriodDays` | int | No | Days a dropped tenant account and its stored credential stay restorable. Rendered by 012 as `DROP ACCOUNT ... GRACE_PERIOD_IN_DAYS`, and the ceiling every secrets backend derives its own recovery window from (003). Must be between `3` and `90` inclusive if set — Snowflake's own documented bounds for `GRACE_PERIOD_IN_DAYS`. Default: `30` when omitted, the largest value AWS Secrets Manager can match exactly. Not overridable per request; see 019. |
 
 ## Project Structure
 
@@ -163,6 +180,7 @@ internal/config/base/
 - No cloud section: `base.yaml must contain one cloud section (one of: aws, azure, gcp)`
 - Several cloud sections: `base.yaml contains several cloud sections (aws, azure); exactly one is allowed`
 - Out-of-range pool-tuning integer: `snowflake.maxConnectionPoolSize '0' must be a positive integer`, `snowflake.maxIdleConnections '-1' must not be negative`
+- Out-of-range deletion window: `deletion.gracePeriodDays '91' must be between 3 and 90`
 - Malformed duration: `snowflake.connectionMaxLifetime 'not-a-duration' does not match the expected format (expected: a Go duration string, e.g. 30m)` — and likewise for `connectionMaxIdleTime`, `connectionProbeTimeout`, `accountCreationGracePeriod`, and `secrets.cacheTtl`
 - Non-positive duration: `snowflake.connectionMaxLifetime '0s' must be a positive duration` — and likewise for `connectionMaxIdleTime`, `connectionProbeTimeout`, `accountCreationGracePeriod`, and `secrets.cacheTtl`
 
@@ -174,6 +192,8 @@ internal/config/base/
 - **What happens if `snowflake.disableOcspChecks` is omitted?** - Defaults to `false`; OCSP certificate-revocation checks stay on.
 - **What happens if `snowflake.maxConnectionPoolSize`, `maxIdleConnections`, `connectionMaxLifetime`, `connectionMaxIdleTime`, `connectionProbeTimeout`, or `accountCreationGracePeriod` is omitted?** - Each defaults independently: `10`, `2`, `30m`, `5m`, `10s`, `5m` respectively.
 - **What happens if `secrets.cacheTtl` is omitted?** - Defaults to `5m`.
+- **What happens if the `deletion:` section is present but carries no keys?** - Identical to the section being absent: `gracePeriodDays` defaults to `30`. The section decodes to a zero-value struct whose `*int` is still nil, so "present but empty" and "absent" cannot be distinguished, and there is no reason to.
+- **What happens if `deletion.gracePeriodDays` is set below `7`?** - `Load` accepts anything in `3`–`90`; the consequence lands in 003. AWS Secrets Manager's shortest representable recovery window is 7 days, so a shorter grace period leaves it no compliant window at all and it destroys the credential irreversibly rather than outliving the account. That is a deliberate 003 outcome, not a 002 validation error.
 - **What happens with an unrecognized YAML key (e.g. a future `timeout`)?** - Ignored by the decoder, not an error. The schema is expected to grow over time (timeouts, pool sizes, and similar settings may be added later as the codebase needs them), and unknown keys must not break `Load` on a rolling deployment.
 - **What if no cloud section is present, or more than one?** - Both are user errors from `Load`: exactly one of `aws` / `azure` / `gcp` is required, so `CloudProvider()` is always unambiguous.
 - **What if the cloud section has no backend compiled in (e.g. `azure:` today)?** - `Load` accepts it and `CloudProvider()` returns `"azure"` — this package has no notion of which backends exist. `cmd/provider/main.go` is the one that fails fast, listing the cloud providers actually compiled in.
@@ -193,7 +213,8 @@ internal/config/base/
 - **`cmd/provider/main.go`** - Owns the `--configDir` flag and resolves it to a directory path. Calls `base.Load(configDir)` once at startup, then switches on `Config.CloudProvider()` to construct the matching secrets backend, fatally rejecting an unrecognized value by listing the cloud providers compiled in. Also reads `Config.Secrets.CacheTTL` and passes it to `secrets.NewCachedBackend(backend, cfg.Secrets.CacheTTL)` (003) — `internal/secrets` itself never imports `internal/config/base` - Key functions: `base.Load()`, `Config.CloudProvider()`.
 - **`internal/secrets/aws` (003.a)** - Consumes `Config.AWS.Region` when constructed by `main.go`; rejects an empty region as a user error itself, since 002 does not validate it. Also optionally consumes `Config.AWS.KmsKeyId`, passing it through to `CreateSecret`'s `KmsKeyId` parameter when non-empty, so Secrets Manager encrypts/decrypts with the customer-managed key instead of its AWS-managed default - Notes: credentials come from the AWS SDK's default chain, never from `Config`.
 - **`internal/snowflake/pool` (004)** - Consumes `Config.Snowflake.Org`, `OrgAdminAccount`, `OrgAdminAccountLocator`, `OrgAdminAccountRegion`, `UsePrivateLink`, and `DisableOCSPChecks` for org-admin connection host/config construction (design.md 3.6, 3.11), plus `MaxConnectionPoolSize`, `MaxIdleConnections`, `ConnectionMaxLifetime`, `ConnectionMaxIdleTime`, and `ConnectionProbeTimeout` to tune every pooled `*sql.DB`.
-- **Account Module (012)** - Consumes `Config.Snowflake.AccountCreationGracePeriod`, passed to `accountmodule.New` as a plain `time.Duration` — this module never loads the config file itself.
+- **Account Module (012)** - Consumes `Config.Snowflake.AccountCreationGracePeriod`, passed to `accountmodule.New` as a plain `time.Duration` — this module never loads the config file itself. Also consumes `Config.Deletion.GracePeriodDays`, rendered verbatim as `DROP ACCOUNT ... GRACE_PERIOD_IN_DAYS` on teardown.
+- **`internal/secrets` (003) / its backends** - Consume `Config.Deletion.GracePeriodDays` as the ceiling for `secrets.DeriveRecoveryWindow`, which each backend calls once at construction with the day band it can represent (003.a: 7–30). `internal/secrets` never imports `internal/config/base`; `main.go` passes the number in.
 - **`internal/config/backplane` (007)** / **guardrails loader (008)** - Read their own sibling files (`backplane.yaml`, a guardrails/exceptions file) from the same `--configDir`, with independently implemented loading and validation logic — no code shared with `internal/config/base`.
 
 ## Success Criteria
@@ -221,11 +242,13 @@ internal/config/base/
 - **SC-020**: `Load` returns a user error when `snowflake.maxConnectionPoolSize` is not a positive integer, or when `snowflake.maxIdleConnections` is negative.
 - **SC-021**: `Load` returns a user error when `snowflake.connectionMaxLifetime`, `connectionMaxIdleTime`, `connectionProbeTimeout`, `accountCreationGracePeriod`, or `secrets.cacheTtl` does not parse as a Go duration string, or parses to a non-positive duration.
 - **SC-022**: `Load` defaults `Snowflake.DisableOCSPChecks` to `false` when the key is omitted, and honors an explicit `true`/`false` value when given.
+- **SC-023**: `Load` defaults `Deletion.GracePeriodDays` to `30` when the `deletion:` section is absent and when it is present but empty, and honors an explicit value at either end of the band (`3`, `90`).
+- **SC-024**: `Load` returns a user error when `deletion.gracePeriodDays` lies outside `3`–`90` inclusive (`-1`, `0`, `2`, `91`).
 
 
 ## References
 
-- **Config Package**: `internal/config/base/base.go` - `Config`, `SnowflakeSettings`, `AWSSettings`, `SecretsSettings`, `Load`
+- **Config Package**: `internal/config/base/base.go` - `Config`, `SnowflakeSettings`, `AWSSettings`, `SecretsSettings`, `DeletionSettings`, `Load`
 - **Design Doc**: `specs/design.md`, §3.11.1 - the AWS Secrets Manager path grammar that consumes `Snowflake.Org`
 
 <br/><br/><br/><br/><br/>
@@ -259,7 +282,7 @@ func main() {
     var backend secrets.Backend
     switch cfg.CloudProvider() {
     case "aws":
-        backend, err = secretsaws.New(cfg.AWS.Region)
+        backend, err = secretsaws.New(cfg.AWS.Region, cfg.AWS.KmsKeyId, cfg.Deletion.GracePeriodDays)
         if err != nil {
             log.Fatalf("failed to construct AWS secrets backend: %v", err)
         }
@@ -297,6 +320,9 @@ aws:
 # secrets:
 #   cacheTtl: 5m                    # optional, default shown (003)
 #   rotationInterval: 4320h         # optional, default shown (004)
+
+# deletion:
+#   gracePeriodDays: 30             # optional, default shown (003, 012); allowed range 3-90
 ```
 
 The `aws:` section is the only cloud section here, so `CloudProvider()` returns `"aws"` — nothing else in the file states the provider.

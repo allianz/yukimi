@@ -159,13 +159,36 @@ func TestCachedBackend_InvalidatesOnWrite(t *testing.T) {
 		if _, _, err := c.Get(ctx, path); err != nil { // warm the cache
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if err := c.Delete(ctx, path); err != nil {
+		if _, err := c.Delete(ctx, path); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if _, _, err := c.Get(ctx, path); err == nil {
 			t.Error("expected a Get after Delete to fail (stale cached value must not have been served)")
 		}
 	})
+}
+
+// SC-025: CachedBackend.Delete forwards the underlying store's restorable-until time
+// unchanged — the decorator caches values, never deletion deadlines.
+func TestCachedBackend_DeleteForwardsRestorableUntil(t *testing.T) {
+	ctx := t.Context()
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	fake := NewFakeBackend()
+	fake.Clock = func() time.Time { return now }
+	fake.RecoveryWindow = 30 * 24 * time.Hour
+	c := NewCachedBackend(fake, time.Hour)
+	path := testPath(t)
+
+	if err := c.Create(ctx, path, "value"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	restorableUntil, err := c.Delete(ctx, path)
+	if err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if want := now.Add(30 * 24 * time.Hour); !restorableUntil.Equal(want) {
+		t.Errorf("restorableUntil = %v, want %v", restorableUntil, want)
+	}
 }
 
 // SC-014: Invalidate clears a path's cache entry directly, without touching
@@ -275,7 +298,7 @@ func TestCachedBackend_WriteMethods_PropagateBackendError(t *testing.T) {
 	fake.OnUpdate = nil
 
 	fake.OnDelete = func(Path) error { return errStoreFault }
-	if err := c.Delete(ctx, path); !stderrors.Is(err, errStoreFault) {
+	if _, err := c.Delete(ctx, path); !stderrors.Is(err, errStoreFault) {
 		t.Errorf("Delete: got %v, want errStoreFault", err)
 	}
 }

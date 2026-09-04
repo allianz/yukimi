@@ -329,7 +329,7 @@ func main() {
         log.Fatalf("failed to load base config: %v", err)
     }
 
-    backend, err := secretsaws.New(cfg.AWS.Region, cfg.AWS.KmsKeyId)
+    backend, err := secretsaws.New(cfg.AWS.Region, cfg.AWS.KmsKeyId, cfg.Deletion.GracePeriodDays)
     if err != nil {
         log.Fatalf("failed to construct AWS secrets backend: %v", err)
     }

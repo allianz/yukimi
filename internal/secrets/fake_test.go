@@ -103,7 +103,7 @@ func TestFakeBackend_HookShortCircuitsBeforeMutation_Delete(t *testing.T) {
 	}
 
 	b.OnDelete = func(Path) error { return errStoreFault }
-	if err := b.Delete(ctx, path); !stderrors.Is(err, errStoreFault) {
+	if _, err := b.Delete(ctx, path); !stderrors.Is(err, errStoreFault) {
 		t.Fatalf("got %v, want errStoreFault", err)
 	}
 
@@ -158,8 +158,13 @@ func TestFakeBackend_DeleteRemovesOutright(t *testing.T) {
 	if err := b.Create(ctx, path, "original"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if err := b.Delete(ctx, path); err != nil {
+	restorableUntil, err := b.Delete(ctx, path)
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	// Nothing is restorable, so there is no deadline to report.
+	if !restorableUntil.IsZero() {
+		t.Errorf("restorableUntil = %v, want the zero time with no RecoveryWindow set", restorableUntil)
 	}
 
 	if _, _, err := b.Get(ctx, path); err == nil || !strings.Contains(err.Error(), "no secret stored") {
@@ -170,13 +175,145 @@ func TestFakeBackend_DeleteRemovesOutright(t *testing.T) {
 	}
 }
 
+// SC-023: with a RecoveryWindow set, Delete schedules the removal instead of performing it:
+// it reports the deadline from Clock, and the path stays occupied until then — unreadable,
+// un-updatable, and not reusable by Create. This is the blockade the invariant bounds.
+func TestFakeBackend_DeleteSchedulesWithinRecoveryWindow(t *testing.T) {
+	ctx := t.Context()
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	b := NewFakeBackend()
+	b.Clock = func() time.Time { return now }
+	b.RecoveryWindow = 30 * 24 * time.Hour
+	path := testPath(t)
+
+	if err := b.Create(ctx, path, "original"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	restorableUntil, err := b.Delete(ctx, path)
+	if err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if want := now.Add(30 * 24 * time.Hour); !restorableUntil.Equal(want) {
+		t.Errorf("restorableUntil = %v, want %v", restorableUntil, want)
+	}
+
+	if _, _, err := b.Get(ctx, path); err == nil || !strings.Contains(err.Error(), "scheduled for deletion") {
+		t.Errorf("Get on a pending path: got %v, want an error naming it as scheduled for deletion", err)
+	}
+	if err := b.Update(ctx, path, "new"); err == nil || !strings.Contains(err.Error(), "scheduled for deletion") {
+		t.Errorf("Update on a pending path: got %v, want an error naming it as scheduled for deletion", err)
+	}
+	if err := b.Create(ctx, path, "new"); err == nil || !strings.Contains(err.Error(), "cannot be reused") {
+		t.Errorf("Create on a pending path: got %v, want an error naming the path as unreusable", err)
+	}
+}
+
+// SC-023: a second Delete of an already-pending path neither fails nor extends the deadline —
+// the store scheduled the removal once and does not restart its clock.
+func TestFakeBackend_DeleteOnPendingPathKeepsDeadline(t *testing.T) {
+	ctx := t.Context()
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	b := NewFakeBackend()
+	b.Clock = func() time.Time { return now }
+	b.RecoveryWindow = 7 * 24 * time.Hour
+	path := testPath(t)
+
+	if err := b.Create(ctx, path, "original"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	first, err := b.Delete(ctx, path)
+	if err != nil {
+		t.Fatalf("first Delete: %v", err)
+	}
+
+	b.Clock = func() time.Time { return now.Add(48 * time.Hour) }
+	second, err := b.Delete(ctx, path)
+	if err != nil {
+		t.Fatalf("second Delete: %v", err)
+	}
+	if !second.Equal(first) {
+		t.Errorf("second Delete moved the deadline from %v to %v", first, second)
+	}
+}
+
+// SC-023: Delete on an absent path stays a no-op success in pending mode too, and schedules
+// nothing that a later Create would trip over.
+func TestFakeBackend_DeleteOnAbsentPathIsNoopInPendingMode(t *testing.T) {
+	ctx := t.Context()
+	b := NewFakeBackend()
+	b.RecoveryWindow = 30 * 24 * time.Hour
+	path := testPath(t)
+
+	restorableUntil, err := b.Delete(ctx, path)
+	if err != nil {
+		t.Fatalf("got %v, want nil", err)
+	}
+	if !restorableUntil.IsZero() {
+		t.Errorf("restorableUntil = %v, want the zero time — nothing was scheduled", restorableUntil)
+	}
+	if err := b.Create(ctx, path, "value"); err != nil {
+		t.Errorf("Create after a no-op Delete: got %v, want nil", err)
+	}
+}
+
+// SC-024: Restore cancels a pending deletion, returning the path to exactly the state it was
+// in before — the store-side half of the manual repair 012 documents.
+func TestFakeBackend_RestoreCancelsPendingDeletion(t *testing.T) {
+	ctx := t.Context()
+	b := NewFakeBackend()
+	b.RecoveryWindow = 30 * 24 * time.Hour
+	path := testPath(t)
+
+	if err := b.Create(ctx, path, "original"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := b.Delete(ctx, path); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if err := b.Restore(path); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+
+	got, _, err := b.Get(ctx, path)
+	if err != nil {
+		t.Fatalf("Get after Restore: %v", err)
+	}
+	if got != "original" {
+		t.Errorf("got %q, want %q — Restore must bring back the stored value", got, "original")
+	}
+	if err := b.Update(ctx, path, "new"); err != nil {
+		t.Errorf("Update after Restore: got %v, want nil", err)
+	}
+}
+
+// SC-024: Restore fails when nothing at the path is scheduled for deletion, whether the path
+// is empty or holds a live value.
+func TestFakeBackend_RestoreWithoutPendingDeletionFails(t *testing.T) {
+	ctx := t.Context()
+	b := NewFakeBackend()
+	b.RecoveryWindow = 30 * 24 * time.Hour
+	path := testPath(t)
+
+	if err := b.Restore(path); err == nil || !strings.Contains(err.Error(), "no secret scheduled for deletion") {
+		t.Errorf("Restore on an absent path: got %v, want an error naming nothing as scheduled", err)
+	}
+
+	if err := b.Create(ctx, path, "original"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := b.Restore(path); err == nil || !strings.Contains(err.Error(), "no secret scheduled for deletion") {
+		t.Errorf("Restore on a live path: got %v, want an error naming nothing as scheduled", err)
+	}
+}
+
 // SC-016: Delete on a path nothing was ever stored at is a no-op success.
 func TestFakeBackend_DeleteOnAbsentPathIsNoop(t *testing.T) {
 	ctx := t.Context()
 	b := NewFakeBackend()
 	path := testPath(t)
 
-	if err := b.Delete(ctx, path); err != nil {
+	if _, err := b.Delete(ctx, path); err != nil {
 		t.Errorf("got %v, want nil", err)
 	}
 }
@@ -190,7 +327,7 @@ func TestFakeBackend_UpdateOnDeletedPathFails(t *testing.T) {
 	if err := b.Create(ctx, path, "original"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if err := b.Delete(ctx, path); err != nil {
+	if _, err := b.Delete(ctx, path); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if err := b.Update(ctx, path, "new"); err == nil || !strings.Contains(err.Error(), "no secret stored") {
