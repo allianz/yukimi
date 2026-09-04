@@ -50,8 +50,8 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
     and the warning events (`QuotaExhausted`, `SyncTimeout`, `DeletionBlocked`) via
     crossplane-runtime's injected `event.Recorder`.
   - **The deletion gate (6.3 Phases 2–3)**: on `deletionTimestamp`, query for an Active request in
-    the same namespace targeting this resource. If one is found, run `DROP ACCOUNT` over the
-    org-admin connection, release the finalizer, and mark the request `Consumed`. If it is absent or
+    the same namespace targeting this resource. If one is found, call `Pipeline.Destroy` (009) —
+    which ends in 012's `DROP ACCOUNT` — release the finalizer, and mark the request `Consumed`. If it is absent or
     expired, refuse: stall in `Terminating`, emit `Warning: DeletionBlocked`, and set `Ready=False`
     so that ArgoCD reports failure, forcing the user either to restore the file or to create a valid
     request.
@@ -82,10 +82,11 @@ its "Integration Points" section states 020's obligations directly, and its Appe
 sketch the `Observe` and `Create`/`Update` bodies. 009 places more obligations on 020 than on any other
 spec.
 
-- **Two entry points, called from three methods.** `pipeline.Observe(ctx, mc)` from `Observe`;
+- **Three entry points, called from four methods.** `pipeline.Observe(ctx, mc)` from `Observe`;
   `pipeline.Apply(ctx, mc)` from **both** `Create` and `Update` — the two bodies are identical,
-  because `Apply` is idempotent by construction. Nothing is threaded from an `Observe` call into the
-  following `Apply`; `ModuleContext` is rebuilt per call and the two entry points share no state.
+  because `Apply` is idempotent by construction; `pipeline.Destroy(ctx, mc)` from `Delete`, once the
+  deletion gate has cleared. Nothing is threaded from one call into the next; `ModuleContext` is
+  rebuilt per call and the entry points share no state.
 - **020 builds one `*account.Context` per reconcile** and hands the same value to every module: the
   CRD (spec **and** status), the resolved account name (006), the region's `*backplane.Region` entry
   already admitted against `Available` (007), the ops-set namespace labels (006), and a
@@ -109,6 +110,12 @@ spec.
   it — so no CRD schema change is needed and the field is 020's to own. Known cost, accepted: one
   persistently rejected module re-runs every module every poll interval — a handful of idempotent
   statements plus one enumeration query per pruning module, so cheap-but-unbounded rather than solved.
+- **`Observe` must not report `ResourceExists: false` on a resource being deleted**, unless its account
+  was never created. The managed reconciler calls `Delete` only when the preceding `Observe` said the
+  external resource exists, and otherwise removes the finalizer straight away
+  (`pkg/reconciler/managed/reconciler.go:1163,1173,1230`) — so reporting otherwise skips the deletion
+  gate and the teardown entirely and orphans the account. An empty `status.accountLocator` is the one
+  case where `false` is right: there is nothing to destroy. See 009's Appendix examples 1 and 3.
 - **Registration order is 010 → 011 → 012 → 013 → 014 → 015 → 017 → 018**, with guardrail-check (010)
   first and quota-check (011) second — neither is the account module (012) — in `New`'s ordered module
   list: `account.New(guardrailCheckModule, quotaCheckModule, accountModule, parameterModule,
