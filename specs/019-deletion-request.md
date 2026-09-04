@@ -1,4 +1,4 @@
-# Specification: SnowflakeDeletionRequest & Deletion Warrants (019)
+# Specification: SnowflakeDeletionRequest & Deletion Lifecycle (019)
 
 ## Overview
 
@@ -16,7 +16,7 @@ pipeline (009).
 
 ## Scope
 
-This specification defines the deletion-warrant subsystem that:
+This specification defines the deletion-request subsystem that:
 - Defines the `SnowflakeDeletionRequest` CRD type in `apis/base/v1alpha1/` (design.md §6.1): the
   target to destroy, the time-boxed window, and the audit reason.
 - Runs a dedicated controller, `internal/controller/snowflakedeletionrequest/`, that computes and
@@ -27,45 +27,45 @@ This specification defines the deletion-warrant subsystem that:
   gate.
 
 **Out of Scope**:
-- Intercepting a `SnowflakeAccount`'s own deletion, blocking it without a warrant, emitting the
+- Intercepting a `SnowflakeAccount`'s own deletion, blocking it without an active request, emitting the
   `DeletionBlocked` event, or calling `DROP ACCOUNT` — all owned by 020 (design.md §6.3 Phases 2-3).
 - Any `targetRef.kind` beyond `SnowflakeAccount` — v1alpha1 accepts only that one kind (see Schema
   Specification); widening later, once a second destructible resource kind exists, is additive.
 - Preventing an approved request from being edited after the fact. Nothing enforces this at the
   schema level (see Security Considerations); that control is left to RBAC or a git-review process
   outside this provider's code, and none is defined anywhere in this repository today.
-- Any replication-related deletion warrant (021, not yet written).
+- Any replication-related deletion request (021, not yet written).
 
-## Key Concept: The Deletion Warrant's Lifecycle
+## Key Concept: The Deletion Request's Lifecycle
 
-A deletion warrant moves through three states — `Active`, `Expired`, `Consumed` — only ever
+A deletion request moves through three states — `Active`, `Expired`, `Consumed` — only ever
 forward, never back. It starts `Active` the moment it's created, carrying an expiry computed once
 from its creation time plus its requested window, capped at eight hours. If nothing consumes it
 before that window closes, it becomes `Expired` on its own, with no further action from anyone;
 from that point it authorizes nothing, and a fresh request is the only way back in. If it's used to
-authorize an actual destruction, it becomes `Consumed` instead, permanently. Once a warrant reaches
+authorize an actual destruction, it becomes `Consumed` instead, permanently. Once a request reaches
 either terminal state, its recorded expiry freezes at whatever it was at that moment — a later edit
 to the requested window can no longer move it. This is why the request keeps existing after its
 target is gone: it isn't cleanup residue, it's the permanent record of when a window opened, when
 (or whether) it closed, and why.
 
-## Key Concept: One Controller Decides, the Other Trusts
+## Key Concept: Two Controllers Implement Deletion Protection
 
-Only one piece of code ever decides whether a warrant is currently valid: its own controller,
-which is the sole writer of `status.state`. The deletion gate that later wants to use a warrant
-doesn't re-derive that answer itself — it just reads the field. Splitting "decide" and "trust" this
-way means there's exactly one place validity logic can be wrong, and everywhere else just consumes
-its answer.
+Two controllers share this feature. This spec's controller only tracks requests: it keeps
+`status.state` current and knows nothing about Snowflake. The `SnowflakeAccount` controller (020)
+does the destroying, and asks this one for permission by reading `status.state` rather than working
+out for itself whether the window is still open. So whether a request is valid is decided in one
+place and simply trusted everywhere else.
 
 **Important**: state transitions are one-way and terminal. A resurrected `duration` value can never
-move a warrant back to `Active` once it has reached `Expired` or `Consumed`.
+move a request back to `Active` once it has reached `Expired` or `Consumed`.
 
 ## Public API
 
 ```go
 // Package v1alpha1 — apis/base/v1alpha1
 
-// SnowflakeDeletionRequestSpec is the deletion warrant a tenant creates to
+// SnowflakeDeletionRequestSpec is the deletion request a tenant creates to
 // authorize destroying one specific target (design.md §6.1). Nothing here
 // is immutable after creation (see Security Considerations).
 type SnowflakeDeletionRequestSpec struct {
@@ -86,7 +86,7 @@ type SnowflakeDeletionRequestSpec struct {
 	ManagementPolicies common.ManagementPolicies `json:"managementPolicies,omitempty"`
 }
 
-// TargetRef names the one resource this warrant authorizes destroying.
+// TargetRef names the one resource this request authorizes destroying.
 // Name is the CRD name, not the resolved Snowflake account name.
 type TargetRef struct {
 	// +kubebuilder:validation:Enum=SnowflakeAccount
@@ -94,7 +94,7 @@ type TargetRef struct {
 	Name string `json:"name"`
 }
 
-// SnowflakeDeletionRequestStatus reports this warrant's time-boxed
+// SnowflakeDeletionRequestStatus reports this request's time-boxed
 // lifecycle. Written only by internal/controller/snowflakedeletionrequest
 // and internal/deletion.MarkConsumed.
 type SnowflakeDeletionRequestStatus struct {
@@ -307,15 +307,15 @@ non-empty requirement are both CEL rules enforced at admission — by the time a
 ## Security Considerations
 
 - Nothing on `SnowflakeDeletionRequestSpec` is immutable, so the schema alone cannot stop someone
-  from editing an approved warrant's target, window, or reason after review. This is deliberate:
+  from editing an approved request's target, window, or reason after review. This is deliberate:
   enforcement is left to an RBAC or git-review process outside this provider's code, and no such
   control is defined anywhere in this repository yet — deploying this spec's code is not sufficient
   by itself; that external control must exist too.
 - The residual risk from the point above is bounded, not open-ended: `duration`'s CEL ceiling
   (`<= 8h`) applies on every write, and `validUntil` derives from the Kubernetes-immutable
-  `creationTimestamp`, so no sequence of edits can push a warrant's authorized window past
+  `creationTimestamp`, so no sequence of edits can push a request's authorized window past
   `creationTimestamp + 8h`.
-- `targetRef.kind` accepts only `SnowflakeAccount`, so a warrant can never be pointed at a resource
+- `targetRef.kind` accepts only `SnowflakeAccount`, so a request can never be pointed at a resource
   kind this platform hasn't reasoned about the destructiveness of yet.
 - `FindActiveRequest`'s trust in the persisted `status.state` field, rather than a live re-check,
   bounds worst-case staleness to about one poll interval (~1 minute) — small against the 8h maximum
@@ -349,7 +349,7 @@ non-empty requirement are both CEL rules enforced at admission — by the time a
 
 ## Appendix: Usage Examples
 
-### Example 1: 020's deletion gate looking up an active warrant
+### Example 1: 020's deletion gate looking up an active request
 
 ```go
 req, err := deletion.FindActiveRequest(ctx, kube, cr.Namespace, "SnowflakeAccount", cr.Name)
@@ -357,12 +357,12 @@ if err != nil {
     return log.Handle(err) // system error: Kubernetes API failure
 }
 if req == nil {
-    // Block: no open warrant. Emit DeletionBlocked, set Ready=False, stay Terminating.
+    // Block: no open request. Emit DeletionBlocked, set Ready=False, stay Terminating.
     return managed.ExternalDelete{}, errors.NewUserError("deletion blocked: no active SnowflakeDeletionRequest authorizes this account")
 }
 ```
 
-### Example 2: 020 marking a warrant used after a successful `DROP ACCOUNT`
+### Example 2: 020 marking a request used after a successful `DROP ACCOUNT`
 
 ```go
 if err := dropAccount(ctx, conn, accountName); err != nil {

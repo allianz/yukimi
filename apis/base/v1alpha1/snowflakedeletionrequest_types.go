@@ -28,7 +28,7 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/resource"
 )
 
-// SnowflakeDeletionRequestSpec is the deletion warrant a tenant creates to
+// SnowflakeDeletionRequestSpec is the deletion request a tenant creates to
 // authorize destroying one specific target (design.md 6.1). Nothing here is
 // immutable after creation (see Security Considerations in
 // specs/019-deletion-request.md).
@@ -51,7 +51,7 @@ type SnowflakeDeletionRequestSpec struct {
 	ManagementPolicies common.ManagementPolicies `json:"managementPolicies,omitempty"`
 }
 
-// TargetRef names the one resource this warrant authorizes destroying. Name
+// TargetRef names the one resource this request authorizes destroying. Name
 // is the CRD name, not the resolved Snowflake account name.
 type TargetRef struct {
 	// +kubebuilder:validation:Enum=SnowflakeAccount
@@ -59,7 +59,7 @@ type TargetRef struct {
 	Name string `json:"name"`
 }
 
-// SnowflakeDeletionRequestStatus reports this warrant's time-boxed
+// SnowflakeDeletionRequestStatus reports this request's time-boxed
 // lifecycle. Written only by internal/controller/snowflakedeletionrequest
 // and internal/deletion.MarkConsumed.
 type SnowflakeDeletionRequestStatus struct {

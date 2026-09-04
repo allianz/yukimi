@@ -34,7 +34,7 @@ Snowflake at all — later specs read these fixed shapes, they don't extend them
   007, 012, 014, 015.
 - Controller reconciliation: `Observe`/`Create`/`Update`/`Delete`, condition-setting, finalizers —
   spec 020.
-- Quota admission math (011), quota enforcement (018), identity sync (016/017), deletion warrants
+- Quota admission math (011), quota enforcement (018), identity sync (016/017), deletion requests
   (019), replication (021).
 - Duplicate-connection detection within `customNetworkRules` (§3.8). Expressing "no repeated
   connection name in this list" in CEL is disproportionately complex for a check that's simple to

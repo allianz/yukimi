@@ -49,7 +49,7 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
     `QuotaAvailable` and `IdentitySynced` conditions, `status.accountName` and `status.accountUrl`,
     and the warning events (`QuotaExhausted`, `SyncTimeout`, `DeletionBlocked`) via
     crossplane-runtime's injected `event.Recorder`.
-  - **The deletion gate (6.3 Phases 2–3)**: on `deletionTimestamp`, query for an Active warrant in
+  - **The deletion gate (6.3 Phases 2–3)**: on `deletionTimestamp`, query for an Active request in
     the same namespace targeting this resource. If one is found, run `DROP ACCOUNT` over the
     org-admin connection, release the finalizer, and mark the request `Consumed`. If it is absent or
     expired, refuse: stall in `Terminating`, emit `Warning: DeletionBlocked`, and set `Ready=False`

@@ -15,7 +15,7 @@ limitations under the License.
 */
 
 // Package deletion looks up and consumes SnowflakeDeletionRequest deletion
-// warrants: the only point of contact between spec 019 and the
+// requests: the only point of contact between spec 019 and the
 // SnowflakeAccount controller's deletion gate (020). See
 // specs/019-deletion-request.md for the full specification.
 package deletion
