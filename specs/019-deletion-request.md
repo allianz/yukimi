@@ -26,7 +26,8 @@ This specification defines the deletion-request subsystem that:
   — the only point of contact between this spec and account provisioning, called by 020's deletion
   gate.
 - Records, on the consumed request, the two restore deadlines the destruction leaves behind: how long the
-  account stays restorable and how long its platform credential does (see Key Concept below).
+  account stays restorable and how long its platform credential does (see Key Concept below). Specified
+  here ahead of the code — today's `internal/deletion` sets `state` and records neither deadline.
 
 **Out of Scope**:
 - Intercepting a `SnowflakeAccount`'s own deletion, blocking it without an active request, emitting the
@@ -66,26 +67,16 @@ place and simply trusted everywhere else.
 **Important**: state transitions are one-way and terminal. A resurrected `duration` value can never
 move a request back to `Active` once it has reached `Expired` or `Consumed`.
 
-## Key Concept: A Consumed Request Records Two Restore Deadlines
+## Key Concept: A Consumed Request Records a Still-Reversible Destruction
 
-Consuming a request does not mean the target is gone. Dropping a Snowflake account only starts a grace
-period during which `UNDROP ACCOUNT` still works, and deleting the account's platform credential only
-starts the secret store's own recovery window (012, 003). So the moment this request flips to `Consumed`,
-two deadlines exist, and this object is the natural place to record them: it is the permanent record of the
-destruction, and unlike the `SnowflakeAccount` it outlives its target by design.
+Destruction is not instantaneous — for a while afterwards the account can still be brought back, so a
+consumed request records something reversible rather than something finished. Bringing an account back
+takes two things: the account itself, and the credential this platform uses to reach it. Each stops being
+recoverable at its own moment, so the request records both.
 
-The two deadlines are tied together by one ops-owned setting, `deletion.gracePeriodDays` (002, default 30).
-The credential window is derived from it and never exceeds it (003) — a credential that outlived its account
-would keep the secret path occupied with nothing recoverable behind it, blocking re-provisioning for no
-gain. So `credentialRestorableUntil` is always at or before `accountRestorableUntil`, and the binding
-constraint on re-creating the same account is always the account's own deadline.
-
-The gap between them, when there is one, is the band of days on which a restore succeeds but arrives at a
-missing credential and needs the manual repair 012 documents. At the default of 30 there is no gap: AWS
-Secrets Manager's ceiling is exactly 30 days.
-
-**Not yet implemented**: both status fields below, and `MarkConsumed`'s two extra parameters, are specified
-here ahead of the code — `internal/deletion` today freezes `validUntil` and sets `state` only.
+They are recorded here because by the time they matter, the account object is gone. This request is what
+remains, which makes it the only place that can answer the question following any destruction: is this
+still reversible, and until when?
 
 ## Public API
 
