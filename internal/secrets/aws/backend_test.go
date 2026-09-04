@@ -89,13 +89,8 @@ func (f *fakeClient) DeleteSecret(_ context.Context, in *secretsmanager.DeleteSe
 	if f.deleteErr != nil {
 		return nil, f.deleteErr
 	}
-	return &secretsmanager.DeleteSecretOutput{DeletionDate: aws.Time(fakeDeletionDate)}, nil
+	return &secretsmanager.DeleteSecretOutput{}, nil
 }
-
-// fakeDeletionDate is what fakeClient.DeleteSecret reports as the moment the secret stops
-// being restorable, so TestDelete can assert Delete reads it through unchanged instead of
-// recomputing it from the window.
-var fakeDeletionDate = time.Date(2026, 10, 4, 9, 30, 0, 0, time.UTC)
 
 // newTestBackend builds a Backend whose recovery window is computed from gracePeriodDays
 // exactly as New computes it, without the SDK config load New performs.
@@ -350,8 +345,7 @@ func TestDelete(t *testing.T) {
 				fake := &fakeClient{}
 				backend := newTestBackend(fake, tc.gracePeriodDays)
 
-				restorableUntil, err := backend.Delete(context.Background(), path)
-				if err != nil {
+				if err := backend.Delete(context.Background(), path); err != nil {
 					t.Fatalf("Delete: %v", err)
 				}
 				if !fake.deleteCalled {
@@ -367,10 +361,6 @@ func TestDelete(t *testing.T) {
 				if fake.deleteInput.ForceDeleteWithoutRecovery != nil {
 					t.Error("Delete must never set ForceDeleteWithoutRecovery")
 				}
-				// SC-022: the deadline is AWS's own DeletionDate, read through unchanged.
-				if !restorableUntil.Equal(fakeDeletionDate) {
-					t.Errorf("restorableUntil = %v, want %v", restorableUntil, fakeDeletionDate)
-				}
 			})
 		}
 	})
@@ -380,10 +370,7 @@ func TestDelete(t *testing.T) {
 		fake := &fakeClient{deleteErr: underlying}
 		backend := newTestBackend(fake, 30)
 
-		restorableUntil, err := backend.Delete(context.Background(), path)
-		if !restorableUntil.IsZero() {
-			t.Errorf("restorableUntil = %v, want the zero time on error", restorableUntil)
-		}
+		err := backend.Delete(context.Background(), path)
 		if err == nil {
 			t.Fatal("expected Delete on an already-absent path to fail (not idempotent)")
 		}

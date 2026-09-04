@@ -119,12 +119,6 @@ account survives, then `Backend.Delete` on the tenant secret path. Each step run
 it succeeded, and a step whose object is already absent counts as success, so the whole sequence is safe to
 re-run.
 
-`Backend.Delete` returns the moment the credential stops being restorable — the zero time when the store
-destroyed it outright (003). `Teardown` logs that timestamp and returns nothing but an error, since
-`pipeline.Module` gives it no other channel; nothing downstream currently consumes it. The log exists for
-an operator to notice a store whose actual deadline differs from what its configured grace period would
-suggest, e.g. after someone changed the store's settings underneath the provider.
-
 **Note**: whether `CREATE ACCOUNT` additionally accepts bind parameters for any of its positions (rather
 than rendered text, see Security Considerations) is an unverified vendor fact — not needed to build this
 module correctly, since the rendering Security Considerations describes is already safe, but worth
@@ -229,8 +223,7 @@ internal/account/modules/account/
 - **Secrets Handling (003)** — Used APIs: `GenerateKeyPair()`/`NewCredentials()`, `MarshalCredentials()`,
   `NewTenantPath()`, `Backend.Create()`, `Backend.Delete()` — Contract: `Create` and `Delete` only,
   never `Update`; the module never reads a credential back. `Delete`'s recovery window is the backend's own
-  business — this module passes no window and cannot choose one; it only observes the deadline `Delete`
-  reports.
+  business — this module passes no window and cannot choose one.
 - **Connection Pooling (004)** — Used APIs: `ModuleContext.OrgAdminDB()`, `ModuleContext.TenantDB()`,
   `ModuleContext.EvictTenant()` — Contract: reached only through `ModuleContext`; this module never
   imports `internal/snowflake/pool` or `internal/snowflake/host` directly.
@@ -317,9 +310,6 @@ internal/account/modules/account/
 - **SC-026**: `Teardown` passes `Config.Deletion.GracePeriodDays` straight into the rendered
   `GRACE_PERIOD_IN_DAYS` for every value 002 admits (3 and 90 at the bounds), and derives no window of its
   own for the credential.
-- **SC-027**: `Teardown` logs the restorable-until time `Backend.Delete` returned, including the case where
-  it is the zero time because the store destroyed the credential outright, and reports it nowhere else —
-  `Teardown`'s return value stays a plain error.
 
 ## Security Considerations
 
@@ -374,8 +364,8 @@ internal/account/modules/account/
   name taken) for that period.
 - **Base Configuration**: `specs/002-base-config.md` — `deletion.gracePeriodDays`, the single setting both
   windows derive from.
-- **Secrets Handling**: `specs/003-secrets-handling.md` — Key Concept: A Credential May Not Outlive Its
-  Account. The concrete window computation lives in `specs/003.a-aws-secrets-backend.md`.
+- **Secrets Handling**: `specs/003-secrets-handling.md` — Key Concept: Deleting a Credential Reserves Its
+  Path. The concrete window computation lives in `specs/003.a-aws-secrets-backend.md`.
 
 <br/><br/><br/><br/><br/>
 

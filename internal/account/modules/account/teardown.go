@@ -87,13 +87,8 @@ func (m *module) deleteCredential(ctx context.Context, mc *pipeline.ModuleContex
 		return nil
 	}
 
-	restorableUntil, err := m.backend.Delete(ctx, path)
-	if err != nil {
+	if err := m.backend.Delete(ctx, path); err != nil {
 		return fmt.Errorf("failed to delete platform credential: %w", err)
-	}
-
-	if log := mc.Logger(); log != nil {
-		log.Info(fmt.Sprintf("platform credential at %s restorable until %s", path, restorableUntil))
 	}
 	return nil
 }

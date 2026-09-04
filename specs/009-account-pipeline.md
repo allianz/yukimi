@@ -130,8 +130,7 @@ type Module interface {
     //
     // A nil error means the removal was accepted, not necessarily that the
     // object is gone: a vendor may keep it restorable, and its name reserved,
-    // for a grace period. There is no channel here to report such a deadline,
-    // deliberately — a module that has one logs it (012).
+    // for a grace period. Nothing here reports such a deadline, deliberately.
     Teardown(ctx context.Context, mc *ModuleContext) error
 }
 

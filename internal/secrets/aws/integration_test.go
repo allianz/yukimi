@@ -102,17 +102,10 @@ func TestIntegration_CreateGetDelete(t *testing.T) {
 	if gotAt.IsZero() {
 		t.Fatal("Get returned a zero CreatedDate")
 	}
-	restorableUntil, err := backend.Delete(ctx, path)
-	if err != nil {
+	// AWS schedules the removal rather than performing it. The cleanup above then force-deletes
+	// the path, which is why consecutive runs are not blocked by the reservation this Delete
+	// just took out.
+	if err := backend.Delete(ctx, path); err != nil {
 		t.Fatalf("Delete: %v", err)
-	}
-	// AWS schedules the removal, so it reports a real DeletionDate roughly 30 days out. The
-	// cleanup above then force-deletes the path, which is why consecutive runs are not blocked
-	// by the reservation this Delete just took out.
-	if restorableUntil.IsZero() {
-		t.Fatal("Delete returned a zero DeletionDate for a scheduled deletion")
-	}
-	if !restorableUntil.After(time.Now().Add(29 * 24 * time.Hour)) {
-		t.Errorf("Delete returned DeletionDate %v, want ~30 days out", restorableUntil)
 	}
 }

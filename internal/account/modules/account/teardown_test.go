@@ -21,33 +21,13 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
-	"strings"
-	"sync"
 	"testing"
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 
 	"github.com/allianz/yukimi/internal/account/pipeline"
-	"github.com/allianz/yukimi/internal/logger"
 	"github.com/allianz/yukimi/internal/secrets"
-
-	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
 )
-
-// spyLogger records every Info call for inspection, mirroring
-// internal/logger's own test fake.
-type spyLogger struct {
-	mu    sync.Mutex
-	infos []string
-}
-
-func (s *spyLogger) Info(msg string, _ ...any) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.infos = append(s.infos, msg)
-}
-func (s *spyLogger) Debug(msg string, _ ...any)         {}
-func (s *spyLogger) WithValues(_ ...any) logging.Logger { return s }
 
 // SC-023: Teardown issues no SQL and evicts nothing when
 // cr.Status.AccountLocator is empty, and still deletes the credential.
@@ -241,39 +221,5 @@ func TestTeardown_CredentialGetSucceeds_DeleteFails_ReturnsError(t *testing.T) {
 
 	if err := m.Teardown(context.Background(), mc); err == nil {
 		t.Fatal("expected an error, got nil")
-	}
-}
-
-// SC-027: Teardown logs the restorable-until time Backend.Delete returned,
-// including the zero-time immediate-destroy case, and only when Delete
-// actually runs.
-func TestTeardown_LogsRestorableUntil(t *testing.T) {
-	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", []string{"a@b.com"}, "")
-	fake := &fakeDBPool{t: t, forbidCalls: true}
-	backend := secrets.NewFakeBackend() // zero RecoveryWindow: Delete destroys outright, returns the zero time
-	path, err := secrets.NewTenantPath("myorg", cr.Namespace, cr.Name)
-	if err != nil {
-		t.Fatalf("secrets.NewTenantPath: %v", err)
-	}
-	if err := backend.Create(context.Background(), path, "creds"); err != nil {
-		t.Fatalf("backend.Create: %v", err)
-	}
-
-	spy := &spyLogger{}
-	log := logger.New(spy, cr.Namespace, "SnowflakeAccount", cr.Name, logger.OpDelete)
-	m := &module{backend: backend, org: "myorg"}
-	mc := pipeline.NewModuleContext(cr, "ns", nil, nil, log, fake)
-
-	if err := m.Teardown(context.Background(), mc); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	spy.mu.Lock()
-	defer spy.mu.Unlock()
-	if len(spy.infos) != 1 {
-		t.Fatalf("Info called %d times, want 1", len(spy.infos))
-	}
-	if !strings.Contains(spy.infos[0], "restorable until") {
-		t.Errorf("log message %q does not mention the restorable-until time", spy.infos[0])
 	}
 }

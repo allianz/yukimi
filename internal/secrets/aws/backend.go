@@ -163,17 +163,15 @@ func (b *Backend) Update(ctx context.Context, path secrets.Path, value string) e
 // this backend cannot schedule a window for. Never calls RestoreSecret.
 //
 // Returns:
-//   - time.Time: AWS's own DeletionDate, the moment the value stops being restorable
 //   - System error if the call fails, including on an already-absent path
 //     (AWS's ResourceNotFoundException) — unlike 003's FakeBackend.Delete,
 //     this is not idempotent (see Edge Cases)
-func (b *Backend) Delete(ctx context.Context, path secrets.Path) (time.Time, error) {
-	out, err := b.client.DeleteSecret(ctx, &secretsmanager.DeleteSecretInput{
+func (b *Backend) Delete(ctx context.Context, path secrets.Path) error {
+	if _, err := b.client.DeleteSecret(ctx, &secretsmanager.DeleteSecretInput{
 		SecretId:             aws.String(path.String()),
 		RecoveryWindowInDays: aws.Int64(int64(b.recoveryWindowDays)),
-	})
-	if err != nil {
-		return time.Time{}, fmt.Errorf("failed to delete secret at %s: %w", path, err)
+	}); err != nil {
+		return fmt.Errorf("failed to delete secret at %s: %w", path, err)
 	}
-	return aws.ToTime(out.DeletionDate), nil
+	return nil
 }
