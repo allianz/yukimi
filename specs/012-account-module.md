@@ -158,11 +158,9 @@ re-run.
 
 `Backend.Delete` returns the moment the credential stops being restorable — the zero time when the store
 destroyed it outright (003). `Teardown` logs that timestamp and returns nothing but an error, since
-`pipeline.Module` gives it no other channel. That is enough: the deadline recorded durably on the consumed
-deletion request (019's `credentialRestorableUntil`) is derived from the same configured grace period, so
-020 computes it without needing anything back out of this module. The log exists for the one case the
-derivation cannot see — a store whose actual deadline differs from the derived window, e.g. after someone
-changed the store's settings underneath the provider.
+`pipeline.Module` gives it no other channel; nothing downstream currently consumes it. The log exists for
+an operator to notice a store whose actual deadline differs from what its configured grace period would
+suggest, e.g. after someone changed the store's settings underneath the provider.
 
 **Note**: whether `CREATE ACCOUNT` additionally accepts bind parameters for any of its positions (rather
 than rendered text, see Security Considerations) is an unverified vendor fact — not needed to build this
