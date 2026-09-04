@@ -103,6 +103,9 @@ func TestLoad_PoolAndCacheDefaults(t *testing.T) {
 	if cfg.Snowflake.ConnectionProbeTimeout != defaultConnectionProbeTimeout {
 		t.Errorf("ConnectionProbeTimeout = %v, want default %v", cfg.Snowflake.ConnectionProbeTimeout, defaultConnectionProbeTimeout)
 	}
+	if cfg.Snowflake.AccountCreationGracePeriod != defaultAccountCreationGracePeriod {
+		t.Errorf("AccountCreationGracePeriod = %v, want default %v", cfg.Snowflake.AccountCreationGracePeriod, defaultAccountCreationGracePeriod)
+	}
 	if cfg.Secrets.CacheTTL != defaultSecretsCacheTTL {
 		t.Errorf("Secrets.CacheTTL = %v, want default %v", cfg.Secrets.CacheTTL, defaultSecretsCacheTTL)
 	}
@@ -124,6 +127,7 @@ snowflake:
   connectionMaxLifetime: 1h
   connectionMaxIdleTime: 15m
   connectionProbeTimeout: 30s
+  accountCreationGracePeriod: 10m
 aws:
   region: eu-central-1
 secrets:
@@ -148,6 +152,9 @@ secrets:
 	}
 	if cfg.Snowflake.ConnectionProbeTimeout != 30*time.Second {
 		t.Errorf("ConnectionProbeTimeout = %v, want 30s", cfg.Snowflake.ConnectionProbeTimeout)
+	}
+	if cfg.Snowflake.AccountCreationGracePeriod != 10*time.Minute {
+		t.Errorf("AccountCreationGracePeriod = %v, want 10m", cfg.Snowflake.AccountCreationGracePeriod)
 	}
 	if cfg.Secrets.CacheTTL != 10*time.Minute {
 		t.Errorf("Secrets.CacheTTL = %v, want 10m", cfg.Secrets.CacheTTL)
@@ -227,6 +234,32 @@ func TestLoad_ConnectionProbeTimeout_NotPositive(t *testing.T) {
 	fixture := wellFormedFixtureWith("  connectionProbeTimeout: -5s\n")
 	_, err := Load(newConfigDir(t, fixture))
 	want := "snowflake.connectionProbeTimeout '-5s' must be a positive duration"
+	if err == nil || err.Error() != want {
+		t.Errorf("error = %v, want %q", err, want)
+	}
+	if !errors.IsUserError(err) {
+		t.Errorf("expected user error, got %v", err)
+	}
+}
+
+// snowflake.accountCreationGracePeriod must parse as a Go duration string.
+func TestLoad_AccountCreationGracePeriod_Unparseable(t *testing.T) {
+	fixture := wellFormedFixtureWith("  accountCreationGracePeriod: not-a-duration\n")
+	_, err := Load(newConfigDir(t, fixture))
+	want := "snowflake.accountCreationGracePeriod 'not-a-duration' does not match the expected format (expected: a Go duration string, e.g. 30m)"
+	if err == nil || err.Error() != want {
+		t.Errorf("error = %v, want %q", err, want)
+	}
+	if !errors.IsUserError(err) {
+		t.Errorf("expected user error, got %v", err)
+	}
+}
+
+// snowflake.accountCreationGracePeriod must be positive.
+func TestLoad_AccountCreationGracePeriod_NotPositive(t *testing.T) {
+	fixture := wellFormedFixtureWith("  accountCreationGracePeriod: 0s\n")
+	_, err := Load(newConfigDir(t, fixture))
+	want := "snowflake.accountCreationGracePeriod '0s' must be a positive duration"
 	if err == nil || err.Error() != want {
 		t.Errorf("error = %v, want %q", err, want)
 	}
@@ -1100,6 +1133,7 @@ func TestConfig_ConcurrentReadOnlyUse(t *testing.T) {
 			_ = cfg.Snowflake.ConnectionMaxLifetime
 			_ = cfg.Snowflake.ConnectionMaxIdleTime
 			_ = cfg.Snowflake.ConnectionProbeTimeout
+			_ = cfg.Snowflake.AccountCreationGracePeriod
 			_ = cfg.AWS.Region
 			_ = cfg.AWS.KmsKeyId
 			_ = cfg.Secrets.CacheTTL

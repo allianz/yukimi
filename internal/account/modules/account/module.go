@@ -22,6 +22,8 @@ limitations under the License.
 package account
 
 import (
+	"time"
+
 	"github.com/allianz/yukimi/internal/account/pipeline"
 	"github.com/allianz/yukimi/internal/secrets"
 )
@@ -30,8 +32,9 @@ import (
 // ever opens an org-admin-scoped connection, and only on the fresh-create
 // path in Apply.
 type module struct {
-	backend secrets.Backend
-	org     string
+	backend     secrets.Backend
+	org         string
+	gracePeriod time.Duration
 }
 
 // New constructs the account module.
@@ -41,11 +44,14 @@ type module struct {
 //     through, via Backend.Create only — this module never calls Update.
 //   - org: Config.Snowflake.Org (002), used to build the tenant secret
 //     path (003) exactly as internal/snowflake/pool does.
+//   - gracePeriod: Config.Snowflake.AccountCreationGracePeriod (002); how
+//     long a fresh account is given to become reachable before the first
+//     post-create connection attempt.
 //
 // Returns:
 //   - pipeline.Module: never nil.
-func New(backend secrets.Backend, org string) pipeline.Module {
-	return &module{backend: backend, org: org}
+func New(backend secrets.Backend, org string, gracePeriod time.Duration) pipeline.Module {
+	return &module{backend: backend, org: org, gracePeriod: gracePeriod}
 }
 
 func (m *module) Name() string { return pipeline.AccountModuleName }

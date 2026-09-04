@@ -208,6 +208,12 @@ type SnowflakeAccountStatus struct {
 	// +optional
 	AccountLocator string `json:"accountLocator,omitempty"`
 
+	// Set once, on the reconcile that first creates the account (012);
+	// anchors the grace period before the first post-create connection
+	// attempt.
+	// +optional
+	AccountCreatedAt *metav1.Time `json:"accountCreatedAt,omitempty"`
+
 	// Built via internal/account/tenant.AccountURL (design.md 7.2).
 	// +optional
 	AccountURL string `json:"accountUrl,omitempty"`
@@ -311,6 +317,7 @@ func AccountURL(locator, region string, usePrivateLink bool) (string, error)
 |---|---|---|---|---|
 | `accountName` | string | No | Controller-set | The resolved name (§3.12), not `metadata.name` |
 | `accountLocator` | string | No | Controller-set | Captured from `CREATE ACCOUNT` (012) |
+| `accountCreatedAt` | timestamp | No | Controller-set | Set once by 012 when the account is first created; anchors the post-create connection grace period |
 | `accountUrl` | string | No | Controller-set | Built via `internal/account/tenant.AccountURL` (§7.2) |
 | `conditions[]` | Condition | No | Controller-set | Standard `Ready`/`Synced` per design.md §7.1 |
 

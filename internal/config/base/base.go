@@ -41,6 +41,8 @@ const (
 	defaultConnectionMaxIdleTime = 5 * time.Minute
 	// defaultConnectionProbeTimeout is snowflake.connectionProbeTimeout's default (004).
 	defaultConnectionProbeTimeout = 10 * time.Second
+	// defaultAccountCreationGracePeriod is snowflake.accountCreationGracePeriod's default (012).
+	defaultAccountCreationGracePeriod = 5 * time.Minute
 	// defaultSecretsCacheTTL is secrets.cacheTtl's default (003).
 	defaultSecretsCacheTTL = 5 * time.Minute
 	// defaultRotationInterval is secrets.rotationInterval's default (004).
@@ -106,6 +108,8 @@ type SnowflakeSettings struct {
 	ConnectionMaxLifetime  time.Duration // max lifetime of a physical connection before it is recycled (004); defaults to 30m when omitted
 	ConnectionMaxIdleTime  time.Duration // max time a physical connection may sit idle before being closed (004); defaults to 5m when omitted
 	ConnectionProbeTimeout time.Duration // timeout for the health probe run on first dial (004); defaults to 10s when omitted
+
+	AccountCreationGracePeriod time.Duration // how long a fresh account is given to become reachable before the first post-create connection attempt (012); defaults to 5m when omitted
 }
 
 // SecretsSettings holds settings for the secrets cache decorator (003), consumed by whoever
@@ -145,6 +149,8 @@ type rawSnowflake struct {
 	ConnectionMaxLifetime  string `yaml:"connectionMaxLifetime"`
 	ConnectionMaxIdleTime  string `yaml:"connectionMaxIdleTime"`
 	ConnectionProbeTimeout string `yaml:"connectionProbeTimeout"`
+
+	AccountCreationGracePeriod string `yaml:"accountCreationGracePeriod"`
 }
 
 type rawAWS struct {
@@ -170,8 +176,9 @@ type rawSecrets struct {
 //     Snowflake.OrgAdminAccountRegion) is empty, the file does not carry exactly
 //     one cloud section, a field's value does not match its documented format, a pool-tuning
 //     integer (MaxConnectionPoolSize, MaxIdleConnections) is out of range, or a duration field
-//     (ConnectionMaxLifetime, ConnectionMaxIdleTime, ConnectionProbeTimeout, Secrets.CacheTTL,
-//     Secrets.RotationInterval) does not parse as a positive Go duration
+//     (ConnectionMaxLifetime, ConnectionMaxIdleTime, ConnectionProbeTimeout,
+//     AccountCreationGracePeriod, Secrets.CacheTTL, Secrets.RotationInterval) does not parse as a
+//     positive Go duration
 //
 // Load walks the parsed YAML's top-level keys to find the cloud sections, so a section with
 // no Go struct yet (azure:, gcp:) is still recognized rather than silently dropped.
@@ -295,6 +302,12 @@ func Load(configDir string) (*Config, error) {
 		return nil, err
 	}
 
+	accountCreationGracePeriod, err := resolvePositiveDuration(
+		"snowflake.accountCreationGracePeriod", raw.Snowflake.AccountCreationGracePeriod, defaultAccountCreationGracePeriod)
+	if err != nil {
+		return nil, err
+	}
+
 	cacheTTL, err := resolvePositiveDuration("secrets.cacheTtl", raw.Secrets.CacheTTL, defaultSecretsCacheTTL)
 	if err != nil {
 		return nil, err
@@ -319,6 +332,8 @@ func Load(configDir string) (*Config, error) {
 			ConnectionMaxLifetime:  connectionMaxLifetime,
 			ConnectionMaxIdleTime:  connectionMaxIdleTime,
 			ConnectionProbeTimeout: connectionProbeTimeout,
+
+			AccountCreationGracePeriod: accountCreationGracePeriod,
 		},
 		AWS: AWSSettings{
 			Region:   raw.AWS.Region,

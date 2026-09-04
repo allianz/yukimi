@@ -125,7 +125,7 @@ func TestIntegration_Create(t *testing.T) {
 		},
 	}
 
-	m := New(backend, org).(*module)
+	m := New(backend, org, 5*time.Minute).(*module)
 	ctx := context.Background()
 
 	// Registered before Apply ever runs: the module stores this secret
@@ -165,15 +165,12 @@ func TestIntegration_Create(t *testing.T) {
 	}
 
 	outcome := m.Apply(ctx, mc1)
-	if outcome.State != pipeline.StateDone {
-		t.Fatalf("Apply (fresh create) = %+v, want Done()", outcome)
+	if outcome.State != pipeline.StatePending || !outcome.Abort {
+		t.Fatalf("Apply (fresh create) = %+v, want Pending().Aborting()", outcome)
 	}
-	if mc1.Locator() == "" {
-		t.Fatal("Apply succeeded but ModuleContext has no locator")
+	if cr.Status.AccountLocator == "" {
+		t.Fatal("Apply succeeded but cr.Status.AccountLocator is still empty")
 	}
-
-	// A real 020 would persist status.accountLocator right after Apply
-	// returns; set it so the drop-account cleanup above can resolve the
-	// account it needs to remove.
-	cr.Status.AccountLocator = mc1.Locator()
+	// Apply sets cr.Status.AccountLocator directly (no separate persist step
+	// needed here); the drop-account cleanup above reads it from cr.
 }

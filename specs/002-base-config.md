@@ -72,6 +72,8 @@ type SnowflakeSettings struct {
     ConnectionMaxLifetime      time.Duration // max lifetime of a physical connection before it is recycled (004); defaults to 30m when omitted
     ConnectionMaxIdleTime      time.Duration // max time a physical connection may sit idle before being closed (004); defaults to 5m when omitted
     ConnectionProbeTimeout     time.Duration // timeout for the health probe run on first dial (004); defaults to 10s when omitted
+
+    AccountCreationGracePeriod time.Duration // how long a fresh account is given to become reachable before the first post-create connection attempt (012); defaults to 5m when omitted
 }
 
 // AWSSettings holds AWS-specific settings, consumed only by 003.a.
@@ -101,8 +103,9 @@ type SecretsSettings struct {
 //     Snowflake.OrgAdminAccountRegion) is empty, the file does not carry exactly
 //     one cloud section, a field's value does not match its documented format, a pool-tuning
 //     integer (MaxConnectionPoolSize, MaxIdleConnections) is out of range, or a duration field
-//     (ConnectionMaxLifetime, ConnectionMaxIdleTime, ConnectionProbeTimeout, Secrets.CacheTTL,
-//     Secrets.RotationInterval) does not parse as a positive Go duration
+//     (ConnectionMaxLifetime, ConnectionMaxIdleTime, ConnectionProbeTimeout,
+//     AccountCreationGracePeriod, Secrets.CacheTTL, Secrets.RotationInterval) does not parse as a
+//     positive Go duration
 //
 // Load walks the parsed YAML's top-level keys to find the cloud sections, so a section with
 // no Go struct yet (azure:, gcp:) is still recognized rather than silently dropped.
@@ -128,6 +131,7 @@ Every field in `base.yaml` is freely editable and the whole file is reloaded who
 | `snowflake.connectionMaxLifetime` | string (duration) | No | Max lifetime of a physical connection before it is recycled (004). Must be a positive Go duration string (e.g. `30m`) if set. Default: `30m` when omitted. |
 | `snowflake.connectionMaxIdleTime` | string (duration) | No | Max time a physical connection may sit idle before being closed (004). Must be a positive Go duration string if set. Default: `5m` when omitted. |
 | `snowflake.connectionProbeTimeout` | string (duration) | No | Timeout for 004's health probe run when a connection is first dialed. Must be a positive Go duration string if set. Default: `10s` when omitted. |
+| `snowflake.accountCreationGracePeriod` | string (duration) | No | How long a fresh account (012) is given to become reachable before the first post-create connection attempt. Must be a positive Go duration string if set. Default: `5m` when omitted. |
 | `aws` | object | **Yes**, or another cloud section | The cloud section for AWS. Its presence is what makes `CloudProvider()` return `"aws"`. Exactly one of `aws` / `azure` / `gcp` must be present — none or several is a user error. |
 | `aws.region` | string | No | Not required here; if non-empty, matches `^[a-z]{2}(-[a-z]+)+-[0-9]$`. Whether the region exists and whether it is required at all is decided by 003.a's constructor. |
 | `aws.kmsKeyId` | string | No | Optional reference to a customer-managed KMS key (key ID, alias, or ARN) used by 003.a when creating/reading secrets in AWS Secrets Manager, in place of the AWS-managed default. Not required here; if non-empty, must match one of the documented KMS identifier forms (bare key ID, `alias/<name>`, key ARN, or alias ARN). Whether the key exists or is usable is 003.a's concern, never this package's. |
@@ -159,8 +163,8 @@ internal/config/base/
 - No cloud section: `base.yaml must contain one cloud section (one of: aws, azure, gcp)`
 - Several cloud sections: `base.yaml contains several cloud sections (aws, azure); exactly one is allowed`
 - Out-of-range pool-tuning integer: `snowflake.maxConnectionPoolSize '0' must be a positive integer`, `snowflake.maxIdleConnections '-1' must not be negative`
-- Malformed duration: `snowflake.connectionMaxLifetime 'not-a-duration' does not match the expected format (expected: a Go duration string, e.g. 30m)` — and likewise for `connectionMaxIdleTime`, `connectionProbeTimeout`, and `secrets.cacheTtl`
-- Non-positive duration: `snowflake.connectionMaxLifetime '0s' must be a positive duration` — and likewise for `connectionMaxIdleTime`, `connectionProbeTimeout`, and `secrets.cacheTtl`
+- Malformed duration: `snowflake.connectionMaxLifetime 'not-a-duration' does not match the expected format (expected: a Go duration string, e.g. 30m)` — and likewise for `connectionMaxIdleTime`, `connectionProbeTimeout`, `accountCreationGracePeriod`, and `secrets.cacheTtl`
+- Non-positive duration: `snowflake.connectionMaxLifetime '0s' must be a positive duration` — and likewise for `connectionMaxIdleTime`, `connectionProbeTimeout`, `accountCreationGracePeriod`, and `secrets.cacheTtl`
 
 **System Errors**: this package makes no network calls and has no retryable infrastructure dependency, so it classifies no scenario as a system error on its own. An unexpected filesystem error (e.g. a permissions problem on the mounted volume) surfaces as a raw wrapped error (`fmt.Errorf("reading base.yaml: %w", err)`); the caller's error handling (001) treats it as a system error by default, since `Load` never wraps it in `errors.NewUserError`. This is intentionally minimal — this package does not attempt to distinguish every possible OS-level failure mode.
 
@@ -168,7 +172,7 @@ internal/config/base/
 
 - **What happens if `snowflake.usePrivateLink` is omitted?** - Defaults to `true`.
 - **What happens if `snowflake.disableOcspChecks` is omitted?** - Defaults to `false`; OCSP certificate-revocation checks stay on.
-- **What happens if `snowflake.maxConnectionPoolSize`, `maxIdleConnections`, `connectionMaxLifetime`, `connectionMaxIdleTime`, or `connectionProbeTimeout` is omitted?** - Each defaults independently: `10`, `2`, `30m`, `5m`, `10s` respectively.
+- **What happens if `snowflake.maxConnectionPoolSize`, `maxIdleConnections`, `connectionMaxLifetime`, `connectionMaxIdleTime`, `connectionProbeTimeout`, or `accountCreationGracePeriod` is omitted?** - Each defaults independently: `10`, `2`, `30m`, `5m`, `10s`, `5m` respectively.
 - **What happens if `secrets.cacheTtl` is omitted?** - Defaults to `5m`.
 - **What happens with an unrecognized YAML key (e.g. a future `timeout`)?** - Ignored by the decoder, not an error. The schema is expected to grow over time (timeouts, pool sizes, and similar settings may be added later as the codebase needs them), and unknown keys must not break `Load` on a rolling deployment.
 - **What if no cloud section is present, or more than one?** - Both are user errors from `Load`: exactly one of `aws` / `azure` / `gcp` is required, so `CloudProvider()` is always unambiguous.
@@ -189,6 +193,7 @@ internal/config/base/
 - **`cmd/provider/main.go`** - Owns the `--configDir` flag and resolves it to a directory path. Calls `base.Load(configDir)` once at startup, then switches on `Config.CloudProvider()` to construct the matching secrets backend, fatally rejecting an unrecognized value by listing the cloud providers compiled in. Also reads `Config.Secrets.CacheTTL` and passes it to `secrets.NewCachedBackend(backend, cfg.Secrets.CacheTTL)` (003) — `internal/secrets` itself never imports `internal/config/base` - Key functions: `base.Load()`, `Config.CloudProvider()`.
 - **`internal/secrets/aws` (003.a)** - Consumes `Config.AWS.Region` when constructed by `main.go`; rejects an empty region as a user error itself, since 002 does not validate it. Also optionally consumes `Config.AWS.KmsKeyId`, passing it through to `CreateSecret`'s `KmsKeyId` parameter when non-empty, so Secrets Manager encrypts/decrypts with the customer-managed key instead of its AWS-managed default - Notes: credentials come from the AWS SDK's default chain, never from `Config`.
 - **`internal/snowflake/pool` (004)** - Consumes `Config.Snowflake.Org`, `OrgAdminAccount`, `OrgAdminAccountLocator`, `OrgAdminAccountRegion`, `UsePrivateLink`, and `DisableOCSPChecks` for org-admin connection host/config construction (design.md 3.6, 3.11), plus `MaxConnectionPoolSize`, `MaxIdleConnections`, `ConnectionMaxLifetime`, `ConnectionMaxIdleTime`, and `ConnectionProbeTimeout` to tune every pooled `*sql.DB`.
+- **Account Module (012)** - Consumes `Config.Snowflake.AccountCreationGracePeriod`, passed to `accountmodule.New` as a plain `time.Duration` — this module never loads the config file itself.
 - **`internal/config/backplane` (007)** / **guardrails loader (008)** - Read their own sibling files (`backplane.yaml`, a guardrails/exceptions file) from the same `--configDir`, with independently implemented loading and validation logic — no code shared with `internal/config/base`.
 
 ## Success Criteria
@@ -212,9 +217,9 @@ internal/config/base/
 - **SC-016**: `Load` returns a user error when `snowflake.orgAdminAccountLocator` is empty or absent.
 - **SC-017**: `Load` returns a user error when `snowflake.orgAdminAccountRegion` is empty or absent.
 - **SC-018**: `Load` returns a user error when `snowflake.orgAdminAccountLocator` or `snowflake.orgAdminAccountRegion` contains characters outside their documented shape, accepts a well-formed region under any of the three recognized cloud prefixes (e.g. `azure-westeurope`), and rejects one missing its cloud prefix (e.g. `eu-central-1`).
-- **SC-019**: `Load` defaults `Snowflake.MaxConnectionPoolSize`, `MaxIdleConnections`, `ConnectionMaxLifetime`, `ConnectionMaxIdleTime`, `ConnectionProbeTimeout`, and `Secrets.CacheTTL` to `10`, `2`, `30m`, `5m`, `10s`, and `5m` respectively when each key is omitted, and honors an explicit value for each when given.
+- **SC-019**: `Load` defaults `Snowflake.MaxConnectionPoolSize`, `MaxIdleConnections`, `ConnectionMaxLifetime`, `ConnectionMaxIdleTime`, `ConnectionProbeTimeout`, `AccountCreationGracePeriod`, and `Secrets.CacheTTL` to `10`, `2`, `30m`, `5m`, `10s`, `5m`, and `5m` respectively when each key is omitted, and honors an explicit value for each when given.
 - **SC-020**: `Load` returns a user error when `snowflake.maxConnectionPoolSize` is not a positive integer, or when `snowflake.maxIdleConnections` is negative.
-- **SC-021**: `Load` returns a user error when `snowflake.connectionMaxLifetime`, `connectionMaxIdleTime`, `connectionProbeTimeout`, or `secrets.cacheTtl` does not parse as a Go duration string, or parses to a non-positive duration.
+- **SC-021**: `Load` returns a user error when `snowflake.connectionMaxLifetime`, `connectionMaxIdleTime`, `connectionProbeTimeout`, `accountCreationGracePeriod`, or `secrets.cacheTtl` does not parse as a Go duration string, or parses to a non-positive duration.
 - **SC-022**: `Load` defaults `Snowflake.DisableOCSPChecks` to `false` when the key is omitted, and honors an explicit `true`/`false` value when given.
 
 
@@ -283,6 +288,7 @@ snowflake:
   # connectionMaxLifetime: 30m      # optional, default shown (004)
   # connectionMaxIdleTime: 5m       # optional, default shown (004)
   # connectionProbeTimeout: 10s     # optional, default shown (004)
+  # accountCreationGracePeriod: 5m  # optional, default shown (012)
 
 aws:
   region: eu-central-1

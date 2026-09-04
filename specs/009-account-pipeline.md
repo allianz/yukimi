@@ -209,9 +209,9 @@ type ModuleContext struct{ /* unexported */ }
 // so ResolvedAccountName() is computed once, here, and no two callers can
 // disagree about it. namespaceLabels are the raw namespace labels set at
 // onboarding (design.md 2); Department/CostCenter/CreditQuota are read from
-// them the same way (internal/account/tenant, 006). If cr.Status.AccountLocator is
-// already set, it seeds Locator() immediately — callers never seed it
-// themselves; see SetLocator below for the only other way it changes.
+// them the same way (internal/account/tenant, 006). The account locator
+// lives on cr.Status.AccountLocator directly — every module reads and
+// writes it through CR(), not through a ModuleContext accessor.
 func NewModuleContext(
     cr *v1alpha1.SnowflakeAccount,
     namespace string,
@@ -226,17 +226,6 @@ func (c *ModuleContext) BackplaneRegion() *backplane.Region
 func (c *ModuleContext) NamespaceLabels() map[string]string
 func (c *ModuleContext) Logger() *logger.Logger
 
-// Locator returns the account locator, or "" if the account does not exist
-// yet on this reconcile. Seeded by NewModuleContext from
-// cr.Status.AccountLocator when already set; see SetLocator for the only way
-// it changes afterward.
-func (c *ModuleContext) Locator() string
-
-// SetLocator records the locator immediately after CREATE ACCOUNT returns it,
-// for the one reconcile where the account did not exist before this call.
-// Only the account module (012) calls this.
-func (c *ModuleContext) SetLocator(locator string)
-
 // OrgAdminDB returns an org-admin-scoped connection (internal/snowflake/pool, 004).
 // Only the account module (012) needs this scope.
 func (c *ModuleContext) OrgAdminDB(ctx context.Context) (*sql.DB, error)
@@ -245,8 +234,9 @@ func (c *ModuleContext) OrgAdminDB(ctx context.Context) (*sql.DB, error)
 // resolved on first call and memoized for the rest of the run.
 //
 // Returns:
-//   - System error if Locator() is still empty — every module after 012 needs
-//     a locator, and getting one is the whole point of running 012 first.
+//   - System error if CR().Status.AccountLocator is still empty — every
+//     module after 012 needs a locator, and getting one is the whole point
+//     of running 012 first.
 func (c *ModuleContext) TenantDB(ctx context.Context) (*sql.DB, error)
 
 // Custom condition types this package defines, plus the static table deciding
@@ -270,7 +260,7 @@ var GatesReady = map[xpv1.ConditionType]bool{
 internal/account/pipeline/
 ├── module.go       # Module interface, Outcome, State, Done/Pending/Rejected/Failed, Aborting
 ├── pipeline.go     # Pipeline, New, Observe, Apply, Observation, Result, ModuleOutcome, AllDone
-├── context.go      # ModuleContext, NewModuleContext, Locator/SetLocator, OrgAdminDB/TenantDB
+├── context.go      # ModuleContext, NewModuleContext, OrgAdminDB/TenantDB
 └── conditions.go   # TypeQuotaAvailable, TypeIdentitySynced, GatesReady
 ```
 
@@ -283,9 +273,10 @@ package's.
 
 **System Errors**: likewise none of this package's own, with one exception. Every module wraps its
 own system failures with `fmt.Errorf("...: %w", err)` before returning `Failed(err)`. The one system
-error this package itself can produce is `ModuleContext.TenantDB`'s error when `Locator()` is still
-empty — every other failure surfacing from `OrgAdminDB`/`TenantDB` is `internal/snowflake/pool`'s
-(004) own error, passed through unwrapped for the calling module to classify.
+error this package itself can produce is `ModuleContext.TenantDB`'s error when
+`CR().Status.AccountLocator` is still empty — every other failure surfacing from `OrgAdminDB`/`TenantDB`
+is `internal/snowflake/pool`'s (004) own error, passed through unwrapped for the calling module to
+classify.
 
 ## Edge Cases
 
@@ -300,11 +291,11 @@ empty — every other failure surfacing from `OrgAdminDB`/`TenantDB` is `interna
   returns a fresh `Outcome`, including a fresh `Condition`; the previous rejection is overwritten the
   moment that module reports `Done` instead.
 - **What happens on the very first reconcile, before `CREATE ACCOUNT` has ever returned a locator?** -
-  `ModuleContext.Locator()` returns `""`. Only the account module (012) can proceed without one; every
-  module that calls `TenantDB` fails with a system error until 012 has called `SetLocator`, which is
-  why 012 must run before any such module, and must abort on anything but `Done`. A module that never
-  calls `TenantDB` (guardrail-check, 010, or quota-check, 011) has no such constraint and may be
-  registered ahead of 012.
+  `cr.Status.AccountLocator` is `""`. Only the account module (012) can proceed without one; every
+  module that calls `TenantDB` fails with a system error until 012 has set `cr.Status.AccountLocator`
+  directly, which is why 012 must run before any such module, and must abort on anything but `Done`. A
+  module that never calls `TenantDB` (guardrail-check, 010, or quota-check, 011) has no such constraint
+  and may be registered ahead of 012.
 - **A module returns `Pending` — who decides when the pipeline is retried?** - Nobody, at this layer.
   `Pending` carries only its reason string, no requeue hint; the controller's own poll interval governs
   when the next reconcile happens.
@@ -369,8 +360,8 @@ directly.
    unchanged.
 8. **SC-008**: `Result.AllDone()` is true iff `Outcomes` is non-empty, `Aborted` is false, and every
    entry's `State` is `StateDone`.
-9. **SC-009**: `ModuleContext.TenantDB` returns a system error when `Locator()` is empty, and never
-   calls the pool when it is.
+9. **SC-009**: `ModuleContext.TenantDB` returns a system error when `CR().Status.AccountLocator` is
+   empty, and never calls the pool when it is.
 10. **SC-010**: `ModuleContext.TenantDB` resolves the connection once and returns the same `*sql.DB`
     on every subsequent call within the same context.
 11. **SC-011**: `ModuleContext.ResolvedAccountName()` returns the same value `tenant.ResolveName` would

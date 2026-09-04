@@ -94,9 +94,12 @@ spec.
   `Apply`, not before it; the context still carries nothing guardrail-specific — that module reads the
   CRD and namespace labels already on `ModuleContext` directly, plus the loaded 008 config/exceptions
   instance injected into its own constructor.
-- **Seed the account locator from `status.accountLocator`** when it is set. The context late-binds it;
-  012 publishes it via `SetLocator` after `CREATE ACCOUNT`, so a fresh account is created and fully
-  configured inside one `Create`.
+- **The account locator lives on `status.accountLocator` directly** — `ModuleContext` carries no
+  separate accessor for it; every module, including 012, reads and writes it straight through `CR()`.
+  012 no longer configures a fresh account fully inside one `Create`: it sets
+  `status.accountLocator`/`status.accountCreatedAt` and aborts the pipeline for that pass, deferring
+  verification and every later module to a reconcile once the post-create grace period has elapsed
+  (specs/012-account-module.md, Key Concept: Post-Create Grace Period).
 - **`ResourceUpToDate` is generation-based**:
   `exists && cr.Status.ObservedGeneration == cr.Generation && allModulesInSync`. Advance the counter
   with `cr.Status.SetObservedGeneration(cr.Generation)` **only** when `result.AllDone()` — so a spec
@@ -142,11 +145,12 @@ spec.
 Recorded by `/yukimi.clarify 010` (spec later renumbered to 012). `specs/012-account-module.md` is now
 written and authoritative for what the module does and does not carry.
 
-- **020 computes `status.accountName`/`accountUrl`/`accountLocator` itself, directly from the
-  `ModuleContext` it already built and holds** — `mc.ResolvedAccountName()`, `mc.Locator()` (readable
-  after `Apply` returns), and `tenant.AccountURL(locator, region, usePrivateLink)` with `usePrivateLink`
-  from `Config.Snowflake.UsePrivateLink` (002) — never from a payload on any module's `Outcome`.
-  012's `Outcome` carries no string result; there is nothing to read off it for this purpose.
+- **020 computes `status.accountName`/`accountUrl` itself, directly from the `ModuleContext` it already
+  built and holds** — `mc.ResolvedAccountName()` and `tenant.AccountURL(locator, region, usePrivateLink)`
+  with `usePrivateLink` from `Config.Snowflake.UsePrivateLink` (002) — never from a payload on any
+  module's `Outcome`. 012's `Outcome` carries no string result; there is nothing to read off it for this
+  purpose. `status.accountLocator` itself needs no separate computation: 012 already sets it directly on
+  `cr.Status` (via `ModuleContext.CR()`), so 020 only has to persist the CRD it's already holding.
 - **Persist `status.accountLocator` as promptly as possible after `Apply` returns.** Every reconcile
   between a successful `CREATE ACCOUNT` and that persist is a crash window, and 012 has no way to
   recover from it automatically: a crash there permanently strands the resource in `Failed(systemErr)`

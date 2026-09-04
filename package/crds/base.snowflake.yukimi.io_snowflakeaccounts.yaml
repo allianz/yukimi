@@ -62,7 +62,7 @@ spec:
               creditQuota:
                 description: |-
                   This account's share of the namespace's monthly credit allowance
-                  (design.md 3.10). Ceiling enforcement is Guardrails'/Quota's job (008/016).
+                  (design.md 3.10). Ceiling enforcement is Guardrails'/Quota's job (008/011).
                 format: int32
                 type: integer
               customAuthRules:
@@ -205,8 +205,15 @@ spec:
           status:
             description: SnowflakeAccountStatus defines the observed state of a SnowflakeAccount.
             properties:
+              accountCreatedAt:
+                description: |-
+                  Set once, on the reconcile that first creates the account (012);
+                  anchors the grace period before the first post-create connection
+                  attempt.
+                format: date-time
+                type: string
               accountLocator:
-                description: Captured from CREATE ACCOUNT's result (010).
+                description: Captured from CREATE ACCOUNT's result (012).
                 type: string
               accountName:
                 description: |-

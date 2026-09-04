@@ -76,8 +76,8 @@ func newTestCR(name, namespace, region, locator string) *v1alpha1.SnowflakeAccou
 	}
 }
 
-// SC-009: ModuleContext.TenantDB returns a system error when Locator() is
-// empty, and never calls the pool when it is.
+// SC-009: ModuleContext.TenantDB returns a system error when
+// CR().Status.AccountLocator is empty, and never calls the pool when it is.
 func TestTenantDB_EmptyLocator_NeverCallsPool(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "")
 	fake := &fakeDBPool{t: t, forbidCalls: true}
@@ -180,13 +180,13 @@ func TestTenantDB_FailureNotCached(t *testing.T) {
 		t.Errorf("TenantAccount called %d times before locator was set, want 0", fake.tenantCalls)
 	}
 
-	mc.SetLocator("AB12345")
+	cr.Status.AccountLocator = "AB12345"
 	got, err := mc.TenantDB(context.Background())
 	if err != nil {
-		t.Fatalf("unexpected error after SetLocator: %v", err)
+		t.Fatalf("unexpected error after the locator was set: %v", err)
 	}
 	if got != db1 {
-		t.Error("TenantDB did not return the pool's *sql.DB after SetLocator")
+		t.Error("TenantDB did not return the pool's *sql.DB after the locator was set")
 	}
 	if fake.tenantCalls != 1 {
 		t.Errorf("TenantAccount called %d times, want 1", fake.tenantCalls)
@@ -247,38 +247,6 @@ func TestNewModuleContext_ResolvedAccountName(t *testing.T) {
 	want := tenant.ResolveName(cr.Name, "finance")
 	if got := mc.ResolvedAccountName(); got != want {
 		t.Errorf("ResolvedAccountName() = %q, want %q", got, want)
-	}
-}
-
-// NewModuleContext seeds Locator() from cr.Status.AccountLocator when set.
-func TestNewModuleContext_SeedsLocatorFromStatus(t *testing.T) {
-	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345")
-	mc := NewModuleContext(cr, "ns", nil, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
-
-	if got := mc.Locator(); got != "AB12345" {
-		t.Errorf("Locator() = %q, want %q", got, "AB12345")
-	}
-}
-
-// NewModuleContext leaves Locator() empty when cr.Status.AccountLocator is
-// empty.
-func TestNewModuleContext_EmptyStatusLocator(t *testing.T) {
-	cr := newTestCR("acct", "ns", "aws-eu-central-1", "")
-	mc := NewModuleContext(cr, "ns", nil, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
-
-	if got := mc.Locator(); got != "" {
-		t.Errorf("Locator() = %q, want empty", got)
-	}
-}
-
-// SetLocator overrides whatever Locator() previously returned.
-func TestSetLocator_Overrides(t *testing.T) {
-	cr := newTestCR("acct", "ns", "aws-eu-central-1", "")
-	mc := NewModuleContext(cr, "ns", nil, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
-
-	mc.SetLocator("XY999")
-	if got := mc.Locator(); got != "XY999" {
-		t.Errorf("Locator() = %q, want %q", got, "XY999")
 	}
 }
 
