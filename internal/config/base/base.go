@@ -48,12 +48,14 @@ const (
 	// defaultRotationInterval is secrets.rotationInterval's default (004).
 	defaultRotationInterval = 4320 * time.Hour
 	// defaultDeletionGracePeriodDays is deletion.gracePeriodDays's default (012). 30 is the
-	// largest value AWS Secrets Manager can match exactly, so the derived credential recovery
-	// window equals the account grace period and no manual-repair band exists (003).
+	// largest value AWS Secrets Manager can match exactly, so the credential recovery window
+	// equals the account grace period and no manual-repair band exists (003.a).
 	defaultDeletionGracePeriodDays = 30
-	// minDeletionGracePeriodDays and maxDeletionGracePeriodDays are the bounds Snowflake itself
-	// documents for DROP ACCOUNT's GRACE_PERIOD_IN_DAYS.
-	minDeletionGracePeriodDays = 3
+	// minDeletionGracePeriodDays matches AWS Secrets Manager's own minimum representable
+	// recovery window (003.a), so a credential is always scheduled for deletion, never
+	// force-deleted for lack of a compliant window. maxDeletionGracePeriodDays is the bound
+	// Snowflake itself documents for DROP ACCOUNT's GRACE_PERIOD_IN_DAYS.
+	minDeletionGracePeriodDays = 7
 	maxDeletionGracePeriodDays = 90
 )
 
@@ -130,16 +132,16 @@ type SecretsSettings struct {
 
 // DeletionSettings holds the one operator-owned deletion window. Both stores that reserve a
 // tenant's deterministic identifier derive their own clock from it: 012 renders it as DROP
-// ACCOUNT's GRACE_PERIOD_IN_DAYS, and each secrets backend derives from it the longest recovery
-// window it can represent that does not outlive the account (secrets.DeriveRecoveryWindow, 003).
-// A credential must never outlive its account — that would leave the secret path occupied for a
-// value nothing can be recovered into.
+// ACCOUNT's GRACE_PERIOD_IN_DAYS, and each secrets backend caps its own recovery window at
+// whatever it can represent, best-effort, so a credential never outlives the account — that
+// would leave the secret path occupied for a value nothing can be recovered into. This package
+// defines no shared derivation helper for that decision; it is each backend's own (003.a).
 //
 // This is unrelated to SnowflakeSettings.AccountCreationGracePeriod, which is how long a freshly
 // created account is given to become reachable. Despite the similar name, that one is about
 // creation and is a Duration; this one is about deletion and is a count of days.
 type DeletionSettings struct {
-	GracePeriodDays int // days a dropped account and its credential stay restorable (003, 012); defaults to 30 when omitted, allowed range 3-90
+	GracePeriodDays int // days a dropped account and its credential stay restorable (003, 012); defaults to 30 when omitted, allowed range 7-90
 }
 
 // AWSSettings holds AWS-specific settings, consumed only by 003.a.
@@ -204,7 +206,7 @@ type rawDeletion struct {
 //     Snowflake.OrgAdminAccountRegion) is empty, the file does not carry exactly
 //     one cloud section, a field's value does not match its documented format, a pool-tuning
 //     integer (MaxConnectionPoolSize, MaxIdleConnections) is out of range,
-//     Deletion.GracePeriodDays is outside Snowflake's documented 3-90 range, or a duration field
+//     Deletion.GracePeriodDays is outside the allowed 7-90 range, or a duration field
 //     (ConnectionMaxLifetime, ConnectionMaxIdleTime, ConnectionProbeTimeout,
 //     AccountCreationGracePeriod, Secrets.CacheTTL, Secrets.RotationInterval) does not parse as a
 //     positive Go duration

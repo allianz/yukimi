@@ -50,8 +50,9 @@ type Backend interface {
 	// report the deadline it heard from the store rather than recompute it.
 	//
 	// An implementation that schedules the removal instead of performing it must
-	// derive its window with DeriveRecoveryWindow, so the value never outlives
-	// the account grace period it belongs to (002). While the removal is
+	// keep that window within whatever account grace period it was constructed
+	// with (002), by whatever means suits its own store — this package
+	// prescribes no shared mechanism for that decision. While the removal is
 	// pending, path stays occupied: Get and Update fail on it and so does
 	// Create, since the store has not released the name yet.
 	Delete(ctx context.Context, path Path) (time.Time, error)

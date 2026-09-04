@@ -39,9 +39,9 @@ This specification defines the deletion-request subsystem that:
   schema level (see Security Considerations); that control is left to RBAC or a git-review process
   outside this provider's code, and none is defined anywhere in this repository today.
 - Any replication-related deletion request (021, not yet written).
-- Deriving either restore window. `deletion.gracePeriodDays` is 002's, the credential window derived from it
-  is 003's, and rendering `GRACE_PERIOD_IN_DAYS` is 012's; this spec only records the two resulting deadlines
-  as 020 hands them over.
+- Deriving either restore window. `deletion.gracePeriodDays` is 002's, the credential window is the
+  concrete secrets backend's own (003.a), and rendering `GRACE_PERIOD_IN_DAYS` is 012's; this spec
+  only records the two resulting deadlines as 020 hands them over.
 
 ## Key Concept: The Deletion Request's Lifecycle
 
@@ -167,14 +167,14 @@ func FindActiveRequest(ctx context.Context, c client.Client, namespace, targetKi
 // Parameters:
 //   - accountRestorableUntil: when UNDROP ACCOUNT stops working — the drop
 //     time plus Config.Deletion.GracePeriodDays (002).
-//   - credentialRestorableUntil: when the platform credential stops being
-//     restorable — the drop time plus the window the secrets backend derived
-//     from the same grace period (secrets.RecoveryWindow, 003). The zero time
-//     when that window is zero and the store destroyed the credential
-//     outright, which leaves the field unset.
+//   - credentialRestorableUntil: exactly what the secrets backend's own
+//     Backend.Delete (003) returned for that credential, taken as-is. The
+//     zero time when the store destroyed the credential outright, which
+//     leaves the field unset.
 //
 // Callers must not pass a credentialRestorableUntil after
-// accountRestorableUntil — 003 derives the credential window so that this
+// accountRestorableUntil — the concrete backend is responsible for keeping
+// its own window within the account grace period (003, 003.a), so this
 // cannot happen, and this function does not clamp it.
 //
 // Returns: system error if the status update against the Kubernetes API
@@ -215,7 +215,7 @@ why, and for the bound that keeps this acceptable.
 | `validUntil` | string (timestamp) | `metadata.creationTimestamp` + `spec.duration` while `Active`; frozen at its terminal value once `Expired` or `Consumed`. Set by `internal/controller/snowflakedeletionrequest`. |
 | `state` | string (enum) | `Active`, `Expired`, or `Consumed`; monotonic, never reverts. Set by `internal/controller/snowflakedeletionrequest` (Active/Expired) and `internal/deletion.MarkConsumed` (Consumed). |
 | `accountRestorableUntil` | string (timestamp) | Drop time + `deletion.gracePeriodDays` (002): the last moment `UNDROP ACCOUNT` works. Set once by `internal/deletion.MarkConsumed`, together with `state = Consumed`; absent on any request that was never consumed. |
-| `credentialRestorableUntil` | string (timestamp) | Drop time + the credential recovery window 003 derives from the same `deletion.gracePeriodDays`. Never later than `accountRestorableUntil`. Absent when the store destroyed the credential outright — which is what a configured grace period below the store's floor means (003.a: below 7 days on AWS). Set once by `internal/deletion.MarkConsumed`. |
+| `credentialRestorableUntil` | string (timestamp) | Exactly what the secrets backend's `Backend.Delete` (003) returned for that credential, taken as-is. Never later than `accountRestorableUntil` — the concrete backend (003.a) is responsible for keeping its own window within `deletion.gracePeriodDays`. Absent when the store destroyed the credential outright; unreachable for the AWS backend today, whose floor (7) matches 002's own floor for `deletion.gracePeriodDays`, but the field stays optional for a hypothetical backend with a stricter one. Set once by `internal/deletion.MarkConsumed`. |
 | `conditions[]` | Condition | Standard `Ready`/`Synced` per design.md §7.1. `Ready` becomes `True` once `Observe` succeeds — there is no failure mode here beyond a Kubernetes API error. |
 
 ## Project Structure
@@ -288,7 +288,7 @@ non-empty requirement are both CEL rules enforced at admission — by the time a
   expected shape whenever `deletion.gracePeriodDays` exceeds what the secret store can represent (above 30
   on AWS). The days between the two are the band on which `UNDROP ACCOUNT` succeeds but the platform
   credential is already unrecoverable; the account is still restorable, by the manual repair 012 documents.
-  The reverse ordering is the one that would be a bug, and 003's derivation makes it unreachable.
+  The reverse ordering is the one that would be a bug, and 003.a's own window computation makes it unreachable.
 - **The request is `Consumed` but the account was later restored — does anything reset?** No. Both
   deadlines and the `Consumed` state freeze permanently; nothing in this platform observes an
   `UNDROP ACCOUNT` performed by hand. The record says a destruction was authorized and carried out at that
@@ -317,11 +317,13 @@ non-empty requirement are both CEL rules enforced at admission — by the time a
 - **SnowflakeAccount controller (020)** - calls `internal/deletion.FindActiveRequest` when
   intercepting a `SnowflakeAccount`'s deletion, and `internal/deletion.MarkConsumed` once the
   account's teardown (009) has succeeded, passing the two restore deadlines it has at that point: the
-  account's, from the drop time plus `Config.Deletion.GracePeriodDays` (002), and the credential's, from the
-  same drop time plus the `secrets.RecoveryWindow` (003) its backend derived — a plain value 020 receives at
-  construction, which is why it needs nothing back out of 012's teardown - Key functions: `FindActiveRequest`, `MarkConsumed` -
-  Notes: the dependency is one-way; 019 never imports anything from 020, and this spec neither reads
-  provider configuration nor derives either deadline itself — it records what 020 hands it.
+  account's, from the drop time plus `Config.Deletion.GracePeriodDays` (002), and the credential's,
+  taken as-is from whatever the secrets backend's own `Backend.Delete` (003) returned during 012's
+  teardown. How that value travels from 012's teardown up to 020's call site is 009/012/020's own
+  wiring to define — this spec neither derives it nor prescribes the mechanism - Key functions:
+  `FindActiveRequest`, `MarkConsumed` - Notes: the dependency is one-way; 019 never imports anything
+  from 020, and this spec neither reads provider configuration nor derives either deadline itself —
+  it records what 020 hands it.
 - **internal/controller/yukimi.go** - registers `snowflakedeletionrequest.SetupGated` in its list of
   controllers alongside every other resource's - Key functions: `SetupGated`.
 - **crossplane-runtime's `managed.NewReconciler`** - drives `Observe`/`Create`/`Update`/`Delete` on
@@ -413,10 +415,11 @@ non-empty requirement are both CEL rules enforced at admission — by the time a
 - **Pipeline package boundary**: `specs/009-account-pipeline.md` - confirms this spec's controller is
   not a pipeline module: the teardown these two calls authorize is sequenced by `Pipeline.Destroy`,
   which nothing here invokes or knows about.
-- **Grace period and derived credential window**: `specs/002-base-config.md`
-  (`deletion.gracePeriodDays`), `specs/003-secrets-handling.md` (`DeriveRecoveryWindow`, and why a
-  credential may not outlive its account), `specs/012-account-module.md` (the drop that starts both clocks,
-  and the manual repair when only the credential is gone).
+- **Grace period and credential window**: `specs/002-base-config.md`
+  (`deletion.gracePeriodDays`), `specs/003-secrets-handling.md` (why a credential may not outlive its
+  account) and `specs/003.a-aws-secrets-backend.md` (the concrete window computation),
+  `specs/012-account-module.md` (the drop that starts both clocks, and the manual repair when only the
+  credential is gone).
 - **Poll interval**: `cmd/provider/main.go` `--poll` flag, default `1m`.
 - **crossplane-runtime v2.0.0**: `pkg/reconciler/managed/reconciler.go` - confirms no per-resource
   requeue override exists.
@@ -443,20 +446,18 @@ if req == nil {
 ### Example 2: 020 marking a request used after a successful teardown
 
 ```go
-// Pipeline.Destroy (009) runs every module's Teardown in reverse, ending with 012's DROP ACCOUNT.
+// Pipeline.Destroy (009) runs every module's Teardown in reverse, ending with 012's DROP ACCOUNT
+// and platform-credential delete. Pipeline.Destroy's own signature (009) returns only error, so
+// how credentialRestorableUntil — exactly what 012's call to Backend.Delete (003) returned —
+// surfaces from inside that call up to here is 020's own wiring to define; this example elides it.
+// accountRestorableUntil, by contrast, is 020's own computation from the one ops setting; it needs
+// nothing back out of the teardown.
 if err := pl.Destroy(ctx, mc); err != nil {
     return managed.ExternalDelete{}, log.Handle(err)
 }
-// Both deadlines are derived from the one ops setting, so 020 computes them itself:
-// the account's from the configured grace period, the credential's from the window
-// the secrets backend derived from that same number (003). credentialRestorableUntil
-// is the zero time when that window is zero, and MarkConsumed then leaves it unset.
-dropTime := time.Now()
-accountRestorableUntil := dropTime.AddDate(0, 0, cfg.Deletion.GracePeriodDays)
-var credentialRestorableUntil time.Time
-if !recoveryWindow.Immediate() {
-    credentialRestorableUntil = dropTime.AddDate(0, 0, recoveryWindow.Days())
-}
+accountRestorableUntil := time.Now().AddDate(0, 0, cfg.Deletion.GracePeriodDays)
+// credentialRestorableUntil is the zero time when the store destroyed the credential outright;
+// MarkConsumed then leaves the field unset.
 if err := deletion.MarkConsumed(ctx, kube, req, accountRestorableUntil, credentialRestorableUntil); err != nil {
     return managed.ExternalDelete{}, err // system error: status update failed
 }

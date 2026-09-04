@@ -86,7 +86,7 @@ type SecretsSettings struct {
 // tenant's deterministic identifier derive their own clock from it (003, 012), so a credential
 // never outlives the account it belongs to.
 type DeletionSettings struct {
-    GracePeriodDays int // days a dropped account and its credential stay restorable (003, 012); defaults to 30 when omitted, allowed range 3-90
+    GracePeriodDays int // days a dropped account and its credential stay restorable (003, 012); defaults to 30 when omitted, allowed range 7-90
 }
 
 // Load reads, parses, and validates "<configDir>/base.yaml".
@@ -130,7 +130,7 @@ func Load(configDir string) (*Config, error)
 | `aws.kmsKeyId` | string | No | Optional reference to a customer-managed KMS key used by 003.a in place of the AWS-managed default. If non-empty, must match one of the documented KMS identifier forms: bare key ID, `alias/<name>`, key ARN, or alias ARN. Whether the key exists or is usable is 003.a's concern. |
 | `secrets.cacheTtl` | string (duration) | No | TTL for the in-memory secrets cache (003), applied by whichever code wraps a `Backend` in `secrets.NewCachedBackend`. Positive Go duration string if set. Default: `5m` when omitted. |
 | `secrets.rotationInterval` | string (duration) | No | Age past which 004 rotates a stored Snowflake credential inline. Positive Go duration string if set (e.g. `1s` for tests). Default: `4320h` (~6 months) when omitted. |
-| `deletion.gracePeriodDays` | int | No | Days a dropped tenant account and its stored credential stay restorable (003, 012). Must be `3`–`90` inclusive if set — Snowflake's own documented bounds. Default: `30` when omitted. Not overridable per request; see 019. |
+| `deletion.gracePeriodDays` | int | No | Days a dropped tenant account and its stored credential stay restorable (003, 012). Must be `7`–`90` inclusive if set — `90` is Snowflake's own documented ceiling for `DROP ACCOUNT`'s `GRACE_PERIOD_IN_DAYS`, and `7` is raised above Snowflake's own floor to match AWS Secrets Manager's minimum representable recovery window (003.a), so a credential is always scheduled for deletion rather than force-deleted. Default: `30` when omitted. Not overridable per request; see 019. |
 
 Every field is freely editable and the whole file is reloaded wholesale on the next pod restart, so there is no per-field mutability rule to enforce.
 
@@ -146,7 +146,7 @@ Every field is freely editable and the whole file is reloaded wholesale on the n
 | Value fails its documented regex | `aws.region 'Frankfurt!' does not match the expected format (expected: eu-central-1)` |
 | No cloud section | `base.yaml must contain one cloud section (one of: aws, azure, gcp)` |
 | Several cloud sections | `base.yaml contains several cloud sections (aws, azure); exactly one is allowed` |
-| Integer out of range | `snowflake.maxConnectionPoolSize '0' must be a positive integer`, `snowflake.maxIdleConnections '-1' must not be negative`, `deletion.gracePeriodDays '91' must be between 3 and 90` |
+| Integer out of range | `snowflake.maxConnectionPoolSize '0' must be a positive integer`, `snowflake.maxIdleConnections '-1' must not be negative`, `deletion.gracePeriodDays '91' must be between 7 and 90` |
 | Duration unparseable | `snowflake.connectionMaxLifetime 'not-a-duration' does not match the expected format (expected: a Go duration string, e.g. 30m)` |
 | Duration not positive | `snowflake.connectionMaxLifetime '0s' must be a positive duration` |
 
@@ -159,7 +159,6 @@ The shape message names the format by example, so the expected form is readable 
 - **What happens when an optional key is omitted?** - It takes the default in the schema table; each field defaults independently. Omitting a whole section (`secrets:`, `deletion:`) is identical to omitting every key in it, and a section present but empty is indistinguishable from absent — the decoder yields the same zero-value struct either way, and there is no reason to tell them apart.
 - **What if a field's value is well-formed but wrong — `aws.region: xx-nowhere-9`, a locator that doesn't exist, a region Snowflake doesn't offer, a KMS key that isn't accessible?** - `Load` accepts all of them. Shape is all this package can judge; the owning component fails on first use, and for a locator or region that can only be 004's first connection attempt.
 - **What if `aws.region` is absent while `aws:` is present?** - `Load` accepts it; requiring a region is 003.a's call, and its constructor rejects the empty value as a user error.
-- **What happens if `deletion.gracePeriodDays` is set below `7`?** - `Load` accepts anything in `3`–`90`; the consequence lands in 003. AWS Secrets Manager's shortest representable recovery window is 7 days, so a shorter grace period leaves it no compliant window at all and it destroys the credential irreversibly rather than outliving the account. That is a deliberate 003 outcome, not a 002 validation error.
 - **What happens with an unrecognized YAML key (e.g. a future `timeout`)?** - Ignored by the decoder, not an error. The schema is expected to grow, and unknown keys must not break `Load` on a rolling deployment.
 - **What if no cloud section is present, or more than one?** - Both are user errors from `Load`: exactly one of `aws` / `azure` / `gcp` is required, so `CloudProvider()` is always unambiguous.
 - **What if the cloud section has no backend compiled in (e.g. `azure:` today)?** - `Load` accepts it and `CloudProvider()` returns `"azure"` — this package has no notion of which backends exist. `cmd/provider/main.go` is the one that fails fast, listing the cloud providers actually compiled in.
@@ -183,7 +182,7 @@ internal/config/base/
 - **`internal/secrets/aws` (003.a)** - Consumes `Config.AWS.Region` when constructed by `main.go`; rejects an empty region as a user error itself, since 002 does not validate it. Also optionally consumes `Config.AWS.KmsKeyId`, passing it through to `CreateSecret`'s `KmsKeyId` parameter when non-empty, so Secrets Manager encrypts/decrypts with the customer-managed key instead of its AWS-managed default - Notes: credentials come from the AWS SDK's default chain, never from `Config`.
 - **`internal/snowflake/pool` (004)** - Consumes `Config.Snowflake.Org`, `OrgAdminAccount`, `OrgAdminAccountLocator`, `OrgAdminAccountRegion`, `UsePrivateLink`, and `DisableOCSPChecks` for org-admin connection host/config construction (design.md 3.6, 3.11), plus `MaxConnectionPoolSize`, `MaxIdleConnections`, `ConnectionMaxLifetime`, `ConnectionMaxIdleTime`, and `ConnectionProbeTimeout` to tune every pooled `*sql.DB`, and `Config.Secrets.RotationInterval` to decide when a stored credential is rotated inline.
 - **Account Module (012)** - Consumes `Config.Snowflake.AccountCreationGracePeriod`, passed to `accountmodule.New` as a plain `time.Duration` — this module never loads the config file itself. Also consumes `Config.Deletion.GracePeriodDays`, rendered verbatim as `DROP ACCOUNT ... GRACE_PERIOD_IN_DAYS` on teardown.
-- **`internal/secrets` (003) / its backends** - Consume `Config.Deletion.GracePeriodDays` as the ceiling for `secrets.DeriveRecoveryWindow`, which each backend calls once at construction with the day band it can represent (003.a: 7–30). `internal/secrets` never imports `internal/config/base`; `main.go` passes the number in.
+- **`internal/secrets` (003) / its backends** - Consume `Config.Deletion.GracePeriodDays` directly; each concrete backend caps its own recovery window at whatever it can represent, once at construction (003.a: capped at 30). `internal/secrets` defines no shared derivation helper for this and never imports `internal/config/base`; `main.go` passes the number in.
 - **`internal/config/backplane` (007)** / **guardrails loader (008)** - Read their own sibling files (`backplane.yaml`, a guardrails/exceptions file) from the same `--configDir`, with independently implemented loading and validation logic — no code shared with `internal/config/base`.
 
 ## Success Criteria
@@ -201,8 +200,8 @@ internal/config/base/
 - **SC-011**: For every optional integer and duration field, `Load` applies the schema table's default when the key is omitted and honors an explicit value when given: `MaxConnectionPoolSize` `10`, `MaxIdleConnections` `2`, `ConnectionMaxLifetime` `30m`, `ConnectionMaxIdleTime` `5m`, `ConnectionProbeTimeout` `10s`, `AccountCreationGracePeriod` `5m`, `Secrets.CacheTTL` `5m`, `Secrets.RotationInterval` `4320h`.
 - **SC-012**: `Load` returns a user error when `snowflake.maxConnectionPoolSize` is not a positive integer, or when `snowflake.maxIdleConnections` is negative.
 - **SC-013**: For every duration field, `Load` returns a user error when the value does not parse as a Go duration string, and another when it parses to a non-positive duration.
-- **SC-014**: `Load` defaults `Deletion.GracePeriodDays` to `30` when the `deletion:` section is absent and when it is present but empty, and honors an explicit value at either end of the band (`3`, `90`).
-- **SC-015**: `Load` returns a user error when `deletion.gracePeriodDays` lies outside `3`–`90` inclusive (`-1`, `0`, `2`, `91`).
+- **SC-014**: `Load` defaults `Deletion.GracePeriodDays` to `30` when the `deletion:` section is absent and when it is present but empty, and honors an explicit value at either end of the band (`7`, `90`).
+- **SC-015**: `Load` returns a user error when `deletion.gracePeriodDays` lies outside `7`–`90` inclusive (`-1`, `0`, `6`, `91`).
 - **SC-016**: An unrecognized top-level YAML key does not cause `Load` to fail.
 - **SC-017**: The returned `*Config` is safe for concurrent read-only use by multiple goroutines after `Load` returns.
 - **SC-018**: `internal/config/base` imports only `internal/errors` among this repository's packages.
@@ -284,7 +283,7 @@ aws:
 #   rotationInterval: 4320h         # optional, default shown (004)
 
 # deletion:
-#   gracePeriodDays: 30             # optional, default shown (003, 012); allowed range 3-90
+#   gracePeriodDays: 30             # optional, default shown (003, 012); allowed range 7-90
 ```
 
 The `aws:` section is the only cloud section here, so `CloudProvider()` returns `"aws"` — nothing else in the file states the provider. The same file and the same `Load` call serve production (a mounted ConfigMap volume) and local development (materialized by the Makefile, out of scope here); neither can tell the difference.

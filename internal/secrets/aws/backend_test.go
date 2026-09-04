@@ -97,14 +97,14 @@ func (f *fakeClient) DeleteSecret(_ context.Context, in *secretsmanager.DeleteSe
 // recomputing it from the window.
 var fakeDeletionDate = time.Date(2026, 10, 4, 9, 30, 0, 0, time.UTC)
 
-// newTestBackend builds a Backend whose recovery window is derived from gracePeriodDays
-// exactly as New derives it, without the SDK config load New performs.
+// newTestBackend builds a Backend whose recovery window is computed from gracePeriodDays
+// exactly as New computes it, without the SDK config load New performs.
 func newTestBackend(fake *fakeClient, gracePeriodDays int) *Backend {
-	return &Backend{
-		client: fake,
-		recoveryWindow: secrets.DeriveRecoveryWindow(
-			gracePeriodDays, minRecoveryWindowDays, maxRecoveryWindowDays),
+	recoveryWindowDays := gracePeriodDays
+	if recoveryWindowDays > maxRecoveryWindowDays {
+		recoveryWindowDays = maxRecoveryWindowDays
 	}
+	return &Backend{client: fake, recoveryWindowDays: recoveryWindowDays}
 }
 
 func testPath(t *testing.T) secrets.Path {
@@ -138,9 +138,9 @@ func TestNew(t *testing.T) {
 		if backend == nil {
 			t.Fatal("expected a non-nil Backend")
 		}
-		// SC-019: the window is derived once, here, from the account grace period.
-		if got := backend.RecoveryWindow().Days(); got != 30 {
-			t.Fatalf("RecoveryWindow().Days() = %d, want 30", got)
+		// SC-019: the window is computed once, here, from the account grace period.
+		if got := backend.recoveryWindowDays; got != 30 {
+			t.Fatalf("recoveryWindowDays = %d, want 30", got)
 		}
 	})
 
@@ -332,20 +332,19 @@ func TestUpdate(t *testing.T) {
 func TestDelete(t *testing.T) {
 	path := testPath(t)
 
-	// SC-020, SC-021: the derived window is what Delete sends, never AWS's own 30-day default,
-	// and a grace period the band cannot represent becomes a forced delete rather than a window
-	// that would outlive the account.
-	t.Run("the window sent is derived from the grace period", func(t *testing.T) {
+	// SC-020, SC-021: the computed window is what Delete sends, never AWS's own 30-day default,
+	// and never ForceDeleteWithoutRecovery — 002's grace period floor (7) already matches
+	// Secrets Manager's own minimum.
+	t.Run("the window sent is computed from the grace period", func(t *testing.T) {
 		for _, tc := range []struct {
 			name            string
 			gracePeriodDays int
-			wantWindowDays  int64 // 0 means "expect ForceDeleteWithoutRecovery instead"
+			wantWindowDays  int64
 		}{
-			{"grace period above the band's ceiling is capped", 90, 30},
-			{"grace period at the band's ceiling matches exactly", 30, 30},
+			{"grace period above the ceiling is capped", 90, 30},
+			{"grace period at the ceiling matches exactly", 30, 30},
 			{"grace period inside the band is used verbatim", 14, 14},
-			{"grace period at the band's floor is used verbatim", 7, 7},
-			{"grace period below the band's floor forces an irreversible delete", 3, 0},
+			{"grace period at the floor is used verbatim", 7, 7},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				fake := &fakeClient{}
@@ -362,27 +361,11 @@ func TestDelete(t *testing.T) {
 					t.Fatalf("SecretId = %q, want %q", aws.ToString(fake.deleteInput.SecretId), path.String())
 				}
 
-				if tc.wantWindowDays == 0 {
-					if !aws.ToBool(fake.deleteInput.ForceDeleteWithoutRecovery) {
-						t.Error("expected ForceDeleteWithoutRecovery to be set")
-					}
-					// The two inputs are mutually exclusive; AWS rejects a call carrying both.
-					if fake.deleteInput.RecoveryWindowInDays != nil {
-						t.Errorf("RecoveryWindowInDays = %d, want unset alongside ForceDeleteWithoutRecovery",
-							aws.ToInt64(fake.deleteInput.RecoveryWindowInDays))
-					}
-					// SC-022: nothing is restorable, so no deadline is reported.
-					if !restorableUntil.IsZero() {
-						t.Errorf("restorableUntil = %v, want the zero time on a forced delete", restorableUntil)
-					}
-					return
-				}
-
 				if got := aws.ToInt64(fake.deleteInput.RecoveryWindowInDays); got != tc.wantWindowDays {
 					t.Errorf("RecoveryWindowInDays = %d, want %d", got, tc.wantWindowDays)
 				}
 				if fake.deleteInput.ForceDeleteWithoutRecovery != nil {
-					t.Error("Delete must not set ForceDeleteWithoutRecovery alongside a window")
+					t.Error("Delete must never set ForceDeleteWithoutRecovery")
 				}
 				// SC-022: the deadline is AWS's own DeletionDate, read through unchanged.
 				if !restorableUntil.Equal(fakeDeletionDate) {

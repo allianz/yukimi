@@ -82,21 +82,23 @@ Dropping an account does not erase it. Snowflake keeps it restorable for a grace
 resolved name stays taken — so re-creating the same resource inside that window collides on the name
 instead of getting a fresh account. The credential is deleted as soon as the drop succeeds, and the secret
 store holds its own recovery window on that deletion (003.a). The two windows are tied together by one
-ops-owned setting, `deletion.gracePeriodDays` (002, default 30): this module renders it verbatim as
-`DROP ACCOUNT`'s `GRACE_PERIOD_IN_DAYS`, and the secrets backend derives its own recovery window from the
-same number, never exceeding it (003).
+ops-owned setting, `deletion.gracePeriodDays` (002, default 30, minimum 7): this module renders it
+verbatim as `DROP ACCOUNT`'s `GRACE_PERIOD_IN_DAYS`, and the secrets backend caps its own recovery
+window at the same number, never exceeding it (003, 003.a).
 
 The tie is one-directional on purpose. A credential window *shorter* than the account's leaves a band of
 days on which `UNDROP ACCOUNT` succeeds but the platform credential is already gone — degraded, and
 repairable by hand (see below). A credential window *longer* than the account's would be worse than
 useless: the account is unrecoverable by then, so nothing can be recovered into the path, while the path
-itself stays occupied and blocks re-provisioning under the same `metadata.name`. So the derived window is
-as long as the store can represent without ever outliving the grace period, and the binding constraint on
-re-provisioning is always Snowflake's grace period alone.
+itself stays occupied and blocks re-provisioning under the same `metadata.name`. So the credential window
+is as long as the store can represent without ever outliving the grace period, and the binding constraint
+on re-provisioning is always Snowflake's grace period alone.
 
 At the default of 30 the two windows coincide exactly — AWS Secrets Manager's ceiling is 30 days — so
-there is no repair band at all. Raising `deletion.gracePeriodDays` above 30 opens one; lowering it below 7
-closes the credential window entirely, and the credential is destroyed with the drop.
+there is no repair band at all. Raising `deletion.gracePeriodDays` above 30 opens one. 002's own floor (7)
+matches Secrets Manager's minimum, so the credential window can never be forced to zero on the AWS backend
+— every grace period this module can ever render still leaves the credential recoverable for at least 7
+days.
 
 ### Manual repair, when the credential is already gone
 
@@ -134,7 +136,7 @@ period is set where the credential window can match it exactly.
 //   - deletionGracePeriodDays: Config.Deletion.GracePeriodDays (002) — rendered verbatim as
 //     DROP ACCOUNT's GRACE_PERIOD_IN_DAYS on teardown. Not to be confused with gracePeriod
 //     above, which is a post-create reachability delay and has nothing to do with deletion.
-//     Already bounded to Snowflake's own 3-90 by 002's loader, so this module does not
+//     Already bounded to 7-90 by 002's loader, so this module does not
 //     re-validate it.
 //
 // Returns:
@@ -262,7 +264,7 @@ internal/account/modules/account/
 - **Base Configuration (002)** — Used APIs: `Config.Snowflake.Org`, `Config.Snowflake.AccountCreationGracePeriod`,
   `Config.Deletion.GracePeriodDays` — Contract: all three passed to `New` as plain values; this module never
   loads the config file itself, and never re-validates `GracePeriodDays`, which 002's loader has already
-  bounded to Snowflake's documented 3-90.
+  bounded to 7-90.
 - **Secrets Handling (003)** — Used APIs: `GenerateKeyPair()`/`NewCredentials()`, `MarshalCredentials()`,
   `NewTenantPath()`, `Backend.Create()`, `Backend.Delete()` — Contract: `Create` and `Delete` only,
   never `Update`; the module never reads a credential back. `Delete`'s recovery window is the backend's own
@@ -390,7 +392,7 @@ internal/account/modules/account/
 
 - **`DROP ACCOUNT` rendering.** Its only two positions are the resolved account name, rendered as a bare
   identifier, and `GRACE_PERIOD_IN_DAYS`, an `int` from ops-owned provider configuration (002) that 002's
-  loader has already bounded to 3-90. No tenant-supplied text reaches this statement at all, and no tenant
+  loader has already bounded to 7-90. No tenant-supplied text reaches this statement at all, and no tenant
   can influence the grace period — deletion protection would be worthless if the party being protected
   from could shorten the window it is protected by.
 
@@ -412,7 +414,7 @@ internal/account/modules/account/
 - **Base Configuration**: `specs/002-base-config.md` — `deletion.gracePeriodDays`, the single setting both
   windows derive from.
 - **Secrets Handling**: `specs/003-secrets-handling.md` — Key Concept: A Credential May Not Outlive Its
-  Account, and `DeriveRecoveryWindow`.
+  Account. The concrete window computation lives in `specs/003.a-aws-secrets-backend.md`.
 
 <br/><br/><br/><br/><br/>
 

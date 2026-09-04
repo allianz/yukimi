@@ -53,7 +53,7 @@ type module struct {
 //     rendered verbatim as DROP ACCOUNT's GRACE_PERIOD_IN_DAYS on teardown.
 //     Not to be confused with gracePeriod above, which is a post-create
 //     reachability delay and has nothing to do with deletion. Already
-//     bounded to Snowflake's own 3-90 by 002's loader, so this module does
+//     bounded to 7-90 by 002's loader, so this module does
 //     not re-validate it.
 //
 // Returns:
