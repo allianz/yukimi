@@ -57,6 +57,11 @@ func TestIntegration_TenantAccount(t *testing.T) {
 			DisableOCSPChecks:      os.Getenv("SNOWFLAKE_DISABLE_OCSP_CHECKS") == "true",
 			ConnectionProbeTimeout: 5 * time.Second,
 		},
+		// A zero RotationInterval makes maybeRotateLocked treat the sample
+		// account's credential as always due, silently rotating it on every
+		// call — this test is documented as read-only, so give it a real
+		// interval (see the same note in account/integration_test.go).
+		Secrets: base.SecretsSettings{RotationInterval: 24 * time.Hour},
 	}
 	p := New(cached, cfg)
 	t.Cleanup(func() { _ = p.Close() })

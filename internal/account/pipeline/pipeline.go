@@ -24,7 +24,7 @@ type Pipeline struct {
 }
 
 // New builds a pipeline from an ordered module list. Registration order is
-// execution order for both Observe and Apply. Exactly one module must be the
+// execution order for Observe and Apply, and its reverse for Destroy. Exactly one module must be the
 // account module, identified by Name() == AccountModuleName: its Observe
 // result is the sole source of Observation.Exists, and every module that
 // calls ModuleContext.TenantDB must be registered after it, since TenantDB
@@ -106,4 +106,24 @@ func (p *Pipeline) Apply(ctx context.Context, mc *ModuleContext) (Result, error)
 		}
 	}
 	return result, nil
+}
+
+// Destroy calls every module's Teardown in reverse registration order, so
+// every module registered after the account module tears down before the
+// account itself is dropped.
+//
+// A nil return means every teardown was accepted. It does not mean the
+// external state is gone: the account and its credential may both still be
+// inside their restore windows.
+//
+// Returns:
+//   - error: the first Teardown error, returned unchanged and already
+//     classified by the module that produced it. No later Teardown runs.
+func (p *Pipeline) Destroy(ctx context.Context, mc *ModuleContext) error {
+	for i := len(p.modules) - 1; i >= 0; i-- {
+		if err := p.modules[i].Teardown(ctx, mc); err != nil {
+			return err
+		}
+	}
+	return nil
 }

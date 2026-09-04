@@ -84,6 +84,12 @@ type Module interface {
 	// the CRD no longer lists. It must be safe to call repeatedly with no
 	// other call in between.
 	Apply(ctx context.Context, mc *ModuleContext) Outcome
+
+	// Teardown removes the state this module leaves outside the tenant's own
+	// account, which dropping that account would not take with it. Most
+	// modules have none and return nil. It uses OrgAdminDB or no connection
+	// at all — never TenantDB — and must be safe to call repeatedly.
+	Teardown(ctx context.Context, mc *ModuleContext) error
 }
 
 // AccountModuleName is the account module's (012) Name(). Pipeline.Observe

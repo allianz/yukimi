@@ -23,14 +23,16 @@ import (
 	"testing"
 )
 
-// fakeModule records call order and returns scripted, single-shot Observe
-// and Apply results. It never touches mc, so callers may pass nil.
+// fakeModule records call order and returns scripted, single-shot Observe,
+// Apply and Teardown results. It never touches mc, so callers may pass nil.
 type fakeModule struct {
 	name          string
 	observeInSync bool
 	applyOut      Outcome
+	teardownErr   error
 	order         *[]string
 	applyCalled   int
+	teardownCalls int
 }
 
 func (f *fakeModule) Name() string { return f.name }
@@ -44,6 +46,12 @@ func (f *fakeModule) Apply(ctx context.Context, mc *ModuleContext) Outcome {
 	*f.order = append(*f.order, "apply:"+f.name)
 	f.applyCalled++
 	return f.applyOut
+}
+
+func (f *fakeModule) Teardown(ctx context.Context, mc *ModuleContext) error {
+	*f.order = append(*f.order, "teardown:"+f.name)
+	f.teardownCalls++
+	return f.teardownErr
 }
 
 // SC-001: New preserves registration order; Apply calls each module's Apply
@@ -224,5 +232,48 @@ func TestResult_AllDone(t *testing.T) {
 				t.Errorf("AllDone() = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// SC-012: Pipeline.Destroy calls each module's Teardown in the exact reverse
+// of registration order.
+func TestDestroy_ReverseOrder(t *testing.T) {
+	var order []string
+	m1 := &fakeModule{name: "m1", order: &order}
+	m2 := &fakeModule{name: "m2", order: &order}
+	m3 := &fakeModule{name: "m3", order: &order}
+
+	p := New(m1, m2, m3)
+	if err := p.Destroy(context.Background(), nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	wantOrder := []string{"teardown:m3", "teardown:m2", "teardown:m1"}
+	if !reflect.DeepEqual(order, wantOrder) {
+		t.Errorf("call order = %v, want %v", order, wantOrder)
+	}
+}
+
+// SC-013: Destroy stops at the first Teardown error, returns it unchanged,
+// and calls Teardown on no earlier-registered module.
+func TestDestroy_StopsAtFirstError(t *testing.T) {
+	var order []string
+	wantErr := errors.New("teardown failed")
+	m1 := &fakeModule{name: "m1", order: &order}
+	m2 := &fakeModule{name: "m2", order: &order, teardownErr: wantErr}
+	m3 := &fakeModule{name: "m3", order: &order}
+
+	p := New(m1, m2, m3)
+	err := p.Destroy(context.Background(), nil)
+	if err != wantErr {
+		t.Errorf("err = %v, want %v", err, wantErr)
+	}
+
+	wantOrder := []string{"teardown:m3", "teardown:m2"}
+	if !reflect.DeepEqual(order, wantOrder) {
+		t.Errorf("call order = %v, want %v", order, wantOrder)
+	}
+	if m1.teardownCalls != 0 {
+		t.Errorf("m1.Teardown was called %d times, want 0", m1.teardownCalls)
 	}
 }
