@@ -63,6 +63,7 @@ spec:
             properties:
               duration:
                 description: Maintenance window length, capped at 8h on every write.
+                format: duration
                 type: string
                 x-kubernetes-validations:
                 - message: duration must be greater than 0 and at most 8h

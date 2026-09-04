@@ -1,0 +1,42 @@
+apiVersion: base.snowflake.yukimi.io/v1alpha1
+kind: SnowflakeAccount
+metadata:
+  name: analytics-team-eu      # created in Snowflake as analytics_team_eu_5k3wf (design.md 3.12)
+spec:
+  # --- General metadata ---
+  description: "Analytics team Snowflake environment for EU operations"
+  contacts:
+    - alice.smith@company.com
+    - team-analytics@company.com
+  # --- Snowflake account configuration ---
+  region: aws-eu-central-1
+  environment: prod            # dev | prod — required, immutable (design.md 3.11.3); a Guardrails target key (3.3)
+  # --- Share of the namespace's monthly credit allowance (design.md 3.10) ---
+  creditQuota: 500
+  # --- GIAM groups to import and bind to system roles ---
+  identityIntegration:
+    groups:                          # one group list per identity integration (design.md 3.7)
+      giam:                          # every group to import; key is free-form, not part of the schema
+        - XYZ_DATA_ENGINEERS
+        - XYZ_DEVELOPERS
+        - XYZ_ANALYSTS
+    roleBindings:                    # system role -> group it is bound to; ACCOUNTADMIN required
+      ACCOUNTADMIN: XYZ_DATA_ENGINEERS
+      SYSADMIN: XYZ_DEVELOPERS       # any Snowflake system role may be bound
+  # --- Allow custom network rules ---
+  customNetworkRules:
+    serviceUsers:                # one entry per service user, deny-by-default (design.md 3.8)
+      tu_airflow:
+        - connection: agn        # from the region's inventory in the Backplane Config
+          allowedIPs: ["172.16.45.0/24"]
+        - connection: dbt-cloud  # VPCE-only: nothing to narrow
+    accountWide:                 # added to the account policy (design.md 3.6); service users
+      - connection: public       # have their own policy and ignore this (3.8)
+        allowedIPs: ["192.0.2.14/32", "192.0.2.15/32"]  # /32 only — see 3.3
+  # --- Allow human users to bypass SSO (design.md 3.9) ---
+  customAuthRules:
+    exceptions:
+      - user: alice.smith
+        rsaKeyAllowed: true
+        patAllowed: false
+        reason: "Legacy desktop tool without SSO support"

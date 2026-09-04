@@ -36,6 +36,7 @@ type SnowflakeDeletionRequestSpec struct {
 	TargetRef TargetRef `json:"targetRef"`
 
 	// Maintenance window length, capped at 8h on every write.
+	// +kubebuilder:validation:Format=duration
 	// +kubebuilder:validation:XValidation:rule="self > duration('0s') && self <= duration('8h')",message="duration must be greater than 0 and at most 8h"
 	Duration metav1.Duration `json:"duration"`
 
@@ -91,9 +92,9 @@ type SnowflakeDeletionRequest struct {
 	Status SnowflakeDeletionRequestStatus `json:"status,omitempty"`
 }
 
-// The four methods below satisfy resource.Managed's Manageable and
-// Conditioned interfaces. angryjet's generator does not recognize this type
-// as a managed resource — its matcher requires an embedded
+// The methods below satisfy resource.Managed's Manageable and Conditioned
+// interfaces. angryjet's generator does not recognize this type as a
+// managed resource — its matcher requires an embedded
 // xpv2.ManagedResourceSpec, which this type deliberately omits, identically
 // to SnowflakeAccount (006) — so these are hand-written rather than
 // generated into a zz_generated.managed.go.
@@ -104,6 +105,23 @@ func (r *SnowflakeDeletionRequest) GetManagementPolicies() common.ManagementPoli
 
 func (r *SnowflakeDeletionRequest) SetManagementPolicies(p common.ManagementPolicies) {
 	r.Spec.ManagementPolicies = p
+}
+
+// GetWriteConnectionSecretToReference/SetWriteConnectionSecretToReference
+// satisfy resource.LocalConnectionSecretOwner with a permanent no-op: this
+// type carries no such field (Key Concept: Minimal Managed-Resource
+// Surface) and never wants a connection secret published. Without these,
+// crossplane-runtime v2's reconciler falls through to its default case
+// after every successful Observe and reports a permanent ReconcileError
+// ("managed resource does not implement connection details"), which pins
+// the Synced condition to False forever. Implementing the interface routes
+// PublishConnection/UnpublishConnection into APILocalSecretPublisher's own
+// nil-ref no-op instead.
+func (r *SnowflakeDeletionRequest) GetWriteConnectionSecretToReference() *xpv1.LocalSecretReference {
+	return nil
+}
+
+func (r *SnowflakeDeletionRequest) SetWriteConnectionSecretToReference(_ *xpv1.LocalSecretReference) {
 }
 
 func (r *SnowflakeDeletionRequest) GetCondition(ct xpv1.ConditionType) xpv1.Condition {
