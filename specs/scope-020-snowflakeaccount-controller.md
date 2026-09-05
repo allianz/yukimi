@@ -66,7 +66,10 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
   sets `Ready` and `Synced` itself. Every custom condition (`QuotaAvailable` from 3.10, `IdentitySynced`
   from 4.3) and every custom event (`DeletionBlocked` from 6.3, `QuotaExhausted` from 3.10, `SyncTimeout`
   from 4.3) is SnowflakeAccount-specific. Aggregation rules live in spec 009; reporting lives here in
-  spec 020.
+  spec 020. Module-sourced events (`QuotaExhausted`, `SyncTimeout`) reach 020 via `Outcome.Event`,
+  rendered from the same per-outcome loop 020 already uses for `Outcome.Condition` (009's Key Concept:
+  Conditions and Events). `DeletionBlocked` stays a direct call from 020's own deletion-gate code, since
+  it isn't a module outcome.
 
 ## References
 

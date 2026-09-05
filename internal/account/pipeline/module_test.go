@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	xpv1 "github.com/crossplane/crossplane-runtime/v2/apis/common/v1"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/event"
 )
 
 // SC-006: Done constructs an Outcome with only State populated.
@@ -29,7 +30,7 @@ func TestDone(t *testing.T) {
 	if o.State != StateDone {
 		t.Errorf("State = %v, want StateDone", o.State)
 	}
-	if o.Reason != "" || o.Err != nil || o.Abort || o.Condition != nil {
+	if o.Reason != "" || o.Err != nil || o.Abort || o.Condition != nil || o.Event != nil {
 		t.Errorf("Done() populated fields beyond State: %+v", o)
 	}
 }
@@ -44,7 +45,7 @@ func TestPending(t *testing.T) {
 	if o.Reason != "waiting for identity sync" {
 		t.Errorf("Reason = %q, want %q", o.Reason, "waiting for identity sync")
 	}
-	if o.Err != nil || o.Abort || o.Condition != nil {
+	if o.Err != nil || o.Abort || o.Condition != nil || o.Event != nil {
 		t.Errorf("Pending() populated fields beyond State/Reason: %+v", o)
 	}
 }
@@ -60,7 +61,7 @@ func TestRejected(t *testing.T) {
 	if o.Err != wantErr {
 		t.Errorf("Err = %v, want %v", o.Err, wantErr)
 	}
-	if o.Reason != "" || o.Abort || o.Condition != nil {
+	if o.Reason != "" || o.Abort || o.Condition != nil || o.Event != nil {
 		t.Errorf("Rejected() populated fields beyond State/Err: %+v", o)
 	}
 }
@@ -76,7 +77,7 @@ func TestFailed(t *testing.T) {
 	if o.Err != wantErr {
 		t.Errorf("Err = %v, want %v", o.Err, wantErr)
 	}
-	if o.Reason != "" || o.Abort || o.Condition != nil {
+	if o.Reason != "" || o.Abort || o.Condition != nil || o.Event != nil {
 		t.Errorf("Failed() populated fields beyond State/Err: %+v", o)
 	}
 }
@@ -85,12 +86,14 @@ func TestFailed(t *testing.T) {
 // unchanged; the original Outcome is untouched.
 func TestOutcome_Aborting(t *testing.T) {
 	cond := xpv1.Available()
+	evt := event.Warning("SomeReason", errors.New("boom"))
 	cases := []Outcome{
 		Done(),
 		Pending("reason"),
 		Rejected(errors.New("rejected")),
 		Failed(errors.New("failed")),
 		{State: StateFailed, Err: errors.New("with condition"), Condition: &cond},
+		{State: StateFailed, Err: errors.New("with event"), Event: &evt},
 		{State: StateDone, Abort: true}, // already aborting
 	}
 
@@ -102,7 +105,7 @@ func TestOutcome_Aborting(t *testing.T) {
 			t.Errorf("Aborting() on %+v: Abort = false, want true", original)
 		}
 		if got.State != original.State || got.Reason != original.Reason ||
-			got.Err != original.Err || got.Condition != original.Condition {
+			got.Err != original.Err || got.Condition != original.Condition || got.Event != original.Event {
 			t.Errorf("Aborting() on %+v changed a field it shouldn't have: got %+v", original, got)
 		}
 		if original.Abort != wantAbort {

@@ -24,6 +24,7 @@ import (
 	"context"
 
 	xpv1 "github.com/crossplane/crossplane-runtime/v2/apis/common/v1"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/event"
 )
 
 // State is the fixed vocabulary every Outcome reports through.
@@ -44,7 +45,8 @@ type Outcome struct {
 	Reason    string          // Pending only: the operator-visible reason for the wait
 	Err       error           // Rejected/Failed only: the module's own classified error
 	Abort     bool            // if true, Apply stops after this module on this pass
-	Condition *xpv1.Condition // optional: a condition this module owns and wants surfaced
+	Condition *xpv1.Condition // optional: a condition this module owns (see Key Concept: Conditions and Events)
+	Event     *event.Event    // optional: an event this module wants recorded (see Key Concept: Conditions and Events)
 }
 
 // Done reports that this module's desired state is fully applied.

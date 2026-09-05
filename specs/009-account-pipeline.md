@@ -62,11 +62,19 @@ failed auth exception, a pending identity sync all let later modules keep runnin
 design's "leaves the account on its baseline" guarantee (§3.8/§3.9) hold.
 
 Every module's `Observe` call is likewise recorded in full, not just its `inSync` bool:
-`Observation.Outcomes` carries each module's `Outcome`, `Condition` included, so a module that owns a
-condition (quota-monitor's `QuotaAvailable`, identity's `IdentitySynced`) can be re-rendered on every
-`Observe`, not only after an `Apply`. This is required because the managed reconciler re-derives `Ready`
-after every `Observe` on the up-to-date path, never just after `Apply` (see References, "Vendored
-behavior").
+`Observation.Outcomes` carries each module's `Outcome` in full (Key Concept: Conditions and Events), so a
+module that owns a condition (quota-monitor's `QuotaAvailable`, identity's `IdentitySynced`) can be
+re-rendered on every `Observe`, not only after an `Apply`. This is required because the managed
+reconciler re-derives `Ready` after every `Observe` on the up-to-date path, never just after `Apply` (see
+References, "Vendored behavior").
+
+## Key Concept: Conditions and Events
+
+A module's `Outcome` can carry two optional signals for the controller, independent of `State` and of
+each other: a `Condition` it owns and wants reflected in the resource's status, and an `Event` it wants
+recorded as a one-off note. Both are values, not live calls — the pipeline forwards them untouched;
+turning either into `status.conditions` or an actual Event is the controller's job, not this package's.
+A module may set neither, either, or both.
 
 ## Key Concept: Overwrite Apply, Generation-Gated Re-Apply
 
@@ -222,7 +230,8 @@ type Outcome struct {
     Reason    string          // Pending only: the operator-visible reason for the wait
     Err       error           // Rejected/Failed only: the module's own classified error
     Abort     bool            // if true, Apply stops after this module on this pass
-    Condition *xpv1.Condition // optional: a condition this module owns and wants surfaced
+    Condition *xpv1.Condition // optional (Key Concept: Conditions and Events)
+    Event     *event.Event    // optional (Key Concept: Conditions and Events)
 }
 
 func Done() Outcome                // StateDone
@@ -327,7 +336,7 @@ var GatesReady = map[xpv1.ConditionType]bool{
 
 ```
 internal/account/pipeline/
-├── module.go       # Module interface, Outcome, State, Done/Pending/Rejected/Failed, Aborting
+├── module.go       # Module interface, Outcome (Condition/Event), State, Done/Pending/Rejected/Failed, Aborting
 ├── pipeline.go     # Pipeline, New, Observe, Apply, Destroy, Observation, Result, ModuleOutcome, AllDone
 ├── context.go      # ModuleContext, NewModuleContext, DBPool, OrgAdminDB/TenantDB/EvictTenant
 └── conditions.go   # TypeQuotaAvailable, TypeIdentitySynced, GatesReady
@@ -407,6 +416,9 @@ classify. `Destroy` likewise returns a module's `Teardown` error exactly as that
   name once via `ResolveName`; modules read the label accessors from `NamespaceLabels()` themselves.
 - **`internal/config/backplane` (007)** - Used APIs: the `Region` type - Contract: the caller resolves the
   region once and passes it into `NewModuleContext`; this package never looks a region up itself.
+- **`crossplane-runtime/v2` `pkg/event`** - Used APIs: the `event.Event` type - Contract: `Outcome.Event`
+  only carries a value of this type (Key Concept: Conditions and Events); this package never constructs
+  one itself and never calls a `Recorder`.
 
 No dependency on 008 (guardrails): guardrail admission is resolved by its own pipeline module,
 guardrail-check (010), built on top of 008's evaluator — the same one-way relationship quota-check
@@ -421,7 +433,8 @@ directly.
   fixed order 010 → 011 → 012 → 013 → 014 → 015 → 017 → 018 — guardrail-check (010) first, quota-check
   (011) second, both ahead of the account module, since neither needs a Snowflake connection and both
   must abort before `CREATE ACCOUNT` when their own check fails. Owns rendering
-  `Outcome.Condition` values, `GatesReady` aggregation, and advancing `status.observedGeneration`.
+  `Outcome.Condition` and `Outcome.Event` values, `GatesReady` aggregation, and advancing
+  `status.observedGeneration`.
   Calls `Pipeline.Destroy` from `Delete`, after the deletion request's gate (019) has authorized the
   destruction and before that request is marked consumed. - Key functions: `pipeline.New()`,
   `(*Pipeline).Observe`, `(*Pipeline).Apply`, `(*Pipeline).Destroy`, `pipeline.NewModuleContext()`.
@@ -470,6 +483,8 @@ directly.
 18. **SC-018**: An `Outcome.Abort == true` returned from any module's `Observe` has no effect on
     `Pipeline.Observe`'s control flow — every later module still runs and is still recorded in
     `Observation.Outcomes`.
+19. **SC-019**: An `Outcome.Event`, when set, survives unchanged through `Observation.Outcomes` and
+    `Result.Outcomes`, independent of `State` and of whether `Condition` is also set.
 
 ## Security Considerations
 
@@ -486,6 +501,9 @@ directly.
 - Nothing here decides whether a destruction is allowed: `Destroy` runs whenever it is called. The
   authorization for that call is the deletion request's two-key gate (019), which the controller (020)
   clears before calling.
+- `Outcome.Event` is a value, not a live call (Key Concept: Conditions and Events) — no module ever holds
+  a `Recorder`, so a bug in a module can misreport an event but can never spam or forge one through the
+  Kubernetes API directly.
 
 ## References
 
@@ -556,6 +574,9 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
     // up-to-date path, not only after Apply.
     ready := true
     for _, mo := range obs.Outcomes {
+        if mo.Outcome.Event != nil {
+            e.record.Event(cr, *mo.Outcome.Event)
+        }
         if mo.Outcome.Condition == nil {
             continue
         }
@@ -615,6 +636,9 @@ func (e *external) apply(ctx context.Context, mg resource.Managed) error {
     for _, mo := range result.Outcomes {
         if mo.Outcome.Err != nil {
             log.Handle(mo.Outcome.Err) // incident-tracked; the condition already carries the user-facing message
+        }
+        if mo.Outcome.Event != nil {
+            e.record.Event(cr, *mo.Outcome.Event)
         }
         if mo.Outcome.Condition == nil {
             continue
