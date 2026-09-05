@@ -77,7 +77,11 @@ func (o Outcome) Aborting() Outcome {
 type Module interface {
 	Name() string
 
-	// Observe is read-back only; it must mutate nothing in Snowflake.
+	// Observe is read-back only; it must mutate nothing in Snowflake. Its
+	// Outcome is collected into Observation.Outcomes by Pipeline.Observe like
+	// any other module's; Outcome.Abort has no effect here — Observe never
+	// stops early, unlike Apply — since nothing here mutates and there is
+	// therefore nothing an abort would protect against.
 	Observe(ctx context.Context, mc *ModuleContext) (inSync bool, outcome Outcome)
 
 	// Apply re-asserts this module's full desired state, pruning any object

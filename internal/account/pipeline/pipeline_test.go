@@ -28,6 +28,7 @@ import (
 type fakeModule struct {
 	name          string
 	observeInSync bool
+	observeOut    Outcome // returned by Observe; zero value is Outcome{} == Done()
 	applyOut      Outcome
 	teardownErr   error
 	order         *[]string
@@ -39,7 +40,7 @@ func (f *fakeModule) Name() string { return f.name }
 
 func (f *fakeModule) Observe(ctx context.Context, mc *ModuleContext) (bool, Outcome) {
 	*f.order = append(*f.order, "observe:"+f.name)
-	return f.observeInSync, Done()
+	return f.observeInSync, f.observeOut
 }
 
 func (f *fakeModule) Apply(ctx context.Context, mc *ModuleContext) Outcome {
@@ -152,6 +153,72 @@ func TestObserve_InSyncRequiresAll(t *testing.T) {
 				t.Errorf("InSync = %v, want %v", obs.InSync, tc.wantInSync)
 			}
 		})
+	}
+}
+
+// SC-017: Observation.Outcomes contains exactly one entry per registered
+// module, in registration order, matching what each module's Observe
+// returned.
+func TestObserve_PopulatesOutcomesInOrder(t *testing.T) {
+	var order []string
+	m1 := &fakeModule{name: "m1", order: &order, observeOut: Pending("waiting")}
+	wantErr := errors.New("bad")
+	m2 := &fakeModule{name: "m2", order: &order, observeOut: Rejected(wantErr)}
+	m3 := &fakeModule{name: "m3", order: &order, observeOut: Done()}
+
+	p := New(m1, m2, m3)
+	obs, err := p.Observe(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(obs.Outcomes) != 3 {
+		t.Fatalf("len(Outcomes) = %d, want 3", len(obs.Outcomes))
+	}
+
+	wantNames := []string{"m1", "m2", "m3"}
+	for i, want := range wantNames {
+		if obs.Outcomes[i].Module != want {
+			t.Errorf("Outcomes[%d].Module = %q, want %q", i, obs.Outcomes[i].Module, want)
+		}
+	}
+
+	if obs.Outcomes[0].Outcome.State != StatePending || obs.Outcomes[0].Outcome.Reason != "waiting" {
+		t.Errorf("Outcomes[0].Outcome = %+v, want Pending(\"waiting\")", obs.Outcomes[0].Outcome)
+	}
+	if obs.Outcomes[1].Outcome.State != StateRejected || obs.Outcomes[1].Outcome.Err != wantErr {
+		t.Errorf("Outcomes[1].Outcome = %+v, want Rejected(wantErr)", obs.Outcomes[1].Outcome)
+	}
+	if obs.Outcomes[2].Outcome.State != StateDone {
+		t.Errorf("Outcomes[2].Outcome = %+v, want Done()", obs.Outcomes[2].Outcome)
+	}
+}
+
+// SC-018: An Outcome.Abort == true returned from any module's Observe has no
+// effect on Pipeline.Observe's control flow — every later module still runs
+// and is still recorded in Observation.Outcomes.
+func TestObserve_AbortHasNoEffect(t *testing.T) {
+	var order []string
+	m1 := &fakeModule{name: "m1", order: &order, observeInSync: true}
+	m2 := &fakeModule{name: "m2", order: &order, observeInSync: false,
+		observeOut: Rejected(errors.New("bad")).Aborting()}
+	m3 := &fakeModule{name: "m3", order: &order, observeInSync: true}
+
+	p := New(m1, m2, m3)
+	obs, err := p.Observe(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	wantOrder := []string{"observe:m1", "observe:m2", "observe:m3"}
+	if !reflect.DeepEqual(order, wantOrder) {
+		t.Errorf("call order = %v, want %v — Observe must not stop early on Abort", order, wantOrder)
+	}
+	if len(obs.Outcomes) != 3 {
+		t.Fatalf("len(Outcomes) = %d, want 3", len(obs.Outcomes))
+	}
+	if !obs.Outcomes[1].Outcome.Abort {
+		t.Error("recorded outcome should still carry Abort == true even though it had no effect")
 	}
 }
 

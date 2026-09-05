@@ -61,6 +61,13 @@ run should happen at all (quota-check's case).
 failed auth exception, a pending identity sync all let later modules keep running. That's what makes
 design's "leaves the account on its baseline" guarantee (§3.8/§3.9) hold.
 
+Every module's `Observe` call is likewise recorded in full, not just its `inSync` bool:
+`Observation.Outcomes` carries each module's `Outcome`, `Condition` included, so a module that owns a
+condition (quota-monitor's `QuotaAvailable`, identity's `IdentitySynced`) can be re-rendered on every
+`Observe`, not only after an `Apply`. This is required because the managed reconciler re-derives `Ready`
+after every `Observe` on the up-to-date path, never just after `Apply` (see References, "Vendored
+behavior").
+
 ## Key Concept: Overwrite Apply, Generation-Gated Re-Apply
 
 `Apply` never diffs against current Snowflake state before acting — no module reads back what it
@@ -114,7 +121,11 @@ package pipeline
 type Module interface {
     Name() string
 
-    // Observe is read-back only; it must mutate nothing in Snowflake.
+    // Observe is read-back only; it must mutate nothing in Snowflake. Its
+    // Outcome is collected into Observation.Outcomes by Pipeline.Observe like
+    // any other module's; Outcome.Abort has no effect here — Observe never
+    // stops early, unlike Apply — since nothing here mutates and there is
+    // therefore nothing an abort would protect against.
     Observe(ctx context.Context, mc *ModuleContext) (inSync bool, outcome Outcome)
 
     // Apply re-asserts this module's full desired state, pruning any object the
@@ -154,7 +165,9 @@ type Pipeline struct{ /* unexported */ }
 func New(modules ...Module) *Pipeline
 
 // Observe calls every module's Observe in order and aggregates the result. It
-// performs no mutation of its own.
+// performs no mutation of its own. Every module's Outcome is recorded in
+// Observation.Outcomes regardless of its content — an Outcome.Abort returned
+// here is ignored; only Apply honors Abort.
 //
 // Returns:
 //   - error: always nil today. Reserved for a future structural failure inside
@@ -186,8 +199,9 @@ func (p *Pipeline) Destroy(ctx context.Context, mc *ModuleContext) error
 
 // Observation is Pipeline.Observe's result.
 type Observation struct {
-    Exists bool // from the account module's Observe alone (Name() == AccountModuleName); no other module contributes to it
-    InSync bool // true iff every module's Observe reported inSync == true
+    Exists   bool            // from the account module's Observe alone (Name() == AccountModuleName); no other module contributes to it
+    InSync   bool            // true iff every module's Observe reported inSync == true
+    Outcomes []ModuleOutcome // one entry per registered module, in registration order — always all of them, since Observe never stops early
 }
 
 // State is the fixed vocabulary every Outcome reports through.
@@ -338,6 +352,10 @@ classify. `Destroy` likewise returns a module's `Teardown` error exactly as that
 - **What does the reconciler do if it calls `Observe` without ever calling `Apply` afterward?** -
   Nothing breaks. `Observe` and `Apply` share no state (`ModuleContext` is rebuilt per call), and
   `Observe` performs no mutation, so the up-to-date path never touches Snowflake.
+- **Does an `Outcome.Abort == true` returned from a module's `Observe` stop later modules from
+  running?** - No. `Abort` only has meaning for `Apply` (Key Concept: Sequential Modules, One Abort
+  Signal); `Observe` always runs every registered module and records every `Outcome` in
+  `Observation.Outcomes`, regardless of any module's `Abort` field.
 - **`Apply` aborts after the first of six modules — what does `Result` say about the other five?** -
   They are absent from `Result.Outcomes` entirely, not recorded with any placeholder state. A
   condition owned by an absent module is left exactly as the previous reconcile set it.
@@ -447,6 +465,11 @@ directly.
 16. **SC-016**: `Destroy` returns nil once every `Teardown` returned nil, and reports nothing else — no
     restore deadline, no partial-erasure signal — so a successful run cannot be mistaken for the external
     state having been erased.
+17. **SC-017**: `Observation.Outcomes` contains exactly one entry per registered module, in
+    registration order, matching what each module's `Observe` returned.
+18. **SC-018**: An `Outcome.Abort == true` returned from any module's `Observe` has no effect on
+    `Pipeline.Observe`'s control flow — every later module still runs and is still recorded in
+    `Observation.Outcomes`.
 
 ## Security Considerations
 
@@ -528,8 +551,27 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
         return managed.ExternalObservation{ResourceExists: false}, nil
     }
 
+    // Same per-outcome condition render/aggregate as Create/Update (Example 2)
+    // — the managed reconciler re-derives Ready after every Observe on the
+    // up-to-date path, not only after Apply.
+    ready := true
+    for _, mo := range obs.Outcomes {
+        if mo.Outcome.Condition == nil {
+            continue
+        }
+        cr.SetConditions(*mo.Outcome.Condition)
+        if gatesReady := pipeline.GatesReady[mo.Outcome.Condition.Type]; gatesReady &&
+            mo.Outcome.Condition.Status != xpv1.ConditionTrue {
+            ready = false
+        }
+    }
+
     upToDate := cr.Status.GetObservedGeneration() == cr.Generation && obs.InSync
-    cr.SetConditions(xpv1.Available())
+    if ready {
+        cr.SetConditions(xpv1.Available())
+    } else {
+        cr.SetConditions(xpv1.Unavailable())
+    }
     return managed.ExternalObservation{
         ResourceExists:   true,
         ResourceUpToDate: upToDate,

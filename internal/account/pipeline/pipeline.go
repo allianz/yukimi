@@ -38,12 +38,15 @@ func New(modules ...Module) *Pipeline {
 
 // Observation is Pipeline.Observe's result.
 type Observation struct {
-	Exists bool // from the account module's Observe alone (Name() == AccountModuleName); no other module contributes to it
-	InSync bool // true iff every module's Observe reported inSync == true
+	Exists   bool            // from the account module's Observe alone (Name() == AccountModuleName); no other module contributes to it
+	InSync   bool            // true iff every module's Observe reported inSync == true
+	Outcomes []ModuleOutcome // one entry per registered module, in registration order — always all of them, since Observe never stops early
 }
 
 // Observe calls every module's Observe in order and aggregates the result. It
-// performs no mutation of its own.
+// performs no mutation of its own. Every module's Outcome is recorded in
+// Observation.Outcomes regardless of its content — an Outcome.Abort returned
+// here is ignored; only Apply honors Abort.
 //
 // Returns:
 //   - error: always nil today. Reserved for a future structural failure
@@ -52,7 +55,8 @@ type Observation struct {
 func (p *Pipeline) Observe(ctx context.Context, mc *ModuleContext) (Observation, error) {
 	obs := Observation{InSync: true}
 	for _, m := range p.modules {
-		inSync, _ := m.Observe(ctx, mc)
+		inSync, outcome := m.Observe(ctx, mc)
+		obs.Outcomes = append(obs.Outcomes, ModuleOutcome{Module: m.Name(), Outcome: outcome})
 		if m.Name() == AccountModuleName {
 			obs.Exists = inSync
 		}
