@@ -65,7 +65,9 @@ func TestIntegration_CreateGetDelete(t *testing.T) {
 	_ = godotenv.Load("../../../.env")
 
 	ctx := context.Background()
-	backend, err := New(os.Getenv("AWS_REGION"), "")
+	// 30 is base.Config's default deletion grace period (002); against AWS's 7-30 band it
+	// derives to a 30-day recovery window, so Delete below schedules rather than destroys.
+	backend, err := New(os.Getenv("AWS_REGION"), "", 30)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -100,6 +102,9 @@ func TestIntegration_CreateGetDelete(t *testing.T) {
 	if gotAt.IsZero() {
 		t.Fatal("Get returned a zero CreatedDate")
 	}
+	// AWS schedules the removal rather than performing it. The cleanup above then force-deletes
+	// the path, which is why consecutive runs are not blocked by the reservation this Delete
+	// just took out.
 	if err := backend.Delete(ctx, path); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}

@@ -28,7 +28,8 @@ This specification defines the deletion-request subsystem that:
 
 **Out of Scope**:
 - Intercepting a `SnowflakeAccount`'s own deletion, blocking it without an active request, emitting the
-  `DeletionBlocked` event, or calling `DROP ACCOUNT` — all owned by 020 (design.md §6.3 Phases 2-3).
+  `DeletionBlocked` event, or tearing the account down — all owned by 020, which reaches the teardown
+  through the account pipeline (009) (design.md §6.3 Phases 2-3).
 - Any `targetRef.kind` beyond `SnowflakeAccount` — v1alpha1 accepts only that one kind (see Schema
   Specification); widening later, once a second destructible resource kind exists, is additive.
 - Preventing an approved request from being edited after the fact. Nothing enforces this at the
@@ -129,9 +130,11 @@ type SnowflakeDeletionRequestStatus struct {
 // a tenant could fix here.
 func FindActiveRequest(ctx context.Context, c client.Client, namespace, targetKind, targetName string) (*v1alpha1.SnowflakeDeletionRequest, error)
 
-// MarkConsumed transitions req's status.state to Consumed and freezes
-// its status.validUntil at its current value. Called by 020 after a
-// successful DROP ACCOUNT.
+// MarkConsumed transitions req's status.state to Consumed. Its
+// status.validUntil is left untouched: once state is terminal, the
+// SnowflakeDeletionRequest controller stops recomputing it from
+// spec.duration, so it freezes at whatever value was already there. Called
+// by 020 after a successful DROP ACCOUNT.
 //
 // Returns: system error if the status update against the Kubernetes API
 // fails.
@@ -236,6 +239,11 @@ non-empty requirement are both CEL rules enforced at admission — by the time a
 - **What happens to a `SnowflakeDeletionRequest` when its target is destroyed?** Nothing — it carries
   no owner reference to its target and no finalizer of its own, so it outlives the target by design,
   forming the durable audit trail (design.md §6.2).
+- **The request is `Consumed` but the account was later restored — does anything reset?** No. The
+  `Consumed` state freezes permanently; nothing in this platform observes a manual restore performed
+  outside it. The record says a destruction was authorized and carried out at that time, which stays
+  true. A restored account that is to be managed again needs a `SnowflakeAccount` object reconciling
+  against it, and destroying it again needs a fresh request — this one authorizes nothing further.
 
 ## Dependencies
 
@@ -252,9 +260,10 @@ non-empty requirement are both CEL rules enforced at admission — by the time a
 ## Integration Points
 
 - **SnowflakeAccount controller (020)** - calls `internal/deletion.FindActiveRequest` when
-  intercepting a `SnowflakeAccount`'s deletion, and `internal/deletion.MarkConsumed` after a
-  successful `DROP ACCOUNT` - Key functions: `FindActiveRequest`, `MarkConsumed` - Notes: the
-  dependency is one-way; 019 never imports anything from 020.
+  intercepting a `SnowflakeAccount`'s deletion, and `internal/deletion.MarkConsumed` once the
+  account's teardown (009) has succeeded - Key functions: `FindActiveRequest`, `MarkConsumed` -
+  Notes: the dependency is one-way; 019 never imports anything from 020, and this spec neither reads
+  provider configuration nor derives anything from it.
 - **internal/controller/yukimi.go** - registers `snowflakedeletionrequest.SetupGated` in its list of
   controllers alongside every other resource's - Key functions: `SetupGated`.
 - **crossplane-runtime's `managed.NewReconciler`** - drives `Observe`/`Create`/`Update`/`Delete` on
@@ -337,8 +346,8 @@ non-empty requirement are both CEL rules enforced at admission — by the time a
   `specs/006-snowflake-account-crd.md` - followed directly for the `duration` CEL mechanism and the
   hand-implemented `resource.Managed` pattern.
 - **Pipeline package boundary**: `specs/009-account-pipeline.md` - confirms this spec's controller is
-  not a pipeline module; deletion is a single `DROP ACCOUNT` plus finalizer release owned by 019/020,
-  with no per-module teardown to sequence.
+  not a pipeline module: the teardown these two calls authorize is sequenced by `Pipeline.Destroy`,
+  which nothing here invokes or knows about.
 - **Poll interval**: `cmd/provider/main.go` `--poll` flag, default `1m`.
 - **crossplane-runtime v2.0.0**: `pkg/reconciler/managed/reconciler.go` - confirms no per-resource
   requeue override exists.
@@ -362,11 +371,13 @@ if req == nil {
 }
 ```
 
-### Example 2: 020 marking a request used after a successful `DROP ACCOUNT`
+### Example 2: 020 marking a request used after a successful teardown
 
 ```go
-if err := dropAccount(ctx, conn, accountName); err != nil {
-    return managed.ExternalDelete{}, fmt.Errorf("failed to drop account: %w", err)
+// Pipeline.Destroy (009) runs every module's Teardown in reverse, ending with 012's DROP ACCOUNT
+// and platform-credential delete.
+if err := pl.Destroy(ctx, mc); err != nil {
+    return managed.ExternalDelete{}, log.Handle(err)
 }
 if err := deletion.MarkConsumed(ctx, kube, req); err != nil {
     return managed.ExternalDelete{}, err // system error: status update failed

@@ -44,8 +44,14 @@ type Backend interface {
 	// is stored there — Update never creates.
 	Update(ctx context.Context, path Path, value string) error
 
-	// Delete removes path. Whether the value is gone immediately or sits in a
-	// recovery window first is the implementation's business; nothing in this
-	// package reads a deleted path afterwards.
+	// Delete removes path. Nothing in this package reads a deleted path
+	// afterwards.
+	//
+	// An implementation that schedules the removal instead of performing it must
+	// keep that window within whatever account grace period it was constructed
+	// with (002), by whatever means suits its own store — this package
+	// prescribes no shared mechanism for that decision. While the removal is
+	// pending, path stays occupied: Get and Update fail on it and so does
+	// Create, since the store has not released the name yet.
 	Delete(ctx context.Context, path Path) error
 }

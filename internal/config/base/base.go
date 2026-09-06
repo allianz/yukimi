@@ -47,6 +47,16 @@ const (
 	defaultSecretsCacheTTL = 5 * time.Minute
 	// defaultRotationInterval is secrets.rotationInterval's default (004).
 	defaultRotationInterval = 4320 * time.Hour
+	// defaultDeletionGracePeriodDays is deletion.gracePeriodDays's default (012). 30 is the
+	// largest value AWS Secrets Manager can match exactly, so the credential recovery window
+	// equals the account grace period and no manual-repair band exists (003.a).
+	defaultDeletionGracePeriodDays = 30
+	// minDeletionGracePeriodDays matches AWS Secrets Manager's own minimum representable
+	// recovery window (003.a), so a credential is always scheduled for deletion, never
+	// force-deleted for lack of a compliant window. maxDeletionGracePeriodDays is the bound
+	// Snowflake itself documents for DROP ACCOUNT's GRACE_PERIOD_IN_DAYS.
+	minDeletionGracePeriodDays = 7
+	maxDeletionGracePeriodDays = 90
 )
 
 var (
@@ -81,6 +91,7 @@ type Config struct {
 	Snowflake SnowflakeSettings // organization identity plus connection-affecting settings
 	AWS       AWSSettings       // consumed by 003.a; checked here for shape only
 	Secrets   SecretsSettings   // consumed by whoever wraps a Backend in secrets.NewCachedBackend (003)
+	Deletion  DeletionSettings  // the single deletion window every store derives its own from (003, 012)
 
 	cloudProvider string // resolved by Load from the cloud section present; read via CloudProvider()
 }
@@ -119,6 +130,20 @@ type SecretsSettings struct {
 	RotationInterval time.Duration // age past which OrgAdmin/TenantAccount rotate a stored credential inline (004); defaults to 4320h (~6 months) when omitted
 }
 
+// DeletionSettings holds the one operator-owned deletion window. Both stores that reserve a
+// tenant's deterministic identifier derive their own clock from it: 012 renders it as DROP
+// ACCOUNT's GRACE_PERIOD_IN_DAYS, and each secrets backend caps its own recovery window at
+// whatever it can represent, best-effort, so a credential never outlives the account — that
+// would leave the secret path occupied for a value nothing can be recovered into. This package
+// defines no shared derivation helper for that decision; it is each backend's own (003.a).
+//
+// This is unrelated to SnowflakeSettings.AccountCreationGracePeriod, which is how long a freshly
+// created account is given to become reachable. Despite the similar name, that one is about
+// creation and is a Duration; this one is about deletion and is a count of days.
+type DeletionSettings struct {
+	GracePeriodDays int // days a dropped account and its credential stay restorable (003, 012); defaults to 30 when omitted, allowed range 7-90
+}
+
 // AWSSettings holds AWS-specific settings, consumed only by 003.a.
 type AWSSettings struct {
 	Region string // optional here, shape-checked if set; an empty region is a user error in 003.a, not here
@@ -134,6 +159,7 @@ type rawConfig struct {
 	Snowflake rawSnowflake `yaml:"snowflake"`
 	AWS       rawAWS       `yaml:"aws"`
 	Secrets   rawSecrets   `yaml:"secrets"`
+	Deletion  rawDeletion  `yaml:"deletion"`
 }
 
 type rawSnowflake struct {
@@ -163,6 +189,10 @@ type rawSecrets struct {
 	RotationInterval string `yaml:"rotationInterval"`
 }
 
+type rawDeletion struct {
+	GracePeriodDays *int `yaml:"gracePeriodDays"`
+}
+
 // Load reads, parses, and validates "<configDir>/base.yaml".
 //
 // Parameters:
@@ -175,7 +205,8 @@ type rawSecrets struct {
 //     (Snowflake.Org, Snowflake.OrgAdminAccount, Snowflake.OrgAdminAccountLocator,
 //     Snowflake.OrgAdminAccountRegion) is empty, the file does not carry exactly
 //     one cloud section, a field's value does not match its documented format, a pool-tuning
-//     integer (MaxConnectionPoolSize, MaxIdleConnections) is out of range, or a duration field
+//     integer (MaxConnectionPoolSize, MaxIdleConnections) is out of range,
+//     Deletion.GracePeriodDays is outside the allowed 7-90 range, or a duration field
 //     (ConnectionMaxLifetime, ConnectionMaxIdleTime, ConnectionProbeTimeout,
 //     AccountCreationGracePeriod, Secrets.CacheTTL, Secrets.RotationInterval) does not parse as a
 //     positive Go duration
@@ -319,6 +350,13 @@ func Load(configDir string) (*Config, error) {
 		return nil, err
 	}
 
+	deletionGracePeriodDays, err := resolveIntInRange(
+		"deletion.gracePeriodDays", raw.Deletion.GracePeriodDays, defaultDeletionGracePeriodDays,
+		minDeletionGracePeriodDays, maxDeletionGracePeriodDays)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Config{
 		Snowflake: SnowflakeSettings{
 			Org:                    raw.Snowflake.Org,
@@ -342,6 +380,9 @@ func Load(configDir string) (*Config, error) {
 		Secrets: SecretsSettings{
 			CacheTTL:         cacheTTL,
 			RotationInterval: rotationInterval,
+		},
+		Deletion: DeletionSettings{
+			GracePeriodDays: deletionGracePeriodDays,
 		},
 		cloudProvider: cloudSections[0],
 	}, nil
@@ -367,6 +408,19 @@ func resolveNonNegativeInt(fieldPath string, raw *int, def int) (int, error) {
 	}
 	if *raw < 0 {
 		return 0, errors.NewUserError(fmt.Sprintf("%s '%d' must not be negative", fieldPath, *raw))
+	}
+	return *raw, nil
+}
+
+// resolveIntInRange returns def when raw is nil, and otherwise returns *raw if it lies within
+// [min, max] inclusive or a user error naming fieldPath if it does not.
+func resolveIntInRange(fieldPath string, raw *int, def, min, max int) (int, error) {
+	if raw == nil {
+		return def, nil
+	}
+	if *raw < min || *raw > max {
+		return 0, errors.NewUserError(fmt.Sprintf(
+			"%s '%d' must be between %d and %d", fieldPath, *raw, min, max))
 	}
 	return *raw, nil
 }

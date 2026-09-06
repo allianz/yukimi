@@ -17,6 +17,7 @@ limitations under the License.
 package base
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -111,6 +112,62 @@ func TestLoad_PoolAndCacheDefaults(t *testing.T) {
 	}
 	if cfg.Secrets.RotationInterval != defaultRotationInterval {
 		t.Errorf("Secrets.RotationInterval = %v, want default %v", cfg.Secrets.RotationInterval, defaultRotationInterval)
+	}
+}
+
+// SC-023: deletion.gracePeriodDays defaults to 30 when the whole section is absent.
+func TestLoad_DeletionGracePeriodDays_DefaultWhenSectionAbsent(t *testing.T) {
+	cfg, err := Load(newConfigDir(t, wellFormedFixture))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Deletion.GracePeriodDays != 30 {
+		t.Errorf("Deletion.GracePeriodDays = %d, want default 30", cfg.Deletion.GracePeriodDays)
+	}
+}
+
+// SC-023: a "deletion:" section carrying no keys is the same as no section at all — the
+// section decodes to a zero-value rawDeletion whose *int is still nil.
+func TestLoad_DeletionGracePeriodDays_DefaultWhenSectionEmpty(t *testing.T) {
+	cfg, err := Load(newConfigDir(t, wellFormedFixture+"\ndeletion:\n"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Deletion.GracePeriodDays != defaultDeletionGracePeriodDays {
+		t.Errorf("Deletion.GracePeriodDays = %d, want default %d",
+			cfg.Deletion.GracePeriodDays, defaultDeletionGracePeriodDays)
+	}
+}
+
+// SC-023: an explicit in-range value overrides the default, including both ends of the
+// allowed 7-90 band.
+func TestLoad_DeletionGracePeriodDays_ExplicitValues(t *testing.T) {
+	for _, days := range []int{7, 30, 90} {
+		fixture := fmt.Sprintf("%s\ndeletion:\n  gracePeriodDays: %d\n", wellFormedFixture, days)
+		cfg, err := Load(newConfigDir(t, fixture))
+		if err != nil {
+			t.Fatalf("gracePeriodDays %d: unexpected error: %v", days, err)
+		}
+		if cfg.Deletion.GracePeriodDays != days {
+			t.Errorf("Deletion.GracePeriodDays = %d, want %d", cfg.Deletion.GracePeriodDays, days)
+		}
+	}
+}
+
+// SC-024: a value outside the allowed 7-90 band is a user error. Rejecting it here rather
+// than at DROP ACCOUNT time means a typo surfaces at startup, not months later during a
+// tenant teardown.
+func TestLoad_DeletionGracePeriodDays_OutOfRange(t *testing.T) {
+	for _, days := range []int{-1, 0, 6, 91} {
+		fixture := fmt.Sprintf("%s\ndeletion:\n  gracePeriodDays: %d\n", wellFormedFixture, days)
+		_, err := Load(newConfigDir(t, fixture))
+		want := fmt.Sprintf("deletion.gracePeriodDays '%d' must be between 7 and 90", days)
+		if err == nil || err.Error() != want {
+			t.Errorf("error = %v, want %q", err, want)
+		}
+		if !errors.IsUserError(err) {
+			t.Errorf("gracePeriodDays %d: expected user error, got %v", days, err)
+		}
 	}
 }
 
@@ -1137,6 +1194,7 @@ func TestConfig_ConcurrentReadOnlyUse(t *testing.T) {
 			_ = cfg.AWS.Region
 			_ = cfg.AWS.KmsKeyId
 			_ = cfg.Secrets.CacheTTL
+			_ = cfg.Deletion.GracePeriodDays
 		}()
 	}
 	wg.Wait()

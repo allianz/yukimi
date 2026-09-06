@@ -17,9 +17,11 @@ This specification defines the account module that:
 - Issues `CREATE ACCOUNT` over the org-admin connection and captures the returned account locator.
 - Detects, on every reconcile, whether the account already exists — the pipeline's sole existence signal.
 - Publishes the resolved account name and locator onto the shared `ModuleContext` for every later module.
+- Tears the account down: `DROP ACCOUNT` over the org-admin connection, eviction of the pooled
+  connection to it, and deletion of the stored credential.
 
 **Out of Scope**:
-- `DROP ACCOUNT` and credential disposal (019/020).
+- Authorizing a deletion (019), and the finalizer and conditions around one (020).
 - `IdentitySyncRequest` emission (017).
 - Drift detection or repair of the account's own parameters or the `platform` key — not until Snowflake
   ships Organization Policies (design.md Appendix B).
@@ -46,32 +48,35 @@ leaving a failure in the log — see Key Concept: Post-Create Grace Period.
 
 ## Key Concept: Post-Create Grace Period
 
-Every module after this one in the pipeline needs a live connection to the account, so nothing about a
-reconcile landing inside the grace period is special to this module alone — it exists to keep every
-downstream module from being asked to connect to an account before it's plausibly ready. The anchor is
-`status.accountCreatedAt`, a field this module owns and sets exactly once, at the moment `CREATE ACCOUNT`
-succeeds — the same "a module may add its own named status field" allowance spec 009 documents for 017's
-`identitySyncStartedAt`. Neither the CRD's own `metadata.creationTimestamp` nor a live re-query of
-Snowflake's `SHOW ACCOUNTS` `created_on` column can substitute for it: guardrail-check (010) and
-quota-check (011) run ahead of this module and can abort the whole pipeline before `CREATE ACCOUNT` ever
-runs, so `creationTimestamp` can predate the real creation moment by an unbounded amount whenever
-admission was delayed; and re-querying Snowflake would mean reopening the org-admin connection on every
-reconcile during the grace window, against this module's own confinement of that connection to the single
-`CREATE ACCOUNT` moment (Key Concept: The Only Module With Organization-Wide Privileges).
+A brand-new account is not reachable right away. So for a configured period (002) after creation, the
+pipeline waits instead of trying to connect. Every module after this one needs that connection, so the wait
+protects all of them, not just this one.
 
-The grace period's length is `Config.Snowflake.AccountCreationGracePeriod` (002), passed into `New` as a
-plain `time.Duration`. A `nil` `status.accountCreatedAt` — an account created before this field existed —
-is treated as "the grace period has already elapsed," so a connection is attempted as usual; nothing
-changes for accounts that predate this mechanism.
+The wait is measured from `status.accountCreatedAt`, which this module sets once, when `CREATE ACCOUNT`
+succeeds. Only this module knows when the account was really created: the resource can be admitted long
+before that, and asking Snowflake would mean reopening the org-admin connection on every reconcile. If the
+field is absent, the wait counts as already over.
 
 ## Key Concept: The Only Module With Organization-Wide Privileges
 
 Creating a Snowflake account needs privileges that span the whole Snowflake organization, not just one
 tenant's account — and organization-wide credentials are exactly what the platform's security model
 (design.md §3.11) tries hardest to avoid using routinely. This module is the sole exception: it is the
-only place in the whole pipeline that ever connects with those privileges, and only for the single act of
-creating the account. Every other connection this module makes — including its own later checks —
-authenticates as the tenant's own account instead.
+only place in the whole pipeline that ever connects with those privileges, and only for the two acts that
+span the organization rather than one account — creating the account and dropping it. Every other
+connection this module makes — including its own later checks — authenticates as the tenant's own account
+instead.
+
+## Key Concept: Two Restore Windows
+
+Teardown does not erase a tenant. It leaves two remnants behind: the account, and the credential that
+connects to it. Each one stays recoverable for a while. A tenant can only be restored while both are still
+there.
+
+So both windows come from the same ops-owned setting, `deletion.gracePeriodDays` (002). The credential's
+window may end earlier than the account's, but never later. Later is the bad direction: the leftover
+credential keeps the tenant's name unusable after the account itself is gone for good. Earlier only means
+an operator has to restore the credential by hand.
 
 ## Public API
 
@@ -79,30 +84,40 @@ authenticates as the tenant's own account instead.
 // package account // internal/account/modules/account
 
 // New constructs the account module (design.md 3.6). It implements
-// internal/account/pipeline.Module's Observe/Apply contract, identified by
-// pipeline.AccountModuleName; see Key Concept: Create-Then-Verify
-// Lifecycle and Key Concept: Post-Create Grace Period for what each method
-// does.
+// internal/account/pipeline.Module's Observe/Apply/Teardown contract,
+// identified by pipeline.AccountModuleName; see Key Concept:
+// Create-Then-Verify Lifecycle and Key Concept: Post-Create Grace Period for
+// what each method does.
 //
 // Parameters:
 //   - backend: the secrets.Backend (003) the platform keypair is stored through, via Backend.Create
-//     only — this module never calls Update.
+//     and, on teardown, Backend.Delete — this module never calls Update.
 //   - org: Config.Snowflake.Org (002), used to build the tenant secret path (003) exactly as
 //     internal/snowflake/pool does.
 //   - gracePeriod: Config.Snowflake.AccountCreationGracePeriod (002) — how long a fresh account is
 //     given to become reachable before the first post-create connection attempt.
+//   - deletionGracePeriodDays: Config.Deletion.GracePeriodDays (002) — rendered verbatim as
+//     DROP ACCOUNT's GRACE_PERIOD_IN_DAYS on teardown. Not to be confused with gracePeriod
+//     above, which is a post-create reachability delay and has nothing to do with deletion.
+//     Already bounded to 7-90 by 002's loader, so this module does not
+//     re-validate it.
 //
 // Returns:
 //   - pipeline.Module: never nil.
-func New(backend secrets.Backend, org string, gracePeriod time.Duration) pipeline.Module
+func New(backend secrets.Backend, org string, gracePeriod time.Duration, deletionGracePeriodDays int) pipeline.Module
 ```
 
-`Observe` and `Apply` themselves are unexported methods on the value `New` returns — nothing outside
-this module's own tests calls them directly, so their behavior is documented under Key Concept:
-Create-Then-Verify Lifecycle and Key Concept: Post-Create Grace Period above rather than here. Both
-read and write `status.accountLocator`/`status.accountCreatedAt` directly through
-`ModuleContext.CR()`, not through any `ModuleContext` accessor — `internal/account/pipeline` (009)
-defines none for either field.
+`Observe`, `Apply` and `Teardown` themselves are unexported methods on the value `New` returns — nothing
+outside this module's own tests calls them directly, so their behavior is documented under Key Concept:
+Create-Then-Verify Lifecycle and Key Concept: Post-Create Grace Period above rather than here. All three
+read `status.accountLocator`/`status.accountCreatedAt` directly through `ModuleContext.CR()`, not through
+any `ModuleContext` accessor — `internal/account/pipeline` (009) defines none for either field.
+
+`Teardown` runs three steps in a fixed order: `DROP ACCOUNT ... GRACE_PERIOD_IN_DAYS = <configured>` over
+the org-admin connection, then `ModuleContext.EvictTenant()` so no stale pooled connection to a dropped
+account survives, then `Backend.Delete` on the tenant secret path. Each step runs only once the one before
+it succeeded, and a step whose object is already absent counts as success, so the whole sequence is safe to
+re-run.
 
 **Note**: whether `CREATE ACCOUNT` additionally accepts bind parameters for any of its positions (rather
 than rendered text, see Security Considerations) is an unverified vendor fact — not needed to build this
@@ -117,10 +132,12 @@ internal/account/modules/account/
 ├── module.go            # module struct, New, Name()
 ├── observe.go           # Observe: existence probe via the tenant platform connection
 ├── apply.go             # Apply: keypair generation, credential storage, CREATE ACCOUNT, locator capture
+├── teardown.go          # Teardown: DROP ACCOUNT, pool eviction, credential deletion
 ├── module_test.go
 ├── observe_test.go
 ├── apply_test.go
-└── integration_test.go  # live Snowflake + AWS Secrets Manager round trip
+├── teardown_test.go
+└── integration_test.go  # live Snowflake + AWS Secrets Manager create-then-destroy round trip
 ```
 
 ## Error Classification
@@ -141,6 +158,8 @@ internal/account/modules/account/
   succeeded.
 - The platform connection fails when a locator is already known (the account exists but is currently
   unreachable).
+- `DROP ACCOUNT` fails for any reason other than the account already being absent.
+- The credential's deletion fails for any reason other than the secret path already being absent.
 
 ## Edge Cases
 
@@ -172,17 +191,42 @@ internal/account/modules/account/
 - **Does this module need anything from the Backplane Config (007)?** No. The region literal comes
   entirely from the CRD plus a fixed transform, and whether a region is open for new accounts at all is
   checked earlier, during 020's validation phase — not here.
+- **A deletion arrives when no locator was ever recorded — what does `Teardown` do?** With no locator
+  there is no account to drop and no pooled connection to evict, so both steps are skipped and only the
+  credential is deleted. That clears the stray secret a crashed create leaves behind (see above); if an
+  account really was created and its locator never persisted, dropping it stays the manual operator job
+  that case already describes.
+- **The credential path is scheduled for deletion but not yet gone — what does the next reconcile see?**
+  Neither present nor absent. A path inside its recovery window cannot be read and cannot be re-created
+  (003), so `Observe` cannot treat it as a live credential and `Apply`'s fresh-create path cannot claim it
+  either: the create-only write fails on an occupied path exactly as it does for a live credential, and the
+  failure is a system error like any other store fault. There is nothing for this module to do about it —
+  the state is self-clearing, bounded by the account's own grace period, and re-provisioning under the same
+  `metadata.name` was already blocked by the account name for at least as long.
+- **Why render the configured grace period rather than Snowflake's minimum of 3?** Because 3 is the value
+  that makes recovery least likely to work: it is below the 7-day floor AWS Secrets Manager can represent,
+  so the credential would be destroyed outright on every deletion and every restore would need the manual
+  repair above. The configured default of 30 is instead the largest value the reference store matches
+  exactly.
+- **The account, or the secret path, is already gone — does `Teardown` fail?** No. Both count as
+  success, so a destruction retried after a partial failure — or after an operator cleaned up by
+  hand — converges instead of stalling. The backends do not agree on this themselves (AWS's `Delete`
+  errors on a path that does not exist, 003.a), so this module swallows the case rather than relying on
+  the backend to.
 
 ## Dependencies
 
-- **Base Configuration (002)** — Used APIs: `Config.Snowflake.Org`, `Config.Snowflake.AccountCreationGracePeriod`
-  — Contract: both passed to `New` as plain values; this module never loads the config file itself.
+- **Base Configuration (002)** — Used APIs: `Config.Snowflake.Org`, `Config.Snowflake.AccountCreationGracePeriod`,
+  `Config.Deletion.GracePeriodDays` — Contract: all three passed to `New` as plain values; this module never
+  loads the config file itself, and never re-validates `GracePeriodDays`, which 002's loader has already
+  bounded to 7-90.
 - **Secrets Handling (003)** — Used APIs: `GenerateKeyPair()`/`NewCredentials()`, `MarshalCredentials()`,
-  `NewTenantPath()`, `Backend.Create()` — Contract: `Backend.Create` only, never `Update`; the module
-  never reads a credential back.
-- **Connection Pooling (004)** — Used APIs: `ModuleContext.OrgAdminDB()`, `ModuleContext.TenantDB()` —
-  Contract: reached only through `ModuleContext`; this module never imports `internal/snowflake/pool` or
-  `internal/snowflake/host` directly.
+  `NewTenantPath()`, `Backend.Create()`, `Backend.Delete()` — Contract: `Create` and `Delete` only,
+  never `Update`; the module never reads a credential back. `Delete`'s recovery window is the backend's own
+  business — this module passes no window and cannot choose one.
+- **Connection Pooling (004)** — Used APIs: `ModuleContext.OrgAdminDB()`, `ModuleContext.TenantDB()`,
+  `ModuleContext.EvictTenant()` — Contract: reached only through `ModuleContext`; this module never
+  imports `internal/snowflake/pool` or `internal/snowflake/host` directly.
 - **Statement Execution (005)** — Used APIs: `statement.New()`, `Runner.Exec()`, `Runner.Query()`,
   `QuoteLiteral()`, `BareIdentifier()`, `*statement.Error` — Contract: every tenant-influenced value is
   rendered through one of these, never concatenated raw.
@@ -191,15 +235,17 @@ internal/account/modules/account/
   read-only; writes `AccountLocator`/`AccountCreatedAt` directly on `ModuleContext.CR().Status` — the
   only two status fields this module ever sets.
 - **Account Pipeline (009)** — Used APIs: `account.Module`, `Done()`/`Pending()`/`Rejected()`/`Failed()`,
-  `Outcome.Aborting()`, `ModuleContext.CR()`, `.ResolvedAccountName()`, `.OrgAdminDB()`, `.TenantDB()` —
-  Contract: `Name()` returns `pipeline.AccountModuleName`, which is how `Pipeline.Observe` finds
-  `Observation.Exists` regardless of registration position; calls `.Aborting()` on every outcome that is
-  not `Done`.
+  `Outcome.Aborting()`, `ModuleContext.CR()`, `.ResolvedAccountName()`, `.OrgAdminDB()`, `.TenantDB()`,
+  `.EvictTenant()` — Contract: `Name()` returns `pipeline.AccountModuleName`, which is how
+  `Pipeline.Observe` finds `Observation.Exists` regardless of registration position; calls `.Aborting()`
+  on every outcome that is not `Done`; `Teardown` returns a plain classified error, not an `Outcome`, and
+  is reached only through `Pipeline.Destroy`.
 
 ## Integration Points
 
 - **SnowflakeAccount Controller (020)** — Registers this module in the pipeline via
-  `account.New(secretsBackend, baseConfig.Snowflake.Org, baseConfig.Snowflake.AccountCreationGracePeriod)`,
+  `account.New(secretsBackend, baseConfig.Snowflake.Org, baseConfig.Snowflake.AccountCreationGracePeriod,
+  baseConfig.Deletion.GracePeriodDays)`,
   after the guardrail-check (010) and quota-check (011) modules. After `Pipeline.Apply` returns, reads
   `ModuleContext.ResolvedAccountName()` directly — never from this module's `Outcome` — plus
   `cr.Status.AccountLocator`, which this module has already set directly on the CRD, to render
@@ -208,7 +254,8 @@ internal/account/modules/account/
   them straight onto the same `*v1alpha1.SnowflakeAccount` the controller already holds and will persist
   when the reconcile returns. Minimizing how long that persist is deferred is still 020's responsibility,
   since every reconcile between a successful `CREATE ACCOUNT` and the actual API-server write is the
-  crash window described above.
+  crash window described above. Reaches the drop only through `Pipeline.Destroy`, once an active deletion
+  request (019) has authorized it — never by calling this module directly.
 
 ## Success Criteria
 
@@ -242,8 +289,8 @@ internal/account/modules/account/
   `Pending(...).Aborting()` — never `Done()`.
 - **SC-016**: Every outcome other than `Done()` carries `Abort == true`.
 - **SC-017**: Unit test coverage exceeds 95%.
-- **SC-018**: Integration test coverage includes a full create-then-reconnect round trip against a live
-  Snowflake organization and a live secrets backend.
+- **SC-018**: Integration test coverage includes a full create-then-reconnect-then-destroy round trip
+  against a live Snowflake organization and a live secrets backend.
 - **SC-019**: Both `Observe` and `Apply`'s reconnect path attempt no platform connection, and issue no
   error, while `time.Since(cr.Status.AccountCreatedAt) < gracePeriod`; `Apply` reports `Pending(...).Aborting()`
   and `Observe` reports not-in-sync with no outcome error.
@@ -252,11 +299,25 @@ internal/account/modules/account/
   period.
 - **SC-021**: A `nil` `cr.Status.AccountCreatedAt` with a known locator is treated as past the grace
   period: `Observe`/`Apply` attempt a connection exactly as they did before this field existed.
+- **SC-022**: `Teardown` renders the resolved account name as a bare identifier and always includes a
+  `GRACE_PERIOD_IN_DAYS` clause carrying the value `New` was given, unchanged and unclamped.
+- **SC-023**: `Teardown` issues no SQL and evicts nothing when `cr.Status.AccountLocator` is empty, and
+  still deletes the credential.
+- **SC-024**: `Teardown` returns nil when the account is already absent, and when the secret path is
+  already absent.
+- **SC-025**: `Teardown` drops the account, then evicts the pooled connection, then deletes the
+  credential — in that order, and performs no later step once one has failed.
+- **SC-026**: `Teardown` passes `Config.Deletion.GracePeriodDays` straight into the rendered
+  `GRACE_PERIOD_IN_DAYS` for every value 002 admits (3 and 90 at the bounds), and derives no window of its
+  own for the credential.
 
 ## Security Considerations
 
-- The org-admin connection is opened only inside this module, and only on the fresh-create path — no
-  other module, and no other path through this one, ever requests it.
+- The org-admin connection is opened only inside this module, and only on the fresh-create and teardown
+  paths — no other module, and no other path through this one, ever requests it.
+- This module does not check whether a destruction is authorized: it drops whenever `Teardown` is called.
+  The deletion request's two-key gate (019) is what stands between a tenant's `kubectl delete` and that
+  call.
 - The secret store's create-only write is the sole safeguard against overwriting a live account's
   credential on a retried request; this module never reads a stored credential back to decide whether to
   reuse it.
@@ -280,9 +341,16 @@ internal/account/modules/account/
   | `REGION` | `spec.region`, transformed into Snowflake's region-identifier form | bare identifier |
   | `COMMENT` | `spec.description` (tenant free text); clause omitted if empty | quoted literal |
 
+- **`DROP ACCOUNT` rendering.** Its only two positions are the resolved account name, rendered as a bare
+  identifier, and `GRACE_PERIOD_IN_DAYS`, an `int` from ops-owned provider configuration (002) that 002's
+  loader has already bounded to 7-90. No tenant-supplied text reaches this statement at all, and no tenant
+  can influence the grace period — deletion protection would be worthless if the party being protected
+  from could shorten the window it is protected by.
+
 ## References
 
-- **Product design**: `specs/design.md` §3.2, §3.6, §3.11, §3.11.1, §3.12, Appendix B (X1).
+- **Product design**: `specs/design.md` §3.2, §3.6, §3.11, §3.11.1, §3.12, §6.1–§6.3 (the deletion
+  flow this module's teardown is the last phase of), Appendix B (X1).
 - **Account Pipeline**: `internal/account/pipeline/module.go`, `context.go`, `pipeline.go` — the `Module`
   interface, `Outcome` vocabulary, and shared `ModuleContext` this module implements against.
 - **Secrets Handling**: `internal/secrets/backend.go`, `path.go`, `credentials.go`.
@@ -291,6 +359,13 @@ internal/account/modules/account/
   — required parameters, and which parameter positions are quoted string literals versus bare tokens.
 - **Snowflake `SHOW ACCOUNTS` reference**: https://docs.snowflake.com/en/sql-reference/sql/show-accounts
   — the `account_locator`/`account_name` columns, and `LIKE`'s wildcard-only, case-insensitive matching.
+- **Snowflake `DROP ACCOUNT` reference**: https://docs.snowflake.com/en/sql-reference/sql/drop-account
+  — `GRACE_PERIOD_IN_DAYS` being required, its range of 3-90, and the account staying restorable (and its
+  name taken) for that period.
+- **Base Configuration**: `specs/002-base-config.md` — `deletion.gracePeriodDays`, the single setting both
+  windows derive from.
+- **Secrets Handling**: `specs/003-secrets-handling.md` — Key Concept: Deleting a Credential Reserves Its
+  Path. The concrete window computation lives in `specs/003.a-aws-secrets-backend.md`.
 
 <br/><br/><br/><br/><br/>
 
@@ -309,7 +384,14 @@ import (
 pl := pipeline.New(
     guardrailcheckmodule.New(...),                                // 010, runs first, aborts before anything else
     quotacheckmodule.New(...),                                    // 011, runs second, aborts before CREATE ACCOUNT
-    accountmodule.New(secretsBackend, baseConfig.Snowflake.Org, baseConfig.Snowflake.AccountCreationGracePeriod), // 012
+    // 012 — the two grace periods are unrelated: the duration is a post-create
+    // reachability delay, the int is DROP ACCOUNT's GRACE_PERIOD_IN_DAYS.
+    accountmodule.New(
+        secretsBackend,
+        baseConfig.Snowflake.Org,
+        baseConfig.Snowflake.AccountCreationGracePeriod,
+        baseConfig.Deletion.GracePeriodDays,
+    ),
     // ... modules 013-015, 017, 018, in order
 )
 ```
@@ -335,4 +417,9 @@ _ = module.Apply(ctx, mc2)                    // same skip; Pending(...).Abortin
 mc3 := pipeline.NewModuleContext(cr, "finance", nil, nsLabels, log, pool)
 inSync3, _ := module.Observe(ctx, mc3) // reconnects as platform; inSync3 == true
 outcome3 := module.Apply(ctx, mc3)     // reconnects again, no SQL issued, returns Done()
+
+// Deletion, reached through Pipeline.Destroy once a deletion request (019) has authorized it:
+err := module.Teardown(ctx, mc3)       // DROP ACCOUNT ... GRACE_PERIOD_IN_DAYS = 30, evicts the
+                                        // pooled connection, deletes the stored credential — which
+                                        // the store keeps restorable for 30 days too, never longer
 ```

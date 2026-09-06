@@ -13,6 +13,7 @@ This specification defines the `internal/secrets/` package that:
 - Constructs and validates the two secret paths design.md 3.11.1 requires: the tenant `platform` credential path and the org-admin credential path.
 - Generates RSA keypairs and defines the JSON shape credentials are stored in.
 - Wraps any `Backend` in an in-memory, TTL-based, lazily-evicted cache.
+- Derives, once and for every backend, the recovery window a deleted credential may sit in — never longer than the account grace period it belongs to (002).
 - Exports an in-memory fake `Backend`, with injectable per-method failures, for every other package to test against.
 - Classifies every failure this package can produce into a user or system error per 001's model.
 
@@ -43,6 +44,12 @@ A stored credential is a `Credentials` value with exactly three JSON fields: `us
 The encodings are chosen so no consumer transforms them: `PublicKey` is PKIX, single-line base64 with no PEM delimiters, dropping straight into `ADMIN_RSA_PUBLIC_KEY = '<...>'` and `ALTER USER ... SET RSA_PUBLIC_KEY = '<...>'` (design.md 3.6, 3.9); `PrivateKey` is PKCS#8, PEM-wrapped, for the Snowflake driver's JWT signing. Generation uses `crypto/rand`, minimum 2048-bit RSA. `Username` is caller-supplied — design.md 3.6's `platform` is the account module's (012) domain knowledge, not a literal here.
 
 `RotatedAt` is in-memory only, never persisted: `UnmarshalCredentials` takes it as a parameter — ordinarily whatever `Get` returned alongside the value — so the store never holds a second copy of the same fact.
+
+## Key Concept: Deleting a Credential Reserves Its Path
+
+Secret stores rarely delete on the spot. They hold the path for a recovery window and refuse to store anything there meanwhile. Because the tenant path is derived from the tenant's own name (design.md 3.11.1), that reservation lands on the next tenant of the same name in the same namespace.
+
+Snowflake reserves a dropped account name the same way, for its grace period. Keeping the credential's window inside that grace period leaves the account as the only thing that ever delays re-provisioning: a recovery window of a credential is as long as the secret store can make it, never longer than the grace period of the Snowflake account. Each backend decides for itself how to keep that promise, with whatever means its own store offers — this package prescribes no shared type or derivation helper for the decision. With one implementation in the tree today (003.a), that decision stays a one-line cap; a second backend with a stricter floor than the grace period's own minimum would face the tradeoff this package used to resolve centrally, and would resolve it itself instead.
 
 ## Key Concept: The Cache Is a `Backend`, Not a Manager
 
@@ -85,9 +92,15 @@ type Backend interface {
     // is stored there — Update never creates.
     Update(ctx context.Context, path Path, value string) error
 
-    // Delete removes path. Whether the value is gone immediately or sits in a
-    // recovery window first is the implementation's business; nothing in this
-    // package reads a deleted path afterwards.
+    // Delete removes path. Nothing in this package reads a deleted path
+    // afterwards.
+    //
+    // An implementation that schedules the removal instead of performing it must
+    // keep that window within whatever account grace period it was constructed
+    // with (002), by whatever means suits its own store — this package
+    // prescribes no shared mechanism for that decision. While the removal is
+    // pending, path stays occupied: Get and Update fail on it and so does
+    // Create, since the store has not released the name yet.
     Delete(ctx context.Context, path Path) error
 }
 
@@ -188,11 +201,27 @@ type FakeBackend struct {
     // and returned by Get. Defaults to time.Now; tests override it for a
     // deterministic RotatedAt.
     Clock func() time.Time
+
+    // SchedulesDeletion makes Delete schedule the removal instead of performing
+    // it: the entry becomes unreadable but keeps its path occupied until
+    // Restore cancels the removal. False — the default — deletes outright, so a
+    // consumer that does not care about the pending state sees the simplest
+    // possible behavior.
+    SchedulesDeletion bool
 }
 
-// NewFakeBackend returns an empty FakeBackend. Delete removes the entry
-// outright and is idempotent, so a Create on a deleted path succeeds and a Get
-// on one fails exactly as it would on a path nothing was ever stored at.
+// Restore cancels a pending deletion, making the value readable and the path
+// writable again — the store-side half of the manual repair 012 documents.
+//
+// Returns:
+//   - Error if nothing at path is scheduled for deletion, whether because the
+//     path is empty or because the entry is live
+func (f *FakeBackend) Restore(path Path) error
+
+// NewFakeBackend returns an empty FakeBackend that deletes outright. Delete
+// removes the entry and is idempotent, so a Create on a deleted path succeeds
+// and a Get on one fails exactly as it would on a path nothing was ever stored
+// at. Set SchedulesDeletion to exercise the pending-deletion state instead.
 func NewFakeBackend() *FakeBackend
 ```
 
@@ -229,8 +258,11 @@ internal/secrets/
 
 - **What happens if `Create` finds a credential already stored at the path?** - It fails, and the stored value is left exactly as it was. This package never reuses, overwrites, or discards what it finds there: it cannot see whether the stored credential belongs to a live Snowflake account, and either guess is destructive — overwriting locks the platform out of an account it still manages, reusing hands a new account its predecessor's key. Clearing a path that is genuinely stale is an operator action.
 - **What happens if two controller replicas race to `Create` the same path?** - One wins outright. The other's `Create` fails on the now-occupied path, which surfaces as a system error with an incident ID (001) rather than being reconciled away, because from inside this package that loss is indistinguishable from any other occupied path.
-- **Why is a missing credential a system error rather than a user error, when path validation failures are user errors?** - A malformed path segment is fixed by editing the CRD or config value that produced it — that is what makes it a user error. A well-formed path with nothing stored at it is not fixable that way: there is no CRD field a tenant edits to make a credential appear, and for the org-admin path there is no owning CRD at all. Whether the missing credential reflects a controller sequencing bug (a `Get` running ahead of the `Create` that should have provisioned it), an unexpected deletion, or ops never having provisioned an org-admin credential, all three need operator visibility — an incident ID, not a silent Debug-level message — so a `Get` or `Update` that finds nothing stored is classified as a system error regardless of which path type it came from.
-- **What happens to a tenant secret after `DROP ACCOUNT` (019, not yet written)?** - `Backend.Delete` is called on the tenant path. What that leaves behind is the concrete backend's business — an outright removal on a store with no recovery concept, a value inside a recovery window on one that has. This package makes no guarantee about which, and nothing in it reads a deleted path afterwards.
+- **Why is a missing credential a system error rather than a user error, when path validation failures are user errors?** - A malformed path segment is fixed by editing the CRD or config value that produced it; a well-formed path with nothing stored at it is not. No tenant field makes a credential appear, and the org-admin path has no owning CRD at all. Whether the cause is a controller sequencing bug, an unexpected deletion, or an org-admin credential ops never provisioned, all three need an incident ID rather than a Debug-level message.
+- **What happens to a tenant secret after `DROP ACCOUNT` (012)?** - `Backend.Delete` is called on the tenant path, which either schedules the removal or performs it outright. Which of the two happens is the concrete backend's business, bounded by the recovery-window rule above, and `Delete` reports neither — it returns only an error. Nothing in this package reads a deleted path afterwards.
+- **What if the store's shortest representable window is longer than the account grace period?** - The backend destroys the value irreversibly rather than reserving a window that would outlive the account. That is the correct outcome rather than a degradation to report: a credential blocking a path whose account is already reusable has no recovery value at all, while a destroyed one only makes a restore need manual repair. How a backend recognizes and reports this case is its own concern (003.a); this package prescribes no shared mechanism for it.
+- **What happens on a `Delete` of a path whose removal is already pending?** - It succeeds and changes nothing: the store scheduled the removal once and does not restart its clock, so a retried teardown neither fails nor silently extends the blockade. (AWS Secrets Manager is the exception among the operations here in not being idempotent on an *absent* path — see 003.a.)
+- **What can be done with a path whose removal is pending?** - Only waiting it out or, where the store offers it, restoring. `Get` and `Update` fail because the value is not readable, and `Create` fails because the name has not been released — this is the blockade the invariant above exists to bound. `FakeBackend.Restore` models the restore for tests.
 - **What if `UnmarshalCredentials` receives well-formed JSON but a truncated or otherwise invalid PEM private key?** - Out of scope for this package's validation. `UnmarshalCredentials` checks only that the three fields are non-empty strings; whether `PrivateKey` parses as an actual RSA key is the first consumer's (the connection pool, 004) problem to detect when it tries to use it.
 - **What happens if a cache entry expires while a request is in flight?** - Lazy eviction: the next `Get` after expiry is a plain cache miss. It fetches from the underlying `Backend` and repopulates the entry with a fresh TTL — there is no special-cased mid-flight behavior.
 - **What if the underlying store is unavailable while a cached entry is still within its TTL?** - `CachedBackend.Get` returns the cached value without calling the underlying `Backend` at all. Serving a value that could be up to `ttl` stale in exchange for availability during an outage is an accepted trade-off, not a defect.
@@ -244,10 +276,9 @@ internal/secrets/
 ## Integration Points
 
 - **`internal/secrets/aws` (003.a)** - Implements `Backend` against AWS Secrets Manager, carrying the value string as a `SecretString` and reporting AWS API failures as plainly worded errors satisfying this interface's per-method contracts - Key functions: implements `secrets.Backend` - Notes: the only place an AWS SDK enters `go.mod`; never imported by anything above 003.
-- **`cmd/provider/main.go`** - Constructs the concrete `Backend` selected by `Config.CloudProvider()` (002), wraps it exactly once in `NewCachedBackend(backend, cfg.Secrets.CacheTTL)` — the TTL comes from `Config.Secrets.CacheTTL` (002), not a literal — and passes the wrapped result to every consumer below - Key functions: `secrets.NewCachedBackend()`.
+- **`cmd/provider/main.go`** - Constructs the concrete `Backend` selected by `Config.CloudProvider()` (002), passing it `Config.Deletion.GracePeriodDays` so it can compute its own recovery window, wraps it exactly once in `NewCachedBackend(backend, cfg.Secrets.CacheTTL)` — the TTL comes from `Config.Secrets.CacheTTL` (002), not a literal — and passes the wrapped result to every consumer below. Any operator-facing gap between that window and the grace period is the concrete backend's own concern to log (003.a); `main.go` neither computes nor logs it - Key functions: `secrets.NewCachedBackend()`.
 - **`internal/snowflake/pool` (004)** - Reads org-admin and per-tenant credentials through the `Backend` interface, keyed by the same `(org, namespace, account)` tuple as the tenant path - Key functions: `Backend.Get()`, `UnmarshalCredentials()`, `NewOrgAdminPath()`, `NewTenantPath()` - Notes: unit tests run against `FakeBackend`, never a real store.
-- **`internal/account/modules/account` (012)** - Generates a keypair and stores it with `Backend.Create` — never `Update` — before running `CREATE ACCOUNT`, using the generated public key in the SQL statement and never persisting the private key anywhere but the store - Key functions: `NewCredentials()`, `MarshalCredentials()`, `Backend.Create()`, `NewTenantPath()`.
-- **`internal/deletion` (019, not yet written)** - Calls `Backend.Delete()` on the tenant path when `DROP ACCOUNT` executes - Key functions: `Backend.Delete()`.
+- **`internal/account/modules/account` (012)** - Generates a keypair and stores it with `Backend.Create` — never `Update` — before running `CREATE ACCOUNT`, using the generated public key in the SQL statement and never persisting the private key anywhere but the store; on teardown, calls `Backend.Delete` on the same tenant path once `DROP ACCOUNT` has succeeded - Key functions: `NewCredentials()`, `MarshalCredentials()`, `Backend.Create()`, `Backend.Delete()`, `NewTenantPath()`.
 
 ## Success Criteria
 
@@ -265,12 +296,14 @@ internal/secrets/
 - **SC-013**: `CachedBackend` never caches a failed `Get` — two consecutive `Get`s on a path nothing is stored at both reach the underlying `Backend`.
 - **SC-014**: `CachedBackend` invalidates a path's cache entry on every successful `Create`/`Update`/`Delete` through it, and via an explicit `Invalidate` call.
 - **SC-015**: `FakeBackend`'s per-method hooks, when set and returning a non-nil error, short-circuit before any state mutation.
-- **SC-016**: `FakeBackend.Delete` removes the entry outright and is idempotent: a following `Create` on that path succeeds, a following `Get` fails as it would on a path nothing was ever stored at, and a `Delete` of an absent path is not an error.
+- **SC-016**: With `SchedulesDeletion` unset, `FakeBackend.Delete` removes the entry outright and is idempotent: a following `Create` on that path succeeds, a following `Get` fails as it would on a path nothing was ever stored at, and a `Delete` of an absent path is not an error.
 - **SC-016a**: `FakeBackend.Get` returns the timestamp its `Create` or `Update` most recently recorded for that path, taken from `Clock` (default `time.Now`).
 - **SC-017**: `internal/secrets` exposes no `Initialize`/`GetInstance`-style singleton and holds no package-level mutable state.
 - **SC-018**: `internal/secrets` imports `internal/errors` and no other package internal to this repository.
 - **SC-019**: `internal/secrets` exposes no `HealthCheck` method.
 - **SC-020**: Unit test coverage exceeds 95%, exercised entirely against `FakeBackend` — no network calls in this package's own test suite.
+- **SC-021**: With `SchedulesDeletion` set, `FakeBackend.Delete` leaves the path occupied but unusable: `Get` and `Update` fail naming it as scheduled for deletion, and `Create` fails naming the path as unreusable. A second `Delete` on a pending path succeeds and changes nothing — the path stays blockaded and `Restore` still works — and a `Delete` of an absent path still schedules nothing.
+- **SC-022**: `FakeBackend.Restore` cancels a pending deletion, restoring the stored value for `Get` and `Update`, and returns an error when nothing at the path is scheduled — whether the path is empty or holds a live value.
 
 ## Security Considerations
 
@@ -285,7 +318,7 @@ internal/secrets/
 
 - **Product design**: `specs/design.md`, §3.6 (the `platform` user and `ADMIN_RSA_PUBLIC_KEY`), §3.11 (org-admin vs. per-account access), §3.11.1 (tenant secret path, namespace as trust anchor), §3.12 (resolved vs. CRD account name), Appendix B X1 (the `platform` user re-key/drop gap).
 - **Error Handling (001)**: `internal/errors/errors.go` - `NewUserError()`, used to classify path-validation and not-found failures.
-- **Base Config (002)**: `internal/config/base/base.go` - `SnowflakeSettings.Org`, `SnowflakeSettings.OrgAdminAccount`, `CloudProvider()`; its own Example 1 already anticipates `secrets.Backend` and a `secretsaws.New(region)` constructor this spec's sibling (003.a) provides.
+- **Base Config (002)**: `internal/config/base/base.go` - `SnowflakeSettings.Org`, `SnowflakeSettings.OrgAdminAccount`, `DeletionSettings.GracePeriodDays`, `CloudProvider()`; its own Example 1 already anticipates `secrets.Backend` and the `secretsaws.New` constructor this spec's sibling (003.a) provides.
 
 <br/><br/><br/><br/><br/>
 
@@ -357,7 +390,7 @@ func (p *Pool) orgAdminCredentials(ctx context.Context, cached secrets.Backend, 
 }
 
 // Wired once at startup:
-// backend := secretsaws.New(cfg.AWS.Region)                     // 003.a
+// backend := secretsaws.New(cfg.AWS.Region, cfg.AWS.KmsKeyId, cfg.Deletion.GracePeriodDays) // 003.a
 // cached := secrets.NewCachedBackend(backend, cfg.Secrets.CacheTTL) // TTL from Config (002)
 // pool := pool.New(cached, ...)                                  // 004 depends only on secrets.Backend
 ```

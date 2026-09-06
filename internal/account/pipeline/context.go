@@ -36,6 +36,7 @@ import (
 type DBPool interface {
 	OrgAdmin(ctx context.Context) (*sql.DB, error)
 	TenantAccount(ctx context.Context, namespace, accountName, locator, region string) (*sql.DB, error)
+	EvictTenant(namespace, accountName string)
 }
 
 var _ DBPool = (*pool.Pool)(nil)
@@ -125,4 +126,10 @@ func (c *ModuleContext) TenantDB(ctx context.Context) (*sql.DB, error) {
 	}
 	c.tenantDB = db
 	return db, nil
+}
+
+// EvictTenant closes and forgets the pooled connection to this tenant's own
+// account, keyed exactly as TenantDB resolves it.
+func (c *ModuleContext) EvictTenant() {
+	c.pool.EvictTenant(c.namespace, c.cr.Name)
 }
