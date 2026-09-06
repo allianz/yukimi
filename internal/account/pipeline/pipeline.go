@@ -16,7 +16,13 @@ limitations under the License.
 
 package pipeline
 
-import "context"
+import (
+	"context"
+
+	xpv1 "github.com/crossplane/crossplane-runtime/v2/apis/common/v1"
+
+	v1alpha1 "github.com/allianz/yukimi/apis/base/v1alpha1"
+)
 
 // Pipeline runs an ordered list of modules against one ModuleContext per call.
 type Pipeline struct {
@@ -67,6 +73,13 @@ func (p *Pipeline) Observe(ctx context.Context, mc *ModuleContext) (Observation,
 	return obs, nil
 }
 
+// Ready reports the resource's aggregate Ready condition from this Observe
+// call's outcomes and the CRD's own persisted status (Key Concept: Ready Is
+// a One-Way Latch).
+func (o Observation) Ready(cr *v1alpha1.SnowflakeAccount) xpv1.Condition {
+	return readyFrom(cr, o.Outcomes)
+}
+
 // Result is Pipeline.Apply's result.
 type Result struct {
 	Aborted  bool
@@ -90,6 +103,42 @@ func (r Result) AllDone() bool {
 		}
 	}
 	return true
+}
+
+// Ready reports the resource's aggregate Ready condition from this Apply
+// call's outcomes and the CRD's own persisted status (Key Concept: Ready Is
+// a One-Way Latch). Callers advancing status.observedGeneration on an
+// all-Done run (AllDone) must do so before calling Ready, so a run that just
+// completed its first fully-Done pass reports Ready=True immediately rather
+// than waiting for the next Observe.
+func (r Result) Ready(cr *v1alpha1.SnowflakeAccount) xpv1.Condition {
+	return readyFrom(cr, r.Outcomes)
+}
+
+// readyFrom is a one-way latch: once cr.Status.GetObservedGeneration() is
+// non-zero — meaning some earlier Apply saw every module report Done —
+// Ready stays True from then on, regardless of what any later Observe or
+// Apply reports (design.md §7.1, §4.3): a group added after that point and
+// still syncing is visible on IdentitySynced, not here. Before that first
+// success, Ready is False, carrying the first Pending outcome's Reason as
+// its message so the tenant knows what they're waiting for. A Rejected or
+// Failed outcome never sets a message here — that belongs on Synced (020's
+// job, out of scope for this package).
+//
+// Deletion is not this package's concern: once the controller's Delete
+// returns an error, the managed reconciler sets Ready to
+// Deleting()/ReconcileError on its own, and neither Observe nor Apply runs
+// during that window (design.md §6.3).
+func readyFrom(cr *v1alpha1.SnowflakeAccount, outcomes []ModuleOutcome) xpv1.Condition {
+	if cr.Status.GetObservedGeneration() != 0 {
+		return xpv1.Available()
+	}
+	for _, mo := range outcomes {
+		if mo.Outcome.State == StatePending {
+			return xpv1.Unavailable().WithMessage(mo.Outcome.Reason)
+		}
+	}
+	return xpv1.Unavailable()
 }
 
 // Apply calls every module's Apply in order, unconditionally, stopping early

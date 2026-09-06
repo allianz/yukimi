@@ -21,8 +21,9 @@ happened into Kubernetes conditions without understanding what any individual mo
   module recomputes or disagrees with another about any of it.
 - A fixed outcome vocabulary (`Done`, `Pending`, `Rejected`, `Failed`) that every module reports
   through, plus a generic signal any module's outcome can carry to stop the run early.
-- Collecting what ran into one `Result`, and a static table deciding which of a module's own
-  conditions forces the resource's aggregate `Ready` to `False`.
+- Collecting what ran into one `Result`, and computing the resource's aggregate `Ready` condition from
+  it — a one-way latch keyed off the CRD's own persisted `observedGeneration`, not a table keyed by any
+  module's own condition.
 
 **Out of Scope**:
 - Executing any SQL itself. Every statement belongs to a module (012–015, 017, 018); this package only
@@ -104,6 +105,20 @@ simply recreated by the overwrite. Nothing here repairs drift — Organization P
 Appendix B) will make this state org-owned and tenant-unmodifiable, so a read-back built now would be
 dead code. Only 014 and 015 prune, each naming its own prefix; baseline rules, account parameters and
 identity bindings are untouched.
+
+## Key Concept: Ready Is a One-Way Latch
+
+`Observation.Ready`/`Result.Ready` derive `Ready` from `cr.Status.GetObservedGeneration()`: `False`
+until the account's first fully-`Done` run, `True` forever after, no matter what a later module
+reports. A `Pending` outcome before that first success supplies `Ready`'s message; once latched, later
+waits (e.g. a newly-added group still syncing) show up only on that module's own condition
+(`IdentitySynced`), not on `Ready`. `Rejected`/`Failed` outcomes belong on `Synced` instead, which is
+020's concern, not this package's. Deletion needs no special-casing — the managed reconciler owns
+`Ready` during that window, and this package isn't called at all while a resource is being deleted.
+
+**Important**: a caller advancing `status.observedGeneration` on an all-`Done` `Apply` (`Result.AllDone`)
+must do so *before* calling `Result.Ready`, so the pass that just completed the account's first fully
+successful run reports `Ready=True` immediately, rather than waiting for the next `Observe` to notice.
 
 ## Key Concept: Reverse-Order Teardown
 
@@ -212,6 +227,11 @@ type Observation struct {
     Outcomes []ModuleOutcome // one entry per registered module, in registration order — always all of them, since Observe never stops early
 }
 
+// Ready reports the resource's aggregate Ready condition from this Observe
+// call's outcomes and the CRD's own persisted status (Key Concept: Ready Is
+// a One-Way Latch).
+func (o Observation) Ready(cr *v1alpha1.SnowflakeAccount) xpv1.Condition
+
 // State is the fixed vocabulary every Outcome reports through.
 type State int
 
@@ -259,6 +279,14 @@ type ModuleOutcome struct {
 
 // AllDone reports whether every module ran and every one reported StateDone.
 func (r Result) AllDone() bool
+
+// Ready reports the resource's aggregate Ready condition from this Apply
+// call's outcomes and the CRD's own persisted status (Key Concept: Ready Is
+// a One-Way Latch). Callers advancing status.observedGeneration on an
+// all-Done run (AllDone) must do so before calling Ready, so a run that just
+// completed its first fully-Done pass reports Ready=True immediately rather
+// than waiting for the next Observe.
+func (r Result) Ready(cr *v1alpha1.SnowflakeAccount) xpv1.Condition
 
 // DBPool is the subset of internal/snowflake/pool (004) that ModuleContext
 // depends on, declared here so a test can inject a fake. *pool.Pool satisfies
@@ -317,19 +345,14 @@ func (c *ModuleContext) TenantDB(ctx context.Context) (*sql.DB, error)
 // calls it once the account is dropped.
 func (c *ModuleContext) EvictTenant()
 
-// Custom condition types this package defines, plus the static table deciding
-// which of them forces the resource's aggregate Ready to False. A module
-// attaches its own condition to its Outcome (above); 020 collects and renders
-// them, applying this table when aggregating Ready.
+// Custom condition types this package defines for a module to attach to its
+// own Outcome (above); 020 collects and renders them as-is (design.md 7.1).
+// Neither gates the resource's aggregate Ready condition — see
+// Observation.Ready and Result.Ready above for how Ready is computed.
 const (
     TypeQuotaAvailable xpv1.ConditionType = "QuotaAvailable" // design.md 3.10
     TypeIdentitySynced xpv1.ConditionType = "IdentitySynced" // design.md 4.3
 )
-
-var GatesReady = map[xpv1.ConditionType]bool{
-    TypeIdentitySynced: true,  // §4.3 — nobody can administer the account until ACCOUNTADMIN is imported
-    TypeQuotaAvailable: false, // §3.10 — the account is intact; warehouses are merely suspended
-}
 ```
 
 ## Project Structure
@@ -337,9 +360,9 @@ var GatesReady = map[xpv1.ConditionType]bool{
 ```
 internal/account/pipeline/
 ├── module.go       # Module interface, Outcome (Condition/Event), State, Done/Pending/Rejected/Failed, Aborting
-├── pipeline.go     # Pipeline, New, Observe, Apply, Destroy, Observation, Result, ModuleOutcome, AllDone
+├── pipeline.go     # Pipeline, New, Observe, Apply, Destroy, Observation, Result, ModuleOutcome, AllDone, Ready
 ├── context.go      # ModuleContext, NewModuleContext, DBPool, OrgAdminDB/TenantDB/EvictTenant
-└── conditions.go   # TypeQuotaAvailable, TypeIdentitySynced, GatesReady
+└── conditions.go   # TypeQuotaAvailable, TypeIdentitySynced
 ```
 
 ## Error Classification
@@ -368,10 +391,16 @@ classify. `Destroy` likewise returns a module's `Teardown` error exactly as that
 - **`Apply` aborts after the first of six modules — what does `Result` say about the other five?** -
   They are absent from `Result.Outcomes` entirely, not recorded with any placeholder state. A
   condition owned by an absent module is left exactly as the previous reconcile set it.
-- **A module's `Rejected` condition was already surfaced on `Ready`; the tenant fixes the CRD and the
-  next run succeeds — does the stale condition linger?** - No. Every module that ran on this pass
-  returns a fresh `Outcome`, including a fresh `Condition`; the previous rejection is overwritten the
-  moment that module reports `Done` instead.
+- **A module's `Rejected` outcome was already surfaced (on `Synced` or on the module's own `Condition`);
+  the tenant fixes the CRD and the next run succeeds — does the stale message linger?** - No. Every
+  module that ran on this pass returns a fresh `Outcome`, including a fresh `Condition`; the previous
+  rejection is overwritten the moment that module reports `Done` instead.
+- **The account has been `Ready` for months; a later CRD edit adds a group to
+  `identityIntegration.groups` whose sync is still `Pending` — does `Ready` revert to `False`?** - No
+  (Key Concept: Ready Is a One-Way Latch). `cr.Status.GetObservedGeneration()` is already non-zero from
+  the account's first fully-`Done` run, so `Observation.Ready`/`Result.Ready` report `Available()`
+  regardless of this pass's outcomes. The wait is visible only on `IdentitySynced`, which the identity
+  module (017) reports `Pending` until the new group is imported.
 - **What happens on the very first reconcile, before `CREATE ACCOUNT` has ever returned a locator?** -
   `cr.Status.AccountLocator` is `""`. Only the account module (012) can proceed without one; every
   module that calls `TenantDB` fails with a system error until 012 has set `cr.Status.AccountLocator`
@@ -433,11 +462,13 @@ directly.
   fixed order 010 → 011 → 012 → 013 → 014 → 015 → 017 → 018 — guardrail-check (010) first, quota-check
   (011) second, both ahead of the account module, since neither needs a Snowflake connection and both
   must abort before `CREATE ACCOUNT` when their own check fails. Owns rendering
-  `Outcome.Condition` and `Outcome.Event` values, `GatesReady` aggregation, and advancing
-  `status.observedGeneration`.
+  `Outcome.Condition` and `Outcome.Event` values and advancing `status.observedGeneration`; calls
+  `Observation.Ready`/`Result.Ready` for the aggregate `Ready` condition rather than computing it
+  itself (Key Concept: Ready Is a One-Way Latch).
   Calls `Pipeline.Destroy` from `Delete`, after the deletion request's gate (019) has authorized the
   destruction and before that request is marked consumed. - Key functions: `pipeline.New()`,
-  `(*Pipeline).Observe`, `(*Pipeline).Apply`, `(*Pipeline).Destroy`, `pipeline.NewModuleContext()`.
+  `(*Pipeline).Observe`, `(*Pipeline).Apply`, `(*Pipeline).Destroy`, `pipeline.NewModuleContext()`,
+  `Observation.Ready()`, `Result.Ready()`.
 - **`internal/account/modules/{guardrailcheck,quotacheck,account,parameter,network,auth,identity,quotamonitor}`
   (010–015, 017–018)** - Each implements `Module` in full and is registered with `pipeline.New()` by
   020; none has any out-of-band entry point outside the `Module` contract. guardrail-check (010) and
@@ -485,6 +516,10 @@ directly.
     `Observation.Outcomes`.
 19. **SC-019**: An `Outcome.Event`, when set, survives unchanged through `Observation.Outcomes` and
     `Result.Outcomes`, independent of `State` and of whether `Condition` is also set.
+20. **SC-020**: `Observation.Ready` and `Result.Ready` return `Available()` whenever
+    `cr.Status.GetObservedGeneration() != 0`, regardless of what `Outcomes` contains; otherwise they
+    return `Unavailable()` carrying the first `Pending` outcome's `Reason` as its message (`WithMessage`),
+    or a bare `Unavailable()` if no outcome is `Pending`.
 
 ## Security Considerations
 
@@ -569,30 +604,20 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
         return managed.ExternalObservation{ResourceExists: false}, nil
     }
 
-    // Same per-outcome condition render/aggregate as Create/Update (Example 2)
-    // — the managed reconciler re-derives Ready after every Observe on the
+    // Same per-outcome condition render as Create/Update (Example 2) — the
+    // managed reconciler re-derives Ready after every Observe on the
     // up-to-date path, not only after Apply.
-    ready := true
     for _, mo := range obs.Outcomes {
         if mo.Outcome.Event != nil {
             e.record.Event(cr, *mo.Outcome.Event)
         }
-        if mo.Outcome.Condition == nil {
-            continue
-        }
-        cr.SetConditions(*mo.Outcome.Condition)
-        if gatesReady := pipeline.GatesReady[mo.Outcome.Condition.Type]; gatesReady &&
-            mo.Outcome.Condition.Status != xpv1.ConditionTrue {
-            ready = false
+        if mo.Outcome.Condition != nil {
+            cr.SetConditions(*mo.Outcome.Condition)
         }
     }
+    cr.SetConditions(obs.Ready(cr)) // Key Concept: Ready Is a One-Way Latch
 
     upToDate := cr.Status.GetObservedGeneration() == cr.Generation && obs.InSync
-    if ready {
-        cr.SetConditions(xpv1.Available())
-    } else {
-        cr.SetConditions(xpv1.Unavailable())
-    }
     return managed.ExternalObservation{
         ResourceExists:   true,
         ResourceUpToDate: upToDate,
@@ -632,7 +657,6 @@ func (e *external) apply(ctx context.Context, mg resource.Managed) error {
 
     // Render each module's own condition; a module absent from result.Outcomes
     // (because the run aborted before reaching it) leaves its condition untouched.
-    ready := true
     for _, mo := range result.Outcomes {
         if mo.Outcome.Err != nil {
             log.Handle(mo.Outcome.Err) // incident-tracked; the condition already carries the user-facing message
@@ -640,24 +664,18 @@ func (e *external) apply(ctx context.Context, mg resource.Managed) error {
         if mo.Outcome.Event != nil {
             e.record.Event(cr, *mo.Outcome.Event)
         }
-        if mo.Outcome.Condition == nil {
-            continue
-        }
-        cr.SetConditions(*mo.Outcome.Condition)
-        if gatesReady := pipeline.GatesReady[mo.Outcome.Condition.Type]; gatesReady &&
-            mo.Outcome.Condition.Status != xpv1.ConditionTrue {
-            ready = false
+        if mo.Outcome.Condition != nil {
+            cr.SetConditions(*mo.Outcome.Condition)
         }
     }
 
     if result.AllDone() {
         cr.Status.SetObservedGeneration(cr.Generation) // only an all-Done run advances the gate
     }
-    if ready {
-        cr.SetConditions(xpv1.Available())
-    } else {
-        cr.SetConditions(xpv1.Unavailable())
-    }
+    // Ready must be computed after the observedGeneration update above, so a
+    // run that just completed its first fully-Done pass reports Ready=True
+    // immediately (Key Concept: Ready Is a One-Way Latch).
+    cr.SetConditions(result.Ready(cr))
 
     return nil
 }

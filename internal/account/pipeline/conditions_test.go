@@ -18,8 +18,6 @@ package pipeline
 
 import (
 	"testing"
-
-	xpv1 "github.com/crossplane/crossplane-runtime/v2/apis/common/v1"
 )
 
 func TestConditionTypes(t *testing.T) {
@@ -28,17 +26,5 @@ func TestConditionTypes(t *testing.T) {
 	}
 	if string(TypeIdentitySynced) != "IdentitySynced" {
 		t.Errorf("TypeIdentitySynced = %q, want %q", TypeIdentitySynced, "IdentitySynced")
-	}
-}
-
-func TestGatesReady(t *testing.T) {
-	if !GatesReady[TypeIdentitySynced] {
-		t.Error("GatesReady[TypeIdentitySynced] = false, want true")
-	}
-	if GatesReady[TypeQuotaAvailable] {
-		t.Error("GatesReady[TypeQuotaAvailable] = true, want false")
-	}
-	if got := GatesReady[xpv1.ConditionType("SomethingElse")]; got {
-		t.Error("GatesReady map-miss should default to false")
 	}
 }

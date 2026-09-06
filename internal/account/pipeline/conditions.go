@@ -18,18 +18,11 @@ package pipeline
 
 import xpv1 "github.com/crossplane/crossplane-runtime/v2/apis/common/v1"
 
-// Custom condition types this package defines, plus the static table
-// deciding which of them forces the resource's aggregate Ready to False. A
-// module attaches its own condition to its Outcome; 020 collects and renders
-// them, applying this table when aggregating Ready.
+// Custom condition types this package defines for a module to attach to its
+// own Outcome; 020 collects and renders them as-is (design.md 7.1). Neither
+// gates the resource's aggregate Ready condition — see Observation.Ready and
+// Result.Ready in pipeline.go for how Ready is computed.
 const (
 	TypeQuotaAvailable xpv1.ConditionType = "QuotaAvailable" // design.md 3.10
 	TypeIdentitySynced xpv1.ConditionType = "IdentitySynced" // design.md 4.3
 )
-
-// GatesReady maps a module-owned condition type to whether that condition
-// being non-True forces the resource's aggregate Ready to False.
-var GatesReady = map[xpv1.ConditionType]bool{
-	TypeIdentitySynced: true,  // §4.3 — nobody can administer the account until ACCOUNTADMIN is imported
-	TypeQuotaAvailable: false, // §3.10 — the account is intact; warehouses are merely suspended
-}
