@@ -192,20 +192,19 @@ func New(modules ...Module) *Pipeline
 // Observation.Outcomes regardless of its content — an Outcome.Abort returned
 // here is ignored; only Apply honors Abort.
 //
-// Returns:
-//   - error: always nil today. Reserved for a future structural failure inside
-//     the pipeline itself; no module can produce one — every failure a module
-//     reports already lives in its own Outcome (see Error Classification).
-func (p *Pipeline) Observe(ctx context.Context, mc *ModuleContext) (Observation, error)
+// It never returns an error: no module's Observe can produce one — every
+// failure a module reports already lives in its own Outcome (see Error
+// Classification).
+func (p *Pipeline) Observe(ctx context.Context, mc *ModuleContext) Observation
 
 // Apply calls every module's Apply in order, unconditionally, stopping early
 // only if a module's Outcome has Abort set. It is idempotent by construction
 // (Key Concept: Overwrite Apply) — callers may call it from both a create and
 // an update path with identical behavior.
 //
-// Returns:
-//   - error: always nil today, for the same reason as Observe.
-func (p *Pipeline) Apply(ctx context.Context, mc *ModuleContext) (Result, error)
+// It never returns an error: a module's own failure is already captured in
+// its Outcome, and Result.Outcomes carries every one of them.
+func (p *Pipeline) Apply(ctx context.Context, mc *ModuleContext) Result
 
 // Destroy calls every module's Teardown in reverse registration order, so
 // every module registered after the account module tears down before the
@@ -595,18 +594,12 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
     region, err := e.backplane.Region(cr.Spec.Region)
     if err != nil {
         retryErr := log.Handle(err)
-        cr.SetConditions(xpv1.Unavailable().WithMessage(retryErr.Error()))
         return managed.ExternalObservation{}, retryErr // nil would report Synced=True; see CLAUDE.md
     }
 
     mc := pipeline.NewModuleContext(cr, cr.Namespace, region, e.namespaceLabels(cr.Namespace), log, e.pool)
 
-    obs, err := e.pipeline.Observe(ctx, mc)
-    if err != nil {
-        retryErr := log.Handle(err)
-        cr.SetConditions(xpv1.Unavailable().WithMessage(retryErr.Error()))
-        return managed.ExternalObservation{}, retryErr // nil would report Synced=True; see CLAUDE.md
-    }
+    obs := e.pipeline.Observe(ctx, mc)
     if !obs.Exists {
         return managed.ExternalObservation{ResourceExists: false}, nil
     }
@@ -657,10 +650,7 @@ func (e *external) apply(ctx context.Context, mg resource.Managed) error {
 
     mc := pipeline.NewModuleContext(cr, cr.Namespace, region, e.namespaceLabels(cr.Namespace), log, e.pool)
 
-    result, err := e.pipeline.Apply(ctx, mc)
-    if err != nil {
-        return log.Handle(err)
-    }
+    result := e.pipeline.Apply(ctx, mc)
 
     // Render each module's own condition; a module absent from result.Outcomes
     // (because the run aborted before reaching it) leaves its condition untouched.

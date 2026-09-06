@@ -54,11 +54,9 @@ type Observation struct {
 // Observation.Outcomes regardless of its content — an Outcome.Abort returned
 // here is ignored; only Apply honors Abort.
 //
-// Returns:
-//   - error: always nil today. Reserved for a future structural failure
-//     inside the pipeline itself; no module can produce one — every failure
-//     a module reports already lives in its own Outcome.
-func (p *Pipeline) Observe(ctx context.Context, mc *ModuleContext) (Observation, error) {
+// It never returns an error: no module's Observe can produce one — every
+// failure a module reports already lives in its own Outcome.
+func (p *Pipeline) Observe(ctx context.Context, mc *ModuleContext) Observation {
 	obs := Observation{InSync: true}
 	for _, m := range p.modules {
 		inSync, outcome := m.Observe(ctx, mc)
@@ -70,7 +68,7 @@ func (p *Pipeline) Observe(ctx context.Context, mc *ModuleContext) (Observation,
 			obs.InSync = false
 		}
 	}
-	return obs, nil
+	return obs
 }
 
 // Ready reports the resource's aggregate Ready condition from this Observe
@@ -146,9 +144,9 @@ func readyFrom(cr *v1alpha1.SnowflakeAccount, outcomes []ModuleOutcome) xpv1.Con
 // — callers may call it from both a create and an update path with identical
 // behavior.
 //
-// Returns:
-//   - error: always nil today, for the same reason as Observe.
-func (p *Pipeline) Apply(ctx context.Context, mc *ModuleContext) (Result, error) {
+// It never returns an error: a module's own failure is already captured in
+// its Outcome, and Result.Outcomes carries every one of them.
+func (p *Pipeline) Apply(ctx context.Context, mc *ModuleContext) Result {
 	var result Result
 	for _, m := range p.modules {
 		outcome := m.Apply(ctx, mc)
@@ -158,7 +156,7 @@ func (p *Pipeline) Apply(ctx context.Context, mc *ModuleContext) (Result, error)
 			break
 		}
 	}
-	return result, nil
+	return result
 }
 
 // Destroy calls every module's Teardown in reverse registration order, so

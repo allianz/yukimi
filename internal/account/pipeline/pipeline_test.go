@@ -66,10 +66,7 @@ func TestApply_PreservesOrder(t *testing.T) {
 	m3 := &fakeModule{name: "m3", order: &order, applyOut: Done()}
 
 	p := New(m1, m2, m3)
-	result, err := p.Apply(context.Background(), nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	result := p.Apply(context.Background(), nil)
 
 	wantOrder := []string{"apply:m1", "apply:m2", "apply:m3"}
 	if !reflect.DeepEqual(order, wantOrder) {
@@ -114,10 +111,7 @@ func TestObserve_ExistsFromAccountModuleByName(t *testing.T) {
 				modules = append(modules, &fakeModule{name: name, observeInSync: inSync, order: &order})
 			}
 			p := New(modules...)
-			obs, err := p.Observe(context.Background(), nil)
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
+			obs := p.Observe(context.Background(), nil)
 			if obs.Exists != tc.wantExists {
 				t.Errorf("Exists = %v, want %v", obs.Exists, tc.wantExists)
 			}
@@ -147,10 +141,7 @@ func TestObserve_InSyncRequiresAll(t *testing.T) {
 				modules = append(modules, &fakeModule{name: string(rune('a' + i)), observeInSync: inSync, order: &order})
 			}
 			p := New(modules...)
-			obs, err := p.Observe(context.Background(), nil)
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
+			obs := p.Observe(context.Background(), nil)
 			if obs.InSync != tc.wantInSync {
 				t.Errorf("InSync = %v, want %v", obs.InSync, tc.wantInSync)
 			}
@@ -169,10 +160,7 @@ func TestObserve_PopulatesOutcomesInOrder(t *testing.T) {
 	m3 := &fakeModule{name: "m3", order: &order, observeOut: Done()}
 
 	p := New(m1, m2, m3)
-	obs, err := p.Observe(context.Background(), nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	obs := p.Observe(context.Background(), nil)
 
 	if len(obs.Outcomes) != 3 {
 		t.Fatalf("len(Outcomes) = %d, want 3", len(obs.Outcomes))
@@ -207,10 +195,7 @@ func TestObserve_AbortHasNoEffect(t *testing.T) {
 	m3 := &fakeModule{name: "m3", order: &order, observeInSync: true}
 
 	p := New(m1, m2, m3)
-	obs, err := p.Observe(context.Background(), nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	obs := p.Observe(context.Background(), nil)
 
 	wantOrder := []string{"observe:m1", "observe:m2", "observe:m3"}
 	if !reflect.DeepEqual(order, wantOrder) {
@@ -234,10 +219,7 @@ func TestApply_AbortStopsEarly(t *testing.T) {
 	m3 := &fakeModule{name: "m3", order: &order, applyOut: Done()}
 
 	p := New(m1, m2, m3)
-	result, err := p.Apply(context.Background(), nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	result := p.Apply(context.Background(), nil)
 
 	if !result.Aborted {
 		t.Error("Aborted = false, want true")
@@ -263,10 +245,7 @@ func TestApply_NonAbortingOutcomesDontStopLaterModules(t *testing.T) {
 	m4 := &fakeModule{name: "m4", order: &order, applyOut: Pending("waiting")}
 
 	p := New(m1, m2, m3, m4)
-	result, err := p.Apply(context.Background(), nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	result := p.Apply(context.Background(), nil)
 
 	if result.Aborted {
 		t.Error("Aborted = true, want false")
