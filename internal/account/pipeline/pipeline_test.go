@@ -359,3 +359,42 @@ func TestPendingReason_MultiplePending_UsesFirstInOrder(t *testing.T) {
 		t.Errorf("PendingReason() = %q, want the first Pending outcome's Reason", got)
 	}
 }
+
+// SC-021: Result.FirstError returns the first non-nil Err among Outcomes.
+func TestResult_FirstError_ReturnsFirstErr(t *testing.T) {
+	wantErr := errors.New("bad cidr")
+	outcomes := []ModuleOutcome{
+		{Module: "account", Outcome: Done()},
+		{Module: "network", Outcome: Rejected(wantErr)},
+	}
+	if got := (Result{Outcomes: outcomes}).FirstError(); got != wantErr {
+		t.Errorf("FirstError() = %v, want %v", got, wantErr)
+	}
+}
+
+// With no Rejected/Failed outcome at all, FirstError is nil.
+func TestResult_FirstError_NilWhenNoError(t *testing.T) {
+	outcomes := []ModuleOutcome{
+		{Module: "account", Outcome: Done()},
+		{Module: "identity", Outcome: Pending("waiting on giam sync")},
+	}
+	if got := (Result{Outcomes: outcomes}).FirstError(); got != nil {
+		t.Errorf("FirstError() = %v, want nil", got)
+	}
+}
+
+// With more than one Rejected/Failed outcome, FirstError returns the first
+// one's Err, in outcome order — a later module's Err is not returned even
+// though it also failed.
+func TestResult_FirstError_MultipleErrors_UsesFirstInOrder(t *testing.T) {
+	firstErr := errors.New("rejected")
+	secondErr := errors.New("failed")
+	outcomes := []ModuleOutcome{
+		{Module: "network", Outcome: Rejected(firstErr)},
+		{Module: "auth", Outcome: Failed(secondErr)},
+	}
+	got := (Result{Outcomes: outcomes}).FirstError()
+	if got != firstErr {
+		t.Errorf("FirstError() = %v, want the first failing outcome's Err (%v)", got, firstErr)
+	}
+}

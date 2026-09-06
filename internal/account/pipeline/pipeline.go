@@ -106,6 +106,20 @@ func (r Result) PendingReason() string {
 	return pendingReason(r.Outcomes)
 }
 
+// FirstError returns the first non-nil Err among this Apply call's Outcomes,
+// in outcome order, or nil if none is set. Only the first is ever
+// returned — the same first-wins precedent as PendingReason; a later
+// Rejected/Failed outcome's Err is surfaced only through its own Condition
+// or Event, if it set one.
+func (r Result) FirstError() error {
+	for _, mo := range r.Outcomes {
+		if mo.Outcome.Err != nil {
+			return mo.Outcome.Err
+		}
+	}
+	return nil
+}
+
 // pendingReason returns the first StatePending outcome's Reason among
 // outcomes, in order, or "" if none is Pending. A Rejected or Failed
 // outcome never contributes a message here — that belongs on Synced (020's

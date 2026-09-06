@@ -290,6 +290,13 @@ func (r Result) AllDone() bool
 // PendingReason Is the Only Ready-Adjacent Logic Here).
 func (r Result) PendingReason() string
 
+// FirstError returns the first non-nil Err among this Apply call's
+// Outcomes, in outcome order, or nil if none is set. Only the first is
+// ever returned — the same first-wins precedent as PendingReason; a later
+// Rejected/Failed outcome's Err is surfaced only through its own Condition
+// or Event, if it set one.
+func (r Result) FirstError() error
+
 // DBPool is the subset of internal/snowflake/pool (004) that ModuleContext
 // depends on, declared here so a test can inject a fake. *pool.Pool satisfies
 // it implicitly.
@@ -434,6 +441,10 @@ classify. `Destroy` likewise returns a module's `Teardown` error exactly as that
   and nothing here promises it. The resolved account name stays reserved for the account's grace period
   (012), so a re-create inside that window collides on the name. `Destroy`'s contract is ordering and
   idempotence, not erasure.
+- **Two modules report `Rejected`/`Failed` in the same `Apply` call — is every error incident-logged?** -
+  No. Only the first, in outcome order (`Result.FirstError()`), is ever passed to the caller's
+  `log.Handle`. A later failing module's error is visible only through its own `Condition`/`Event`, if
+  it set one — the same narrowing `PendingReason` already applies to simultaneous `Pending` outcomes.
 
 ## Dependencies
 
@@ -474,7 +485,7 @@ directly.
   Calls `Pipeline.Destroy` from `Delete`, after the deletion request's gate (019) has authorized the
   destruction and before that request is marked consumed. - Key functions: `pipeline.New()`,
   `(*Pipeline).Observe`, `(*Pipeline).Apply`, `(*Pipeline).Destroy`, `pipeline.NewModuleContext()`,
-  `Observation.PendingReason()`, `Result.PendingReason()`.
+  `Observation.PendingReason()`, `Result.PendingReason()`, `Result.FirstError()`.
 - **`internal/account/modules/{guardrailcheck,quotacheck,account,parameter,network,auth,identity,quotamonitor}`
   (010–015, 017–018)** - Each implements `Module` in full and is registered with `pipeline.New()` by
   020; none has any out-of-band entry point outside the `Module` contract. guardrail-check (010) and
@@ -524,6 +535,8 @@ directly.
     `Result.Outcomes`, independent of `State` and of whether `Condition` is also set.
 20. **SC-020**: `Observation.PendingReason()` and `Result.PendingReason()` return the first `Pending`
     outcome's `Reason` in outcome order, or `""` if no outcome is `Pending`.
+21. **SC-021**: `Result.FirstError()` returns the first non-nil `Err` among `Outcomes` in outcome
+    order, or `nil` if none is set.
 
 ## Security Considerations
 
@@ -665,18 +678,13 @@ func (e *external) apply(ctx context.Context, mg resource.Managed) error {
 
     result := e.pipeline.Apply(ctx, mc)
 
-    // Render each module's own condition; a module absent from result.Outcomes
-    // (because the run aborted before reaching it) leaves its condition untouched.
-    // firstErr becomes Synced's message below — every Err is still handled
-    // (incident-tracked / debug-logged) even though only the first is returned.
-    var firstErr error
+    // Render each module's own condition/event; a module absent from
+    // result.Outcomes (because the run aborted before reaching it) leaves its
+    // condition untouched. Only the first error is ever handled — a later
+    // Rejected/Failed outcome is surfaced solely through its own
+    // Condition/Event, mirroring PendingReason's first-wins precedent (Edge
+    // Cases).
     for _, mo := range result.Outcomes {
-        if mo.Outcome.Err != nil {
-            handled := log.Handle(mo.Outcome.Err)
-            if firstErr == nil {
-                firstErr = handled
-            }
-        }
         if mo.Outcome.Event != nil {
             e.record.Event(cr, *mo.Outcome.Event)
         }
@@ -684,6 +692,7 @@ func (e *external) apply(ctx context.Context, mg resource.Managed) error {
             cr.SetConditions(*mo.Outcome.Condition)
         }
     }
+    firstErr := log.Handle(result.FirstError()) // firstErr becomes Synced's message below; log.Handle(nil) == nil
 
     if result.AllDone() {
         cr.Status.SetObservedGeneration(cr.Generation) // only an all-Done run advances the gate
