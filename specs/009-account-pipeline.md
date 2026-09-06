@@ -559,6 +559,13 @@ directly.
   than relying on what a prior `Apply` set. On a deleted resource it calls `Delete` only when the
   preceding `Observe` reported `ResourceExists: true`, and otherwise removes the finalizer straight
   away (`reconciler.go:1163,1173,1230`).
+- **Vendored behavior**: the same reconciler unconditionally calls
+  `status.MarkConditions(xpv1.ReconcileSuccess())` on the managed resource immediately after
+  `Create`/`Update` returns a **nil** error (`reconciler.go:1406,1437,1457,1507`) — this overwrites
+  `Synced` regardless of any condition the call already set on `cr` beforehand. The only way
+  `xpv1.ReconcileError(err)` ends up on `Synced` instead is for `Create`/`Update` to return that `err`
+  (see Appendix Example 2); this is why the example returns a module's handled error rather than
+  swallowing it to `nil`.
 
 <br/><br/><br/><br/><br/>
 ================
@@ -589,7 +596,7 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
     if err != nil {
         retryErr := log.Handle(err)
         cr.SetConditions(xpv1.Unavailable().WithMessage(retryErr.Error()))
-        return managed.ExternalObservation{}, nil
+        return managed.ExternalObservation{}, retryErr // nil would report Synced=True; see CLAUDE.md
     }
 
     mc := pipeline.NewModuleContext(cr, cr.Namespace, region, e.namespaceLabels(cr.Namespace), log, e.pool)
@@ -598,7 +605,7 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
     if err != nil {
         retryErr := log.Handle(err)
         cr.SetConditions(xpv1.Unavailable().WithMessage(retryErr.Error()))
-        return managed.ExternalObservation{}, nil
+        return managed.ExternalObservation{}, retryErr // nil would report Synced=True; see CLAUDE.md
     }
     if !obs.Exists {
         return managed.ExternalObservation{ResourceExists: false}, nil
@@ -657,9 +664,15 @@ func (e *external) apply(ctx context.Context, mg resource.Managed) error {
 
     // Render each module's own condition; a module absent from result.Outcomes
     // (because the run aborted before reaching it) leaves its condition untouched.
+    // firstErr becomes Synced's message below — every Err is still handled
+    // (incident-tracked / debug-logged) even though only the first is returned.
+    var firstErr error
     for _, mo := range result.Outcomes {
         if mo.Outcome.Err != nil {
-            log.Handle(mo.Outcome.Err) // incident-tracked; the condition already carries the user-facing message
+            handled := log.Handle(mo.Outcome.Err)
+            if firstErr == nil {
+                firstErr = handled
+            }
         }
         if mo.Outcome.Event != nil {
             e.record.Event(cr, *mo.Outcome.Event)
@@ -677,7 +690,13 @@ func (e *external) apply(ctx context.Context, mg resource.Managed) error {
     // immediately (Key Concept: Ready Is a One-Way Latch).
     cr.SetConditions(result.Ready(cr))
 
-    return nil
+    // Returning nil unconditionally here would drop firstErr on the floor:
+    // the managed reconciler calls status.MarkConditions(xpv1.ReconcileSuccess())
+    // right after Update returns nil (see References, "Vendored behavior"),
+    // overwriting Synced regardless of what this function set on cr beforehand.
+    // Returning firstErr is what makes the reconciler render
+    // xpv1.ReconcileError(firstErr) onto Synced instead (design.md §3.3/§7.1).
+    return firstErr
 }
 ```
 

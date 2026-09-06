@@ -214,3 +214,36 @@ work one out itself.
   separately from 020's own controller registration. 020 only ever reads (`FindActiveRequest`) and
   writes (`MarkConsumed`) it as a sibling object — it does not own or drive that CRD's own
   `Observe`/`Create`/`Update`/`Delete`.
+
+## Raised by a review of how Rejected/Failed outcomes reach `Synced`
+
+Recorded from a direct conversation (no `/yukimi.clarify` run). design.md §3.3/§7.1 require a
+guardrail rejection (and, via §3.8/§3.9, a rejected network rule or auth exception) to surface as
+`Synced=False` with a message identifying the violation, until the tenant fixes the CRD. Getting there
+takes more than rendering `Outcome.Condition` — most modules that can reject (guardrail-check,
+quota-check, network, auth) never own a `Condition` type (only `QuotaAvailable`/`IdentitySynced` do,
+per 009's `conditions.go`), so their `Outcome.Err` has nowhere else to go.
+
+- **`Create`/`Update` must *return* the first handled `Outcome.Err` from `Result.Outcomes`, not just
+  `log.Handle` it and return `nil`.** Verified against the vendored
+  `crossplane-runtime/v2@v2.0.0` reconciler: whenever `Create`/`Update` returns nil, the reconciler
+  unconditionally calls `status.MarkConditions(xpv1.ReconcileSuccess())` right after
+  (`pkg/reconciler/managed/reconciler.go:1406,1437,1457,1507`), overwriting `Synced` no matter what the
+  call set on `cr` beforehand. Returning the error is what makes the reconciler render
+  `xpv1.ReconcileError(err)` onto `Synced` instead — the same convention CLAUDE.md's "Standard
+  Controllers with External State" section already documents generically; 020 just has to apply it to
+  `Result.Outcomes` specifically, which 009's now-corrected Appendix Example 2 does.
+- **Tie-break when more than one registered module reports a non-`Done` outcome in the same pass**
+  (network module and auth module both rejecting in one run, say — neither aborts, so both run):
+  return the **first** one's handled error, in registration order, as `Synced`'s message. Still
+  `log.Handle` every non-nil `Err` in the result regardless, so later ones stay visible in
+  logs/incident IDs even though only the first becomes the `Synced` message.
+- **This does not reintroduce a retry flood.** A returned error only triggers controller-runtime's
+  rate-limited backoff on the *next poll-driven* reconcile of an unchanged, still-rejected CRD — which
+  is fine, since there is nothing new to check. A tenant edit delivers a fresh watch event and
+  reconciles immediately regardless of any backoff state, so "re-applies on every reconcile until the
+  tenant fixes it" (009, Key Concept: Overwrite Apply) still holds from the tenant's perspective.
+- **`Observe` does not need the same fix.** A non-`Done` module `Outcome` implies that module's
+  `Observe` also reports `inSync == false`, which already forces `Observation.InSync` false and
+  therefore `ResourceUpToDate: false` — routing the very next reconcile through `Update()`, where the
+  fix above applies. 009's Appendix Example 1 (`Observe`) is unchanged.

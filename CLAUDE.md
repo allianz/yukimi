@@ -87,9 +87,9 @@ This provider uses the standard Crossplane managed resource reconciler (`crosspl
 ### Shared Across All Controller Types
 
 - On successful observation, set condition to `xpv1.Available()`
-- On error in Observe, set `xpv1.Unavailable().WithMessage(userMsg)` and return nil to avoid retry flood
+- On error in Observe, set `xpv1.Unavailable().WithMessage(userMsg)` and return the handled error, not nil — nil only sets `Synced=True` and, with a zero-value `ExternalObservation`, can trigger a spurious `Create`.
 - Do not implement retries in controller code. On error, return and let Kubernetes handle the retry.
-- **Error handling in Observe**: create a `Logger` at method start, call `log.Handle(err)` to get `retryErr`, set `xpv1.Unavailable().WithMessage(retryErr.Error())`, and return nil. Returning nil prevents exponential backoff retry loops for user-fixable errors.
+- **Error handling in Observe**: create a `Logger` at method start, call `log.Handle(err)` to get `retryErr`, set `xpv1.Unavailable().WithMessage(retryErr.Error())`, and return `retryErr`.
 - **Error handling in Create/Update/Delete**: call `log.Handle(err)` and return the result. The framework automatically sets conditions when these methods return an error, so the controller should not set conditions itself.
 
 
@@ -126,8 +126,7 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
     result, err := e.policy.BuildTargetState(ctx, cr)
     if err != nil {
         retryErr := log.Handle(err)
-        cr.SetConditions(xpv1.Unavailable().WithMessage(retryErr.Error()))
-        return managed.ExternalObservation{}, nil // nil avoids retry flood; the condition already reports the failure
+        return managed.ExternalObservation{}, retryErr // returning nil would report Synced=True
     }
     // ... success path
 }
