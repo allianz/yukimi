@@ -28,10 +28,10 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
 - **`Observe`** surfaces the `QuotaAvailable` condition — `True` while credits remain, `False` with
   reason `QuotaExhausted` plus a matching warning event once the resource monitor has suspended
   warehouses. This is **not** a provisioning failure: the account stays fully intact and `Ready` stays
-  `True`. 009 owns the `TypeQuotaAvailable` constant, but its `Ready` latch (`Observation.Ready`/
-  `Result.Ready`) never consults any module's condition at all, so `QuotaAvailable` needs no special
-  casing to stay non-gating; this module only attaches the condition to its `Outcome`. It clears
-  automatically at the next monthly billing cycle.
+  `True`. 009 owns the `TypeQuotaAvailable` constant, but the controller's own `Ready` check (009's
+  `PendingReason` plus its own persisted `Ready` condition) never consults any module's `Condition` at
+  all, so `QuotaAvailable` needs no special casing to stay non-gating; this module only attaches the
+  condition to its `Outcome`. It clears automatically at the next monthly billing cycle.
 - **Never calls `.Aborting()`.** Only guardrail-check (010), `quotacheck` (011), and the account module
   (012) can stop the pipeline; a `Failed` or `Rejected` outcome from this module must not prevent later
   modules from running, per 009's "non-aborting outcomes don't stop later modules" rule.

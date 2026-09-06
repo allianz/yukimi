@@ -20,8 +20,10 @@ import xpv1 "github.com/crossplane/crossplane-runtime/v2/apis/common/v1"
 
 // Custom condition types this package defines for a module to attach to its
 // own Outcome; 020 collects and renders them as-is (design.md 7.1). Neither
-// gates the resource's aggregate Ready condition — see Observation.Ready and
-// Result.Ready in pipeline.go for how Ready is computed.
+// gates the resource's aggregate Ready condition — see
+// Observation.PendingReason/Result.PendingReason in pipeline.go for the
+// pending message, and the controller's own check of the CR's persisted
+// Ready condition for the latch.
 const (
 	TypeQuotaAvailable xpv1.ConditionType = "QuotaAvailable" // design.md 3.10
 	TypeIdentitySynced xpv1.ConditionType = "IdentitySynced" // design.md 4.3

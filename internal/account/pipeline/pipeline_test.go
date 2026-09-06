@@ -21,8 +21,6 @@ import (
 	"errors"
 	"reflect"
 	"testing"
-
-	corev1 "k8s.io/api/core/v1"
 )
 
 // fakeModule records call order and returns scripted, single-shot Observe,
@@ -326,72 +324,38 @@ func TestDestroy_StopsAtFirstError(t *testing.T) {
 	}
 }
 
-// Ready is a one-way latch: once cr.Status.GetObservedGeneration() is
-// non-zero, both Observation.Ready and Result.Ready report Available(),
-// regardless of what the outcomes say.
-func TestReady_LatchesTrueOnceObservedGenerationSet(t *testing.T) {
-	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345")
-	cr.Status.SetObservedGeneration(1)
-
-	obs := Observation{Outcomes: []ModuleOutcome{{Module: "identity", Outcome: Pending("still syncing")}}}
-	if got := obs.Ready(cr); got.Status != corev1.ConditionTrue {
-		t.Errorf("Observation.Ready = %+v, want Available()", got)
-	}
-
-	result := Result{Outcomes: []ModuleOutcome{{Module: "network", Outcome: Rejected(errors.New("bad cidr"))}}}
-	if got := result.Ready(cr); got.Status != corev1.ConditionTrue {
-		t.Errorf("Result.Ready = %+v, want Available()", got)
-	}
-}
-
-// Before the latch (ObservedGeneration == 0), a Pending outcome makes Ready
-// False and carries that outcome's Reason as the condition's message.
-func TestReady_BeforeLatch_PendingSetsMessage(t *testing.T) {
-	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345")
-
+// PendingReason returns the first Pending outcome's Reason.
+func TestPendingReason_ReturnsFirstPendingReason(t *testing.T) {
 	outcomes := []ModuleOutcome{
 		{Module: "account", Outcome: Done()},
 		{Module: "identity", Outcome: Pending("waiting on giam sync")},
 	}
-	got := Observation{Outcomes: outcomes}.Ready(cr)
-	if got.Status != corev1.ConditionFalse {
-		t.Fatalf("Ready.Status = %v, want False", got.Status)
-	}
-	if got.Message != "waiting on giam sync" {
-		t.Errorf("Ready.Message = %q, want %q", got.Message, "waiting on giam sync")
+	if got := (Observation{Outcomes: outcomes}).PendingReason(); got != "waiting on giam sync" {
+		t.Errorf("PendingReason() = %q, want %q", got, "waiting on giam sync")
 	}
 }
 
-// Before the latch, with no Pending outcome at all (only Done/Rejected/
-// Failed), Ready is False with no message — that detail belongs on Synced,
-// not here.
-func TestReady_BeforeLatch_NoPendingLeavesMessageEmpty(t *testing.T) {
-	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345")
-
+// With no Pending outcome at all (only Done/Rejected/Failed), PendingReason
+// is empty — that detail belongs on Synced, not here.
+func TestPendingReason_EmptyWhenNonePending(t *testing.T) {
 	outcomes := []ModuleOutcome{
 		{Module: "account", Outcome: Done()},
 		{Module: "network", Outcome: Rejected(errors.New("bad cidr"))},
 	}
-	got := Result{Outcomes: outcomes}.Ready(cr)
-	if got.Status != corev1.ConditionFalse {
-		t.Fatalf("Ready.Status = %v, want False", got.Status)
-	}
-	if got.Message != "" {
-		t.Errorf("Ready.Message = %q, want empty", got.Message)
+	if got := (Result{Outcomes: outcomes}).PendingReason(); got != "" {
+		t.Errorf("PendingReason() = %q, want empty", got)
 	}
 }
 
-// Before the latch, with more than one Pending outcome, the message comes
-// from the first one in outcome order.
-func TestReady_BeforeLatch_MultiplePending_UsesFirstInOrder(t *testing.T) {
-	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345")
-
+// With more than one Pending outcome, the reason comes from the first one
+// in outcome order.
+func TestPendingReason_MultiplePending_UsesFirstInOrder(t *testing.T) {
 	outcomes := []ModuleOutcome{
 		{Module: "account", Outcome: Pending("waiting for the account to finish provisioning")},
 		{Module: "identity", Outcome: Pending("waiting on giam sync")},
 	}
-	got := Observation{Outcomes: outcomes}.Ready(cr)
-	if got.Message != "waiting for the account to finish provisioning" {
-		t.Errorf("Ready.Message = %q, want the first Pending outcome's Reason", got.Message)
+	got := (Observation{Outcomes: outcomes}).PendingReason()
+	if got != "waiting for the account to finish provisioning" {
+		t.Errorf("PendingReason() = %q, want the first Pending outcome's Reason", got)
 	}
 }
