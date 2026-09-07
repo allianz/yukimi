@@ -1,7 +1,7 @@
 apiVersion: base.snowflake.yukimi.io/v1alpha1
 kind: SnowflakeAccount
 metadata:
-  name: test-christoph6    # created in Snowflake as analytics_team_eu_5k3wf (design.md 3.12)
+  name: analytics-team-eu      # created in Snowflake as analytics_team_eu_5k3wf (design.md 3.12)
 spec:
   # --- General metadata ---
   description: "Analytics team Snowflake environment for EU operations"
