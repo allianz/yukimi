@@ -45,6 +45,10 @@ type fakeDBPool struct {
 	tenantDB    *sql.DB
 	tenantErr   error
 	tenantCalls int
+
+	evictCalls       int
+	evictNamespace   string
+	evictAccountName string
 }
 
 func (f *fakeDBPool) OrgAdmin(ctx context.Context) (*sql.DB, error) {
@@ -64,6 +68,15 @@ func (f *fakeDBPool) TenantAccount(ctx context.Context, namespace, accountName, 
 	}
 	f.tenantCalls++
 	return f.tenantDB, f.tenantErr
+}
+
+func (f *fakeDBPool) EvictTenant(namespace, accountName string) {
+	if f.forbidCalls {
+		f.t.Fatal("EvictTenant must not be called")
+	}
+	f.evictCalls++
+	f.evictNamespace = namespace
+	f.evictAccountName = accountName
 }
 
 func newTestCR(name, namespace, region, locator string, contacts []string, description string) *v1alpha1.SnowflakeAccount {

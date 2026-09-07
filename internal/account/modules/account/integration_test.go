@@ -35,7 +35,6 @@ import (
 	"github.com/allianz/yukimi/internal/secrets"
 	secretsaws "github.com/allianz/yukimi/internal/secrets/aws"
 	"github.com/allianz/yukimi/internal/snowflake/pool"
-	"github.com/allianz/yukimi/internal/snowflake/statement"
 )
 
 // forceDeleteForTest permanently deletes the secret at path, bypassing AWS
@@ -63,19 +62,23 @@ func forceDeleteForTest(ctx context.Context, t *testing.T, path secrets.Path) {
 	}
 }
 
-// TestIntegration_Create only runs via `make test-integration` (skipped
-// whenever tests run with -short). It creates a brand-new Snowflake account
-// in the live organization .env describes — the one genuinely destructive
-// integration test in this codebase, since 012 is the first module that
-// ever mutates organization-wide state — and confirms Apply captures a
-// locator (SC-018's create half).
+// TestIntegration_CreateThenDestroy only runs via `make test-integration`
+// (skipped whenever tests run with -short). It creates a brand-new Snowflake
+// account in the live organization .env describes — the one genuinely
+// destructive integration test in this codebase, since 012 is the first
+// module that ever mutates organization-wide state — confirms Apply captures
+// a locator, then tears it down through the real pipeline.Destroy ->
+// (*module).Teardown path (drop account, evict the pooled connection, delete
+// the credential) rather than a hand-rolled cleanup, fully covering SC-018's
+// create-then-destroy round trip.
 //
 // It deliberately does not also reconnect to the new account on a second
-// ModuleContext: a freshly created account was observed taking well over two
-// minutes to become reachable even over an already-healthy PrivateLink path
-// (confirmed separately against the pre-existing sample account), which is
-// Snowflake's own backend account-activation lag rather than anything this
-// module controls — impractical to wait out in a test.
+// ModuleContext before destroying it: a freshly created account was observed
+// taking well over two minutes to become reachable even over an
+// already-healthy PrivateLink path (confirmed separately against the
+// pre-existing sample account), which is Snowflake's own backend
+// account-activation lag rather than anything this module controls —
+// impractical to wait out in a test.
 //
 // Requires, in addition to the AWS/SNOWFLAKE_ORG variables every other
 // integration test in this repo already uses: SNOWFLAKE_ORG_ADMIN_ACCOUNT,
@@ -85,7 +88,7 @@ func forceDeleteForTest(ctx context.Context, t *testing.T, path secrets.Path) {
 // account is created in SAMPLE_CUSTOMER_ACCOUNT_REGION — the same real, open
 // cloud-region the sample tenant account already lives in — rather than a
 // dedicated variable.
-func TestIntegration_Create(t *testing.T) {
+func TestIntegration_CreateThenDestroy(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test — run via `make test-integration`")
 	}
@@ -93,7 +96,9 @@ func TestIntegration_Create(t *testing.T) {
 	// (internal/account/modules/account), so the repo-root .env is 4 levels up.
 	_ = godotenv.Load("../../../../.env")
 
-	awsBackend, err := secretsaws.New(os.Getenv("AWS_REGION"), "")
+	// 30 is base.Config's default deletion grace period (002), which the backend derives its
+	// recovery window from; nothing here deletes a secret.
+	awsBackend, err := secretsaws.New(os.Getenv("AWS_REGION"), "", 30)
 	if err != nil {
 		t.Fatalf("secretsaws.New: %v", err)
 	}
@@ -110,6 +115,14 @@ func TestIntegration_Create(t *testing.T) {
 			DisableOCSPChecks:      os.Getenv("SNOWFLAKE_DISABLE_OCSP_CHECKS") == "true",
 			ConnectionProbeTimeout: 5 * time.Second,
 		},
+		// A zero RotationInterval makes maybeRotateLocked (internal/snowflake/pool/rotate.go)
+		// treat the org-admin credential as due on every OrgAdmin call — this test calls it
+		// several times (create, then Destroy's drop, then Destroy again on cleanup), and
+		// rapid rotations overwrite both of the org-admin user's RSA key slots while the
+		// already-open *sql.DB's connector keeps signing with the original, now-orphaned key,
+		// so any later physical reconnect fails JWT auth. This test isn't exercising rotation
+		// at all, so give it a real interval.
+		Secrets: base.SecretsSettings{RotationInterval: 24 * time.Hour},
 	}
 	p := pool.New(backend, cfg)
 	t.Cleanup(func() { _ = p.Close() })
@@ -125,7 +138,7 @@ func TestIntegration_Create(t *testing.T) {
 		},
 	}
 
-	m := New(backend, org, 5*time.Minute).(*module)
+	m := New(backend, org, 5*time.Minute, 3).(*module)
 	ctx := context.Background()
 
 	// Registered before Apply ever runs: the module stores this secret
@@ -138,26 +151,21 @@ func TestIntegration_Create(t *testing.T) {
 	}
 	t.Cleanup(func() { forceDeleteForTest(ctx, t, secretPath) })
 
+	pl := pipeline.New(m)
+	mc1 := pipeline.NewModuleContext(cr, namespace, nil, nil, nil, p)
+
+	// Real Destroy, not a hand-rolled cleanup: registered so it still runs
+	// even if an assertion below fails early, and doubling as an idempotence
+	// check (Teardown must be safe to call twice, SC-025) on the success path
+	// below, since it then finds everything already gone.
 	t.Cleanup(func() {
 		if cr.Status.AccountLocator == "" {
 			return
 		}
-		orgAdminDB, err := p.OrgAdmin(ctx)
-		if err != nil {
-			t.Logf("cleanup: could not open org-admin connection to drop %s: %v", cr.Status.AccountLocator, err)
-			return
-		}
-		resolvedName := pipeline.NewModuleContext(cr, namespace, nil, nil, nil, p).ResolvedAccountName()
-		// GRACE_PERIOD_IN_DAYS is required by current Snowflake versions; 3 is
-		// its minimum. This only starts the drop's grace period — the account
-		// is gone once the grace period elapses, not immediately.
-		if err := statement.New(orgAdminDB).Exec(ctx, "drop integration test account",
-			"DROP ACCOUNT "+resolvedName+" GRACE_PERIOD_IN_DAYS = 3"); err != nil {
-			t.Logf("cleanup: failed to drop %s: %v", resolvedName, err)
+		if err := pl.Destroy(ctx, mc1); err != nil {
+			t.Errorf("cleanup: Destroy: %v", err)
 		}
 	})
-
-	mc1 := pipeline.NewModuleContext(cr, namespace, nil, nil, nil, p)
 
 	inSync, _ := m.Observe(ctx, mc1)
 	if inSync {
@@ -172,5 +180,27 @@ func TestIntegration_Create(t *testing.T) {
 		t.Fatal("Apply succeeded but cr.Status.AccountLocator is still empty")
 	}
 	// Apply sets cr.Status.AccountLocator directly (no separate persist step
-	// needed here); the drop-account cleanup above reads it from cr.
+	// needed here); the Destroy cleanup above reads it from cr.
+
+	// SC-018's destroy half: tear the freshly created account down through
+	// the real Pipeline.Destroy -> Module.Teardown path against the live org
+	// and secret store.
+	if err := pl.Destroy(ctx, mc1); err != nil {
+		t.Fatalf("Destroy: %v", err)
+	}
+
+	// deleteCredential only schedules removal (a 30-day AWS recovery window
+	// derived from gracePeriodDays=30 via secretsaws.New above) — a
+	// scheduled-for-deletion path is unreadable immediately, which is enough
+	// to prove the delete step ran for real.
+	if _, _, err := awsBackend.Get(ctx, secretPath); err == nil {
+		t.Error("platform credential still readable after Destroy")
+	}
+
+	// The account itself is gone (restorable, not connectable): a fresh
+	// connection attempt against the same locator must now fail.
+	mc2 := pipeline.NewModuleContext(cr, namespace, nil, nil, nil, p)
+	if _, err := mc2.TenantDB(ctx); err == nil {
+		t.Error("expected the tenant connection to fail after Destroy dropped the account")
+	}
 }

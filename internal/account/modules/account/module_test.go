@@ -24,7 +24,7 @@ import (
 )
 
 func TestNew(t *testing.T) {
-	m := New(secrets.NewFakeBackend(), "myorg", 5*time.Minute)
+	m := New(secrets.NewFakeBackend(), "myorg", 5*time.Minute, 30)
 	if m == nil {
 		t.Fatal("New() = nil, want non-nil")
 	}

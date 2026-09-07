@@ -24,6 +24,7 @@ import (
 	"context"
 
 	xpv1 "github.com/crossplane/crossplane-runtime/v2/apis/common/v1"
+	"github.com/crossplane/crossplane-runtime/v2/pkg/event"
 )
 
 // State is the fixed vocabulary every Outcome reports through.
@@ -44,7 +45,8 @@ type Outcome struct {
 	Reason    string          // Pending only: the operator-visible reason for the wait
 	Err       error           // Rejected/Failed only: the module's own classified error
 	Abort     bool            // if true, Apply stops after this module on this pass
-	Condition *xpv1.Condition // optional: a condition this module owns and wants surfaced
+	Condition *xpv1.Condition // optional: a condition this module owns (see Key Concept: Conditions and Events)
+	Event     *event.Event    // optional: an event this module wants recorded (see Key Concept: Conditions and Events)
 }
 
 // Done reports that this module's desired state is fully applied.
@@ -77,13 +79,23 @@ func (o Outcome) Aborting() Outcome {
 type Module interface {
 	Name() string
 
-	// Observe is read-back only; it must mutate nothing in Snowflake.
+	// Observe is read-back only; it must mutate nothing in Snowflake. Its
+	// Outcome is collected into Observation.Outcomes by Pipeline.Observe like
+	// any other module's; Outcome.Abort has no effect here — Observe never
+	// stops early, unlike Apply — since nothing here mutates and there is
+	// therefore nothing an abort would protect against.
 	Observe(ctx context.Context, mc *ModuleContext) (inSync bool, outcome Outcome)
 
 	// Apply re-asserts this module's full desired state, pruning any object
 	// the CRD no longer lists. It must be safe to call repeatedly with no
 	// other call in between.
 	Apply(ctx context.Context, mc *ModuleContext) Outcome
+
+	// Teardown removes the state this module leaves outside the tenant's own
+	// account, which dropping that account would not take with it. Most
+	// modules have none and return nil. It uses OrgAdminDB or no connection
+	// at all — never TenantDB — and must be safe to call repeatedly.
+	Teardown(ctx context.Context, mc *ModuleContext) error
 }
 
 // AccountModuleName is the account module's (012) Name(). Pipeline.Observe

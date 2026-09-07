@@ -49,6 +49,10 @@ type fakeDBPool struct {
 	tenantErr   error
 	tenantCalls int
 	tenantArgs  []tenantArgs
+
+	evictCalls       int
+	evictNamespace   string
+	evictAccountName string
 }
 
 func (f *fakeDBPool) OrgAdmin(ctx context.Context) (*sql.DB, error) {
@@ -66,6 +70,15 @@ func (f *fakeDBPool) TenantAccount(ctx context.Context, namespace, accountName, 
 	f.tenantCalls++
 	f.tenantArgs = append(f.tenantArgs, tenantArgs{namespace, accountName, locator, region})
 	return f.tenantDB, f.tenantErr
+}
+
+func (f *fakeDBPool) EvictTenant(namespace, accountName string) {
+	if f.forbidCalls {
+		f.t.Fatal("EvictTenant must not be called")
+	}
+	f.evictCalls++
+	f.evictNamespace = namespace
+	f.evictAccountName = accountName
 }
 
 func newTestCR(name, namespace, region, locator string) *v1alpha1.SnowflakeAccount {
@@ -268,5 +281,30 @@ func TestModuleContext_Accessors(t *testing.T) {
 	}
 	if mc.BackplaneRegion() != nil {
 		t.Error("BackplaneRegion() should be nil when nil was passed in")
+	}
+}
+
+// SC-014: ModuleContext.EvictTenant calls the pool with the same namespace
+// and account name TenantDB resolves its connection under.
+func TestModuleContext_EvictTenant_UsesSameKeyAsTenantDB(t *testing.T) {
+	cr := newTestCR("analytics-team", "finance", "aws-eu-central-1", "AB12345")
+	fake := &fakeDBPool{t: t}
+	mc := NewModuleContext(cr, "finance", nil, nil, nil, fake)
+
+	if _, err := mc.TenantDB(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	wantNamespace, wantAccountName := fake.tenantArgs[0].namespace, fake.tenantArgs[0].accountName
+
+	mc.EvictTenant()
+
+	if fake.evictCalls != 1 {
+		t.Fatalf("EvictTenant called %d times, want 1", fake.evictCalls)
+	}
+	if fake.evictNamespace != wantNamespace {
+		t.Errorf("evictNamespace = %q, want %q", fake.evictNamespace, wantNamespace)
+	}
+	if fake.evictAccountName != wantAccountName {
+		t.Errorf("evictAccountName = %q, want %q", fake.evictAccountName, wantAccountName)
 	}
 }

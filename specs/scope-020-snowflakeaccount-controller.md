@@ -50,8 +50,8 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
     and the warning events (`QuotaExhausted`, `SyncTimeout`, `DeletionBlocked`) via
     crossplane-runtime's injected `event.Recorder`.
   - **The deletion gate (6.3 Phases 2–3)**: on `deletionTimestamp`, query for an Active request in
-    the same namespace targeting this resource. If one is found, run `DROP ACCOUNT` over the
-    org-admin connection, release the finalizer, and mark the request `Consumed`. If it is absent or
+    the same namespace targeting this resource. If one is found, call `Pipeline.Destroy` (009) —
+    which ends in 012's `DROP ACCOUNT` — release the finalizer, and mark the request `Consumed`. If it is absent or
     expired, refuse: stall in `Terminating`, emit `Warning: DeletionBlocked`, and set `Ready=False`
     so that ArgoCD reports failure, forcing the user either to restore the file or to create a valid
     request.
@@ -66,7 +66,10 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
   sets `Ready` and `Synced` itself. Every custom condition (`QuotaAvailable` from 3.10, `IdentitySynced`
   from 4.3) and every custom event (`DeletionBlocked` from 6.3, `QuotaExhausted` from 3.10, `SyncTimeout`
   from 4.3) is SnowflakeAccount-specific. Aggregation rules live in spec 009; reporting lives here in
-  spec 020.
+  spec 020. Module-sourced events (`QuotaExhausted`, `SyncTimeout`) reach 020 via `Outcome.Event`,
+  rendered from the same per-outcome loop 020 already uses for `Outcome.Condition` (009's Key Concept:
+  Conditions and Events). `DeletionBlocked` stays a direct call from 020's own deletion-gate code, since
+  it isn't a module outcome.
 
 ## References
 
@@ -82,10 +85,11 @@ its "Integration Points" section states 020's obligations directly, and its Appe
 sketch the `Observe` and `Create`/`Update` bodies. 009 places more obligations on 020 than on any other
 spec.
 
-- **Two entry points, called from three methods.** `pipeline.Observe(ctx, mc)` from `Observe`;
+- **Three entry points, called from four methods.** `pipeline.Observe(ctx, mc)` from `Observe`;
   `pipeline.Apply(ctx, mc)` from **both** `Create` and `Update` — the two bodies are identical,
-  because `Apply` is idempotent by construction. Nothing is threaded from an `Observe` call into the
-  following `Apply`; `ModuleContext` is rebuilt per call and the two entry points share no state.
+  because `Apply` is idempotent by construction; `pipeline.Destroy(ctx, mc)` from `Delete`, once the
+  deletion gate has cleared. Nothing is threaded from one call into the next; `ModuleContext` is
+  rebuilt per call and the entry points share no state.
 - **020 builds one `*account.Context` per reconcile** and hands the same value to every module: the
   CRD (spec **and** status), the resolved account name (006), the region's `*backplane.Region` entry
   already admitted against `Available` (007), the ops-set namespace labels (006), and a
@@ -109,6 +113,12 @@ spec.
   it — so no CRD schema change is needed and the field is 020's to own. Known cost, accepted: one
   persistently rejected module re-runs every module every poll interval — a handful of idempotent
   statements plus one enumeration query per pruning module, so cheap-but-unbounded rather than solved.
+- **`Observe` must not report `ResourceExists: false` on a resource being deleted**, unless its account
+  was never created. The managed reconciler calls `Delete` only when the preceding `Observe` said the
+  external resource exists, and otherwise removes the finalizer straight away
+  (`pkg/reconciler/managed/reconciler.go:1163,1173,1230`) — so reporting otherwise skips the deletion
+  gate and the teardown entirely and orphans the account. An empty `status.accountLocator` is the one
+  case where `false` is right: there is nothing to destroy. See 009's Appendix examples 1 and 3.
 - **Registration order is 010 → 011 → 012 → 013 → 014 → 015 → 017 → 018**, with guardrail-check (010)
   first and quota-check (011) second — neither is the account module (012) — in `New`'s ordered module
   list: `account.New(guardrailCheckModule, quotaCheckModule, accountModule, parameterModule,
@@ -204,3 +214,36 @@ work one out itself.
   separately from 020's own controller registration. 020 only ever reads (`FindActiveRequest`) and
   writes (`MarkConsumed`) it as a sibling object — it does not own or drive that CRD's own
   `Observe`/`Create`/`Update`/`Delete`.
+
+## Raised by a review of how Rejected/Failed outcomes reach `Synced`
+
+Recorded from a direct conversation (no `/yukimi.clarify` run). design.md §3.3/§7.1 require a
+guardrail rejection (and, via §3.8/§3.9, a rejected network rule or auth exception) to surface as
+`Synced=False` with a message identifying the violation, until the tenant fixes the CRD. Getting there
+takes more than rendering `Outcome.Condition` — most modules that can reject (guardrail-check,
+quota-check, network, auth) never own a `Condition` type (only `QuotaAvailable`/`IdentitySynced` do,
+per 009's `conditions.go`), so their `Outcome.Err` has nowhere else to go.
+
+- **`Create`/`Update` must *return* the first handled `Outcome.Err` from `Result.Outcomes`, not just
+  `log.Handle` it and return `nil`.** Verified against the vendored
+  `crossplane-runtime/v2@v2.0.0` reconciler: whenever `Create`/`Update` returns nil, the reconciler
+  unconditionally calls `status.MarkConditions(xpv1.ReconcileSuccess())` right after
+  (`pkg/reconciler/managed/reconciler.go:1406,1437,1457,1507`), overwriting `Synced` no matter what the
+  call set on `cr` beforehand. Returning the error is what makes the reconciler render
+  `xpv1.ReconcileError(err)` onto `Synced` instead — the same convention CLAUDE.md's "Standard
+  Controllers with External State" section already documents generically; 020 just has to apply it to
+  `Result.Outcomes` specifically, which 009's now-corrected Appendix Example 2 does.
+- **Tie-break when more than one registered module reports a non-`Done` outcome in the same pass**
+  (network module and auth module both rejecting in one run, say — neither aborts, so both run):
+  return the **first** one's handled error, in registration order, as `Synced`'s message. Still
+  `log.Handle` every non-nil `Err` in the result regardless, so later ones stay visible in
+  logs/incident IDs even though only the first becomes the `Synced` message.
+- **This does not reintroduce a retry flood.** A returned error only triggers controller-runtime's
+  rate-limited backoff on the *next poll-driven* reconcile of an unchanged, still-rejected CRD — which
+  is fine, since there is nothing new to check. A tenant edit delivers a fresh watch event and
+  reconciles immediately regardless of any backoff state, so "re-applies on every reconcile until the
+  tenant fixes it" (009, Key Concept: Overwrite Apply) still holds from the tenant's perspective.
+- **`Observe` does not need the same fix.** A non-`Done` module `Outcome` implies that module's
+  `Observe` also reports `inSync == false`, which already forces `Observation.InSync` false and
+  therefore `ResourceUpToDate: false` — routing the very next reconcile through `Update()`, where the
+  fix above applies. 009's Appendix Example 1 (`Observe`) is unchanged.

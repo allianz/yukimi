@@ -42,7 +42,9 @@ func TestIntegration_TenantAccount(t *testing.T) {
 	// (internal/snowflake/pool), so the repo-root .env is 3 levels up.
 	_ = godotenv.Load("../../../.env")
 
-	backend, err := secretsaws.New(os.Getenv("AWS_REGION"), "")
+	// 30 is base.Config's default deletion grace period (002), which the backend derives its
+	// recovery window from; nothing here deletes a secret.
+	backend, err := secretsaws.New(os.Getenv("AWS_REGION"), "", 30)
 	if err != nil {
 		t.Fatalf("secretsaws.New: %v", err)
 	}
@@ -55,6 +57,11 @@ func TestIntegration_TenantAccount(t *testing.T) {
 			DisableOCSPChecks:      os.Getenv("SNOWFLAKE_DISABLE_OCSP_CHECKS") == "true",
 			ConnectionProbeTimeout: 5 * time.Second,
 		},
+		// A zero RotationInterval makes maybeRotateLocked treat the sample
+		// account's credential as always due, silently rotating it on every
+		// call — this test is documented as read-only, so give it a real
+		// interval (see the same note in account/integration_test.go).
+		Secrets: base.SecretsSettings{RotationInterval: 24 * time.Hour},
 	}
 	p := New(cached, cfg)
 	t.Cleanup(func() { _ = p.Close() })
@@ -94,7 +101,9 @@ func TestIntegration_TenantAccount_RotatesStaleCredential(t *testing.T) {
 	}
 	_ = godotenv.Load("../../../.env")
 
-	backend, err := secretsaws.New(os.Getenv("AWS_REGION"), "")
+	// 30 is base.Config's default deletion grace period (002), which the backend derives its
+	// recovery window from; nothing here deletes a secret.
+	backend, err := secretsaws.New(os.Getenv("AWS_REGION"), "", 30)
 	if err != nil {
 		t.Fatalf("secretsaws.New: %v", err)
 	}

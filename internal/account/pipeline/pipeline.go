@@ -24,7 +24,7 @@ type Pipeline struct {
 }
 
 // New builds a pipeline from an ordered module list. Registration order is
-// execution order for both Observe and Apply. Exactly one module must be the
+// execution order for Observe and Apply, and its reverse for Destroy. Exactly one module must be the
 // account module, identified by Name() == AccountModuleName: its Observe
 // result is the sole source of Observation.Exists, and every module that
 // calls ModuleContext.TenantDB must be registered after it, since TenantDB
@@ -38,21 +38,23 @@ func New(modules ...Module) *Pipeline {
 
 // Observation is Pipeline.Observe's result.
 type Observation struct {
-	Exists bool // from the account module's Observe alone (Name() == AccountModuleName); no other module contributes to it
-	InSync bool // true iff every module's Observe reported inSync == true
+	Exists   bool            // from the account module's Observe alone (Name() == AccountModuleName); no other module contributes to it
+	InSync   bool            // true iff every module's Observe reported inSync == true
+	Outcomes []ModuleOutcome // one entry per registered module, in registration order — always all of them, since Observe never stops early
 }
 
 // Observe calls every module's Observe in order and aggregates the result. It
-// performs no mutation of its own.
+// performs no mutation of its own. Every module's Outcome is recorded in
+// Observation.Outcomes regardless of its content — an Outcome.Abort returned
+// here is ignored; only Apply honors Abort.
 //
-// Returns:
-//   - error: always nil today. Reserved for a future structural failure
-//     inside the pipeline itself; no module can produce one — every failure
-//     a module reports already lives in its own Outcome.
-func (p *Pipeline) Observe(ctx context.Context, mc *ModuleContext) (Observation, error) {
+// It never returns an error: no module's Observe can produce one — every
+// failure a module reports already lives in its own Outcome.
+func (p *Pipeline) Observe(ctx context.Context, mc *ModuleContext) Observation {
 	obs := Observation{InSync: true}
 	for _, m := range p.modules {
-		inSync, _ := m.Observe(ctx, mc)
+		inSync, outcome := m.Observe(ctx, mc)
+		obs.Outcomes = append(obs.Outcomes, ModuleOutcome{Module: m.Name(), Outcome: outcome})
 		if m.Name() == AccountModuleName {
 			obs.Exists = inSync
 		}
@@ -60,7 +62,17 @@ func (p *Pipeline) Observe(ctx context.Context, mc *ModuleContext) (Observation,
 			obs.InSync = false
 		}
 	}
-	return obs, nil
+	return obs
+}
+
+// PendingReason returns the first Pending outcome's Reason in this Observe
+// call's Outcomes, in outcome order, or "" if none is Pending. It is the
+// only piece of business logic this package retains toward the resource's
+// aggregate Ready condition — deciding whether Ready is already latched
+// true is the controller's job (020), via the CR's own persisted Ready
+// condition, not this package's.
+func (o Observation) PendingReason() string {
+	return pendingReason(o.Outcomes)
 }
 
 // Result is Pipeline.Apply's result.
@@ -88,14 +100,47 @@ func (r Result) AllDone() bool {
 	return true
 }
 
+// PendingReason returns the first Pending outcome's Reason in this Apply
+// call's Outcomes, in outcome order, or "" if none is Pending.
+func (r Result) PendingReason() string {
+	return pendingReason(r.Outcomes)
+}
+
+// FirstError returns the first non-nil Err among this Apply call's Outcomes,
+// in outcome order, or nil if none is set. Only the first is ever
+// returned — the same first-wins precedent as PendingReason; a later
+// Rejected/Failed outcome's Err is surfaced only through its own Condition
+// or Event, if it set one.
+func (r Result) FirstError() error {
+	for _, mo := range r.Outcomes {
+		if mo.Outcome.Err != nil {
+			return mo.Outcome.Err
+		}
+	}
+	return nil
+}
+
+// pendingReason returns the first StatePending outcome's Reason among
+// outcomes, in order, or "" if none is Pending. A Rejected or Failed
+// outcome never contributes a message here — that belongs on Synced (020's
+// job, out of scope for this package).
+func pendingReason(outcomes []ModuleOutcome) string {
+	for _, mo := range outcomes {
+		if mo.Outcome.State == StatePending {
+			return mo.Outcome.Reason
+		}
+	}
+	return ""
+}
+
 // Apply calls every module's Apply in order, unconditionally, stopping early
 // only if a module's Outcome has Abort set. It is idempotent by construction
 // — callers may call it from both a create and an update path with identical
 // behavior.
 //
-// Returns:
-//   - error: always nil today, for the same reason as Observe.
-func (p *Pipeline) Apply(ctx context.Context, mc *ModuleContext) (Result, error) {
+// It never returns an error: a module's own failure is already captured in
+// its Outcome, and Result.Outcomes carries every one of them.
+func (p *Pipeline) Apply(ctx context.Context, mc *ModuleContext) Result {
 	var result Result
 	for _, m := range p.modules {
 		outcome := m.Apply(ctx, mc)
@@ -105,5 +150,25 @@ func (p *Pipeline) Apply(ctx context.Context, mc *ModuleContext) (Result, error)
 			break
 		}
 	}
-	return result, nil
+	return result
+}
+
+// Destroy calls every module's Teardown in reverse registration order, so
+// every module registered after the account module tears down before the
+// account itself is dropped.
+//
+// A nil return means every teardown was accepted. It does not mean the
+// external state is gone: the account and its credential may both still be
+// inside their restore windows.
+//
+// Returns:
+//   - error: the first Teardown error, returned unchanged and already
+//     classified by the module that produced it. No later Teardown runs.
+func (p *Pipeline) Destroy(ctx context.Context, mc *ModuleContext) error {
+	for i := len(p.modules) - 1; i >= 0; i-- {
+		if err := p.modules[i].Teardown(ctx, mc); err != nil {
+			return err
+		}
+	}
+	return nil
 }

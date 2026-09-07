@@ -92,6 +92,16 @@ func (f *fakeClient) DeleteSecret(_ context.Context, in *secretsmanager.DeleteSe
 	return &secretsmanager.DeleteSecretOutput{}, nil
 }
 
+// newTestBackend builds a Backend whose recovery window is computed from gracePeriodDays
+// exactly as New computes it, without the SDK config load New performs.
+func newTestBackend(fake *fakeClient, gracePeriodDays int) *Backend {
+	recoveryWindowDays := gracePeriodDays
+	if recoveryWindowDays > maxRecoveryWindowDays {
+		recoveryWindowDays = maxRecoveryWindowDays
+	}
+	return &Backend{client: fake, recoveryWindowDays: recoveryWindowDays}
+}
+
 func testPath(t *testing.T) secrets.Path {
 	t.Helper()
 	path, err := secrets.NewTenantPath("my_org", "finance", "analytics-team-eu")
@@ -103,7 +113,7 @@ func testPath(t *testing.T) secrets.Path {
 
 func TestNew(t *testing.T) {
 	t.Run("empty region is a user error", func(t *testing.T) {
-		backend, err := New("", "")
+		backend, err := New("", "", 30)
 		if err == nil {
 			t.Fatal("expected an error for empty region")
 		}
@@ -116,12 +126,16 @@ func TestNew(t *testing.T) {
 	})
 
 	t.Run("non-empty region succeeds and makes no AWS call", func(t *testing.T) {
-		backend, err := New("eu-central-1", "")
+		backend, err := New("eu-central-1", "", 30)
 		if err != nil {
 			t.Fatalf("New: %v", err)
 		}
 		if backend == nil {
 			t.Fatal("expected a non-nil Backend")
+		}
+		// SC-019: the window is computed once, here, from the account grace period.
+		if got := backend.recoveryWindowDays; got != 30 {
+			t.Fatalf("recoveryWindowDays = %d, want 30", got)
 		}
 	})
 
@@ -134,7 +148,7 @@ func TestNew(t *testing.T) {
 		t.Setenv("AWS_CONFIG_FILE", configPath)
 		t.Setenv("AWS_PROFILE", "broken")
 
-		backend, err := New("eu-central-1", "")
+		backend, err := New("eu-central-1", "", 30)
 		if err == nil {
 			t.Fatal("expected a config-load error")
 		}
@@ -313,28 +327,48 @@ func TestUpdate(t *testing.T) {
 func TestDelete(t *testing.T) {
 	path := testPath(t)
 
-	t.Run("success calls DeleteSecret with no recovery-bypass flags", func(t *testing.T) {
-		fake := &fakeClient{}
-		backend := &Backend{client: fake}
+	// SC-020, SC-021: the computed window is what Delete sends, never AWS's own 30-day default,
+	// and never ForceDeleteWithoutRecovery — 002's grace period floor (7) already matches
+	// Secrets Manager's own minimum.
+	t.Run("the window sent is computed from the grace period", func(t *testing.T) {
+		for _, tc := range []struct {
+			name            string
+			gracePeriodDays int
+			wantWindowDays  int64
+		}{
+			{"grace period above the ceiling is capped", 90, 30},
+			{"grace period at the ceiling matches exactly", 30, 30},
+			{"grace period inside the band is used verbatim", 14, 14},
+			{"grace period at the floor is used verbatim", 7, 7},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				fake := &fakeClient{}
+				backend := newTestBackend(fake, tc.gracePeriodDays)
 
-		if err := backend.Delete(context.Background(), path); err != nil {
-			t.Fatalf("Delete: %v", err)
-		}
-		if !fake.deleteCalled {
-			t.Fatal("expected DeleteSecret to be called")
-		}
-		if aws.ToString(fake.deleteInput.SecretId) != path.String() {
-			t.Fatalf("SecretId = %q, want %q", aws.ToString(fake.deleteInput.SecretId), path.String())
-		}
-		if fake.deleteInput.ForceDeleteWithoutRecovery != nil {
-			t.Fatal("Delete must never set ForceDeleteWithoutRecovery")
+				if err := backend.Delete(context.Background(), path); err != nil {
+					t.Fatalf("Delete: %v", err)
+				}
+				if !fake.deleteCalled {
+					t.Fatal("expected DeleteSecret to be called")
+				}
+				if aws.ToString(fake.deleteInput.SecretId) != path.String() {
+					t.Fatalf("SecretId = %q, want %q", aws.ToString(fake.deleteInput.SecretId), path.String())
+				}
+
+				if got := aws.ToInt64(fake.deleteInput.RecoveryWindowInDays); got != tc.wantWindowDays {
+					t.Errorf("RecoveryWindowInDays = %d, want %d", got, tc.wantWindowDays)
+				}
+				if fake.deleteInput.ForceDeleteWithoutRecovery != nil {
+					t.Error("Delete must never set ForceDeleteWithoutRecovery")
+				}
+			})
 		}
 	})
 
 	t.Run("failure on an already-absent path is wrapped, not swallowed", func(t *testing.T) {
 		underlying := errors.New("ResourceNotFoundException: secret not found")
 		fake := &fakeClient{deleteErr: underlying}
-		backend := &Backend{client: fake}
+		backend := newTestBackend(fake, 30)
 
 		err := backend.Delete(context.Background(), path)
 		if err == nil {

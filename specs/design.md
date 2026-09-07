@@ -194,7 +194,7 @@ Guardrails act as a gatekeeper that validates and modifies a tenant's input befo
 Each guardrail defines two components: `target` and `constraints`:
 
   * **`target`:** Defines which accounts the guardrail applies to. An omitted field or a `"*"` wildcard means the rule matches all accounts. Each key is read from a fixed source: `environment` and `region` from the CRD's spec fields (3.1), `account` from `metadata.name` as the tenant wrote it (not the resolved Snowflake name — guardrails run before the account exists; see 3.12), and `department` from the namespace label set by ops during onboarding (2). Since `department` is ops-owned, tenants cannot move themselves out of their department's rules; `environment`, by contrast, the tenant declares themselves.
-  * **`constraints`:** The strict rules the user's input must pass, such as correct naming conventions, maximum credit quotas, and network rules. If a submitted CRD violates these rules, the system immediately rejects it with a validation error.
+  * **`constraints`:** The strict rules the user's input must pass, such as correct naming conventions, maximum credit quotas, and network rules. A submitted CRD that violates these rules is accepted by the API server; the controller's guardrail-check module rejects it during reconciliation instead, reporting `Synced=False` with a message identifying the violated constraint (7.1), and stays that way until the tenant corrects the CRD.
 
 **On self-declared `environment`:** Because the tenant sets `environment` in their own CRD, they can choose `dev` and receive its looser constraints. The platform does not verify that a `dev` account is actually used for development — a team running production workloads in an account they declared as `dev` carries that risk themselves.
 
@@ -659,7 +659,7 @@ Fulfilment is a long-running, out-of-band process: an Azure Entra ID sync takes 
   * **Aggregate condition.** The `SnowflakeAccount` surfaces an `IdentitySynced` condition — its own, like `QuotaAvailable` (3.10), additional to `Ready` and `Synced` (7.1) — **True** once every request is fulfilled and every group imported.
   * **Grace period.** While outstanding and within the base config's `identitySync.timeout` (default **1h**, never shorter than the slowest provider), the reason is `SyncPending`: an expected provisioning state, with no warning event. Past the timeout it becomes `SyncTimeout` with a warning event so ops can see the stall. The clock starts when the account's first request is emitted and is recorded in its status.
   * **Recoverable.** `SyncTimeout` is a reporting state, not a stop: the controller keeps reconciling and returns to `IdentitySynced=True` on its own if the sync lands.
-  * **Relation to `Ready`.** Until the group bound to `ACCOUNTADMIN` is imported nobody can administer the account, so `Ready` stays **False** while `IdentitySynced` is False, carrying the reason above to distinguish a benign wait from a provisioning failure.
+  * **Relation to `Ready`.** Until the group bound to `ACCOUNTADMIN` is imported nobody can administer the account, so `Ready` stays **False** until the account completes its first fully successful provisioning run, carrying the reason above to distinguish a benign wait from a provisioning failure. Once that first run has completed, `Ready` stays **True** even if a later CRD edit adds a group whose sync is still pending — the account is already administrable, so that ongoing wait is visible only on `IdentitySynced`, not on `Ready`.
 
 
 

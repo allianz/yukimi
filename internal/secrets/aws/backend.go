@@ -19,6 +19,7 @@ package secretsaws
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -39,12 +40,19 @@ type client interface {
 	DeleteSecret(ctx context.Context, in *secretsmanager.DeleteSecretInput, opts ...func(*secretsmanager.Options)) (*secretsmanager.DeleteSecretOutput, error)
 }
 
+// maxRecoveryWindowDays is the longest RecoveryWindowInDays Secrets Manager's DeleteSecret
+// accepts. 002's grace period floor (7) already matches its shortest, so this package only
+// ever needs to cap the top end, never fall back to ForceDeleteWithoutRecovery.
+const maxRecoveryWindowDays = 30
+
 // Backend implements secrets.Backend (003) against AWS Secrets Manager.
-// Each method is exactly one AWS API call; the struct holds only the client
-// and the KMS key id carried through to every Create.
+// Each method is exactly one AWS API call; the struct holds only the client,
+// the KMS key id carried through to every Create, and the recovery window
+// (in days) computed once for every Delete.
 type Backend struct {
-	client   client
-	kmsKeyId string
+	client             client
+	kmsKeyId           string
+	recoveryWindowDays int
 }
 
 var _ secrets.Backend = (*Backend)(nil)
@@ -59,14 +67,17 @@ var _ secrets.Backend = (*Backend)(nil)
 //     (Config.AWS.KmsKeyId, 002); passed to CreateSecret's KmsKeyId only
 //     when non-empty — otherwise Secrets Manager's AWS-managed default key
 //     encrypts the secret
+//   - gracePeriodDays: the account grace period (Config.Deletion.GracePeriodDays,
+//     002) the recovery window is computed from, once, here — every Delete then
+//     uses that one window
 //
 // Returns:
-//   - secrets.Backend: never nil on a nil error
+//   - *Backend: never nil on a nil error.
 //   - User error if region is empty
 //   - System error if the AWS SDK's own local config/credential loading
 //     fails (e.g. a malformed shared config file) — this is not a network
 //     call and not specific to Secrets Manager
-func New(region, kmsKeyId string) (secrets.Backend, error) {
+func New(region, kmsKeyId string, gracePeriodDays int) (*Backend, error) {
 	if region == "" {
 		return nil, errors.NewUserError(
 			"AWS region is required to construct the secrets backend (expected: aws.region in base.yaml)")
@@ -77,9 +88,20 @@ func New(region, kmsKeyId string) (secrets.Backend, error) {
 		return nil, fmt.Errorf("failed to load AWS SDK config: %w", err)
 	}
 
+	recoveryWindowDays := gracePeriodDays
+	if recoveryWindowDays > maxRecoveryWindowDays {
+		recoveryWindowDays = maxRecoveryWindowDays
+		log.Printf(
+			"secrets/aws: recovery window capped at %d days (Secrets Manager's maximum); "+
+				"configured grace period is %d days, so a credential deleted after this cap needs "+
+				"manual repair (012) if the account is restored on days %d-%d",
+			maxRecoveryWindowDays, gracePeriodDays, maxRecoveryWindowDays+1, gracePeriodDays)
+	}
+
 	return &Backend{
-		client:   secretsmanager.NewFromConfig(cfg),
-		kmsKeyId: kmsKeyId,
+		client:             secretsmanager.NewFromConfig(cfg),
+		kmsKeyId:           kmsKeyId,
+		recoveryWindowDays: recoveryWindowDays,
 	}, nil
 }
 
@@ -134,18 +156,21 @@ func (b *Backend) Update(ctx context.Context, path secrets.Path, value string) e
 	return nil
 }
 
-// Delete removes path via DeleteSecret, leaving AWS's default recovery
-// window in place. Never calls RestoreSecret or ForceDeleteWithoutRecovery.
+// Delete removes path via DeleteSecret, scheduling it for the window computed at construction
+// rather than accepting AWS's own 30-day default, which could outlive a shorter account grace
+// period. It always sets RecoveryWindowInDays and never ForceDeleteWithoutRecovery — 002's grace
+// period floor (7) already matches Secrets Manager's own minimum, so there is no grace period
+// this backend cannot schedule a window for. Never calls RestoreSecret.
 //
 // Returns:
 //   - System error if the call fails, including on an already-absent path
 //     (AWS's ResourceNotFoundException) — unlike 003's FakeBackend.Delete,
 //     this is not idempotent (see Edge Cases)
 func (b *Backend) Delete(ctx context.Context, path secrets.Path) error {
-	_, err := b.client.DeleteSecret(ctx, &secretsmanager.DeleteSecretInput{
-		SecretId: aws.String(path.String()),
-	})
-	if err != nil {
+	if _, err := b.client.DeleteSecret(ctx, &secretsmanager.DeleteSecretInput{
+		SecretId:             aws.String(path.String()),
+		RecoveryWindowInDays: aws.Int64(int64(b.recoveryWindowDays)),
+	}); err != nil {
 		return fmt.Errorf("failed to delete secret at %s: %w", path, err)
 	}
 	return nil
