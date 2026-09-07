@@ -268,6 +268,17 @@ func (e *external) apply(ctx context.Context, cr *v1alpha1.SnowflakeAccount) err
 		cr.SetConditions(xpv1.Unavailable().WithMessage(result.PendingReason()))
 	}
 
+	// Persist status now, before returning: the managed reconciler's own
+	// post-Create/Update status write happens after UpdateCriticalAnnotations,
+	// whose plain (non-status-subresource) client.Update round-trips the
+	// object through the API server and overwrites our in-memory status with
+	// whatever is currently persisted. Without this call, a freshly captured
+	// account locator never survives a Create(), and every later reconcile
+	// re-attempts account creation against the same name forever.
+	if err := e.kube.Status().Update(ctx, cr); err != nil && firstErr == nil {
+		firstErr = log.Handle(err)
+	}
+
 	// Returning nil here would drop firstErr: the managed reconciler calls
 	// status.MarkConditions(xpv1.ReconcileSuccess()) right after Create/Update
 	// returns nil, overwriting Synced regardless of what was set above.

@@ -139,7 +139,7 @@ func newTestDeletionRequest(name, namespace, targetName, state string, createdAt
 
 func newExternal(t *testing.T, m pipeline.Module, objs ...client.Object) (*external, client.Client) {
 	t.Helper()
-	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(objs...).WithStatusSubresource(&v1alpha1.SnowflakeDeletionRequest{}).Build()
+	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(objs...).WithStatusSubresource(&v1alpha1.SnowflakeDeletionRequest{}, &v1alpha1.SnowflakeAccount{}).Build()
 	e := &external{
 		kube:     c,
 		pool:     nil, // fakeModule never touches the ModuleContext's pool
@@ -405,9 +405,9 @@ func TestObserve_NotReady_SetsUnavailableWithPendingReason(t *testing.T) {
 // --- Create / Update / apply --------------------------------------------------
 
 func TestCreateUpdate_BothDelegateToApply(t *testing.T) {
-	m := &fakeModule{name: pipeline.AccountModuleName, applyOut: pipeline.Done()}
-	e, _ := newExternal(t, m, newTestNamespace("ns", nil))
 	cr := newTestCR("acct", "ns", "aws-eu-central-1")
+	m := &fakeModule{name: pipeline.AccountModuleName, applyOut: pipeline.Done()}
+	e, _ := newExternal(t, m, newTestNamespace("ns", nil), cr)
 
 	if _, err := e.Create(context.Background(), cr); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -423,11 +423,11 @@ func TestCreateUpdate_BothDelegateToApply(t *testing.T) {
 // SC-009/SC-010: observedGeneration only advances, and status is populated,
 // once Result.AllDone() is true.
 func TestApply_AllDone_AdvancesGenerationAndSetsStatus(t *testing.T) {
-	m := &fakeModule{name: pipeline.AccountModuleName, applyOut: pipeline.Done()}
-	e, _ := newExternal(t, m, newTestNamespace("ns", nil))
 	cr := newTestCR("acct", "ns", "aws-eu-central-1")
 	cr.Status.AccountLocator = "xc19114"
 	cr.Generation = 7
+	m := &fakeModule{name: pipeline.AccountModuleName, applyOut: pipeline.Done()}
+	e, _ := newExternal(t, m, newTestNamespace("ns", nil), cr)
 
 	if err := e.apply(context.Background(), cr); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -478,13 +478,13 @@ func TestApply_RejectedModule_ReturnsHandledError(t *testing.T) {
 // SC-013 (apply half): Ready, once already True, is not reverted to
 // Unavailable by a later Pending outcome from some other module.
 func TestApply_ReadyLatch_AlreadyTrueNotReverted(t *testing.T) {
+	cr := newTestCR("acct", "ns", "aws-eu-central-1")
+	cr.SetConditions(xpv1.Available())
 	accountModule := &fakeModule{name: pipeline.AccountModuleName, applyOut: pipeline.Done()}
 	other := &fakeModule{name: "other", applyOut: pipeline.Pending("still syncing")}
 
-	e, _ := newExternal(t, accountModule, newTestNamespace("ns", nil))
+	e, _ := newExternal(t, accountModule, newTestNamespace("ns", nil), cr)
 	e.pipeline = pipeline.New(accountModule, other)
-	cr := newTestCR("acct", "ns", "aws-eu-central-1")
-	cr.SetConditions(xpv1.Available())
 
 	if err := e.apply(context.Background(), cr); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -615,10 +615,10 @@ func assertNewSystemError() error { return stderrors.New("boom") }
 // updateAccountStatus's tenant.AccountURL error path is logged and
 // swallowed, never failing the caller (Edge Cases).
 func TestApply_AccountURLError_LoggedAndSwallowed(t *testing.T) {
-	m := &fakeModule{name: pipeline.AccountModuleName, applyOut: pipeline.Done()}
-	e, _ := newExternal(t, m, newTestNamespace("ns", nil))
 	cr := newTestCR("acct", "ns", "not a region")
 	cr.Status.AccountLocator = "xc19114"
+	m := &fakeModule{name: pipeline.AccountModuleName, applyOut: pipeline.Done()}
+	e, _ := newExternal(t, m, newTestNamespace("ns", nil), cr)
 
 	if err := e.apply(context.Background(), cr); err != nil {
 		t.Fatalf("unexpected error: %v", err)
