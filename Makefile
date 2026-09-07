@@ -102,7 +102,7 @@ dev: $(KIND) $(KUBECTL) $(GOMPLATE)
 	@$(INFO) Switching kubectl default namespace to tenant namespace
 	@set -a && source .env && set +a && $(KUBECTL) config set-context --current --namespace=$${SAMPLE_CUSTOMER_NAMESPACE}
 	@$(INFO) Starting Yukimi controllers
-	@$(GO) run cmd/provider/main.go --debug
+	@set -a && source .env && set +a && $(GO) run cmd/provider/main.go --debug --configDir=$(ROOT_DIR)/_output/config
 
 dev-clean: $(KIND) $(KUBECTL)
 	@$(INFO) Deleting kind cluster

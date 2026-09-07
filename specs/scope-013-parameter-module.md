@@ -53,3 +53,23 @@ these points rest on — see its "Key Concept: Overwrite Apply, Generation-Gated
   compensate for.
 - **Account parameters are never pruned.** Only 014 and 015 prune, each by its own object-name prefix;
   013's parameters are re-asserted but never enumerated or dropped.
+
+## Raised by the 020 clarification
+
+Recorded by `/yukimi.clarify 020`. 020 was implemented ahead of this spec, wiring only the account
+module (012) into the pipeline; this module was not yet registered anywhere at that time.
+
+- **The "`Observe` returns `true, Done()` today" line above has a consequence beyond the crash-safety
+  reasoning already given for it, worth naming when this spec is actually written.**
+  `internal/account/pipeline`'s `Apply` only re-runs when a `SnowflakeAccount`'s `generation` moves past
+  what the last successful run recorded, or when some module's own `Observe` reports `inSync == false`
+  (`specs/009-account-pipeline.md`, Key Concept: Overwrite Apply, Generation-Gated Re-Apply). If this
+  module's `Observe` reports `true, Done()` unconditionally the very first time it is ever registered —
+  against a `SnowflakeAccount` that already reached `Ready` under a pipeline that didn't include it
+  (as every account created by 020's first cut did) — then this module's `Apply` never runs against that
+  pre-existing account, so its global/regional parameters (design.md §3.6) are never actually set on it,
+  ever, unless that account's generation happens to move for an unrelated reason (e.g. a tenant edit).
+  Confirm deliberately when writing `013-parameter-module.md` whether that's accepted (matching what 014
+  and 015 already independently document the same way, see their own "Raised by the 020 clarification"
+  sections) or whether it needs its own one-time detection of "never applied yet," distinct from the
+  ordinary steady-state drift detection this spec already defers to Organization Policies.

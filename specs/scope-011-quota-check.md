@@ -100,3 +100,24 @@ and ordered, before `specs/scope-016-quota.md` had been formally clarified.
   performs.
 - **Sibling scope note**: `specs/scope-010-guardrail-check.md` — the guardrail admission module
   registered immediately ahead of this one.
+
+## Raised by the 020 clarification
+
+Recorded by `/yukimi.clarify 020`. 020 was implemented ahead of this spec, wiring only the account
+module (012) into the pipeline; this module was not yet registered anywhere at that time.
+
+- **This module's own "`Observe` is a no-op: always `true, Done()`" line, above, has a sharper
+  consequence for an admission gate than for a module that only applies state.**
+  `internal/account/pipeline`'s `Apply` only re-runs when a `SnowflakeAccount`'s `generation` moves past
+  what the last successful run recorded, or when some module's own `Observe` reports `inSync == false`
+  (`specs/009-account-pipeline.md`, Key Concept: Overwrite Apply, Generation-Gated Re-Apply). This
+  module's `Apply` is where the actual quota-admission check happens — so if `Observe` always reports
+  `true, Done()` unconditionally, any `SnowflakeAccount` that reached `Ready` before this module was ever
+  registered will simply never be checked against the namespace's credit-quota allowance, ever, unless
+  its generation happens to move for an unrelated reason. That defeats the purpose of adding admission
+  later — accounts that predate it stay permanently unchecked even if their `creditQuota` no longer fits
+  (design.md §3.10's "Quota Reductions" case already anticipates existing accounts outliving a lowered
+  namespace allowance, but assumes quota-check was checking them all along). Confirm deliberately when
+  writing `011-quota-check.md` whether that gap is accepted, or whether this module's `Observe` needs to
+  differ from the "no-op" pattern precisely because it is a gate, not an applier — see the identical
+  point raised on `specs/scope-010-guardrail-check.md`, this module's sibling.
