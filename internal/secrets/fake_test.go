@@ -21,6 +21,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	internalerrors "github.com/allianz/yukimi/internal/errors"
 )
 
 // errStoreFault is the error every test injects through FakeBackend's hooks. It
@@ -193,8 +195,36 @@ func TestFakeBackend_DeleteSchedulesRemoval(t *testing.T) {
 	if err := b.Update(ctx, path, "new"); err == nil || !strings.Contains(err.Error(), "scheduled for deletion") {
 		t.Errorf("Update on a pending path: got %v, want an error naming it as scheduled for deletion", err)
 	}
-	if err := b.Create(ctx, path, "new"); err == nil || !strings.Contains(err.Error(), "cannot be reused") {
-		t.Errorf("Create on a pending path: got %v, want an error naming the path as unreusable", err)
+	createErr := b.Create(ctx, path, "new")
+	if createErr == nil || !strings.Contains(createErr.Error(), "cannot be reused") {
+		t.Errorf("Create on a pending path: got %v, want an error naming the path as unreusable", createErr)
+	}
+	if !stderrors.Is(createErr, ErrPendingDeletion) {
+		t.Errorf("Create on a pending path: got %v, want it to wrap ErrPendingDeletion", createErr)
+	}
+	if internalerrors.IsUserError(createErr) {
+		t.Errorf("Create on a pending path: got a user error, want an ordinary system error — "+
+			"classification is the catching caller's job, not this package's: %v", createErr)
+	}
+}
+
+// Create on a path occupied by a live secret never wraps ErrPendingDeletion — only the
+// pending-deletion sub-case does.
+func TestFakeBackend_CreateOnLivePathDoesNotWrapErrPendingDeletion(t *testing.T) {
+	ctx := t.Context()
+	b := NewFakeBackend()
+	path := testPath(t)
+
+	if err := b.Create(ctx, path, "original"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	err := b.Create(ctx, path, "new")
+	if err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("got %v, want an error naming the path as already occupied", err)
+	}
+	if stderrors.Is(err, ErrPendingDeletion) {
+		t.Errorf("got %v, want it to not wrap ErrPendingDeletion", err)
 	}
 }
 

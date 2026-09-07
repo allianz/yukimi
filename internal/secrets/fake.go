@@ -103,7 +103,8 @@ func (f *FakeBackend) Create(_ context.Context, path Path, value string) error {
 	if existing, ok := f.entries[path]; ok {
 		if existing.pendingDeletion {
 			return fmt.Errorf(
-				"secrets: the secret at %s is scheduled for deletion and its path cannot be reused", path)
+				"secrets: the secret at %s is scheduled for deletion and its path cannot be reused: %w",
+				path, ErrPendingDeletion)
 		}
 		return fmt.Errorf("secrets: a secret already exists at %s", path)
 	}

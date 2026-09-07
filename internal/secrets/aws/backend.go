@@ -18,13 +18,16 @@ package secretsaws
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
+	smtypes "github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
 
 	"github.com/allianz/yukimi/internal/errors"
 	"github.com/allianz/yukimi/internal/secrets"
@@ -124,7 +127,9 @@ func (b *Backend) Get(ctx context.Context, path secrets.Path) (string, time.Time
 // constructor was given one. Never calls PutSecretValue.
 //
 // Returns:
-//   - System error if path is already occupied or the call otherwise fails
+//   - System error if path is already occupied or the call otherwise fails;
+//     also wraps secrets.ErrPendingDeletion if the occupying secret is
+//     scheduled for deletion rather than live
 func (b *Backend) Create(ctx context.Context, path secrets.Path, value string) error {
 	in := &secretsmanager.CreateSecretInput{
 		Name:         aws.String(path.String()),
@@ -135,9 +140,28 @@ func (b *Backend) Create(ctx context.Context, path secrets.Path, value string) e
 	}
 
 	if _, err := b.client.CreateSecret(ctx, in); err != nil {
+		if isPendingDeletion(err) {
+			return fmt.Errorf("failed to create secret at %s: %w: %w", path, secrets.ErrPendingDeletion, err)
+		}
 		return fmt.Errorf("failed to create secret at %s: %w", path, err)
 	}
 	return nil
+}
+
+// isPendingDeletion reports whether err is AWS's InvalidRequestException
+// naming a secret already scheduled for deletion. AWS gives this cause no
+// distinct error code — InvalidRequestException also covers two unrelated
+// causes (rotation misconfigured, a service-linked secret) — so a message
+// substring is the only signal the SDK exposes. This is the one narrow
+// exception to this package's own "no error inspection" rule (see doc.go):
+// it changes nothing about Create's classification, only whether the
+// returned error also wraps secrets.ErrPendingDeletion.
+func isPendingDeletion(err error) bool {
+	var invalidReq *smtypes.InvalidRequestException
+	if !stderrors.As(err, &invalidReq) {
+		return false
+	}
+	return strings.Contains(strings.ToLower(invalidReq.ErrorMessage()), "scheduled for deletion")
 }
 
 // Update overwrites the value at path via PutSecretValue. Never calls

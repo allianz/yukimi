@@ -18,8 +18,17 @@ package secrets
 
 import (
 	"context"
+	"errors"
 	"time"
 )
+
+// ErrPendingDeletion marks a Create failure caused by a path occupied by a
+// secret scheduled for deletion rather than a live one. It is identity
+// only: the failure it wraps is still an ordinary system error by
+// default; a caller with more context may catch it via errors.Is and
+// classify it differently. This is the first entry in a small taxonomy of
+// such errors (see Key Concept: A Backend Error Taxonomy, specs/003).
+var ErrPendingDeletion = errors.New("secrets: path pending deletion")
 
 // Backend is a string-valued keystore. It never parses a credential, never
 // caches, and never logs — every method reports failure as an ordinary error
@@ -37,7 +46,9 @@ type Backend interface {
 	// Create stores value at path. It fails if path is already occupied, and
 	// leaves the occupying value untouched when it does — this is the
 	// atomicity 012 depends on to never silently overwrite a live account's
-	// credential on a retried request.
+	// credential on a retried request. If the occupying secret is scheduled
+	// for deletion rather than live, the returned error also wraps
+	// ErrPendingDeletion.
 	Create(ctx context.Context, path Path, value string) error
 
 	// Update overwrites the value already stored at path. It fails if nothing

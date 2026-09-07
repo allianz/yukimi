@@ -102,6 +102,11 @@ func (m *module) createAccount(ctx context.Context, mc *pipeline.ModuleContext) 
 	}
 
 	if err := m.backend.Create(ctx, path, marshaled); err != nil {
+		if stderrors.Is(err, secrets.ErrPendingDeletion) {
+			return pipeline.Rejected(internalerrors.NewUserError(fmt.Sprintf(
+				"account %q was deleted recently and is still within its deletion recovery "+
+					"window; wait for the recovery window to elapse, then try again", cr.Name))).Aborting()
+		}
 		return pipeline.Failed(fmt.Errorf("failed to store platform credentials: %w", err)).Aborting()
 	}
 
