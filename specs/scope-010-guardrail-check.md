@@ -73,3 +73,25 @@ should be wired, mirroring the earlier quota conversation recorded in
   admission module this one is modeled on; follow its section skeleton.
 - **Dependency specs**: `specs/scope-008-guardrails.md` (the evaluator this module wraps),
   `specs/009-account-pipeline.md` (the `Module` contract, `Outcome`, `Rejected`, `Aborting`).
+
+## Raised by the 020 clarification
+
+Recorded by `/yukimi.clarify 020`. 020 was implemented ahead of this spec, wiring only the account
+module (012) into the pipeline; this module was not yet registered anywhere at that time.
+
+- **This module's own "`Observe` is a no-op: always `true, Done()`" line, above, has a sharper
+  consequence for an admission gate than for a module that only applies state, worth naming explicitly
+  when this spec is actually written.** `internal/account/pipeline`'s `Apply` only re-runs when a
+  `SnowflakeAccount`'s `generation` moves past what the last successful run recorded, or when some
+  module's own `Observe` reports `inSync == false` (`specs/009-account-pipeline.md`, Key Concept:
+  Overwrite Apply, Generation-Gated Re-Apply). This module's `Apply` is where the actual guardrail
+  evaluation happens (`Observe` never evaluates 008 at all, per its own "no-op" line) — so if `Observe`
+  always reports `true, Done()` unconditionally, then any `SnowflakeAccount` that reached `Ready` before
+  this module was ever registered (020 was implemented ahead of this spec, with no guardrail-check
+  wired in at all) will simply never be evaluated against guardrails, ever, unless its own generation
+  happens to move for an unrelated reason. That is a real gap for an admission gate specifically — the
+  whole point of adding it later is to start enforcing guardrails on accounts that predate it, not only
+  on new ones. Confirm deliberately when writing `010-guardrail-check.md` whether that gap is accepted
+  (matching quota-check's own identical shape, see `specs/scope-011-quota-check.md`) or whether this
+  module's `Observe` needs to do something different from the "no-op" pattern precisely because it is a
+  gate, not an applier.

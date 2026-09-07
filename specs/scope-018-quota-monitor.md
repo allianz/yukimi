@@ -49,3 +49,22 @@ parent and strictly before the next whole number (`003` < `003.a` < `003.b` < `0
 - **Sibling scope note**: `specs/scope-011-quota-check.md` — the admission half this module never
   performs, and the design-conversation decisions behind the split (see its "Decisions from design
   conversation" section).
+
+## Raised by the 020 clarification
+
+Recorded by `/yukimi.clarify 020`. 020 was implemented ahead of this spec, wiring only the account
+module (012) into the pipeline; this module was not yet registered anywhere at that time.
+
+- **Confirm this module's `Observe` reports `inSync == false` for an account it has never actually
+  provisioned a resource monitor/budget against, not only for one whose credits are exhausted.**
+  `internal/account/pipeline`'s `Apply` only re-runs when a `SnowflakeAccount`'s `generation` moves past
+  what the last successful run recorded, or when some module's own `Observe` reports `inSync == false`
+  (`specs/009-account-pipeline.md`, Key Concept: Overwrite Apply, Generation-Gated Re-Apply). This
+  module's `Observe` already needs to read live resource-monitor state to compute `QuotaAvailable`
+  (design.md §3.10), which suggests it's naturally in a better position than a pure no-op module to
+  notice "no resource monitor exists for this account at all" — but that's a distinct case from "credits
+  remain, monitor is fine" and needs to resolve to `inSync == false` too, or this module's `Apply` never
+  runs for any `SnowflakeAccount` that reached `Ready` before this module was registered (as every
+  account created by 020's first cut did), and its `creditQuota` is simply never pushed into Snowflake or
+  enforced. 013/014/015/017 raise the identical point in their own "Raised by the 020 clarification"
+  sections.

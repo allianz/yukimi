@@ -69,3 +69,24 @@ these points rest on.
   aborts the run on any non-`Done` outcome.
 - **Identity bindings are never pruned.** Only 014 and 015 prune, each by its own object-name prefix;
   017's group imports and role bindings are re-asserted but never enumerated or dropped.
+
+## Raised by the 020 clarification
+
+Recorded by `/yukimi.clarify 020`. 020 was implemented ahead of this spec, wiring only the account
+module (012) into the pipeline; this module was not yet registered anywhere at that time.
+
+- **Whatever this module's `Observe` ends up doing, check it against one specific consequence before
+  finalizing it.** `internal/account/pipeline`'s `Apply` only re-runs when a `SnowflakeAccount`'s
+  `generation` moves past what the last successful run recorded, or when some module's own `Observe`
+  reports `inSync == false` (`specs/009-account-pipeline.md`, Key Concept: Overwrite Apply,
+  Generation-Gated Re-Apply). This module's `Observe` likely needs to read something back anyway, to
+  compute `IdentitySynced` (design.md §4.3) — but confirm specifically that it reports `inSync == false`
+  for a `SnowflakeAccount` that reached `Ready` before this module was ever registered (as every account
+  created by 020's first cut did, with no identity module wired in at all), not only for one whose sync
+  is genuinely still pending. Otherwise this module's `Apply` never runs for that pre-existing account,
+  so no group is ever imported and no `roleBindings` entry ever granted for it — the account stays
+  reachable only by the platform's own service-user key, indefinitely, with no signal that anything is
+  wrong (`Ready` would already be `True` from 012 alone, and `IdentitySynced` would never even be
+  rendered since this module never ran to set it). 013/014/015 raise the identical point in their own
+  "Raised by the 020 clarification" sections, for modules that already plan an unconditional
+  `Observe`; this module's case is only different in not yet having committed to that shape.

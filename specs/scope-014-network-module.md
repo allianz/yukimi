@@ -98,3 +98,21 @@ a run.
   ever aborts the run; 014 never calls `.Aborting()` on its own outcome.
 - 014 implements `Observe(ctx, mc) (bool, Outcome)` returning `true, Done()` today, for the same reason
   013 does: the method exists so a real read-back can be added later without reopening the interface.
+
+## Raised by the 020 clarification
+
+Recorded by `/yukimi.clarify 020`. 020 was implemented ahead of this spec, wiring only the account
+module (012) into the pipeline; this module was not yet registered anywhere at that time.
+
+- **The "`Observe` returns `true, Done()` today" line above has a consequence beyond the crash-safety
+  reasoning already given for it (see 013's own "Raised by the 020 clarification" section — the same
+  point, restated here since it applies identically to this module).**
+  `internal/account/pipeline`'s `Apply` only re-runs when a `SnowflakeAccount`'s `generation` moves past
+  what the last successful run recorded, or when some module's own `Observe` reports `inSync == false`
+  (`specs/009-account-pipeline.md`, Key Concept: Overwrite Apply, Generation-Gated Re-Apply). If this
+  module reports `true, Done()` unconditionally the first time it is ever registered — against a
+  `SnowflakeAccount` that already reached `Ready` under a pipeline that didn't include it (as every
+  account created by 020's first cut did) — then this module's `Apply` never runs against that
+  pre-existing account, so its `customNetworkRules`/baseline network policy (design.md §3.6/§3.8) are
+  never actually created for it. Confirm deliberately when writing `014-network-module.md` whether
+  that's accepted or whether it needs its own one-time detection of "never applied yet."
