@@ -1,7 +1,7 @@
 apiVersion: base.snowflake.yukimi.io/v1alpha1
 kind: SnowflakeDeletionRequest
 metadata:
-  name: test-christoph6-2
+  name: test-christoph6-3
 spec:
   targetRef:
     kind: SnowflakeAccount
