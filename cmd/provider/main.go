@@ -18,6 +18,7 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -169,6 +170,11 @@ func main() {
 
 	p := pool.New(cached, baseConfig)
 	defer p.Close()
+
+	startupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	_, err = p.OrgAdmin(startupCtx)
+	cancel()
+	kingpin.FatalIfError(err, "failed to establish org-admin Snowflake connection")
 
 	kingpin.FatalIfError(customresourcesgate.Setup(mgr, o), "Cannot setup CRD gate controller")
 	kingpin.FatalIfError(yukimi.SetupGated(mgr, o, baseConfig, p, cached), "Cannot setup Yukimi controllers")

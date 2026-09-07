@@ -47,7 +47,9 @@ This specification defines the `internal/controller/snowflakeaccount` package th
 - Finishes `cmd/provider/main.go`'s startup wiring: a `--configDir` flag, `base.Load` (002), a
   cloud-provider switch constructing the AWS secrets backend (003.a), `secrets.NewCachedBackend` (003),
   and `pool.New` (004) — then forwards `Config`, the pool, and the cached backend into this package's own
-  `SetupGated`.
+  `SetupGated`. Immediately after constructing the pool, `main.go` also calls `Pool.OrgAdmin` once,
+  bounded by a short timeout, and exits fatally if it errors, so a broken AWS session or an unreachable
+  org-admin Snowflake connection fails the process at startup rather than on the first reconcile.
 
 **Out of Scope**:
 
