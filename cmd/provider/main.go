@@ -46,7 +46,11 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/allianz/yukimi/apis"
+	"github.com/allianz/yukimi/internal/config/base"
 	yukimi "github.com/allianz/yukimi/internal/controller"
+	"github.com/allianz/yukimi/internal/secrets"
+	secretsaws "github.com/allianz/yukimi/internal/secrets/aws"
+	"github.com/allianz/yukimi/internal/snowflake/pool"
 	"github.com/allianz/yukimi/internal/version"
 )
 
@@ -55,6 +59,7 @@ func main() {
 		app            = kingpin.New(filepath.Base(os.Args[0]), "Yukimi support for Crossplane.").DefaultEnvars()
 		debug          = app.Flag("debug", "Run with debug logging.").Short('d').Bool()
 		leaderElection = app.Flag("leader-election", "Use leader election for the controller manager.").Short('l').Default("false").Envar("LEADER_ELECTION").Bool()
+		configDir      = app.Flag("configDir", "directory containing base.yaml and sibling config files").Default("/etc/yukimi/config").String()
 
 		syncInterval            = app.Flag("sync", "How often all resources will be double-checked for drift from the desired state.").Short('s').Default("1h").Duration()
 		pollInterval            = app.Flag("poll", "How often individual resources will be checked for drift from the desired state").Default("1m").Duration()
@@ -149,7 +154,23 @@ func main() {
 		o.ChangeLogOptions = &clo
 	}
 
+	baseConfig, err := base.Load(*configDir)
+	kingpin.FatalIfError(err, "failed to load base config")
+
+	var backend secrets.Backend
+	switch baseConfig.CloudProvider() {
+	case "aws":
+		backend, err = secretsaws.New(baseConfig.AWS.Region, baseConfig.AWS.KmsKeyId, baseConfig.Deletion.GracePeriodDays)
+		kingpin.FatalIfError(err, "failed to construct AWS secrets backend")
+	default:
+		kingpin.Fatalf("no secrets backend compiled in for cloud section %q (compiled in: aws)", baseConfig.CloudProvider())
+	}
+	cached := secrets.NewCachedBackend(backend, baseConfig.Secrets.CacheTTL)
+
+	p := pool.New(cached, baseConfig)
+	defer p.Close()
+
 	kingpin.FatalIfError(customresourcesgate.Setup(mgr, o), "Cannot setup CRD gate controller")
-	kingpin.FatalIfError(yukimi.SetupGated(mgr, o), "Cannot setup Yukimi controllers")
+	kingpin.FatalIfError(yukimi.SetupGated(mgr, o, baseConfig, p, cached), "Cannot setup Yukimi controllers")
 	kingpin.FatalIfError(mgr.Start(ctrl.SetupSignalHandler()), "Cannot start controller manager")
 }
