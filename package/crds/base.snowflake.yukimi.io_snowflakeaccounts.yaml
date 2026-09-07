@@ -24,6 +24,9 @@ spec:
     - jsonPath: .status.conditions[?(@.type=='Ready')].reason
       name: REASON
       type: string
+    - jsonPath: .status.accountUrl
+      name: ACCOUNT-URL
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: AGE
       type: date

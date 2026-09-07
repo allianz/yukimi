@@ -97,6 +97,9 @@ func TestTeardown_KnownLocator_DropsEvictsDeletes_InOrder(t *testing.T) {
 			if _, _, err := backend.Get(context.Background(), path); err == nil {
 				t.Error("credential still present after Teardown")
 			}
+			if cr.Status.AccountLocator != "" {
+				t.Errorf("cr.Status.AccountLocator = %q, want empty after a successful teardown", cr.Status.AccountLocator)
+			}
 		})
 	}
 }

@@ -40,6 +40,10 @@ func (m *module) Teardown(ctx context.Context, mc *pipeline.ModuleContext) error
 			return err
 		}
 		mc.EvictTenant()
+		// Observe's deletion check (020) reports ResourceExists solely from
+		// this field, so leaving it set would make the account look
+		// permanently undeleted and the finalizer would never clear.
+		cr.Status.AccountLocator = ""
 	}
 
 	return m.deleteCredential(ctx, mc)
