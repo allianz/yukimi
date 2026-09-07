@@ -179,6 +179,23 @@ func (a *SnowflakeAccount) SetManagementPolicies(p common.ManagementPolicies) {
 	a.Spec.ManagementPolicies = p
 }
 
+// GetWriteConnectionSecretToReference/SetWriteConnectionSecretToReference
+// satisfy resource.LocalConnectionSecretOwner with a permanent no-op: this
+// type carries no such field (Key Concept: Minimal Managed-Resource
+// Surface) and never wants a connection secret published. Without these,
+// crossplane-runtime v2's reconciler falls through to its default case
+// after every successful Observe and reports a permanent ReconcileError
+// ("managed resource does not implement connection details"), which pins
+// the Synced condition to False forever. Implementing the interface routes
+// PublishConnection/UnpublishConnection into APILocalSecretPublisher's own
+// nil-ref no-op instead. Identical to SnowflakeDeletionRequest (019).
+func (a *SnowflakeAccount) GetWriteConnectionSecretToReference() *xpv1.LocalSecretReference {
+	return nil
+}
+
+func (a *SnowflakeAccount) SetWriteConnectionSecretToReference(_ *xpv1.LocalSecretReference) {
+}
+
 func (a *SnowflakeAccount) GetCondition(ct xpv1.ConditionType) xpv1.Condition {
 	return a.Status.GetCondition(ct)
 }
