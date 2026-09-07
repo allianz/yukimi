@@ -39,7 +39,7 @@ This platform is not built using traditional, manual software development method
 
 ## 2. Tenant Onboarding
 
-The onboarding process begins when a team requests access to the self-service platform and provides four pieces of information: the tenant name (called profile at FCP), the GIAM group that should be granted access in Argo CD, the team’s cost center, and the team’s department (e.g. `Allianz_DE`) — used by Guardrails (3.3) to scope department-specific rules. The platform product owner defines the credit quota based on expected consumption. Once this information is available, the operations team performs a standardized onboarding workflow:
+The onboarding process begins when a team requests access to the self-service platform and provides four pieces of information: the tenant name (sometimes called profile at Allianz), the GIAM group (Allianz's corporate identity directory group, analogous to an AD group) that should be granted access in Argo CD, the team’s cost center, and the team’s department (e.g. `Allianz_DE`) — used by Guardrails (3.3) to scope department-specific rules. The platform product owner defines the credit quota based on expected consumption. Once this information is available, the operations team performs a standardized onboarding workflow:
 
 * A Kubernetes namespace with the same name is created and labeled with the cost center, department, and credit quota. Like the credit quota (3.10), the department label is set by ops during onboarding and is not exposed as a CRD field, so tenants cannot alter it themselves.
 * A new GitHub repository is created under the shared organization using the tenant name.
@@ -114,7 +114,7 @@ spec:
   # --- Allow custom network rules ---
   customNetworkRules:
     serviceUsers:                # one entry per service user, deny-by-default (3.8)
-      tu_airflow:
+      tu_airflow:                # technical user
         - connection: agn        # from the region's inventory in the Backplane Config
           allowedIPs: ["172.16.45.0/24"]
         - connection: dbt-cloud  # VPCE-only: nothing to narrow
@@ -175,7 +175,7 @@ flowchart LR
 
 * **SnowflakeAccount CRD (3.1):** The customer commits a `SnowflakeAccount` CRD describing the account they want, kicking off the reconciliation flow.
 * **Guardrails (3.3):** OEs (Operating Entities) define the rules that gate the customer's SnowflakeAccount CRD input before it is ever applied to Snowflake.
-* **Approved Exceptions (3.4):** ISO approves one-off exceptions to what the guardrails would otherwise reject — e.g. opening a public-internet IP range.
+* **Approved Exceptions (3.4):** ISO (Information Security Office) approves one-off exceptions to what the guardrails would otherwise reject — e.g. opening a public-internet IP range.
 * **Backplane Config (3.5):** Once Ops has provisioned a region's network via Terraform and closed out the follow-up setup tickets, they record the resulting IDs and IP ranges in the Backplane Config for the controller to use.
 * **Credit Quota (3.10):** Before anything is created, the controller checks the share of credits the SnowflakeAccount CRD claims against the namespace allowance set at onboarding (2), and blocks the account outright if it doesn't fit. Once the account exists, the controller pushes the approved share into Snowflake as a resource monitor and a budget so consumption stops when it is used up.
 * **Account Bootstrapping (3.6):** The controller creates the Snowflake account and binds it to the regional backplane infrastructure from the Backplane Config.
@@ -269,7 +269,7 @@ guardrails:
 
 When a `SnowflakeAccount` CRD fails its guardrails (3.3), the controller does not reject it outright. Before returning a validation error, it checks a separate exceptions file for a matching approved exception. If one exists, the otherwise-failing input is allowed through; if not, the resource is rejected as usual.
 
-This exists for cases where a customer has a legitimate, one-off need that the standing guardrail baseline would otherwise block — for example, opening the `public` connection with a wider CIDR than the guardrails normally permit. Getting one added is a manual, email-driven process, not a self-service one: the customer emails ISO (Information Security Office) to request approval for their specific use case; ISO reviews it and, if approved, forwards the request to platform ops; ops then adds the corresponding entry to the exceptions file. Only after that entry exists does the customer's CRD pass validation.
+This exists for cases where a customer has a legitimate, one-off need that the standing guardrail baseline would otherwise block — for example, opening the `public` connection with a wider CIDR than the guardrails normally permit. Getting one added is a manual, email-driven process, not a self-service one: the customer emails ISO (Information Security Office) to request approval for their specific use case; ISO (Information Security Office) reviews it and, if approved, forwards the request to platform ops; ops then adds the corresponding entry to the exceptions file. Only after that entry exists does the customer's CRD pass validation.
 
 **Ownership:** The exceptions file is owned and maintained by platform ops, not ISO — ISO grants the security approval, but ops is the one who edits the file that the controller reads. The approval itself happens outside the platform, over email; the file is just the durable record of what was approved.
 
@@ -282,7 +282,7 @@ exceptions:
                                         # Snowflake name — exact match, no wildcards
     customNetworkRules:                 # the full entry being approved, verbatim
       serviceUsers:
-        tu_airflow:
+        tu_airflow:              # technical user
           - connection: public
             allowedIPs: ["198.51.100.0/24"] # /24 — the baseline caps `public` at /32 (3.3)
     reason: "ISO-4821: temporary vendor integration, approved by ISO via email 2026-06-01"
@@ -413,7 +413,7 @@ Every newly provisioned Snowflake account requires identity integration to allow
 
 To define which users get access to the local account, the `SnowflakeAccount` CRD uses the `identityIntegration` configuration:
 
-  * **`groups`:** Lists the specific corporate groups to pull into the local account, one list per identity integration. Each key names an integration and is free-form, not schema — `giam` is the only one configured today.
+  * **`groups`:** Lists the specific corporate groups to pull into the local account, one list per identity integration. Each key names an integration and is free-form, not schema — `giam` (Allianz's corporate identity directory group, analogous to an AD group) is the only one configured today.
   * **`roleBindings`:** Maps Snowflake system roles to those imported groups. Binding the `ACCOUNTADMIN` role is strictly required so the account can be managed after creation.
 
 The controller enforces this access by importing the necessary corporate groups directly from the central Snowflake organization account into the local account. For details on how these groups get into the central organization account in the first place, refer to Chapter 4.
