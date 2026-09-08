@@ -35,7 +35,9 @@ const (
 // rejects a bare region string missing its cloud prefix (e.g.
 // "eu-central-1": its leading segment "eu" is only 2 characters, an AWS
 // geographic region code, not a cloud identifier) without maintaining an
-// allowlist of specific cloud names.
+// allowlist of specific cloud names. Mirrored by the
+// +kubebuilder:validation:Pattern marker on SnowflakeAccountSpec.Region
+// (apis/base/v1alpha1/snowflakeaccount_types.go, 006) — keep both in sync.
 var regionPattern = regexp.MustCompile(`^[a-z][a-z0-9]{2,}-[a-z0-9]+(-[a-z0-9]+)*$`)
 
 // regionSegment returns the hostname segment for region, e.g.

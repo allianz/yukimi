@@ -20,7 +20,9 @@ Snowflake at all — later specs read these fixed shapes, they don't extend them
   `x-kubernetes-validations` CEL rules: `region`/`environment` immutability after creation
   (§3.11.3), the `environment` enum, `identityIntegration.roleBindings` requiring an
   `ACCOUNTADMIN` entry (§3.7), and a `customAuthRules.exceptions` entry naming at least one of
-  `rsaKeyAllowed`/`patAllowed` (§3.9).
+  `rsaKeyAllowed`/`patAllowed` (§3.9). `region` additionally carries a `Pattern` marker rejecting
+  a value with no valid cloud-region shape (e.g. `aaa`), mirroring spec 004's
+  `host.regionPattern` so both layers agree on what "well-formed" means.
 - The `status.accountName` / `accountLocator` / `accountUrl` / `conditions` shape (§7.2).
 - The `internal/account/tenant/` package: `ResolveName` (§3.12), the `Department`/`CostCenter`/
   `CreditQuota` namespace-label readers (chapter 2), and `AccountURL` (§7.2, built on spec 004's
@@ -29,7 +31,9 @@ Snowflake at all — later specs read these fixed shapes, they don't extend them
 ### Out of Scope
 
 - Guardrails constraint/preset enforcement (naming patterns, credit ceilings, network CIDR
-  limits, allowed regions) — spec 008.
+  limits, *which* regions are actually allowed/available for a given account) — spec 008. This
+  spec only rejects a `region` that is syntactically impossible; whether a well-formed region is
+  offered at all is entirely Guardrails'/Backplane Config's call (007/008).
 - Backplane Config lookups and any bootstrapping, network, or auth SQL (§3.6, §3.8, §3.9) — specs
   007, 012, 014, 015.
 - Controller reconciliation: `Observe`/`Create`/`Update`/`Delete`, condition-setting, finalizers —
@@ -56,6 +60,12 @@ free to choose either value the first time, just not to change it afterward. `en
 immutability exists for a different reason than `region`'s: it selects which Guardrails baseline
 applies (§3.3), so leaving it mutable would let an account be created under `prod` and flipped to
 `dev` to pick up its looser network posture.
+
+## Key Concept: Structural Region Shape
+
+The API rejects a `region` that does not have a valid cloud-region shape, such as `aaa` or
+`eu-central-1` without a cloud prefix. This is only a format check: Guardrails and Backplane Config
+(007/008) decide whether a well-formed region is actually supported.
 
 ## Key Concept: Namespace as Trust Anchor & Ops-Owned Labels
 
@@ -114,7 +124,12 @@ type SnowflakeAccountSpec struct {
 	// +optional
 	Contacts []string `json:"contacts,omitempty"`
 
-	// Immutable after creation (design.md 3.11.3).
+	// Immutable after creation (design.md 3.11.3). Structural cloud-region
+	// shape, checked by the API server before the account ever exists.
+	// Mirrors internal/snowflake/host.regionPattern (004) — keep both in
+	// sync. Whether the region is actually offered is resolved later against
+	// the Backplane Config (007) / Guardrails (008), not here.
+	// +kubebuilder:validation:Pattern=`^[a-z][a-z0-9]{2,}-[a-z0-9]+(-[a-z0-9]+)*$`
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="region is immutable"
 	Region string `json:"region"`
 
@@ -292,7 +307,7 @@ func AccountURL(locator, region string, usePrivateLink bool) (string, error)
 |---|---|---|---|---|
 | `description` | string | No | Mutable | — |
 | `contacts[]` | string | No | Mutable | — |
-| `region` | string | Yes | Immutable | Format/allowlist enforced by Guardrails (008), not here |
+| `region` | string | Yes | Immutable | Structural cloud-region shape rejected by a `Pattern` marker (mirrors 004's `host.regionPattern`); allowlist/availability enforced by Guardrails (008), not here |
 | `environment` | string | Yes | Immutable | Enum: `dev`, `prod` |
 | `creditQuota` | int32 | No | Mutable | Ceiling enforced by Guardrails/Quota (008/011), not here |
 | `identityIntegration` | object | Yes | Mutable | — |
@@ -375,6 +390,12 @@ caller (020) already has the namespace object from its own reconcile and passes 
   Classification for why this is a user error despite being ops-caused).
 - **Do the `region`/`environment` CEL rules block the first `CREATE`?** No — `oldSelf` doesn't
   exist yet on create, so both rules only evaluate (and can only fail) on `UPDATE`.
+- **Is a malformed `region` (e.g. `aaa`) rejected the same way as a Guardrails violation?** No —
+  the `Pattern` marker is a schema check, so the API server itself rejects the write before the
+  object is ever persisted; the controller never observes it, never reconciles it, and never gets a
+  chance to report it on `Synced` (design.md §3.3). A `region` that is well-formed but simply not
+  offered is a different failure entirely: it persists, reconciles, and is rejected later by
+  Guardrails (008) with a message on `Synced`.
 - **Why no CEL rule for `metadata.name`?** Kubernetes already rejects any attempt to change an
   object's `name`; there's nothing left for this CRD's schema to enforce.
 
@@ -418,6 +439,8 @@ caller (020) already has the namespace object from its own reconcile and passes 
   Specification tables above, with matching JSON names.
 - **SC-003**: `region` and `environment` carry `x-kubernetes-validations` CEL rules that reject a
   changed value on update but impose no constraint on create.
+- **SC-003a**: `region` carries a `Pattern` marker, identical to spec 004's `host.regionPattern`,
+  that rejects a value with no valid cloud-region shape (e.g. `aaa`) on both create and update.
 - **SC-004**: attempting to change an existing `SnowflakeAccount`'s `metadata.name` is rejected by
   the Kubernetes API server itself — no CEL rule needed or present for it.
 - **SC-005**: `environment` accepts only `dev` or `prod`; any other value is rejected at admission.

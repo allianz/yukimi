@@ -39,7 +39,12 @@ type SnowflakeAccountSpec struct {
 	// +optional
 	Contacts []string `json:"contacts,omitempty"`
 
-	// Immutable after creation (design.md 3.11.3).
+	// Immutable after creation (design.md 3.11.3). Structural cloud-region
+	// shape, checked by the API server before the account ever exists.
+	// Mirrors internal/snowflake/host.regionPattern (004) — keep both in
+	// sync. Whether the region is actually offered is resolved later against
+	// the Backplane Config (007) / Guardrails (008), not here.
+	// +kubebuilder:validation:Pattern=`^[a-z][a-z0-9]{2,}-[a-z0-9]+(-[a-z0-9]+)*$`
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="region is immutable"
 	Region string `json:"region"`
 
