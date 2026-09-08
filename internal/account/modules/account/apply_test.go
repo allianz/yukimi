@@ -20,6 +20,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -317,6 +318,49 @@ func TestApply_FreshCreate_SecretPathOccupied(t *testing.T) {
 	}
 	if !outcome.Abort {
 		t.Error("outcome.Abort = false, want true")
+	}
+}
+
+// A fresh create aborts with a user error naming the account and its deletion
+// recovery window — never the secret path — when the resolved secret path is
+// occupied by a secret scheduled for deletion (secrets.ErrPendingDeletion).
+func TestApply_FreshCreate_SecretPathPendingDeletion_Rejected(t *testing.T) {
+	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", []string{"a@b.com"}, "")
+	backend := secrets.NewFakeBackend()
+	backend.SchedulesDeletion = true
+	mc := pipeline.NewModuleContext(cr, "ns", nil, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
+
+	path, err := secrets.NewTenantPath("myorg", cr.Namespace, cr.Name)
+	if err != nil {
+		t.Fatalf("secrets.NewTenantPath: %v", err)
+	}
+	if err := backend.Create(context.Background(), path, "existing-secret"); err != nil {
+		t.Fatalf("seeding existing secret: %v", err)
+	}
+	if err := backend.Delete(context.Background(), path); err != nil {
+		t.Fatalf("scheduling deletion: %v", err)
+	}
+
+	m := &module{backend: backend, org: "myorg", gracePeriod: 5 * time.Minute}
+	outcome := m.Apply(context.Background(), mc)
+
+	if outcome.State != pipeline.StateRejected {
+		t.Errorf("outcome.State = %v, want StateRejected", outcome.State)
+	}
+	if !outcome.Abort {
+		t.Error("outcome.Abort = false, want true")
+	}
+	if !internalerrors.IsUserError(outcome.Err) {
+		t.Errorf("expected a user error, got: %v", outcome.Err)
+	}
+	if outcome.Err == nil || !strings.Contains(outcome.Err.Error(), `"acct"`) {
+		t.Errorf("expected the message to name the account, got: %v", outcome.Err)
+	}
+	if outcome.Err == nil || !strings.Contains(outcome.Err.Error(), "recovery window") {
+		t.Errorf("expected the message to mention the deletion recovery window, got: %v", outcome.Err)
+	}
+	if outcome.Err != nil && strings.Contains(outcome.Err.Error(), path.String()) {
+		t.Errorf("expected the message to never name the secret path, got: %v", outcome.Err)
 	}
 }
 

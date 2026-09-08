@@ -147,11 +147,13 @@ internal/account/modules/account/
 - `spec.contacts` is empty when this module reaches its fresh-create path (defense-in-depth backstop;
   Guardrails (008) is expected to already block this at admission).
 - The resolved account name does not start with a letter (same backstop).
+- The secret store's create-only write fails because the occupying secret is scheduled for deletion
+  (`errors.Is(err, secrets.ErrPendingDeletion)`) — the account was deleted too recently.
 
 **System Errors**:
 - RSA keypair generation fails.
-- The secret store's create-only write fails, for any reason — including the path already being
-  occupied.
+- The secret store's create-only write fails for any other reason, including the path already being
+  occupied by a live secret.
 - The org-admin connection cannot be opened.
 - `CREATE ACCOUNT` fails for any reason other than the name collision above.
 - The post-create locator lookup finds no matching account despite `CREATE ACCOUNT` having just
@@ -199,10 +201,10 @@ internal/account/modules/account/
 - **The credential path is scheduled for deletion but not yet gone — what does the next reconcile see?**
   Neither present nor absent. A path inside its recovery window cannot be read and cannot be re-created
   (003), so `Observe` cannot treat it as a live credential and `Apply`'s fresh-create path cannot claim it
-  either: the create-only write fails on an occupied path exactly as it does for a live credential, and the
-  failure is a system error like any other store fault. There is nothing for this module to do about it —
-  the state is self-clearing, bounded by the account's own grace period, and re-provisioning under the same
-  `metadata.name` was already blocked by the account name for at least as long.
+  either. `Apply` recognizes this case (`secrets.ErrPendingDeletion`) and rejects with a message naming
+  the account and its deletion recovery window — never the secret path. The state is still self-clearing,
+  bounded by the account's own grace period; there is nothing more for this module to do than report it
+  clearly.
 - **Why render the configured grace period rather than Snowflake's minimum of 3?** Because 3 is the value
   that makes recovery least likely to work: it is below the 7-day floor AWS Secrets Manager can represent,
   so the credential would be destroyed outright on every deletion and every restore would need the manual
@@ -221,9 +223,11 @@ internal/account/modules/account/
   loads the config file itself, and never re-validates `GracePeriodDays`, which 002's loader has already
   bounded to 7-90.
 - **Secrets Handling (003)** — Used APIs: `GenerateKeyPair()`/`NewCredentials()`, `MarshalCredentials()`,
-  `NewTenantPath()`, `Backend.Create()`, `Backend.Delete()` — Contract: `Create` and `Delete` only,
-  never `Update`; the module never reads a credential back. `Delete`'s recovery window is the backend's own
-  business — this module passes no window and cannot choose one.
+  `NewTenantPath()`, `Backend.Create()`, `Backend.Delete()`, `ErrPendingDeletion` — Contract: `Create` and
+  `Delete` only, never `Update`; the module never reads a credential back. `Delete`'s recovery window is
+  the backend's own business — this module passes no window and cannot choose one. Matches `Create`'s
+  error against `ErrPendingDeletion` via `errors.Is` and decides its own classification and message for
+  that case.
 - **Connection Pooling (004)** — Used APIs: `ModuleContext.OrgAdminDB()`, `ModuleContext.TenantDB()`,
   `ModuleContext.EvictTenant()` — Contract: reached only through `ModuleContext`; this module never
   imports `internal/snowflake/pool` or `internal/snowflake/host` directly.
@@ -271,7 +275,10 @@ internal/account/modules/account/
 - **SC-006**: A fresh create generates a keypair, stores it create-only, then issues `CREATE ACCOUNT` —
   in that order, and only in that order.
 - **SC-007**: A fresh create aborts with a system error, generating no keypair and issuing no SQL, when
-  the resolved secret path is already occupied.
+  the resolved secret path is already occupied by a live secret.
+- **SC-007a**: A fresh create aborts with a user error naming the account and its deletion recovery
+  window — never the secret path — when the resolved secret path is occupied by a secret scheduled for
+  deletion.
 - **SC-008**: `CREATE ACCOUNT`'s `REGION` literal is the CRD's region uppercased with every `-` replaced
   by `_`.
 - **SC-009**: `CREATE ACCOUNT`'s `COMMENT` clause is omitted entirely when `spec.description` is empty.

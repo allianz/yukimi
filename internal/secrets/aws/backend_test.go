@@ -27,6 +27,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
+	smtypes "github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
 
 	yukimierrors "github.com/allianz/yukimi/internal/errors"
 	"github.com/allianz/yukimi/internal/secrets"
@@ -274,6 +275,48 @@ func TestCreate(t *testing.T) {
 		}
 		if !errors.Is(err, underlying) {
 			t.Fatalf("expected errors.Is to reach the underlying AWS error, got %v", err)
+		}
+		if errors.Is(err, secrets.ErrPendingDeletion) {
+			t.Fatalf("occupied-by-a-live-secret failure must not wrap ErrPendingDeletion, got %v", err)
+		}
+	})
+
+	t.Run("failure on a path scheduled for deletion wraps ErrPendingDeletion", func(t *testing.T) {
+		underlying := &smtypes.InvalidRequestException{Message: aws.String(
+			"You can't create this secret because a secret with this name is already scheduled for deletion.")}
+		fake := &fakeClient{createErr: underlying}
+		backend := &Backend{client: fake}
+
+		err := backend.Create(context.Background(), path, "some-opaque-value")
+		if err == nil {
+			t.Fatal("expected Create to fail on a path scheduled for deletion")
+		}
+		if fake.putCalled {
+			t.Fatal("Create must never call PutSecretValue")
+		}
+		if !errors.Is(err, secrets.ErrPendingDeletion) {
+			t.Fatalf("expected errors.Is to reach secrets.ErrPendingDeletion, got %v", err)
+		}
+		if !errors.Is(err, underlying) {
+			t.Fatalf("expected errors.Is to still reach the underlying AWS error, got %v", err)
+		}
+	})
+
+	t.Run("an InvalidRequestException for an unrelated cause does not wrap ErrPendingDeletion", func(t *testing.T) {
+		underlying := &smtypes.InvalidRequestException{Message: aws.String(
+			"You must specify a rotation function ARN before enabling rotation.")}
+		fake := &fakeClient{createErr: underlying}
+		backend := &Backend{client: fake}
+
+		err := backend.Create(context.Background(), path, "some-opaque-value")
+		if err == nil {
+			t.Fatal("expected Create to fail")
+		}
+		if errors.Is(err, secrets.ErrPendingDeletion) {
+			t.Fatalf("an unrelated InvalidRequestException must not wrap ErrPendingDeletion, got %v", err)
+		}
+		if !errors.Is(err, underlying) {
+			t.Fatalf("expected errors.Is to still reach the underlying AWS error, got %v", err)
 		}
 	})
 }
