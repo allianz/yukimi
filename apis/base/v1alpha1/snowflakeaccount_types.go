@@ -160,6 +160,7 @@ type SnowflakeAccountStatus struct {
 // +kubebuilder:printcolumn:name="AGE",type="date",JSONPath=".metadata.creationTimestamp"
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Namespaced
+// +kubebuilder:validation:XValidation:rule="size(self.metadata.name) <= 249",message="metadata.name must be 249 characters or fewer, so the resolved Snowflake account name (design.md 3.12) stays within Snowflake's 255-character identifier limit"
 type SnowflakeAccount struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

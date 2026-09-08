@@ -293,6 +293,11 @@ spec:
         required:
         - spec
         type: object
+        x-kubernetes-validations:
+        - message: metadata.name must be 249 characters or fewer, so the resolved
+            Snowflake account name (design.md 3.12) stays within Snowflake's 255-character
+            identifier limit
+          rule: size(self.metadata.name) <= 249
     served: true
     storage: true
     subresources:
