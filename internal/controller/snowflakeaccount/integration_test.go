@@ -142,7 +142,7 @@ func TestIntegration_CreateThenDestroy(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, Generation: 1},
 		Spec: v1alpha1.SnowflakeAccountSpec{
 			Region:      os.Getenv("SAMPLE_CUSTOMER_ACCOUNT_REGION"),
-			Contacts:    []string{"yukimi-integration-test@example.com"},
+			Contact:     "yukimi-integration-test@example.com",
 			Description: "yukimi 020 integration test — safe to drop",
 			IdentityIntegration: v1alpha1.IdentityIntegration{
 				RoleBindings: map[string]string{"ACCOUNTADMIN": "acme-admins"},

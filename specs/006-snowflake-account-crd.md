@@ -72,6 +72,7 @@ The API rejects invalid input before an account is created:
 - `metadata.name` must be 249 characters or fewer, leaving room for the suffix added to form the
   Snowflake account name.
 - `description` must be 1024 characters or fewer, keeping it a short, human-readable comment.
+- `contact` must be a valid email address. It is the Snowflake account's contact address.
 
 These checks prevent basic input errors from reaching the controller or Snowflake.
 
@@ -129,8 +130,8 @@ type SnowflakeAccountSpec struct {
 	// +optional
 	Description string `json:"description,omitempty"`
 
-	// +optional
-	Contacts []string `json:"contacts,omitempty"`
+	// +kubebuilder:validation:Pattern=`^[^\s@]+@[^\s@]+\.[^\s@]+$`
+	Contact string `json:"contact"`
 
 	// Immutable after creation (design.md 3.11.3). Structural cloud-region
 	// shape, checked by the API server before the account ever exists.
@@ -333,7 +334,7 @@ func AccountURL(locator, region string, usePrivateLink bool) (string, error)
 | Field Path | Type | Required | Mutability | Validation/Constraints |
 |---|---|---|---|---|
 | `description` | string | No | Mutable | `MaxLength`: 1024 (product choice, not a discovered Snowflake limit — see Key Concept: Structural Admission Checks) |
-| `contacts[]` | string | No | Mutable | — |
+| `contact` | string | Yes | Mutable | `Pattern`: `` `^[^\s@]+@[^\s@]+\.[^\s@]+$` `` — email shape, checked by the API server; carried into `CREATE ACCOUNT`'s `EMAIL` (012) |
 | `region` | string | Yes | Immutable | `Pattern`: `` `^[a-z][a-z0-9]{2,}-[a-z0-9]+(-[a-z0-9]+)*$` `` — identical to 004's `host.regionPattern`; allowlist/availability enforced by Guardrails (008), not here |
 | `environment` | string | Yes | Immutable | Enum: `dev`, `prod` |
 | `creditQuota` | int32 | No | Mutable | Ceiling enforced by Guardrails/Quota (008/011), not here |
@@ -580,9 +581,7 @@ metadata:
 spec:
   # --- General metadata ---
   description: "Analytics team Snowflake environment for EU operations"
-  contacts:
-    - alice.smith@company.com
-    - team-analytics@company.com
+  contact: alice.smith@company.com
   # --- Snowflake account configuration ---
   region: aws-eu-central-1
   environment: prod            # dev | prod — required, immutable (3.11.3)

@@ -144,9 +144,8 @@ internal/account/modules/account/
 
 **User Errors**:
 - `CREATE ACCOUNT` fails because the resolved account name is already taken by another account org-wide.
-- `spec.contacts` is empty when this module reaches its fresh-create path (defense-in-depth backstop;
-  Guardrails (008) is expected to already block this at admission).
-- The resolved account name does not start with a letter (same backstop).
+- The resolved account name does not start with a letter (backstop; Guardrails (008) is expected to
+  already block this at admission).
 - The secret store's create-only write fails because the occupying secret is scheduled for deletion
   (`errors.Is(err, secrets.ErrPendingDeletion)`) — the account was deleted too recently.
 
@@ -234,7 +233,7 @@ internal/account/modules/account/
 - **Statement Execution (005)** — Used APIs: `statement.New()`, `Runner.Exec()`, `Runner.Query()`,
   `QuoteLiteral()`, `BareIdentifier()`, `*statement.Error` — Contract: every tenant-influenced value is
   rendered through one of these, never concatenated raw.
-- **SnowflakeAccount CRD (006)** — Used APIs: `SnowflakeAccountSpec.Description`, `.Contacts`, `.Region`,
+- **SnowflakeAccount CRD (006)** — Used APIs: `SnowflakeAccountSpec.Description`, `.Contact`, `.Region`,
   `SnowflakeAccountStatus.AccountLocator`, `.AccountCreatedAt` — Contract: reads the spec fields
   read-only; writes `AccountLocator`/`AccountCreatedAt` directly on `ModuleContext.CR().Status` — the
   only two status fields this module ever sets.
@@ -282,9 +281,9 @@ internal/account/modules/account/
 - **SC-008**: `CREATE ACCOUNT`'s `REGION` literal is the CRD's region uppercased with every `-` replaced
   by `_`.
 - **SC-009**: `CREATE ACCOUNT`'s `COMMENT` clause is omitted entirely when `spec.description` is empty.
-- **SC-010**: `CREATE ACCOUNT`'s `EMAIL` is always `spec.contacts[0]`.
-- **SC-011**: A fresh create aborts with a user error, generating no keypair, when `spec.contacts` is
-  empty.
+- **SC-010**: `CREATE ACCOUNT`'s `EMAIL` is always `spec.contact`.
+- **SC-011**: a missing or non-email-shaped `spec.contact` is rejected by the API server at admission
+  (006), before this module ever runs.
 - **SC-012**: A `CREATE ACCOUNT` failure due to an org-wide name collision is classified as a user error;
   every other `CREATE ACCOUNT` failure is classified as a system error.
 - **SC-013**: The post-create locator lookup discards a row whose account name is not an exact,
@@ -343,7 +342,7 @@ internal/account/modules/account/
   | `ADMIN_NAME` | fixed `"platform"` | quoted literal |
   | `ADMIN_RSA_PUBLIC_KEY` | the generated public key | quoted literal |
   | `ADMIN_USER_TYPE` | fixed `SERVICE` | bare token |
-  | `EMAIL` | `spec.contacts[0]` (tenant free text) | quoted literal |
+  | `EMAIL` | `spec.contact` (email-shape checked at admission, 006) | quoted literal |
   | `EDITION` | fixed `ENTERPRISE` | bare token |
   | `REGION` | `spec.region`, transformed into Snowflake's region-identifier form | bare identifier |
   | `COMMENT` | `spec.description` (tenant free text); clause omitted if empty | quoted literal |

@@ -79,12 +79,12 @@ func (f *fakeDBPool) EvictTenant(namespace, accountName string) {
 	f.evictAccountName = accountName
 }
 
-func newTestCR(name, namespace, region, locator string, contacts []string, description string) *v1alpha1.SnowflakeAccount {
+func newTestCR(name, namespace, region, locator, contact, description string) *v1alpha1.SnowflakeAccount {
 	return &v1alpha1.SnowflakeAccount{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 		Spec: v1alpha1.SnowflakeAccountSpec{
 			Region:      region,
-			Contacts:    contacts,
+			Contact:     contact,
 			Description: description,
 		},
 		Status: v1alpha1.SnowflakeAccountStatus{AccountLocator: locator},
@@ -94,7 +94,7 @@ func newTestCR(name, namespace, region, locator string, contacts []string, descr
 // SC-001: Observe returns not-in-sync with no connection attempt when no
 // locator is known.
 func TestObserve_NoLocator_NoConnectionAttempt(t *testing.T) {
-	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", []string{"a@b.com"}, "")
+	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
 	mc := pipeline.NewModuleContext(cr, "ns", nil, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
 
 	m := &module{}
@@ -111,7 +111,7 @@ func TestObserve_NoLocator_NoConnectionAttempt(t *testing.T) {
 // SC-002: Observe returns in-sync once a known locator's platform connection
 // succeeds.
 func TestObserve_KnownLocator_ConnectionSucceeds(t *testing.T) {
-	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345", []string{"a@b.com"}, "")
+	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345", "a@b.com", "")
 	fake := &fakeDBPool{}
 	mc := pipeline.NewModuleContext(cr, "ns", nil, nil, nil, fake)
 
@@ -132,7 +132,7 @@ func TestObserve_KnownLocator_ConnectionSucceeds(t *testing.T) {
 // SC-003: Observe returns not-in-sync, with a system error, when a known
 // locator's platform connection fails.
 func TestObserve_KnownLocator_ConnectionFails(t *testing.T) {
-	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345", []string{"a@b.com"}, "")
+	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345", "a@b.com", "")
 	wantErr := errors.New("dial failed")
 	mc := pipeline.NewModuleContext(cr, "ns", nil, nil, nil, &fakeDBPool{tenantErr: wantErr})
 
@@ -156,7 +156,7 @@ func TestObserve_KnownLocator_ConnectionFails(t *testing.T) {
 // Observe never attempts a connection while the account is within its
 // post-create grace period.
 func TestObserve_WithinGracePeriod_NoConnectionAttempt(t *testing.T) {
-	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345", []string{"a@b.com"}, "")
+	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345", "a@b.com", "")
 	cr.Status.AccountCreatedAt = &metav1.Time{Time: time.Now()}
 	mc := pipeline.NewModuleContext(cr, "ns", nil, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
 
@@ -173,7 +173,7 @@ func TestObserve_WithinGracePeriod_NoConnectionAttempt(t *testing.T) {
 
 // Observe attempts a connection as usual once the grace period has elapsed.
 func TestObserve_PastGracePeriod_ConnectionAttempted(t *testing.T) {
-	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345", []string{"a@b.com"}, "")
+	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345", "a@b.com", "")
 	cr.Status.AccountCreatedAt = &metav1.Time{Time: time.Now().Add(-10 * time.Minute)}
 	fake := &fakeDBPool{}
 	mc := pipeline.NewModuleContext(cr, "ns", nil, nil, nil, fake)

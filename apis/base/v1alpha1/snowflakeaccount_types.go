@@ -37,8 +37,8 @@ type SnowflakeAccountSpec struct {
 	// +kubebuilder:validation:MaxLength=1024
 	Description string `json:"description,omitempty"`
 
-	// +optional
-	Contacts []string `json:"contacts,omitempty"`
+	// +kubebuilder:validation:Pattern=`^[^\s@]+@[^\s@]+\.[^\s@]+$`
+	Contact string `json:"contact"`
 
 	// Immutable after creation (design.md 3.11.3). Structural cloud-region
 	// shape, checked by the API server before the account ever exists.

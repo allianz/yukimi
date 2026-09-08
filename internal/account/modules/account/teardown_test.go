@@ -32,7 +32,7 @@ import (
 // SC-023: Teardown issues no SQL and evicts nothing when
 // cr.Status.AccountLocator is empty, and still deletes the credential.
 func TestTeardown_NoLocator_SkipsAccountSteps_DeletesCredential(t *testing.T) {
-	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", []string{"a@b.com"}, "")
+	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
 	fake := &fakeDBPool{t: t, forbidCalls: true}
 	backend := secrets.NewFakeBackend()
 	path, err := secrets.NewTenantPath("myorg", cr.Namespace, cr.Name)
@@ -63,7 +63,7 @@ func TestTeardown_NoLocator_SkipsAccountSteps_DeletesCredential(t *testing.T) {
 func TestTeardown_KnownLocator_DropsEvictsDeletes_InOrder(t *testing.T) {
 	for _, days := range []int{3, 90} {
 		t.Run(fmt.Sprintf("gracePeriodDays=%d", days), func(t *testing.T) {
-			cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345", []string{"a@b.com"}, "")
+			cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345", "a@b.com", "")
 			orgAdminDB, mock := newOrgAdminMock(t)
 			fake := &fakeDBPool{orgAdminDB: orgAdminDB}
 			backend := secrets.NewFakeBackend()
@@ -107,7 +107,7 @@ func TestTeardown_KnownLocator_DropsEvictsDeletes_InOrder(t *testing.T) {
 // SC-025: a DROP ACCOUNT failure stops the run before EvictTenant or the
 // credential deletion runs.
 func TestTeardown_DropAccountFails_StopsBeforeEvictOrDelete(t *testing.T) {
-	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345", []string{"a@b.com"}, "")
+	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345", "a@b.com", "")
 	orgAdminDB, mock := newOrgAdminMock(t)
 	fake := &fakeDBPool{orgAdminDB: orgAdminDB}
 	backend := secrets.NewFakeBackend()
@@ -139,7 +139,7 @@ func TestTeardown_DropAccountFails_StopsBeforeEvictOrDelete(t *testing.T) {
 // The org-admin connection failing to open stops the run before any SQL is
 // issued, before EvictTenant, and before the credential is deleted.
 func TestTeardown_OrgAdminConnectionFails_ReturnsError(t *testing.T) {
-	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345", []string{"a@b.com"}, "")
+	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345", "a@b.com", "")
 	wantErr := errors.New("dial failed")
 	fake := &fakeDBPool{orgAdminErr: wantErr}
 	backend := secrets.NewFakeBackend()
@@ -169,7 +169,7 @@ func TestTeardown_OrgAdminConnectionFails_ReturnsError(t *testing.T) {
 // A tenant path that fails to build (here, via an empty org) is returned
 // unchanged.
 func TestTeardown_CredentialPathBuildFails_ReturnsError(t *testing.T) {
-	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", []string{"a@b.com"}, "")
+	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
 	fake := &fakeDBPool{t: t, forbidCalls: true}
 	backend := secrets.NewFakeBackend()
 
@@ -184,7 +184,7 @@ func TestTeardown_CredentialPathBuildFails_ReturnsError(t *testing.T) {
 // SC-024: an already-absent credential path is treated as success, and
 // Delete is never called.
 func TestTeardown_CredentialAlreadyAbsent_DeleteNeverCalled(t *testing.T) {
-	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", []string{"a@b.com"}, "")
+	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
 	fake := &fakeDBPool{t: t, forbidCalls: true}
 	backend := secrets.NewFakeBackend()
 	deleteCalls := 0
@@ -207,7 +207,7 @@ func TestTeardown_CredentialAlreadyAbsent_DeleteNeverCalled(t *testing.T) {
 // A credential present at Get time but failing on Delete is a real system
 // error.
 func TestTeardown_CredentialGetSucceeds_DeleteFails_ReturnsError(t *testing.T) {
-	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", []string{"a@b.com"}, "")
+	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
 	fake := &fakeDBPool{t: t, forbidCalls: true}
 	backend := secrets.NewFakeBackend()
 	path, err := secrets.NewTenantPath("myorg", cr.Namespace, cr.Name)
