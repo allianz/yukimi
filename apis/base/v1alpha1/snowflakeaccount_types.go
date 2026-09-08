@@ -34,6 +34,7 @@ import (
 // Managed-Resource Surface).
 type SnowflakeAccountSpec struct {
 	// +optional
+	// +kubebuilder:validation:MaxLength=1024
 	Description string `json:"description,omitempty"`
 
 	// +optional

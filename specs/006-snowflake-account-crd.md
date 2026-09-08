@@ -71,6 +71,7 @@ The API rejects invalid input before an account is created:
   Config (007/008) later decide whether that region is supported.
 - `metadata.name` must be 249 characters or fewer, leaving room for the suffix added to form the
   Snowflake account name.
+- `description` must be 1024 characters or fewer, keeping it a short, human-readable comment.
 
 These checks prevent basic input errors from reaching the controller or Snowflake.
 
@@ -331,7 +332,7 @@ func AccountURL(locator, region string, usePrivateLink bool) (string, error)
 
 | Field Path | Type | Required | Mutability | Validation/Constraints |
 |---|---|---|---|---|
-| `description` | string | No | Mutable | — |
+| `description` | string | No | Mutable | `MaxLength`: 1024 (product choice, not a discovered Snowflake limit — see Key Concept: Structural Admission Checks) |
 | `contacts[]` | string | No | Mutable | — |
 | `region` | string | Yes | Immutable | `Pattern`: `` `^[a-z][a-z0-9]{2,}-[a-z0-9]+(-[a-z0-9]+)*$` `` — identical to 004's `host.regionPattern`; allowlist/availability enforced by Guardrails (008), not here |
 | `environment` | string | Yes | Immutable | Enum: `dev`, `prod` |
@@ -481,6 +482,8 @@ caller (020) already has the namespace object from its own reconcile and passes 
 - **SC-003b**: a root-level `XValidation` rule on `SnowflakeAccount` rejects a `metadata.name`
   longer than 249 characters on both create and update; a name of exactly 249 characters is
   accepted.
+- **SC-003c**: `description` carries a `MaxLength` marker that rejects a value longer than 1024
+  characters; a description of exactly 1024 characters is accepted.
 - **SC-004**: attempting to change an existing `SnowflakeAccount`'s `metadata.name` is rejected by
   the Kubernetes API server itself — no CEL rule needed or present for that.
 - **SC-005**: `environment` accepts only `dev` or `prod`; any other value is rejected at admission.
