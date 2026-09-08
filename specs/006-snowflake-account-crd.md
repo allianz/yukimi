@@ -69,8 +69,8 @@ The API rejects invalid input before an account is created:
 
 - `region` must have a cloud-region shape, such as `aws-eu-central-1`. Guardrails and Backplane
   Config (007/008) later decide whether that region is supported.
-- `metadata.name` must be 249 characters or fewer, leaving room for the suffix added to form the
-  Snowflake account name.
+- `metadata.name` must be 249 characters or fewer, start with a lowercase letter, and contain
+  only lowercase letters, digits, and `-`. This keeps the derived Snowflake account name valid.
 - `description` must be 1024 characters or fewer, keeping it a short, human-readable comment.
 - `contact` must be a valid email address. It is the Snowflake account's contact address.
 
@@ -244,10 +244,11 @@ type SnowflakeAccountStatus struct {
 }
 
 // A SnowflakeAccount is the resource a team commits to Git to describe the
-// Snowflake account they want (design.md 3.1). The length rule below is
+// Snowflake account they want (design.md 3.1). Both rules below are
 // root-level, not on Spec, because metadata.name isn't a field Spec defines
 // (Key Concept: Structural Admission Checks).
 // +kubebuilder:validation:XValidation:rule="size(self.metadata.name) <= 249",message="metadata.name must be 249 characters or fewer, so the resolved Snowflake account name (design.md 3.12) stays within Snowflake's 255-character identifier limit"
+// +kubebuilder:validation:XValidation:rule="self.metadata.name.matches('^[a-z][a-z0-9-]*$')",message="metadata.name must start with a lowercase letter and contain only lowercase letters, digits, and '-', so the resolved Snowflake account name (design.md 3.12) is always a valid Snowflake identifier"
 type SnowflakeAccount struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -327,7 +328,7 @@ func AccountURL(locator, region string, usePrivateLink bool) (string, error)
 
 | Field Path | Type | Required | Mutability | Validation/Constraints |
 |---|---|---|---|---|
-| `name` | string | Yes | Immutable (Kubernetes-enforced, no CEL needed) | Root-level `XValidation`: `size(self.metadata.name) <= 249` — 255 (Snowflake's identifier limit) minus the 6 characters `ResolveName` (§3.12) always appends |
+| `name` | string | Yes | Immutable (Kubernetes-enforced, no CEL needed) | Two root-level `XValidation` rules: `size(self.metadata.name) <= 249` (255, Snowflake's identifier limit, minus the 6 characters `ResolveName` (§3.12) always appends), and `self.metadata.name.matches('^[a-z][a-z0-9-]*$')` (starts with a lowercase letter, only lowercase letters/digits/`-` after — the shape `ResolveName` needs to always produce a valid Snowflake identifier) |
 
 ### Fields (spec)
 
@@ -437,6 +438,13 @@ caller (020) already has the namespace object from its own reconcile and passes 
   written credentials to the secret store, permanently wedging the resource on retry. This rule
   closes off that path entirely; the secret-write/retry behavior itself is a separate, known gap
   this spec does not fix.
+- **A `metadata.name` with a leading digit (e.g. `9-team`) or a dot (e.g. `my.team`) — does
+  Kubernetes already reject these?** No — both are legal under Kubernetes' own DNS-1123-subdomain
+  name validation, and `ResolveName` never translates either away (only `-` becomes `_`). Before
+  the shape `XValidation` rule existed, both reached a live `CREATE ACCOUNT` call and failed there
+  (a leading digit fails Snowflake's bare-identifier rule; a dot is never a valid identifier
+  character) — the same wedge-bug shape as the length case above. The shape rule rejects both at
+  admission instead.
 
 ## Dependencies
 
@@ -483,6 +491,9 @@ caller (020) already has the namespace object from its own reconcile and passes 
 - **SC-003b**: a root-level `XValidation` rule on `SnowflakeAccount` rejects a `metadata.name`
   longer than 249 characters on both create and update; a name of exactly 249 characters is
   accepted.
+- **SC-003d**: a second root-level `XValidation` rule rejects a `metadata.name` that starts with a
+  digit (e.g. `9-team`) or contains a dot (e.g. `my.team`) on both create and update;
+  `analytics-team-eu` is accepted.
 - **SC-003c**: `description` carries a `MaxLength` marker that rejects a value longer than 1024
   characters; a description of exactly 1024 characters is accepted.
 - **SC-004**: attempting to change an existing `SnowflakeAccount`'s `metadata.name` is rejected by
