@@ -1,11 +1,13 @@
 apiVersion: base.snowflake.yukimi.io/v1alpha1
 kind: SnowflakeAccount
 metadata:
-  name: manual-test-7    # created in Snowflake as analytics_team_eu_5k3wf (design.md 3.12)
+  name: manual-test-1    # created in Snowflake as analytics_team_eu_5k3wf (design.md 3.12)
 spec:
   # --- General metadata ---
   description: "Analytics team Snowflake environment for EU operations"
-  contact: alice.smith@company.com
+  contacts:
+    - alice.smith@company.com
+    - team-analytics@company.com
   # --- Snowflake account configuration ---
   region: aws-eu-central-1
   environment: prod            # dev | prod — required, immutable (design.md 3.11.3); a Guardrails target key (3.3)
