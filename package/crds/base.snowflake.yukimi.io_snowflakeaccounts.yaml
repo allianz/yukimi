@@ -201,10 +201,11 @@ spec:
                 description: |-
                   Immutable after creation (design.md 3.11.3). Structural cloud-region
                   shape, checked by the API server before the account ever exists.
-                  Mirrors internal/snowflake/host.regionPattern (004) — keep both in
-                  sync. Whether the region is actually offered is resolved later against
-                  the Backplane Config (007) / Guardrails (008), not here.
-                pattern: ^[a-z][a-z0-9]{2,}-[a-z0-9]+(-[a-z0-9]+)*$
+                  Reuses internal/config/base.orgAdminRegionPattern's cloud allowlist
+                  (002) — aws/azure/gcp are the clouds a Snowflake org's account may
+                  live on. Whether the region is actually offered is resolved later
+                  against the Backplane Config (007) / Guardrails (008), not here.
+                pattern: ^(aws|azure|gcp)-[a-z][a-z0-9-]*$
                 type: string
                 x-kubernetes-validations:
                 - message: region is immutable

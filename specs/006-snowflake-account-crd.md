@@ -21,8 +21,8 @@ Snowflake at all — later specs read these fixed shapes, they don't extend them
   (§3.11.3), the `environment` enum, `identityIntegration.roleBindings` requiring an
   `ACCOUNTADMIN` entry (§3.7), and a `customAuthRules.exceptions` entry naming at least one of
   `rsaKeyAllowed`/`patAllowed` (§3.9). `region` additionally carries a `Pattern` marker rejecting
-  a value with no valid cloud-region shape (e.g. `aaa`), mirroring spec 004's
-  `host.regionPattern` so both layers agree on what "well-formed" means; a root-level rule on
+  a value with no valid cloud-region shape (e.g. `aaa`) or an unrecognized cloud, reusing spec
+  002's `base.orgAdminRegionPattern` allowlist; a root-level rule on
   `metadata.name` rejects a name too long for the resolved Snowflake account name (§3.12) to fit
   Snowflake's identifier limit (see Key Concept: Structural Admission Checks).
 - The `status.accountName` / `accountLocator` / `accountUrl` / `conditions` shape (§7.2).
@@ -67,8 +67,9 @@ applies (§3.3), so leaving it mutable would let an account be created under `pr
 
 The API rejects invalid input before an account is created:
 
-- `region` must have a cloud-region shape, such as `aws-eu-central-1`. Guardrails and Backplane
-  Config (007/008) later decide whether that region is supported.
+- `region` must have a cloud-region shape naming one of `aws`/`azure`/`gcp`, such as
+  `aws-eu-central-1`. Guardrails and Backplane Config (007/008) later decide whether that
+  specific region is supported.
 - `metadata.name` must be 249 characters or fewer, start with a lowercase letter, and contain
   only lowercase letters, digits, and `-`. This keeps the derived Snowflake account name valid.
 - `description` must be 1024 characters or fewer, keeping it a short, human-readable comment.
@@ -135,10 +136,11 @@ type SnowflakeAccountSpec struct {
 
 	// Immutable after creation (design.md 3.11.3). Structural cloud-region
 	// shape, checked by the API server before the account ever exists.
-	// Mirrors internal/snowflake/host.regionPattern (004) — keep both in
-	// sync. Whether the region is actually offered is resolved later against
-	// the Backplane Config (007) / Guardrails (008), not here.
-	// +kubebuilder:validation:Pattern=`^[a-z][a-z0-9]{2,}-[a-z0-9]+(-[a-z0-9]+)*$`
+	// Reuses internal/config/base.orgAdminRegionPattern's cloud allowlist
+	// (002) — aws/azure/gcp are the clouds a Snowflake org's account may
+	// live on. Whether the region is actually offered is resolved later
+	// against the Backplane Config (007) / Guardrails (008), not here.
+	// +kubebuilder:validation:Pattern=`^(aws|azure|gcp)-[a-z][a-z0-9-]*$`
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="region is immutable"
 	Region string `json:"region"`
 
@@ -336,7 +338,7 @@ func AccountURL(locator, region string, usePrivateLink bool) (string, error)
 |---|---|---|---|---|
 | `description` | string | No | Mutable | `MaxLength`: 1024 (product choice, not a discovered Snowflake limit — see Key Concept: Structural Admission Checks) |
 | `contact` | string | Yes | Mutable | `Pattern`: `` `^[^\s@]+@[^\s@]+\.[^\s@]+$` `` — email shape, checked by the API server; carried into `CREATE ACCOUNT`'s `EMAIL` (012) |
-| `region` | string | Yes | Immutable | `Pattern`: `` `^[a-z][a-z0-9]{2,}-[a-z0-9]+(-[a-z0-9]+)*$` `` — identical to 004's `host.regionPattern`; allowlist/availability enforced by Guardrails (008), not here |
+| `region` | string | Yes | Immutable | `Pattern`: `` `^(aws|azure|gcp)-[a-z][a-z0-9-]*$` `` — identical to 002's `base.orgAdminRegionPattern`; region availability enforced by Guardrails (008), not here |
 | `environment` | string | Yes | Immutable | Enum: `dev`, `prod` |
 | `creditQuota` | int32 | No | Mutable | Ceiling enforced by Guardrails/Quota (008/011), not here |
 | `identityIntegration` | object | Yes | Mutable | — |
@@ -486,8 +488,9 @@ caller (020) already has the namespace object from its own reconcile and passes 
   Specification tables above, with matching JSON names.
 - **SC-003**: `region` and `environment` carry `x-kubernetes-validations` CEL rules that reject a
   changed value on update but impose no constraint on create.
-- **SC-003a**: `region` carries a `Pattern` marker, identical to spec 004's `host.regionPattern`,
-  that rejects a value with no valid cloud-region shape (e.g. `aaa`) on both create and update.
+- **SC-003a**: `region` carries a `Pattern` marker, identical to spec 002's
+  `base.orgAdminRegionPattern`, that rejects a value with no valid cloud-region shape (e.g. `aaa`)
+  or an unrecognized cloud (e.g. `oracle-eu-1`) on both create and update.
 - **SC-003b**: a root-level `XValidation` rule on `SnowflakeAccount` rejects a `metadata.name`
   longer than 249 characters on both create and update; a name of exactly 249 characters is
   accepted.
