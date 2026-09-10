@@ -104,7 +104,7 @@ func targetSlot(ctx context.Context, db *sql.DB, username, currentFingerprint st
 	if err != nil {
 		return "", err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	cols, err := rows.Columns()
 	if err != nil {

@@ -48,6 +48,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/allianz/yukimi/apis"
+	"github.com/allianz/yukimi/internal/config/backplane"
 	"github.com/allianz/yukimi/internal/config/base"
 	yukimi "github.com/allianz/yukimi/internal/controller"
 	"github.com/allianz/yukimi/internal/secrets"
@@ -114,7 +115,12 @@ func main() {
 		// Lower than client-go's default of 10: a resource stuck retrying the
 		// same failure (e.g. CannotCreateExternalResource) collapses into one
 		// combined event after 3 distinct messages instead of 10.
-		EventBroadcaster: record.NewBroadcasterWithCorrelatorOptions(record.CorrelatorOptions{MaxEvents: 3}),
+		//
+		// Deprecated per controller-runtime, but the goroutine-leak risk it
+		// warns about doesn't apply here: this manager's lifetime is the
+		// entire process (mgr.Start blocks until shutdown below), so the
+		// broadcaster never outlives it.
+		EventBroadcaster: record.NewBroadcasterWithCorrelatorOptions(record.CorrelatorOptions{MaxEvents: 3}), //nolint:staticcheck
 	})
 	kingpin.FatalIfError(err, "Cannot create controller manager")
 
@@ -164,6 +170,9 @@ func main() {
 	baseConfig, err := base.Load(*configDir)
 	kingpin.FatalIfError(err, "failed to load base config")
 
+	bpConfig, err := backplane.Load(*configDir)
+	kingpin.FatalIfError(err, "failed to load backplane config")
+
 	var backend secrets.Backend
 	switch baseConfig.CloudProvider() {
 	case "aws":
@@ -175,7 +184,11 @@ func main() {
 	cached := secrets.NewCachedBackend(backend, baseConfig.Secrets.CacheTTL)
 
 	p := pool.New(cached, baseConfig)
-	defer p.Close()
+	defer func() {
+		if err := p.Close(); err != nil {
+			log.Info("error closing Snowflake connection pool", "error", err)
+		}
+	}()
 
 	startupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	_, err = p.OrgAdmin(startupCtx)
@@ -183,6 +196,6 @@ func main() {
 	kingpin.FatalIfError(err, "failed to establish org-admin Snowflake connection")
 
 	kingpin.FatalIfError(customresourcesgate.Setup(mgr, o), "Cannot setup CRD gate controller")
-	kingpin.FatalIfError(yukimi.SetupGated(mgr, o, baseConfig, p, cached), "Cannot setup Yukimi controllers")
+	kingpin.FatalIfError(yukimi.SetupGated(mgr, o, baseConfig, p, cached, bpConfig), "Cannot setup Yukimi controllers")
 	kingpin.FatalIfError(mgr.Start(ctrl.SetupSignalHandler()), "Cannot start controller manager")
 }

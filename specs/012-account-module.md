@@ -13,19 +13,26 @@ account with that key, and then remember the account's unique ID so every later 
 ## Scope
 
 This specification defines the account module that:
+- Confirms the resolved region exists in the Backplane Config (007) and, unless the tenant is an
+  alpha tester, is available, before generating any credential or issuing any SQL.
 - Generates and stores the `platform` service user's RSA keypair, create-only.
 - Issues `CREATE ACCOUNT` over the org-admin connection and captures the returned account locator.
 - Detects, on every reconcile, whether the account already exists — the pipeline's sole existence signal.
 - Publishes the resolved account name and locator onto the shared `ModuleContext` for every later module.
 - Tears the account down: `DROP ACCOUNT` over the org-admin connection, eviction of the pooled
   connection to it, and deletion of the stored credential.
+- Keeps the `platform` user's `EMAIL` in sync with `spec.contact` on every `Apply` against an existing
+  account, via a live read-compare-then-write over the tenant connection (Key Concept: Contact Email
+  Kept In Sync).
 
 **Out of Scope**:
 - Authorizing a deletion (019), and the finalizer and conditions around one (020).
 - `IdentitySyncRequest` emission (017).
 - Drift detection or repair of the account's own parameters or the `platform` key — not until Snowflake
-  ships Organization Policies (design.md Appendix B).
-- Validating the region's `available` gate (020's validation phase).
+  ships Organization Policies (design.md Appendix B). This exclusion is about re-provisioning a rotated
+  key, an organization-wide, disruptive action; it does not cover reasserting one free-text field
+  (`EMAIL`) on a user this module already exclusively owns — see Key Concept: Contact Email Kept In
+  Sync.
 
 ## Key Concept: Create-Then-Verify Lifecycle
 
@@ -57,6 +64,21 @@ succeeds. Only this module knows when the account was really created: the resour
 before that, and asking Snowflake would mean reopening the org-admin connection on every reconcile. If the
 field is absent, the wait counts as already over.
 
+## Key Concept: Contact Email Kept In Sync
+
+`spec.contact` is the only account-creation field tenants can change later. It is the `EMAIL` of the
+`platform` user, not an account property. On an existing account, the module updates that user with
+`ALTER USER "platform" SET EMAIL = ...` when its current email differs from `spec.contact`.
+
+## Key Concept: Region Validation
+
+Before creating an account, the module checks that the requested region is listed in the Backplane
+Config (007). Normal tenants can use only regions marked `available: true`. Ops may grant selected
+tenants early access to a staged region with the `alpha-tester: "true"` namespace label.
+
+This check happens only when the account is created. The region cannot be changed afterward, so an
+existing account never needs to be checked against a different region.
+
 ## Key Concept: The Only Module With Organization-Wide Privileges
 
 Creating a Snowflake account needs privileges that span the whole Snowflake organization, not just one
@@ -86,8 +108,8 @@ an operator has to restore the credential by hand.
 // New constructs the account module (design.md 3.6). It implements
 // internal/account/pipeline.Module's Observe/Apply/Teardown contract,
 // identified by pipeline.AccountModuleName; see Key Concept:
-// Create-Then-Verify Lifecycle and Key Concept: Post-Create Grace Period for
-// what each method does.
+// Create-Then-Verify Lifecycle, Key Concept: Post-Create Grace Period, and
+// Key Concept: Contact Email Kept In Sync for what each method does.
 //
 // Parameters:
 //   - backend: the secrets.Backend (003) the platform keypair is stored through, via Backend.Create
@@ -101,15 +123,19 @@ an operator has to restore the credential by hand.
 //     above, which is a post-create reachability delay and has nothing to do with deletion.
 //     Already bounded to 7-90 by 002's loader, so this module does not
 //     re-validate it.
+//   - bpConfig: the loaded Backplane Config (007), consulted on the fresh-create path for region
+//     existence via Region(), and — combined with the tenant's alpha-tester namespace label
+//     (Key Concept: Region Validation) — for region availability via Region.Available.
 //
 // Returns:
 //   - pipeline.Module: never nil.
-func New(backend secrets.Backend, org string, gracePeriod time.Duration, deletionGracePeriodDays int) pipeline.Module
+func New(backend secrets.Backend, org string, gracePeriod time.Duration, deletionGracePeriodDays int, bpConfig *backplane.Config) pipeline.Module
 ```
 
 `Observe`, `Apply` and `Teardown` themselves are unexported methods on the value `New` returns — nothing
 outside this module's own tests calls them directly, so their behavior is documented under Key Concept:
-Create-Then-Verify Lifecycle and Key Concept: Post-Create Grace Period above rather than here. All three
+Create-Then-Verify Lifecycle, Key Concept: Post-Create Grace Period, and Key Concept: Contact Email Kept
+In Sync above rather than here. All three
 read `status.accountLocator`/`status.accountCreatedAt` directly through `ModuleContext.CR()`, not through
 any `ModuleContext` accessor — `internal/account/pipeline` (009) defines none for either field.
 
@@ -143,6 +169,14 @@ internal/account/modules/account/
 ## Error Classification
 
 **User Errors**:
+- `spec.region` is not listed in the loaded Backplane Config (007) — surfaces as `Config.Region`'s own
+  user error, passed through unchanged.
+- `spec.region` exists but its `Region.Available` is `false` and the tenant's namespace is not labeled
+  `alpha-tester: "true"` (Key Concept: Region Validation) — this module's own message,
+  wording matched to `Config.Region`'s unknown-region error so the two stay indistinguishable to the
+  tenant.
+- The namespace's `alpha-tester` label is present but not a valid boolean — surfaces as
+  `tenant.AlphaTester`'s own user error, passed through unchanged.
 - `CREATE ACCOUNT` fails because the resolved account name is already taken by another account org-wide.
 - The resolved account name does not start with a letter (backstop; Guardrails (008) is expected to
   already block this at admission).
@@ -161,6 +195,8 @@ internal/account/modules/account/
   unreachable).
 - `DROP ACCOUNT` fails for any reason other than the account already being absent.
 - The credential's deletion fails for any reason other than the secret path already being absent.
+- The platform user's `EMAIL` lookup (`SHOW USERS`) or update (`ALTER USER ... SET EMAIL`) fails for any
+  reason (Key Concept: Contact Email Kept In Sync).
 
 ## Edge Cases
 
@@ -189,9 +225,24 @@ internal/account/modules/account/
   is reserved for `CREATE ACCOUNT` and `DROP ACCOUNT` alone. Every module downstream of this one already
   needs a connection authenticated as the account's own `platform` user, so `Observe` reuses that same
   path to check existence rather than opening a more privileged one just to look.
-- **Does this module need anything from the Backplane Config (007)?** No. The region literal comes
-  entirely from the CRD plus a fixed transform, and whether a region is open for new accounts at all is
-  checked earlier, during 020's validation phase — not here.
+- **Does this module need anything from the Backplane Config (007)?** Yes, two calls, both on the
+  fresh-create path and both before any side effect (keypair generation, secret storage, or the
+  org-admin connection): `Region(cr.Spec.Region)`, to confirm the region exists in the loaded config,
+  and a check of the returned `Region.Available`, bypassed only for alpha-tester namespaces (Key
+  Concept: Region Validation). The region literal `CREATE ACCOUNT` renders still comes
+  entirely from the CRD plus a fixed transform; the Backplane Config only gates whether that literal
+  is attempted at all.
+- **Why look the email up before writing it, when this module doesn't bother for anything else it
+  owns?** Unlike the RSA key or the account's own existence, `EMAIL` is compared on every single `Apply`
+  call for an existing account — not just when `spec.contact` itself changed, since the pipeline calls
+  every module's `Apply` unconditionally whenever the CRD's generation has moved, for any reason. Skipping
+  the read and reasserting unconditionally would put a same-value `ALTER USER` in Snowflake's query
+  history on nearly every reconcile of a perfectly healthy tenant; the read avoids that at the cost of one
+  extra query, and still requires no new state to be kept on `status`.
+- **What does a namespace's malformed `alpha-tester` label do to a fresh create?** Rejects with the
+  user error `tenant.AlphaTester` itself returns (006) — the same readability reasoning as a malformed
+  `credit-quota` label — before the region-existence check's result is even used to decide anything,
+  and before any side effect.
 - **A deletion arrives when no locator was ever recorded — what does `Teardown` do?** With no locator
   there is no account to drop and no pooled connection to evict, so both steps are skipped and only the
   credential is deleted. That clears the stray secret a crashed create leaves behind (see above); if an
@@ -221,6 +272,14 @@ internal/account/modules/account/
   `Config.Deletion.GracePeriodDays` — Contract: all three passed to `New` as plain values; this module never
   loads the config file itself, and never re-validates `GracePeriodDays`, which 002's loader has already
   bounded to 7-90.
+- **Backplane Config (007)** — Used APIs: `Config.Region()`, `Region.Available` — Contract: `bpConfig`
+  passed to `New`; the fresh-create path calls `Region(cr.Spec.Region)` once, before any side effect,
+  and passes any returned error straight into `Rejected` unmodified — the error is already
+  tenant-appropriate and user-classified by 007 itself, so this module authors no message of its own
+  for that case. It then reads the returned `Region.Available` itself and, combined with
+  `tenant.AlphaTester`, authors its own user error when the region is unavailable and the tenant is
+  not an alpha tester (Key Concept: Region Validation), reusing 007's own unknown-region
+  wording so the two cases stay indistinguishable to the tenant.
 - **Secrets Handling (003)** — Used APIs: `GenerateKeyPair()`/`NewCredentials()`, `MarshalCredentials()`,
   `NewTenantPath()`, `Backend.Create()`, `Backend.Delete()`, `ErrPendingDeletion` — Contract: `Create` and
   `Delete` only, never `Update`; the module never reads a credential back. `Delete`'s recovery window is
@@ -234,9 +293,12 @@ internal/account/modules/account/
   `QuoteLiteral()`, `BareIdentifier()`, `*statement.Error` — Contract: every tenant-influenced value is
   rendered through one of these, never concatenated raw.
 - **SnowflakeAccount CRD (006)** — Used APIs: `SnowflakeAccountSpec.Description`, `.Contact`, `.Region`,
-  `SnowflakeAccountStatus.AccountLocator`, `.AccountCreatedAt` — Contract: reads the spec fields
-  read-only; writes `AccountLocator`/`AccountCreatedAt` directly on `ModuleContext.CR().Status` — the
-  only two status fields this module ever sets.
+  `SnowflakeAccountStatus.AccountLocator`, `.AccountCreatedAt`, `internal/account/tenant.AlphaTester()`
+  — Contract: reads the spec fields read-only; writes `AccountLocator`/`AccountCreatedAt` directly on
+  `ModuleContext.CR().Status` — the only two status fields this module ever sets. Calls
+  `tenant.AlphaTester()` once on the fresh-create path against `ModuleContext.NamespaceLabels()`,
+  before any side effect, and passes its returned error (a malformed label value) straight into
+  `Rejected` unmodified.
 - **Account Pipeline (009)** — Used APIs: `account.Module`, `Done()`/`Pending()`/`Rejected()`/`Failed()`,
   `Outcome.Aborting()`, `ModuleContext.CR()`, `.ResolvedAccountName()`, `.OrgAdminDB()`, `.TenantDB()`,
   `.EvictTenant()` — Contract: `Name()` returns `pipeline.AccountModuleName`, which is how
@@ -248,7 +310,7 @@ internal/account/modules/account/
 
 - **SnowflakeAccount Controller (020)** — Registers this module in the pipeline via
   `account.New(secretsBackend, baseConfig.Snowflake.Org, baseConfig.Snowflake.AccountCreationGracePeriod,
-  baseConfig.Deletion.GracePeriodDays)`,
+  baseConfig.Deletion.GracePeriodDays, bpConfig)`,
   after the guardrail-check (010) and quota-check (011) modules. After `Pipeline.Apply` returns, reads
   `ModuleContext.ResolvedAccountName()` directly — never from this module's `Outcome` — plus
   `cr.Status.AccountLocator`, which this module has already set directly on the CRD, to render
@@ -316,6 +378,26 @@ internal/account/modules/account/
 - **SC-026**: `Teardown` passes `Config.Deletion.GracePeriodDays` straight into the rendered
   `GRACE_PERIOD_IN_DAYS` for every value 002 admits (3 and 90 at the bounds), and derives no window of its
   own for the credential.
+- **SC-027**: A fresh create calls `Config.Region(cr.Spec.Region)` before generating a keypair,
+  storing any secret, or opening the org-admin connection; when `Region()` returns an error, `Apply`
+  aborts with that error unchanged (`Rejected(err).Aborting()`) and performs none of those three
+  side effects.
+- **SC-028**: A fresh create aborts with a user error, generating no keypair and issuing no SQL, when
+  the resolved region exists, `Region.Available` is `false`, and the tenant's namespace is not labeled
+  `alpha-tester: "true"`.
+- **SC-029**: A fresh create proceeds past the availability check — reaching keypair generation exactly
+  as an available region would — when `Region.Available` is `false` but the tenant's namespace is
+  labeled `alpha-tester: "true"`.
+- **SC-030**: A fresh create aborts with `tenant.AlphaTester`'s own user error, generating no keypair
+  and issuing no SQL, when the namespace's `alpha-tester` label is present but not a valid boolean.
+- **SC-031**: On the existing-account reconnect path, `Apply` issues `SHOW USERS LIKE 'platform'` over
+  the tenant connection and issues no `ALTER USER` when the looked-up `email` already equals
+  `spec.contact`.
+- **SC-032**: On the existing-account reconnect path, `Apply` issues `ALTER USER "platform" SET EMAIL =
+  spec.contact`, over the tenant connection and never the org-admin connection, whenever the looked-up
+  email differs from `spec.contact` or no row names the `platform` user at all.
+- **SC-033**: A `SHOW USERS` or `ALTER USER` failure during the email sync is classified as a system
+  error and aborts `Apply` (`Failed(...).Aborting()`).
 
 ## Security Considerations
 
@@ -353,6 +435,18 @@ internal/account/modules/account/
   can influence the grace period — deletion protection would be worthless if the party being protected
   from could shorten the window it is protected by.
 
+- **`SHOW USERS`/`ALTER USER` rendering (Key Concept: Contact Email Kept In Sync).** The fixed literal
+  `"platform"` — both in the `SHOW USERS LIKE` pattern and as the `ALTER USER` target — is rendered as a
+  quoted literal and a bare identifier respectively, passed through the same bare-identifier charset
+  check as every other fixed literal in this module, as a defense-in-depth backstop. `spec.contact` is
+  rendered as a quoted literal, identical to its `CREATE ACCOUNT` `EMAIL` rendering.
+
+  | Position | Value | Rendering |
+  | --- | --- | --- |
+  | `SHOW USERS LIKE` pattern | fixed `"platform"` | quoted literal |
+  | `ALTER USER` target | fixed `"platform"` | bare identifier |
+  | `EMAIL` | `spec.contact` (email-shape checked at admission, 006) | quoted literal |
+
 ## References
 
 - **Product design**: `specs/design.md` §3.2, §3.6, §3.11, §3.11.1, §3.12, §6.1–§6.3 (the deletion
@@ -368,10 +462,19 @@ internal/account/modules/account/
 - **Snowflake `DROP ACCOUNT` reference**: https://docs.snowflake.com/en/sql-reference/sql/drop-account
   — `GRACE_PERIOD_IN_DAYS` being required, its range of 3-90, and the account staying restorable (and its
   name taken) for that period.
+- **Snowflake `SHOW USERS` reference**: https://docs.snowflake.com/en/sql-reference/sql/show-users —
+  the `name`/`email` columns, and `LIKE`'s wildcard-only, case-insensitive matching (Key Concept: Contact
+  Email Kept In Sync).
+- **Snowflake `ALTER USER` reference**: https://docs.snowflake.com/en/sql-reference/sql/alter-user —
+  the `SET EMAIL = '<string>'` property.
 - **Base Configuration**: `specs/002-base-config.md` — `deletion.gracePeriodDays`, the single setting both
   windows derive from.
 - **Secrets Handling**: `specs/003-secrets-handling.md` — Key Concept: Deleting a Credential Reserves Its
   Path. The concrete window computation lives in `specs/003.a-aws-secrets-backend.md`.
+- **Backplane Config**: `specs/007-backplane-config.md` — `Config.Region()`, `Region.Available`, and
+  its Error Classification's tenant-facing "not yet available" wording, reused for the availability
+  check.
+- **SnowflakeAccount CRD**: `specs/006-snowflake-account-crd.md` — `internal/account/tenant.AlphaTester()`.
 
 <br/><br/><br/><br/><br/>
 
@@ -397,6 +500,7 @@ pl := pipeline.New(
         baseConfig.Snowflake.Org,
         baseConfig.Snowflake.AccountCreationGracePeriod,
         baseConfig.Deletion.GracePeriodDays,
+        bpConfig,
     ),
     // ... modules 013-015, 017, 018, in order
 )
@@ -405,7 +509,7 @@ pl := pipeline.New(
 ### Example 2: Create, wait out the grace period, then reconnect
 
 ```go
-mc := pipeline.NewModuleContext(cr, "finance", nil, nsLabels, log, pool)
+mc := pipeline.NewModuleContext(cr, nsLabels, log, pool)
 
 // First reconcile: no locator yet.
 inSync, _ := module.Observe(ctx, mc)   // inSync == false, nothing has been touched yet
@@ -415,14 +519,16 @@ outcome := module.Apply(ctx, mc)       // generates keypair, stores it, issues C
 
 // A reconcile landing inside the grace period, against the same cr (status.accountLocator and
 // status.accountCreatedAt already set by the pass above):
-mc2 := pipeline.NewModuleContext(cr, "finance", nil, nsLabels, log, pool)
+mc2 := pipeline.NewModuleContext(cr, nsLabels, log, pool)
 inSync2, outcome2 := module.Observe(ctx, mc2) // inSync2 == false, StatePending — no connection attempted
 _ = module.Apply(ctx, mc2)                    // same skip; Pending(...).Aborting(), no connection attempted
 
 // A later reconcile, once the grace period has elapsed:
-mc3 := pipeline.NewModuleContext(cr, "finance", nil, nsLabels, log, pool)
+mc3 := pipeline.NewModuleContext(cr, nsLabels, log, pool)
 inSync3, _ := module.Observe(ctx, mc3) // reconnects as platform; inSync3 == true
-outcome3 := module.Apply(ctx, mc3)     // reconnects again, no SQL issued, returns Done()
+outcome3 := module.Apply(ctx, mc3)     // reconnects again; SHOW USERS LIKE 'platform' finds the email
+                                        // already matches spec.Contact, so no ALTER USER is issued;
+                                        // returns Done()
 
 // Deletion, reached through Pipeline.Destroy once a deletion request (019) has authorized it:
 err := module.Teardown(ctx, mc3)       // DROP ACCOUNT ... GRACE_PERIOD_IN_DAYS = 30, evicts the

@@ -20,11 +20,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/allianz/yukimi/internal/config/backplane"
 	"github.com/allianz/yukimi/internal/secrets"
 )
 
 func TestNew(t *testing.T) {
-	m := New(secrets.NewFakeBackend(), "myorg", 5*time.Minute, 30)
+	m := New(secrets.NewFakeBackend(), "myorg", 5*time.Minute, 30, &backplane.Config{})
 	if m == nil {
 		t.Fatal("New() = nil, want non-nil")
 	}

@@ -40,6 +40,7 @@ import (
 
 	"github.com/allianz/yukimi/apis/base/v1alpha1"
 	"github.com/allianz/yukimi/internal/account/pipeline"
+	"github.com/allianz/yukimi/internal/config/backplane"
 	"github.com/allianz/yukimi/internal/config/base"
 	internalerrors "github.com/allianz/yukimi/internal/errors"
 	"github.com/allianz/yukimi/internal/secrets"
@@ -183,7 +184,7 @@ func TestSetup_Default(t *testing.T) {
 	p := pool.New(secrets.NewFakeBackend(), cfg)
 	o := controller.Options{Logger: logging.NewNopLogger(), Features: &feature.Flags{}}
 
-	if err := Setup(mgr, o, cfg, p, secrets.NewFakeBackend()); err != nil {
+	if err := Setup(mgr, o, cfg, p, secrets.NewFakeBackend(), &backplane.Config{}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -203,7 +204,7 @@ func TestSetup_AllOptionalFeaturesEnabled(t *testing.T) {
 		ChangeLogOptions: &controller.ChangeLogOptions{},
 		MetricOptions:    &controller.MetricOptions{},
 	}
-	if err := Setup(mgr, o, cfg, p, secrets.NewFakeBackend()); err != nil {
+	if err := Setup(mgr, o, cfg, p, secrets.NewFakeBackend(), &backplane.Config{}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -227,7 +228,7 @@ func TestSetupGated_RegistersAndRuns(t *testing.T) {
 	gate := &fakeGate{}
 	o := controller.Options{Logger: logging.NewNopLogger(), Features: &feature.Flags{}, Gate: gate}
 
-	if err := SetupGated(mgr, o, cfg, p, secrets.NewFakeBackend()); err != nil {
+	if err := SetupGated(mgr, o, cfg, p, secrets.NewFakeBackend(), &backplane.Config{}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(gate.registered) != 1 || gate.registered[0] != v1alpha1.SnowflakeAccountGroupVersionKind {

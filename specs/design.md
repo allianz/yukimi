@@ -292,7 +292,9 @@ exceptions:
 
 The Backplane Config is a platform-owned artifact that catalogs the pre-provisioned regional networking infrastructure (such as VPC endpoints) established via Terraform. The controller uses this active backplane to instantly network-bind new accounts without manual setup. Additionally, it enforces the organization-wide security posture through global parameters and strict network ingress ceilings.
 
-Bringing a region online is a one-time manual job for platform ops: run the Terraform project that provisions the region's backplane, close out the follow-up tickets that finalize it (DNS, Snowflake accepting the VPC endpoint), test it end-to-end, then add the region's entry from the Terraform outputs with `available: true`. From then on the controller can provision accounts into it, looking the region up by the CRD's `region` field. `available` is a controller-side gate with no counterpart in Snowflake: it lets ops stage a region and reject CRDs naming it until it is officially offered.
+Bringing a region online is a one-time manual job for platform ops: run the Terraform project that provisions the region's backplane, complete the follow-up work (such as DNS and Snowflake accepting the VPC endpoint), and test it end to end. Ops can then add the region's Terraform outputs to the Backplane Config.
+
+While the entry has `available: false`, the controller blocks normal tenants from creating accounts there. This gives ops a chance to complete a controlled early-access trial with selected tenants: a namespace labeled `alpha-tester: "true"` (2) may use a staged region before general release. When ops is ready to offer the region to everyone, they set `available: true`. The controller looks up the selected region from the CRD's `region` field; `available` is only this controller-side release gate and has no counterpart in Snowflake.
 
 Beyond the `regions` map itself and each region's `available` flag, the configuration is organized around three main components:
 

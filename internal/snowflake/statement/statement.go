@@ -70,7 +70,7 @@ func (r *Runner) Query(ctx context.Context, label, sql string, args ...any) (Res
 	if err != nil {
 		return Result{}, newError(label, sql, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	columns, err := rows.Columns()
 	if err != nil {

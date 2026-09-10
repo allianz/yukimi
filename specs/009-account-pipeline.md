@@ -16,9 +16,10 @@ happened into Kubernetes conditions without understanding what any individual mo
 - An ordered list of modules, run strictly in sequence.
 - Three entry points: a read-only `Observe` that mutates nothing in Snowflake, a mutating `Apply` that
   re-asserts every module's desired state, and a `Destroy` that tears the account down in reverse.
-- A shared, per-reconcile context that carries what every module needs — the CRD, the resolved
-  region, the namespace's labels, a scoped logger, and a lazily-resolved account connection — so no
-  module recomputes or disagrees with another about any of it.
+- A shared, per-reconcile context that carries what every module needs — the CRD, the namespace's
+  labels, a scoped logger, and a lazily-resolved account connection — so no module recomputes or
+  disagrees with another about any of it. Static, binary-lifetime dependencies (e.g. backplane
+  config) are not carried here; a module that needs one injects its own copy at construction.
 - A fixed outcome vocabulary (`Done`, `Pending`, `Rejected`, `Failed`) that every module reports
   through, plus a generic signal any module's outcome can carry to stop the run early.
 - Collecting what ran into one `Result`, and surfacing the first `Pending` module's reason from it
@@ -313,18 +314,18 @@ type ModuleContext struct{ /* unexported */ }
 
 // NewModuleContext builds the shared context for one reconcile.
 //
-// namespace is the trust anchor (design.md 3.11.1) the resolved account name
-// is derived from — callers pass the bare namespace, not a pre-resolved name,
-// so ResolvedAccountName() is computed once, here, and no two callers can
+// namespace is derived from cr.Namespace (design.md 3.11.1) — the trust
+// anchor the resolved account name is derived from — so
+// ResolvedAccountName() is computed once, here, and no two callers can
 // disagree about it. namespaceLabels are the raw namespace labels set at
 // onboarding (design.md 2); Department/CostCenter/CreditQuota are read from
 // them the same way (internal/account/tenant, 006). The account locator
 // lives on cr.Status.AccountLocator directly — every module reads and
-// writes it through CR(), not through a ModuleContext accessor.
+// writes it through CR(), not through a ModuleContext accessor. Static,
+// binary-lifetime dependencies (e.g. backplane config) are not accepted
+// here — a module that needs one injects its own copy at construction.
 func NewModuleContext(
     cr *v1alpha1.SnowflakeAccount,
-    namespace string,
-    backplaneRegion *backplane.Region,
     namespaceLabels map[string]string,
     log *logger.Logger,
     p DBPool,
@@ -332,7 +333,6 @@ func NewModuleContext(
 
 func (c *ModuleContext) CR() *v1alpha1.SnowflakeAccount
 func (c *ModuleContext) ResolvedAccountName() string // tenant.ResolveName(cr.Name, namespace), resolved once
-func (c *ModuleContext) BackplaneRegion() *backplane.Region
 func (c *ModuleContext) NamespaceLabels() map[string]string
 func (c *ModuleContext) Logger() *logger.Logger
 
@@ -459,8 +459,6 @@ classify. `Destroy` likewise returns a module's `Teardown` error exactly as that
 - **`internal/account/tenant` (006)** - Used APIs: `tenant.ResolveName()`, `tenant.Department()`,
   `tenant.CostCenter()`, `tenant.CreditQuota()` - Contract: `NewModuleContext` resolves the account
   name once via `ResolveName`; modules read the label accessors from `NamespaceLabels()` themselves.
-- **`internal/config/backplane` (007)** - Used APIs: the `Region` type - Contract: the caller resolves the
-  region once and passes it into `NewModuleContext`; this package never looks a region up itself.
 - **`crossplane-runtime/v2` `pkg/event`** - Used APIs: the `event.Event` type - Contract: `Outcome.Event`
   only carries a value of this type (Key Concept: Conditions and Events); this package never constructs
   one itself and never calls a `Recorder`.
@@ -469,6 +467,12 @@ No dependency on 008 (guardrails): guardrail admission is resolved by its own pi
 guardrail-check (010), built on top of 008's evaluator — the same one-way relationship quota-check
 (011) already has with this package. This package itself still neither imports nor references 008
 directly.
+
+No dependency on 007 (backplane config) either: it is a static, binary-lifetime dependency, not a
+per-reconcile one, so a module that needs it (e.g. the account module's region check, or the
+parameter module's global/regional parameters) injects its own `*backplane.Config` at construction
+instead of reading it off `ModuleContext`. This package neither imports nor references
+`internal/config/backplane`.
 
 ## Integration Points
 
@@ -568,7 +572,7 @@ directly.
   phrasing followed here.
 - **Dependency code**: `internal/snowflake/pool/pool.go` (`OrgAdmin`, `TenantAccount`, `EvictTenant`),
   `internal/account/tenant/` (`ResolveName`, `Department`, `CostCenter`, `CreditQuota`),
-  `internal/config/backplane/backplane.go` (`Region`), `internal/logger/logger.go` (`New`, `Handle`),
+  `internal/logger/logger.go` (`New`, `Handle`),
   `apis/base/v1alpha1/snowflakeaccount_types.go` (`SnowflakeAccountStatus`).
 - **Vendored behavior**: `crossplane-runtime/v2@v2.0.0` `pkg/reconciler/managed/reconciler.go` — the
   managed reconciler sets `Creating()`/`ReconcileSuccess()` after `Create` returns and after
@@ -610,13 +614,7 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
         }, nil
     }
 
-    region, err := e.backplane.Region(cr.Spec.Region)
-    if err != nil {
-        retryErr := log.Handle(err)
-        return managed.ExternalObservation{}, retryErr // nil would report Synced=True; see CLAUDE.md
-    }
-
-    mc := pipeline.NewModuleContext(cr, cr.Namespace, region, e.namespaceLabels(cr.Namespace), log, e.pool)
+    mc := pipeline.NewModuleContext(cr, e.namespaceLabels(cr.Namespace), log, e.pool)
 
     obs := e.pipeline.Observe(ctx, mc)
     if !obs.Exists {
@@ -669,12 +667,7 @@ func (e *external) apply(ctx context.Context, mg resource.Managed) error {
     cr := mg.(*v1alpha1.SnowflakeAccount)
     log := logger.New(e.logger, cr.Namespace, "SnowflakeAccount", cr.Name, logger.OpUpdate)
 
-    region, err := e.backplane.Region(cr.Spec.Region)
-    if err != nil {
-        return log.Handle(err)
-    }
-
-    mc := pipeline.NewModuleContext(cr, cr.Namespace, region, e.namespaceLabels(cr.Namespace), log, e.pool)
+    mc := pipeline.NewModuleContext(cr, e.namespaceLabels(cr.Namespace), log, e.pool)
 
     result := e.pipeline.Apply(ctx, mc)
 
@@ -734,12 +727,7 @@ func (e *external) Delete(ctx context.Context, mg resource.Managed) (managed.Ext
         return managed.ExternalDelete{}, errNoActiveRequest
     }
 
-    region, err := e.backplane.Region(cr.Spec.Region)
-    if err != nil {
-        return managed.ExternalDelete{}, log.Handle(err)
-    }
-
-    mc := pipeline.NewModuleContext(cr, cr.Namespace, region, e.namespaceLabels(cr.Namespace), log, e.pool)
+    mc := pipeline.NewModuleContext(cr, e.namespaceLabels(cr.Namespace), log, e.pool)
 
     // Phase 3: every module's Teardown, in reverse. A failure here keeps the
     // request Active, so the next reconcile retries the whole walk.
@@ -782,8 +770,13 @@ func (m *Module) Apply(ctx context.Context, mc *pipeline.ModuleContext) pipeline
         return pipeline.Failed(fmt.Errorf("getting platform connection: %w", err))
     }
 
+    region, err := m.backplane.Region(mc.CR().Spec.Region)
+    if err != nil {
+        return pipeline.Failed(fmt.Errorf("resolving region: %w", err))
+    }
+
     params := m.backplane.GlobalParameters
-    for name, value := range mc.BackplaneRegion().RegionalParameters {
+    for name, value := range region.RegionalParameters {
         params[name] = value
     }
     for name, value := range params {

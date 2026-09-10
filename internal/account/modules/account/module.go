@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/allianz/yukimi/internal/account/pipeline"
+	"github.com/allianz/yukimi/internal/config/backplane"
 	"github.com/allianz/yukimi/internal/secrets"
 )
 
@@ -36,6 +37,7 @@ type module struct {
 	org                     string
 	gracePeriod             time.Duration
 	deletionGracePeriodDays int
+	backplane               *backplane.Config
 }
 
 // New constructs the account module.
@@ -55,11 +57,16 @@ type module struct {
 //     reachability delay and has nothing to do with deletion. Already
 //     bounded to 7-90 by 002's loader, so this module does
 //     not re-validate it.
+//   - bpConfig: the loaded Backplane Config (007), consulted on the
+//     fresh-create path for region existence via Region(), and — combined
+//     with the tenant's alpha-tester namespace label — for region
+//     availability via Region.Available (Key Concept: Alpha-Tester Region
+//     Bypass).
 //
 // Returns:
 //   - pipeline.Module: never nil.
-func New(backend secrets.Backend, org string, gracePeriod time.Duration, deletionGracePeriodDays int) pipeline.Module {
-	return &module{backend: backend, org: org, gracePeriod: gracePeriod, deletionGracePeriodDays: deletionGracePeriodDays}
+func New(backend secrets.Backend, org string, gracePeriod time.Duration, deletionGracePeriodDays int, bpConfig *backplane.Config) pipeline.Module {
+	return &module{backend: backend, org: org, gracePeriod: gracePeriod, deletionGracePeriodDays: deletionGracePeriodDays, backplane: bpConfig}
 }
 
 func (m *module) Name() string { return pipeline.AccountModuleName }

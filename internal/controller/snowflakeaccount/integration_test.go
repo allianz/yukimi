@@ -41,6 +41,7 @@ import (
 	v1alpha1 "github.com/allianz/yukimi/apis/base/v1alpha1"
 	accountmodule "github.com/allianz/yukimi/internal/account/modules/account"
 	"github.com/allianz/yukimi/internal/account/pipeline"
+	"github.com/allianz/yukimi/internal/config/backplane"
 	"github.com/allianz/yukimi/internal/config/base"
 	"github.com/allianz/yukimi/internal/secrets"
 	secretsaws "github.com/allianz/yukimi/internal/secrets/aws"
@@ -138,10 +139,11 @@ func TestIntegration_CreateThenDestroy(t *testing.T) {
 
 	namespace := os.Getenv("SAMPLE_CUSTOMER_NAMESPACE")
 	name := fmt.Sprintf("integration-test-%d", time.Now().Unix())
+	region := os.Getenv("SAMPLE_CUSTOMER_ACCOUNT_REGION")
 	cr := &v1alpha1.SnowflakeAccount{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, Generation: 1},
 		Spec: v1alpha1.SnowflakeAccountSpec{
-			Region:      os.Getenv("SAMPLE_CUSTOMER_ACCOUNT_REGION"),
+			Region:      region,
 			Contact:     "yukimi-integration-test@example.com",
 			Description: "yukimi 020 integration test — safe to drop",
 			IdentityIntegration: v1alpha1.IdentityIntegration{
@@ -150,7 +152,8 @@ func TestIntegration_CreateThenDestroy(t *testing.T) {
 		},
 	}
 
-	pl := pipeline.New(accountmodule.New(backend, org, cfg.Snowflake.AccountCreationGracePeriod, cfg.Deletion.GracePeriodDays))
+	bpConfig := &backplane.Config{Regions: map[string]backplane.Region{region: {}}}
+	pl := pipeline.New(accountmodule.New(backend, org, cfg.Snowflake.AccountCreationGracePeriod, cfg.Deletion.GracePeriodDays, bpConfig))
 	e := &external{
 		kube:     kube,
 		pool:     p,
@@ -175,7 +178,7 @@ func TestIntegration_CreateThenDestroy(t *testing.T) {
 		if cr.Status.AccountLocator == "" {
 			return
 		}
-		mc := pipeline.NewModuleContext(cr, namespace, nil, nil, nil, p)
+		mc := pipeline.NewModuleContext(cr, nil, nil, p)
 		if err := pl.Destroy(context.Background(), mc); err != nil {
 			t.Errorf("cleanup: Destroy: %v", err)
 		}
@@ -227,7 +230,7 @@ func TestIntegration_CreateThenDestroy(t *testing.T) {
 
 	// The account itself is gone: a fresh connection attempt against the
 	// same locator must now fail.
-	mc := pipeline.NewModuleContext(cr, namespace, nil, nil, nil, p)
+	mc := pipeline.NewModuleContext(cr, nil, nil, p)
 	if _, err := mc.TenantDB(context.Background()); err == nil {
 		t.Error("expected the tenant connection to fail after Delete dropped the account")
 	}

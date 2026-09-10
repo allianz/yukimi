@@ -84,13 +84,13 @@ func (l *Logger) Handle(err error) error {
 
 	if errors.IsUserError(err) {
 		l.log.Debug(err.Error(), l.contextFields()...)
-		return fmt.Errorf("%s", err.Error()) //nolint:goerr113
+		return fmt.Errorf("%s", err.Error()) //nolint:err113
 	}
 
 	incidentID := generateIncidentID()
 	contextFields := append(l.contextFields(), "incidentID", incidentID)
 	l.log.Info(fmt.Sprintf("system error (incidentID=%s): %s", incidentID, err.Error()), contextFields...)
-	return fmt.Errorf("An internal error occurred (%s)", incidentID) //nolint:goerr113
+	return fmt.Errorf("An internal error occurred (%s)", incidentID) //nolint:err113,staticcheck // capitalization is the exact tenant-facing wording specs/001-error-and-logging.md SC-008 requires
 }
 
 func generateIncidentID() string {

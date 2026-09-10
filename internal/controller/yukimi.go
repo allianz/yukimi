@@ -21,6 +21,7 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/controller"
 	ctrl "sigs.k8s.io/controller-runtime"
 
+	"github.com/allianz/yukimi/internal/config/backplane"
 	"github.com/allianz/yukimi/internal/config/base"
 	"github.com/allianz/yukimi/internal/controller/snowflakeaccount"
 	"github.com/allianz/yukimi/internal/controller/snowflakedeletionrequest"
@@ -30,9 +31,9 @@ import (
 
 // SetupGated creates all Yukimi controllers with safe-start support and adds them to
 // the supplied manager.
-func SetupGated(mgr ctrl.Manager, o controller.Options, cfg *base.Config, p *pool.Pool, secretsBackend secrets.Backend) error {
+func SetupGated(mgr ctrl.Manager, o controller.Options, cfg *base.Config, p *pool.Pool, secretsBackend secrets.Backend, bpConfig *backplane.Config) error {
 	if err := snowflakedeletionrequest.SetupGated(mgr, o); err != nil {
 		return err
 	}
-	return snowflakeaccount.SetupGated(mgr, o, cfg, p, secretsBackend)
+	return snowflakeaccount.SetupGated(mgr, o, cfg, p, secretsBackend, bpConfig)
 }

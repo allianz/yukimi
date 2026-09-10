@@ -23,7 +23,6 @@ import (
 
 	v1alpha1 "github.com/allianz/yukimi/apis/base/v1alpha1"
 	"github.com/allianz/yukimi/internal/account/tenant"
-	"github.com/allianz/yukimi/internal/config/backplane"
 	"github.com/allianz/yukimi/internal/logger"
 	"github.com/allianz/yukimi/internal/snowflake/pool"
 )
@@ -48,7 +47,6 @@ type ModuleContext struct {
 	cr              *v1alpha1.SnowflakeAccount
 	namespace       string
 	resolvedName    string
-	backplaneRegion *backplane.Region
 	namespaceLabels map[string]string
 	log             *logger.Logger
 
@@ -59,28 +57,28 @@ type ModuleContext struct {
 
 // NewModuleContext builds the shared context for one reconcile.
 //
-// namespace is the trust anchor the resolved account name is derived from —
-// callers pass the bare namespace, not a pre-resolved name, so
-// ResolvedAccountName() is computed once, here, and no two callers can
-// disagree about it. namespaceLabels are the raw namespace labels set at
-// onboarding; Department/CostCenter/CreditQuota are read from them by each
-// module itself, not by this constructor. The account locator lives on
-// cr.Status.AccountLocator directly — every module reads and writes it
-// through CR(), not through a ModuleContext accessor. p is DBPool, not the
-// concrete *pool.Pool, so a module package's own tests can pass a fake.
+// namespace is derived from cr.Namespace, the trust anchor the resolved
+// account name is derived from — so ResolvedAccountName() is computed once,
+// here, and no two callers can disagree about it. namespaceLabels are the
+// raw namespace labels set at onboarding; Department/CostCenter/CreditQuota
+// are read from them by each module itself, not by this constructor. The
+// account locator lives on cr.Status.AccountLocator directly — every module
+// reads and writes it through CR(), not through a ModuleContext accessor. p
+// is DBPool, not the concrete *pool.Pool, so a module package's own tests
+// can pass a fake. Static, binary-lifetime dependencies (e.g. backplane
+// config) are not carried here — ModuleContext is rebuilt per reconcile, so
+// a module that needs one injects its own copy at construction instead.
 func NewModuleContext(
 	cr *v1alpha1.SnowflakeAccount,
-	namespace string,
-	backplaneRegion *backplane.Region,
 	namespaceLabels map[string]string,
 	log *logger.Logger,
 	p DBPool,
 ) *ModuleContext {
+	namespace := cr.Namespace
 	return &ModuleContext{
 		cr:              cr,
 		namespace:       namespace,
 		resolvedName:    tenant.ResolveName(cr.Name, namespace),
-		backplaneRegion: backplaneRegion,
 		namespaceLabels: namespaceLabels,
 		log:             log,
 		pool:            p,
@@ -91,8 +89,6 @@ func (c *ModuleContext) CR() *v1alpha1.SnowflakeAccount { return c.cr }
 
 // ResolvedAccountName returns tenant.ResolveName(cr.Name, namespace), resolved once.
 func (c *ModuleContext) ResolvedAccountName() string { return c.resolvedName }
-
-func (c *ModuleContext) BackplaneRegion() *backplane.Region { return c.backplaneRegion }
 
 func (c *ModuleContext) NamespaceLabels() map[string]string { return c.namespaceLabels }
 

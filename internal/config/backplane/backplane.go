@@ -216,10 +216,7 @@ func loadRegion(regionName string, rr rawRegion) (*Region, error) {
 			}
 		}
 
-		allowlist = append(allowlist, AllowlistEntry{
-			Connection: ra.Connection,
-			AllowedIPs: ra.AllowedIPs,
-		})
+		allowlist = append(allowlist, AllowlistEntry(ra))
 	}
 
 	regionalParameters := rr.RegionalParameters
@@ -244,7 +241,7 @@ func loadRegion(regionName string, rr rawRegion) (*Region, error) {
 func (c *Config) Region(name string) (*Region, error) {
 	region, ok := c.Regions[name]
 	if !ok {
-		return nil, errors.NewUserError(fmt.Sprintf("region '%s' not found in backplane.yaml", name))
+		return nil, errors.NewUserError(fmt.Sprintf("region '%s' is not yet available; choose a different one", name))
 	}
 	return &region, nil
 }

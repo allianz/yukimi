@@ -33,11 +33,11 @@ This specification defines the `internal/config/backplane/` package that:
 
 ## Key Concept: The Availability Gate
 
-Each region entry carries an `available` flag with no Snowflake counterpart — it lets Ops stage a
-region ahead of time and keep it unofferable until it's ready. Defaults to `false` when omitted.
+Each region has an `available` flag. Ops uses it to keep a new region closed while its backplane is
+being prepared and tested.
 
-**TODO:** In the future, select alpha-tester namespaces will be allowed to use a region even while
-`available: false`, via a namespace label not yet defined in any spec.
+When a region is not yet available, normal tenants cannot create accounts there. Ops can grant
+selected tenants early access by setting the `alpha-tester` namespace label.
 
 ## Key Concept: CIDR Containment
 
@@ -164,7 +164,10 @@ internal/config/backplane/
 - Malformed CIDR: `regions.aws-eu-central-1.inventory[0].maxCidrs '172.16.0.0/99' is not a valid CIDR`
 - Containment violation: `regions.aws-eu-central-1.regionalAllowlist connection 'agn' allowedIPs '172.32.0.0/16' is not contained within maxCidrs [172.16.0.0/12]`
 - Nothing-to-narrow violation: `regions.aws-eu-central-1.regionalAllowlist connection 'dbt-cloud' specifies allowedIPs but this connection has no maxCidrs to narrow`
-- Unknown region: `region 'aws-ap-southeast-1' not found in backplane.yaml` (from `Region()`, not `Load`)
+- Unknown region: `region 'aws-ap-southeast-1' is not yet available; choose a different one` (from
+  `Region()`, not `Load`) — deliberately tenant-facing wording, naming neither `backplane.yaml` nor
+  any other operator-only detail, since `Region()`'s caller is typically a `SnowflakeAccount`'s own
+  `spec.region` (012) and this message may reach a tenant unchanged.
 
 **System Errors**: like `002`, this package makes no network calls and classifies nothing as a
 system error on its own. An unexpected filesystem error surfaces as a raw wrapped error
@@ -182,8 +185,8 @@ a system error by default, since `Load` never wraps it in `errors.NewUserError`.
   does not require an available region to grant any baseline access. Whether that is operationally
   sound (e.g. nobody could log in) is an Ops discipline concern, not something `Load` enforces.
 - **What happens when a region is marked `available: false`?** - `Load` validates it exactly as
-  strictly as an available one; nothing about validation depends on the flag. Only the caller
-  (009/020) decides whether to admit a `SnowflakeAccount` naming this region.
+  strictly as an available one; nothing about validation depends on the flag. Only the caller (012)
+  decides whether to admit a `SnowflakeAccount` naming this region.
 - **What if a connection carries both a `vpceId` and `maxCidrs` (e.g. `agn`)?** - Accepted; the two
   are independent optional fields, never treated as mutually exclusive.
 - **What if the same connection name appears in two different regions?** - Accepted; connection
@@ -203,14 +206,14 @@ a system error by default, since `Load` never wraps it in `errors.NewUserError`.
 - **`cmd/provider/main.go`** - Calls `backplane.Load(configDir)` once at startup, alongside (and
   independently of) `config.Load(configDir)` - Key functions: `backplane.Load()`.
 - **`internal/account/modules/account` (012)** - Consumes a region's `Inventory` and
-  `RegionalAllowlist` during account bootstrapping (design.md 3.6).
+  `RegionalAllowlist` during account bootstrapping (design.md 3.6), and calls `Config.Region()` and
+  inspects `Region.Available` on the fresh-create path to admit or reject a `SnowflakeAccount`
+  naming that region, bypassing an unavailable region only for alpha-tester namespaces (Key Concept:
+  The Availability Gate).
 - **`internal/account/modules/parameter` (013)** - Consumes `Config.GlobalParameters` and a
   region's `RegionalParameters`.
 - **`internal/account/modules/network` (014)** - Consumes a region's `Inventory`, `Connection()`,
   and `ContainsCIDR()` to validate and apply `customNetworkRules` (design.md 3.8).
-- **`internal/account` (009) / `internal/controller/snowflakeaccount` (020)** - Calls
-  `Config.Region()` and inspects `Region.Available` as part of admitting or rejecting a
-  `SnowflakeAccount` naming that region.
 
 ## Success Criteria
 
