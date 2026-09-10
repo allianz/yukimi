@@ -115,7 +115,12 @@ func main() {
 		// Lower than client-go's default of 10: a resource stuck retrying the
 		// same failure (e.g. CannotCreateExternalResource) collapses into one
 		// combined event after 3 distinct messages instead of 10.
-		EventBroadcaster: record.NewBroadcasterWithCorrelatorOptions(record.CorrelatorOptions{MaxEvents: 3}),
+		//
+		// Deprecated per controller-runtime, but the goroutine-leak risk it
+		// warns about doesn't apply here: this manager's lifetime is the
+		// entire process (mgr.Start blocks until shutdown below), so the
+		// broadcaster never outlives it.
+		EventBroadcaster: record.NewBroadcasterWithCorrelatorOptions(record.CorrelatorOptions{MaxEvents: 3}), //nolint:staticcheck
 	})
 	kingpin.FatalIfError(err, "Cannot create controller manager")
 
@@ -179,7 +184,11 @@ func main() {
 	cached := secrets.NewCachedBackend(backend, baseConfig.Secrets.CacheTTL)
 
 	p := pool.New(cached, baseConfig)
-	defer p.Close()
+	defer func() {
+		if err := p.Close(); err != nil {
+			log.Info("error closing Snowflake connection pool", "error", err)
+		}
+	}()
 
 	startupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	_, err = p.OrgAdmin(startupCtx)

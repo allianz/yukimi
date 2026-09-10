@@ -189,7 +189,7 @@ func (e *external) updateAccountStatus(cr *v1alpha1.SnowflakeAccount, log *logge
 	}
 	url, err := tenant.AccountURL(cr.Status.AccountLocator, cr.Spec.Region, e.cfg.Snowflake.UsePrivateLink)
 	if err != nil {
-		log.Handle(err)
+		_ = log.Handle(err)
 		return
 	}
 	cr.Status.AccountURL = url

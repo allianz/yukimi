@@ -57,7 +57,7 @@ type fakeConnector struct {
 }
 
 func (c fakeConnector) Connect(context.Context) (driver.Conn, error) {
-	return fakeConn{closed: c.closed, closeErr: c.closeErr}, nil
+	return fakeConn(c), nil
 }
 func (c fakeConnector) Driver() driver.Driver { return fakeDriverStub{} }
 
@@ -875,7 +875,7 @@ func TestClose_ClosesEverythingAndJoinsErrors(t *testing.T) {
 func TestApplyPoolSettings_UsesConfig(t *testing.T) {
 	cfg := testConfig()
 	db, _ := newFakeDB(t, nil)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	applyPoolSettings(db, cfg)
 

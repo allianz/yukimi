@@ -41,7 +41,7 @@ func TestNew(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sqlmock.New() error: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	r := New(db)
 	if r == nil {

@@ -182,7 +182,7 @@ func TestTargetSlot(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			db, _, _ := newRotateFakeDB(tc.rows, nil)
-			defer db.Close()
+			defer func() { _ = db.Close() }()
 
 			got, err := targetSlot(context.Background(), db, "platform", tc.fp)
 			if tc.wantErr {
@@ -215,7 +215,7 @@ func TestRotateCredential_WritesSecretOnlyAfterSuccessfulAlterUser(t *testing.T)
 	fp := publicKeyFingerprint(key)
 
 	db, _, execCalls := newRotateFakeDB([]descUserRow{{"RSA_PUBLIC_KEY_FP", fp}, {"RSA_PUBLIC_KEY_2_FP", ""}}, nil)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	p := New(backend, testConfig())
 	if err := p.rotateCredential(context.Background(), db, path, original.Username, key); err != nil {
@@ -250,7 +250,7 @@ func TestRotateCredential_FailedAlterUserLeavesStoreUntouched(t *testing.T) {
 	fp := publicKeyFingerprint(key)
 
 	db, _, _ := newRotateFakeDB([]descUserRow{{"RSA_PUBLIC_KEY_FP", fp}, {"RSA_PUBLIC_KEY_2_FP", ""}}, stderrors.New("boom"))
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	p := New(backend, testConfig())
 	if err := p.rotateCredential(context.Background(), db, path, original.Username, key); err == nil {
@@ -402,7 +402,7 @@ func TestMaybeRotateLocked_UnmarshalFailure_NeverAttemptsRotation(t *testing.T) 
 	}
 
 	db, queryCalls, execCalls := newRotateFakeDB(nil, nil)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	p := New(backend, cfg)
 	p.maybeRotateLocked(context.Background(), db, path)
@@ -425,7 +425,7 @@ func TestMaybeRotateLocked_ParsePrivateKeyFailure_NeverAttemptsRotation(t *testi
 	}
 
 	db, queryCalls, execCalls := newRotateFakeDB(nil, nil)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	p := New(backend, cfg)
 	p.maybeRotateLocked(context.Background(), db, path)
@@ -451,7 +451,7 @@ func TestRotateCredential_FailedBackendUpdate_ReturnsErrorAfterAlterUserSucceede
 	fp := publicKeyFingerprint(key)
 
 	db, _, execCalls := newRotateFakeDB([]descUserRow{{"RSA_PUBLIC_KEY_FP", fp}, {"RSA_PUBLIC_KEY_2_FP", ""}}, nil)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	backend.OnUpdate = func(secrets.Path) error { return stderrors.New("store unavailable") }
 
@@ -466,7 +466,7 @@ func TestRotateCredential_FailedBackendUpdate_ReturnsErrorAfterAlterUserSucceede
 
 func TestTargetSlot_QueryContextFailure(t *testing.T) {
 	db := newRotateFakeDBWithQueryErr(stderrors.New("connection reset"))
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	if _, err := targetSlot(context.Background(), db, "platform", "SHA256:whatever"); err == nil {
 		t.Fatal("expected an error when DESC USER itself fails")

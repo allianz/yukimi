@@ -216,10 +216,7 @@ func loadRegion(regionName string, rr rawRegion) (*Region, error) {
 			}
 		}
 
-		allowlist = append(allowlist, AllowlistEntry{
-			Connection: ra.Connection,
-			AllowedIPs: ra.AllowedIPs,
-		})
+		allowlist = append(allowlist, AllowlistEntry(ra))
 	}
 
 	regionalParameters := rr.RegionalParameters
