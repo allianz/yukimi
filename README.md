@@ -12,6 +12,7 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-22C2FF.svg)](LICENSE)
 [![Go Version](https://img.shields.io/badge/Go-1.24-22C2FF.svg)](https://golang.org/doc/go1.24)
 [![GitHub Stars](https://img.shields.io/github/stars/allianz/yukimi?color=22‚C2FF)](https://github.com/allianz/yukimi/stargazers)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/allianz/yukimi/badge)](https://scorecard.dev/viewer/?uri=github.com/allianz/yukimi)
 
 
 Yukimi is an open source platform for self-service Snowflake management at enterprise scale. Teams provision new Snowflake accounts and bootstrap new analytics or AI applications without tickets, without waiting, and without depending on a central operations team.
