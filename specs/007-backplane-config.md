@@ -164,7 +164,10 @@ internal/config/backplane/
 - Malformed CIDR: `regions.aws-eu-central-1.inventory[0].maxCidrs '172.16.0.0/99' is not a valid CIDR`
 - Containment violation: `regions.aws-eu-central-1.regionalAllowlist connection 'agn' allowedIPs '172.32.0.0/16' is not contained within maxCidrs [172.16.0.0/12]`
 - Nothing-to-narrow violation: `regions.aws-eu-central-1.regionalAllowlist connection 'dbt-cloud' specifies allowedIPs but this connection has no maxCidrs to narrow`
-- Unknown region: `region 'aws-ap-southeast-1' not found in backplane.yaml` (from `Region()`, not `Load`)
+- Unknown region: `region 'aws-ap-southeast-1' is not yet available; choose a different one` (from
+  `Region()`, not `Load`) — deliberately tenant-facing wording, naming neither `backplane.yaml` nor
+  any other operator-only detail, since `Region()`'s caller is typically a `SnowflakeAccount`'s own
+  `spec.region` (012) and this message may reach a tenant unchanged.
 
 **System Errors**: like `002`, this package makes no network calls and classifies nothing as a
 system error on its own. An unexpected filesystem error surfaces as a raw wrapped error

@@ -235,7 +235,7 @@ func TestRegion_Lookup(t *testing.T) {
 	if !errors.IsUserError(err) {
 		t.Errorf("expected user error, got: %v", err)
 	}
-	want := "region 'aws-ap-southeast-1' not found in backplane.yaml"
+	want := "region 'aws-ap-southeast-1' is not yet available; choose a different one"
 	if err.Error() != want {
 		t.Errorf("error = %q, want %q", err.Error(), want)
 	}

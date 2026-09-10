@@ -44,24 +44,30 @@ This specification defines the `internal/controller/snowflakeaccount` package th
   `SnowflakeDeletionRequest` (019) before honoring a `SnowflakeAccount` deletion, blocks and emits
   `Warning: DeletionBlocked` when none is found, and marks the request `Consumed` once `Pipeline.Destroy`
   succeeds.
-- Finishes `cmd/provider/main.go`'s startup wiring: a `--configDir` flag, `base.Load` (002), a
-  cloud-provider switch constructing the AWS secrets backend (003.a), `secrets.NewCachedBackend` (003),
-  and `pool.New` (004) — then forwards `Config`, the pool, and the cached backend into this package's own
-  `SetupGated`. Immediately after constructing the pool, `main.go` also calls `Pool.OrgAdmin` once,
-  bounded by a short timeout, and exits fatally if it errors, so a broken AWS session or an unreachable
-  org-admin Snowflake connection fails the process at startup rather than on the first reconcile.
+- Finishes `cmd/provider/main.go`'s startup wiring: a `--configDir` flag, `base.Load` (002),
+  `backplane.Load` (007), a cloud-provider switch constructing the AWS secrets backend (003.a),
+  `secrets.NewCachedBackend` (003), and `pool.New` (004) — then forwards `Config`, the pool, the
+  cached backend, and the loaded `*backplane.Config` into this package's own `SetupGated`, which
+  forwards the latter unchanged into the account module's own constructor (012); this package's own
+  controller logic never calls `Region()`/`Connection()` itself. Immediately after constructing the
+  pool, `main.go` also calls `Pool.OrgAdmin` once, bounded by a short timeout, and exits fatally if it
+  errors, so a broken AWS session or an unreachable org-admin Snowflake connection fails the process at
+  startup rather than on the first reconcile.
 
 **Out of Scope**:
 
 - Guardrail admission (008/010), quota admission (011), account parameters (013), network rules (014),
   auth exceptions (015), identity import (017), quota-monitor enforcement (018), and the backplane
   region's `available` gate (007) — all deliberately absent from this cut, not merely deferred within it;
-  see Edge Cases for exactly what that leaves unenforced today.
+  see Edge Cases for exactly what that leaves unenforced today. The backplane region's *existence* check
+  is in scope (see below) — only `Available` stays out.
 - Any mechanism that forces a later-registered module to apply itself against a `SnowflakeAccount` that
   already reached `Ready` under today's smaller pipeline — left to each future module's own `Observe`
   (see Edge Cases).
-- Any call to `internal/config/backplane`'s `Load`/`Config`/`Region` — nothing registered in this cut
-  reads one, so this package has zero callers of that package.
+- Calling `internal/config/backplane`'s `Region`/`Connection` itself — this package only calls `Load`
+  in `main.go` and forwards the result unchanged through `SetupGated`/`Setup` into the account module's
+  constructor (012), which is the sole caller of `Region()` in this cut. No per-reconcile region check
+  runs in this controller's own code; the check runs inside the pipeline, as one module's own step.
 - Executing any SQL, or deciding what SQL to execute — entirely the account module's (012) job, reached
   only through the pipeline (009).
 - Drift detection or repair of anything already applied — not attempted anywhere in this pipeline until
@@ -77,7 +83,9 @@ quota, and the admission checks that would normally gate all of them — is acce
 the module that owns each concern does not exist yet. This also means the "validation phase" earlier
 designs imagined ahead of the pipeline has nothing left in it beyond what the CRD's own schema (006)
 already enforces at admission, before this controller ever sees the object — no per-reconcile region or
-admission check runs here at all.
+admission check runs in this controller's own code at all. The one exception is the account module's own
+region-existence check against the Backplane Config (007, 012): that is a pipeline module's step, reached
+through `Pipeline.Apply` like everything else this cut does, not logic this controller carries itself.
 
 **Important**: adding a module later is a one-line change to the pipeline's argument list, not a change
 to this controller's shape — nothing here needs to anticipate which module lands next or expose an
@@ -152,6 +160,7 @@ package snowflakeaccount // internal/controller/snowflakeaccount
 //	    cfg.Snowflake.Org,
 //	    cfg.Snowflake.AccountCreationGracePeriod,
 //	    cfg.Deletion.GracePeriodDays,
+//	    bpConfig,
 //	))
 //
 // Parameters:
@@ -165,12 +174,15 @@ package snowflakeaccount // internal/controller/snowflakeaccount
 //   - secretsBackend: the cached secrets backend (003), passed straight
 //     into the account module's own constructor (012) — this controller
 //     never calls it directly.
+//   - bpConfig: the loaded Backplane Config (007), passed straight into
+//     the account module's own constructor (012) — this controller never
+//     calls Region()/Connection() itself.
 //
 // Returns:
 //   - error if registration with the manager fails; never an error from
 //     anything Snowflake- or secrets-related, since SetupGated performs
 //     no I/O of its own.
-func SetupGated(mgr ctrl.Manager, o controller.Options, cfg *base.Config, p *pool.Pool, secretsBackend secrets.Backend) error
+func SetupGated(mgr ctrl.Manager, o controller.Options, cfg *base.Config, p *pool.Pool, secretsBackend secrets.Backend, bpConfig *backplane.Config) error
 ```
 
 ## Project Structure
@@ -190,13 +202,14 @@ internal/controller/snowflakeaccount/
 Modified, pre-existing files (owned by no numbered spec — design.md §1.2):
 
 ```text
-cmd/provider/main.go            # --configDir flag; base.Load (002); a cloud-provider switch
-                                 # constructing the AWS secrets backend (003.a); secrets.NewCachedBackend
-                                 # (003); pool.New (004); pool.Close() on shutdown; forwards Config, the
-                                 # pool, and the cached backend into internal/controller/yukimi.SetupGated
-internal/controller/yukimi.go   # SetupGated gains cfg/pool/secretsBackend parameters and forwards them
-                                 # into snowflakeaccount.SetupGated, alongside the unchanged call to
-                                 # snowflakedeletionrequest.SetupGated
+cmd/provider/main.go            # --configDir flag; base.Load (002); backplane.Load (007); a
+                                 # cloud-provider switch constructing the AWS secrets backend (003.a);
+                                 # secrets.NewCachedBackend (003); pool.New (004); pool.Close() on
+                                 # shutdown; forwards Config, the pool, the cached backend, and the
+                                 # loaded *backplane.Config into internal/controller/yukimi.SetupGated
+internal/controller/yukimi.go   # SetupGated gains cfg/pool/secretsBackend/bpConfig parameters and
+                                 # forwards them into snowflakeaccount.SetupGated, alongside the
+                                 # unchanged call to snowflakedeletionrequest.SetupGated
 ```
 
 ## Error Classification
@@ -292,20 +305,25 @@ internal/controller/yukimi.go   # SetupGated gains cfg/pool/secretsBackend param
   `xpv1.Available()`/`Unavailable()`, `event.Recorder` — Contract: standard managed-resource wiring, per
   CLAUDE.md's "Standard Controllers with External State" pattern.
 
-No dependency on `internal/config/backplane` (007), `internal/snowflake/statement` (005 — this controller
-issues no SQL of its own), or any of `internal/account/modules/{guardrailcheck,quotacheck,parameter,
-network,auth,identity,quotamonitor}` (008/010/011/013–015/017/018) — none of the latter exist yet, and
-007 has no caller anywhere in this cut (D-005).
+- **Backplane Config (007)** — Used APIs: none directly; `*backplane.Config` is loaded once in
+  `main.go` via `backplane.Load` and forwarded unchanged through `SetupGated`/`Setup` into
+  `accountmodule.New` (012) — Contract: this package itself never calls `Region()`/`Connection()`; the
+  account module is the sole caller of either.
+
+No dependency on `internal/snowflake/statement` (005 — this controller issues no SQL of its own), or any
+of `internal/account/modules/{guardrailcheck,quotacheck,parameter,network,auth,identity,quotamonitor}`
+(008/010/011/013–015/017/018) — none of the latter exist yet.
 
 ## Integration Points
 
 - **`cmd/provider/main.go`** — Owns the new `--configDir` flag (default `/etc/yukimi/config`), calls
-  `base.Load`, switches on `Config.CloudProvider()` to construct the AWS secrets backend (fatally
-  rejecting any other value by listing the cloud providers actually compiled in), wraps it in
-  `secrets.NewCachedBackend`, constructs the `*pool.Pool`, and forwards `Config`, the pool, and the cached
-  backend into `internal/controller/yukimi.SetupGated` — Key functions: `base.Load()`, `secretsaws.New()`,
-  `secrets.NewCachedBackend()`, `pool.New()`, `Pool.Close()`.
-- **`internal/controller/yukimi.go`** — `SetupGated`'s signature gains the same three parameters and
+  `base.Load` and `backplane.Load`, switches on `Config.CloudProvider()` to construct the AWS secrets
+  backend (fatally rejecting any other value by listing the cloud providers actually compiled in), wraps
+  it in `secrets.NewCachedBackend`, constructs the `*pool.Pool`, and forwards `Config`, the pool, the
+  cached backend, and the loaded `*backplane.Config` into `internal/controller/yukimi.SetupGated` — Key
+  functions: `base.Load()`, `backplane.Load()`, `secretsaws.New()`, `secrets.NewCachedBackend()`,
+  `pool.New()`, `Pool.Close()`.
+- **`internal/controller/yukimi.go`** — `SetupGated`'s signature gains the same four parameters and
   forwards them into `snowflakeaccount.SetupGated`, while `snowflakedeletionrequest.SetupGated` keeps its
   existing two-parameter call — Key functions: `SetupGated()`.
 - **`internal/account/pipeline` (009) and `internal/account/modules/account` (012)** — This controller is
@@ -315,14 +333,14 @@ network,auth,identity,quotamonitor}` (008/010/011/013–015/017/018) — none of
 
 ## Success Criteria
 
-- **SC-001**: `internal/controller/yukimi.go`'s `SetupGated` forwards `cfg`, `p`, and `secretsBackend`
-  into `snowflakeaccount.SetupGated`, while `snowflakedeletionrequest.SetupGated`'s call keeps its
-  existing two-parameter signature.
+- **SC-001**: `internal/controller/yukimi.go`'s `SetupGated` forwards `cfg`, `p`, `secretsBackend`, and
+  `bpConfig` into `snowflakeaccount.SetupGated`, while `snowflakedeletionrequest.SetupGated`'s call
+  keeps its existing two-parameter signature.
 - **SC-002**: `cmd/provider/main.go` gains a `--configDir` flag defaulting to `/etc/yukimi/config`, calls
   `base.Load`, and exits fatally — listing the cloud providers actually compiled in — when
   `Config.CloudProvider()` names one with no backend compiled in.
-- **SC-003**: `cmd/provider/main.go` never calls `backplane.Load`, and this package never imports
-  `internal/config/backplane`.
+- **SC-003**: `cmd/provider/main.go` calls `backplane.Load` exactly once, alongside `base.Load`, and
+  forwards the result unchanged into `SetupGated` — never calling `Region()`/`Connection()` itself.
 - **SC-004**: the pipeline `SetupGated` builds contains exactly one module, identified by
   `Name() == pipeline.AccountModuleName`.
 - **SC-005**: every `pipeline.NewModuleContext` call this controller makes passes no backplane
@@ -355,8 +373,9 @@ network,auth,identity,quotamonitor}` (008/010/011/013–015/017/018) — none of
 - **SC-016**: a `Pipeline.Destroy` failure leaves the matched `SnowflakeDeletionRequest` `Active` (never
   calls `MarkConsumed`) and returns a handled error.
 - **SC-017**: `internal/controller/snowflakeaccount` imports none of
-  `internal/account/modules/{guardrailcheck,quotacheck,parameter,network,auth,identity,quotamonitor}` or
-  `internal/config/backplane` (grep-provable — none of the former exist yet).
+  `internal/account/modules/{guardrailcheck,quotacheck,parameter,network,auth,identity,quotamonitor}`
+  (grep-provable — none exist yet). It does import `internal/config/backplane`, but only for the
+  `*backplane.Config` parameter type — it never calls `Region()`/`Connection()`.
 - **SC-018**: unit test coverage exceeds 95% for `internal/controller/snowflakeaccount`.
 - **SC-019**: `make generate` and `make reviewable` both pass with no CRD schema change introduced by this
   spec.
@@ -367,9 +386,11 @@ network,auth,identity,quotamonitor}` (008/010/011/013–015/017/018) — none of
 ## Security Considerations
 
 - **No admission control exists in this cut** (D-003/D-005): any syntactically valid `SnowflakeAccount`
-  creates a real Snowflake account, in any region, with any credit quota, network, or auth-exception
-  entry it names. This is accepted for the development cluster this code runs against today, which is
-  wiped constantly, and is expected to close once 008/010/011 land — not a production posture.
+  creates a real Snowflake account, in any region listed in the Backplane Config (007) — regardless of
+  that region's `available` flag, which nothing in this cut consults — with any credit quota, network,
+  or auth-exception entry it names. This is accepted for the development cluster this code runs against
+  today, which is wiped constantly, and is expected to close once 008/010/011 (and the `available` gate
+  itself) land — not a production posture.
 - **Deletion's positive control is fully enforced regardless of how small the provisioning pipeline is**
   — the deletion gate depends only on 019's own lifecycle, never on which modules happen to be
   registered, so today's reduced pipeline does not weaken it.
@@ -402,7 +423,8 @@ network,auth,identity,quotamonitor}` (008/010/011/013–015/017/018) — none of
   their rationale; kept until this spec's code lands.
 - **Dependency specs**: `specs/002-base-config.md`, `specs/003-secrets-handling.md`,
   `specs/003.a-aws-secrets-backend.md`, `specs/004-connection-pooling.md`,
-  `specs/006-snowflake-account-crd.md`, `specs/009-account-pipeline.md` (Appendix Examples 1–3, adapted
+  `specs/006-snowflake-account-crd.md`, `specs/007-backplane-config.md` (loaded and forwarded, never
+  called directly by this package), `specs/009-account-pipeline.md` (Appendix Examples 1–3, adapted
   below), `specs/012-account-module.md`, `specs/019-deletion-request.md`.
 - **Vendored behavior**: `crossplane-runtime/v2@v2.0.0` `pkg/reconciler/managed/reconciler.go` — the
   managed reconciler sets `Creating()`/`ReconcileSuccess()` after `Create`/`Update` return and after
@@ -420,8 +442,9 @@ network,auth,identity,quotamonitor}` (008/010/011/013–015/017/018) — none of
 ## Appendix: Usage Examples
 
 These illustrate call shape and sequencing, adapted from `specs/009-account-pipeline.md`'s own Appendix
-for this cut's finalized decisions — no backplane lookup, one registered module, and the deletion gate
-wired in. Not exact compilable code.
+for this cut's finalized decisions — one registered module, the deletion gate wired in, and the loaded
+Backplane Config forwarded straight into that module's own constructor (this package itself never looks
+anything up in it). Not exact compilable code.
 
 ### Example 1: `Observe`
 
@@ -443,8 +466,8 @@ func (e *external) Observe(ctx context.Context, cr *v1alpha1.SnowflakeAccount) (
         return managed.ExternalObservation{}, retryErr
     }
 
-    // No backplane config wired into this cut (D-005): no registered module
-    // depends on it yet.
+    // NewModuleContext itself takes no backplane config — the account
+    // module (012) that needs one already has its own copy from construction time.
     mc := pipeline.NewModuleContext(cr, labels, log, e.pool)
     obs := e.pipeline.Observe(ctx, mc)
     if !obs.Exists {
@@ -579,6 +602,9 @@ configDir := app.Flag("configDir", "directory containing base.yaml and sibling c
 cfg, err := base.Load(*configDir)
 kingpin.FatalIfError(err, "failed to load base config")
 
+bpConfig, err := backplane.Load(*configDir)
+kingpin.FatalIfError(err, "failed to load backplane config")
+
 var backend secrets.Backend
 switch cfg.CloudProvider() {
 case "aws":
@@ -594,6 +620,6 @@ defer p.Close()
 
 // o := controller.Options{...} unchanged from today's construction.
 kingpin.FatalIfError(customresourcesgate.Setup(mgr, o), "Cannot setup CRD gate controller")
-kingpin.FatalIfError(yukimi.SetupGated(mgr, o, cfg, p, cached), "Cannot setup Yukimi controllers")
+kingpin.FatalIfError(yukimi.SetupGated(mgr, o, cfg, p, cached, bpConfig), "Cannot setup Yukimi controllers")
 kingpin.FatalIfError(mgr.Start(ctrl.SetupSignalHandler()), "Cannot start controller manager")
 ```

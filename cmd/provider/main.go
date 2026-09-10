@@ -48,6 +48,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/allianz/yukimi/apis"
+	"github.com/allianz/yukimi/internal/config/backplane"
 	"github.com/allianz/yukimi/internal/config/base"
 	yukimi "github.com/allianz/yukimi/internal/controller"
 	"github.com/allianz/yukimi/internal/secrets"
@@ -164,6 +165,9 @@ func main() {
 	baseConfig, err := base.Load(*configDir)
 	kingpin.FatalIfError(err, "failed to load base config")
 
+	bpConfig, err := backplane.Load(*configDir)
+	kingpin.FatalIfError(err, "failed to load backplane config")
+
 	var backend secrets.Backend
 	switch baseConfig.CloudProvider() {
 	case "aws":
@@ -183,6 +187,6 @@ func main() {
 	kingpin.FatalIfError(err, "failed to establish org-admin Snowflake connection")
 
 	kingpin.FatalIfError(customresourcesgate.Setup(mgr, o), "Cannot setup CRD gate controller")
-	kingpin.FatalIfError(yukimi.SetupGated(mgr, o, baseConfig, p, cached), "Cannot setup Yukimi controllers")
+	kingpin.FatalIfError(yukimi.SetupGated(mgr, o, baseConfig, p, cached, bpConfig), "Cannot setup Yukimi controllers")
 	kingpin.FatalIfError(mgr.Start(ctrl.SetupSignalHandler()), "Cannot start controller manager")
 }

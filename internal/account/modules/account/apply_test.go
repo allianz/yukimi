@@ -29,6 +29,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/allianz/yukimi/internal/account/pipeline"
+	"github.com/allianz/yukimi/internal/config/backplane"
 	internalerrors "github.com/allianz/yukimi/internal/errors"
 	"github.com/allianz/yukimi/internal/secrets"
 )
@@ -43,6 +44,17 @@ func newOrgAdminMock(t *testing.T) (*sql.DB, sqlmock.Sqlmock) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	return db, mock
+}
+
+// testBackplaneConfig returns a *backplane.Config listing exactly regions,
+// each with no inventory/allowlist — enough for Region() lookups in the
+// fresh-create path, which never reads anything else off Region.
+func testBackplaneConfig(regions ...string) *backplane.Config {
+	m := make(map[string]backplane.Region, len(regions))
+	for _, r := range regions {
+		m[r] = backplane.Region{}
+	}
+	return &backplane.Config{Regions: m}
 }
 
 // SC-006/SC-015: a fresh create issues CREATE ACCOUNT, captures the locator
@@ -60,7 +72,7 @@ func TestApply_FreshCreate_Success(t *testing.T) {
 		AddRow(mc.ResolvedAccountName(), "AB12345")
 	mock.ExpectQuery("SHOW ACCOUNTS").WillReturnRows(rows)
 
-	m := &module{backend: secrets.NewFakeBackend(), org: "myorg", gracePeriod: 5 * time.Minute}
+	m := &module{backend: secrets.NewFakeBackend(), org: "myorg", gracePeriod: 5 * time.Minute, backplane: testBackplaneConfig("aws-eu-central-1")}
 	before := time.Now()
 	outcome := m.Apply(context.Background(), mc)
 
@@ -180,7 +192,7 @@ func TestApply_FreshCreate_DuplicateAccountName_Rejected(t *testing.T) {
 		Message:  "SQL compilation error: object already exists",
 	})
 
-	m := &module{backend: secrets.NewFakeBackend(), org: "myorg", gracePeriod: 5 * time.Minute}
+	m := &module{backend: secrets.NewFakeBackend(), org: "myorg", gracePeriod: 5 * time.Minute, backplane: testBackplaneConfig("aws-eu-central-1")}
 	outcome := m.Apply(context.Background(), mc)
 
 	if outcome.State != pipeline.StateRejected {
@@ -202,7 +214,7 @@ func TestApply_FreshCreate_CreateAccountFails_SystemError(t *testing.T) {
 
 	mock.ExpectExec("CREATE ACCOUNT").WillReturnError(errors.New("connection reset"))
 
-	m := &module{backend: secrets.NewFakeBackend(), org: "myorg", gracePeriod: 5 * time.Minute}
+	m := &module{backend: secrets.NewFakeBackend(), org: "myorg", gracePeriod: 5 * time.Minute, backplane: testBackplaneConfig("aws-eu-central-1")}
 	outcome := m.Apply(context.Background(), mc)
 
 	if outcome.State != pipeline.StateFailed {
@@ -219,7 +231,7 @@ func TestApply_FreshCreate_OrgAdminConnectionFails(t *testing.T) {
 	wantErr := errors.New("dial failed")
 	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{orgAdminErr: wantErr})
 
-	m := &module{backend: secrets.NewFakeBackend(), org: "myorg", gracePeriod: 5 * time.Minute}
+	m := &module{backend: secrets.NewFakeBackend(), org: "myorg", gracePeriod: 5 * time.Minute, backplane: testBackplaneConfig("aws-eu-central-1")}
 	outcome := m.Apply(context.Background(), mc)
 
 	if outcome.State != pipeline.StateFailed {
@@ -239,7 +251,7 @@ func TestApply_FreshCreate_MalformedRegion_Rejected(t *testing.T) {
 	orgAdminDB, _ := newOrgAdminMock(t)
 	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{orgAdminDB: orgAdminDB})
 
-	m := &module{backend: secrets.NewFakeBackend(), org: "myorg", gracePeriod: 5 * time.Minute}
+	m := &module{backend: secrets.NewFakeBackend(), org: "myorg", gracePeriod: 5 * time.Minute, backplane: testBackplaneConfig("aws-eu-1!")}
 	outcome := m.Apply(context.Background(), mc)
 
 	if outcome.State != pipeline.StateRejected {
@@ -260,7 +272,7 @@ func TestApply_FreshCreate_LocateAccount_NoMatch(t *testing.T) {
 	mock.ExpectExec("CREATE ACCOUNT").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SHOW ACCOUNTS").WillReturnRows(sqlmock.NewRows([]string{"account_name", "account_locator"}))
 
-	m := &module{backend: secrets.NewFakeBackend(), org: "myorg", gracePeriod: 5 * time.Minute}
+	m := &module{backend: secrets.NewFakeBackend(), org: "myorg", gracePeriod: 5 * time.Minute, backplane: testBackplaneConfig("aws-eu-central-1")}
 	outcome := m.Apply(context.Background(), mc)
 
 	if outcome.State != pipeline.StateFailed {
@@ -284,7 +296,7 @@ func TestApply_FreshCreate_LocateAccount_DiscardsNonExactMatch(t *testing.T) {
 		AddRow(mc.ResolvedAccountName(), "AB12345")
 	mock.ExpectQuery("SHOW ACCOUNTS").WillReturnRows(rows)
 
-	m := &module{backend: secrets.NewFakeBackend(), org: "myorg", gracePeriod: 5 * time.Minute}
+	m := &module{backend: secrets.NewFakeBackend(), org: "myorg", gracePeriod: 5 * time.Minute, backplane: testBackplaneConfig("aws-eu-central-1")}
 	outcome := m.Apply(context.Background(), mc)
 
 	if outcome.State != pipeline.StatePending {
@@ -310,7 +322,7 @@ func TestApply_FreshCreate_SecretPathOccupied(t *testing.T) {
 		t.Fatalf("seeding existing secret: %v", err)
 	}
 
-	m := &module{backend: backend, org: "myorg", gracePeriod: 5 * time.Minute}
+	m := &module{backend: backend, org: "myorg", gracePeriod: 5 * time.Minute, backplane: testBackplaneConfig("aws-eu-central-1")}
 	outcome := m.Apply(context.Background(), mc)
 
 	if outcome.State != pipeline.StateFailed {
@@ -341,7 +353,7 @@ func TestApply_FreshCreate_SecretPathPendingDeletion_Rejected(t *testing.T) {
 		t.Fatalf("scheduling deletion: %v", err)
 	}
 
-	m := &module{backend: backend, org: "myorg", gracePeriod: 5 * time.Minute}
+	m := &module{backend: backend, org: "myorg", gracePeriod: 5 * time.Minute, backplane: testBackplaneConfig("aws-eu-central-1")}
 	outcome := m.Apply(context.Background(), mc)
 
 	if outcome.State != pipeline.StateRejected {
@@ -361,5 +373,32 @@ func TestApply_FreshCreate_SecretPathPendingDeletion_Rejected(t *testing.T) {
 	}
 	if outcome.Err != nil && strings.Contains(outcome.Err.Error(), path.String()) {
 		t.Errorf("expected the message to never name the secret path, got: %v", outcome.Err)
+	}
+}
+
+// A fresh create aborts with backplane.Config.Region's own user error, and no
+// side effects, when spec.region is not listed in the Backplane Config (007).
+// Available is never consulted — only existence.
+func TestApply_FreshCreate_UnknownRegion_Rejected(t *testing.T) {
+	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
+	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
+
+	m := &module{backend: secrets.NewFakeBackend(), org: "myorg", gracePeriod: 5 * time.Minute, backplane: testBackplaneConfig("aws-ap-southeast-1")}
+	outcome := m.Apply(context.Background(), mc)
+
+	if outcome.State != pipeline.StateRejected {
+		t.Errorf("outcome.State = %v, want StateRejected", outcome.State)
+	}
+	if !outcome.Abort {
+		t.Error("outcome.Abort = false, want true")
+	}
+	if !internalerrors.IsUserError(outcome.Err) {
+		t.Errorf("expected a user error, got: %v", outcome.Err)
+	}
+	if outcome.Err == nil || !strings.Contains(outcome.Err.Error(), "not yet available") {
+		t.Errorf("expected the message to mention region availability, got: %v", outcome.Err)
+	}
+	if cr.Status.AccountLocator != "" {
+		t.Errorf("cr.Status.AccountLocator = %q, want empty", cr.Status.AccountLocator)
 	}
 }

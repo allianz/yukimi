@@ -101,10 +101,13 @@ an operator has to restore the credential by hand.
 //     above, which is a post-create reachability delay and has nothing to do with deletion.
 //     Already bounded to 7-90 by 002's loader, so this module does not
 //     re-validate it.
+//   - bpConfig: the loaded Backplane Config (007), consulted only for region existence via
+//     Region() on the fresh-create path. Region.Available is deliberately not checked yet — a
+//     later step.
 //
 // Returns:
 //   - pipeline.Module: never nil.
-func New(backend secrets.Backend, org string, gracePeriod time.Duration, deletionGracePeriodDays int) pipeline.Module
+func New(backend secrets.Backend, org string, gracePeriod time.Duration, deletionGracePeriodDays int, bpConfig *backplane.Config) pipeline.Module
 ```
 
 `Observe`, `Apply` and `Teardown` themselves are unexported methods on the value `New` returns — nothing
@@ -143,6 +146,8 @@ internal/account/modules/account/
 ## Error Classification
 
 **User Errors**:
+- `spec.region` is not listed in the loaded Backplane Config (007) — surfaces as `Config.Region`'s own
+  user error, passed through unchanged.
 - `CREATE ACCOUNT` fails because the resolved account name is already taken by another account org-wide.
 - The resolved account name does not start with a letter (backstop; Guardrails (008) is expected to
   already block this at admission).
@@ -189,9 +194,13 @@ internal/account/modules/account/
   is reserved for `CREATE ACCOUNT` and `DROP ACCOUNT` alone. Every module downstream of this one already
   needs a connection authenticated as the account's own `platform` user, so `Observe` reuses that same
   path to check existence rather than opening a more privileged one just to look.
-- **Does this module need anything from the Backplane Config (007)?** No. The region literal comes
-  entirely from the CRD plus a fixed transform, and whether a region is open for new accounts at all is
-  checked earlier, during 020's validation phase — not here.
+- **Does this module need anything from the Backplane Config (007)?** Yes, but only one call:
+  `Region(cr.Spec.Region)`, on the fresh-create path, to confirm the region exists in the loaded
+  config before any side effect (keypair generation, secret storage, or the org-admin connection).
+  `Region.Available` is still out of scope here — ignored deliberately, to be enforced in a later
+  change — so an existing-but-unavailable region is accepted by this check. The region literal
+  `CREATE ACCOUNT` renders still comes entirely from the CRD plus a fixed transform; the Backplane
+  Config only gates whether that literal is attempted at all.
 - **A deletion arrives when no locator was ever recorded — what does `Teardown` do?** With no locator
   there is no account to drop and no pooled connection to evict, so both steps are skipped and only the
   credential is deleted. That clears the stray secret a crashed create leaves behind (see above); if an
@@ -221,6 +230,11 @@ internal/account/modules/account/
   `Config.Deletion.GracePeriodDays` — Contract: all three passed to `New` as plain values; this module never
   loads the config file itself, and never re-validates `GracePeriodDays`, which 002's loader has already
   bounded to 7-90.
+- **Backplane Config (007)** — Used APIs: `Config.Region()` — Contract: `bpConfig` passed to `New`;
+  the fresh-create path calls `Region(cr.Spec.Region)` once, before any side effect, and passes any
+  returned error straight into `Rejected` unmodified — the error is already tenant-appropriate and
+  user-classified by 007 itself, so this module authors no message of its own. `Region.Available` is
+  never consulted.
 - **Secrets Handling (003)** — Used APIs: `GenerateKeyPair()`/`NewCredentials()`, `MarshalCredentials()`,
   `NewTenantPath()`, `Backend.Create()`, `Backend.Delete()`, `ErrPendingDeletion` — Contract: `Create` and
   `Delete` only, never `Update`; the module never reads a credential back. `Delete`'s recovery window is
@@ -248,7 +262,7 @@ internal/account/modules/account/
 
 - **SnowflakeAccount Controller (020)** — Registers this module in the pipeline via
   `account.New(secretsBackend, baseConfig.Snowflake.Org, baseConfig.Snowflake.AccountCreationGracePeriod,
-  baseConfig.Deletion.GracePeriodDays)`,
+  baseConfig.Deletion.GracePeriodDays, bpConfig)`,
   after the guardrail-check (010) and quota-check (011) modules. After `Pipeline.Apply` returns, reads
   `ModuleContext.ResolvedAccountName()` directly — never from this module's `Outcome` — plus
   `cr.Status.AccountLocator`, which this module has already set directly on the CRD, to render
@@ -316,6 +330,10 @@ internal/account/modules/account/
 - **SC-026**: `Teardown` passes `Config.Deletion.GracePeriodDays` straight into the rendered
   `GRACE_PERIOD_IN_DAYS` for every value 002 admits (3 and 90 at the bounds), and derives no window of its
   own for the credential.
+- **SC-027**: A fresh create calls `Config.Region(cr.Spec.Region)` before generating a keypair,
+  storing any secret, or opening the org-admin connection; when `Region()` returns an error, `Apply`
+  aborts with that error unchanged (`Rejected(err).Aborting()`) and performs none of those three
+  side effects. `Region.Available` is never consulted.
 
 ## Security Considerations
 
@@ -372,6 +390,8 @@ internal/account/modules/account/
   windows derive from.
 - **Secrets Handling**: `specs/003-secrets-handling.md` — Key Concept: Deleting a Credential Reserves Its
   Path. The concrete window computation lives in `specs/003.a-aws-secrets-backend.md`.
+- **Backplane Config**: `specs/007-backplane-config.md` — `Config.Region()`, the sole API this module
+  calls, and its Error Classification's tenant-facing "not yet available" wording.
 
 <br/><br/><br/><br/><br/>
 
@@ -397,6 +417,7 @@ pl := pipeline.New(
         baseConfig.Snowflake.Org,
         baseConfig.Snowflake.AccountCreationGracePeriod,
         baseConfig.Deletion.GracePeriodDays,
+        bpConfig,
     ),
     // ... modules 013-015, 017, 018, in order
 )

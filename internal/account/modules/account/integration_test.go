@@ -31,6 +31,7 @@ import (
 
 	v1alpha1 "github.com/allianz/yukimi/apis/base/v1alpha1"
 	"github.com/allianz/yukimi/internal/account/pipeline"
+	"github.com/allianz/yukimi/internal/config/backplane"
 	"github.com/allianz/yukimi/internal/config/base"
 	"github.com/allianz/yukimi/internal/secrets"
 	secretsaws "github.com/allianz/yukimi/internal/secrets/aws"
@@ -129,16 +130,18 @@ func TestIntegration_CreateThenDestroy(t *testing.T) {
 
 	namespace := os.Getenv("SAMPLE_CUSTOMER_NAMESPACE")
 	name := fmt.Sprintf("integration-test-%d", time.Now().Unix())
+	region := os.Getenv("SAMPLE_CUSTOMER_ACCOUNT_REGION")
 	cr := &v1alpha1.SnowflakeAccount{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 		Spec: v1alpha1.SnowflakeAccountSpec{
-			Region:      os.Getenv("SAMPLE_CUSTOMER_ACCOUNT_REGION"),
+			Region:      region,
 			Contact:     "yukimi-integration-test@example.com",
 			Description: "yukimi 012 integration test — safe to drop",
 		},
 	}
 
-	m := New(backend, org, 5*time.Minute, 3).(*module)
+	bpConfig := &backplane.Config{Regions: map[string]backplane.Region{region: {}}}
+	m := New(backend, org, 5*time.Minute, 3, bpConfig).(*module)
 	ctx := context.Background()
 
 	// Registered before Apply ever runs: the module stores this secret
