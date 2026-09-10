@@ -126,3 +126,53 @@ func TestCreditQuota_Zero(t *testing.T) {
 		t.Errorf("CreditQuota() = %d, want %d", got, 0)
 	}
 }
+
+// Missing label defaults to false, unlike Department/CostCenter/CreditQuota.
+func TestAlphaTester_Missing(t *testing.T) {
+	got, err := AlphaTester(map[string]string{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got {
+		t.Error("AlphaTester() = true, want false")
+	}
+}
+
+// Empty label defaults to false, unlike Department/CostCenter/CreditQuota.
+func TestAlphaTester_Empty(t *testing.T) {
+	got, err := AlphaTester(map[string]string{"alpha-tester": ""})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got {
+		t.Error("AlphaTester() = true, want false")
+	}
+}
+
+func TestAlphaTester_True(t *testing.T) {
+	got, err := AlphaTester(map[string]string{"alpha-tester": "true"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !got {
+		t.Error("AlphaTester() = false, want true")
+	}
+}
+
+func TestAlphaTester_False(t *testing.T) {
+	got, err := AlphaTester(map[string]string{"alpha-tester": "false"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got {
+		t.Error("AlphaTester() = true, want false")
+	}
+}
+
+// A present but non-boolean value is a user error.
+func TestAlphaTester_Malformed(t *testing.T) {
+	_, err := AlphaTester(map[string]string{"alpha-tester": "yes"})
+	if err == nil || !errors.IsUserError(err) {
+		t.Fatalf("expected user error, got %v", err)
+	}
+}

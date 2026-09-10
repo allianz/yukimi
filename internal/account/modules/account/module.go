@@ -57,9 +57,11 @@ type module struct {
 //     reachability delay and has nothing to do with deletion. Already
 //     bounded to 7-90 by 002's loader, so this module does
 //     not re-validate it.
-//   - bpConfig: the loaded Backplane Config (007), consulted only for
-//     region existence via Region() on the fresh-create path. Region.Available
-//     is deliberately not checked yet — a later step.
+//   - bpConfig: the loaded Backplane Config (007), consulted on the
+//     fresh-create path for region existence via Region(), and — combined
+//     with the tenant's alpha-tester namespace label — for region
+//     availability via Region.Available (Key Concept: Alpha-Tester Region
+//     Bypass).
 //
 // Returns:
 //   - pipeline.Module: never nil.

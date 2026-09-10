@@ -27,6 +27,7 @@ const (
 	departmentLabel  = "department"
 	costCenterLabel  = "cost-center"
 	creditQuotaLabel = "credit-quota"
+	alphaTesterLabel = "alpha-tester"
 )
 
 func readLabel(labels map[string]string, key string) (string, error) {
@@ -78,4 +79,26 @@ func CreditQuota(labels map[string]string) (int, error) {
 			creditQuotaLabel, value))
 	}
 	return quota, nil
+}
+
+// AlphaTester returns whether the namespace carries the ops-set "alpha-tester" label (design.md
+// chapter 2), consumed by the account module (012) to bypass a region's Backplane Config (007)
+// availability gate. Unlike Department/CostCenter/CreditQuota, this label is optional: most
+// namespaces don't carry it, so a missing or empty value means "not an alpha tester" rather than an
+// error.
+//
+// Returns: User error if the label is present but not a valid boolean — same readability reasoning
+// as CreditQuota's invalid-integer case.
+func AlphaTester(labels map[string]string) (bool, error) {
+	value, ok := labels[alphaTesterLabel]
+	if !ok || value == "" {
+		return false, nil
+	}
+	isAlphaTester, err := strconv.ParseBool(value)
+	if err != nil {
+		return false, errors.NewUserError(fmt.Sprintf(
+			"namespace label '%s' must be a boolean, got %q; contact platform ops",
+			alphaTesterLabel, value))
+	}
+	return isAlphaTester, nil
 }

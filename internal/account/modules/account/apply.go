@@ -27,6 +27,7 @@ import (
 
 	v1alpha1 "github.com/allianz/yukimi/apis/base/v1alpha1"
 	"github.com/allianz/yukimi/internal/account/pipeline"
+	"github.com/allianz/yukimi/internal/account/tenant"
 	internalerrors "github.com/allianz/yukimi/internal/errors"
 	"github.com/allianz/yukimi/internal/secrets"
 	"github.com/allianz/yukimi/internal/snowflake/statement"
@@ -71,17 +72,29 @@ func (m *module) Apply(ctx context.Context, mc *pipeline.ModuleContext) pipeline
 }
 
 // createAccount runs the fresh-create path: confirm the region exists in the
-// Backplane Config (007), generate and store the platform keypair
-// create-only, issue CREATE ACCOUNT over the org-admin connection, then
-// record the resulting locator and creation time directly on the CRD's
-// status. It never runs when a locator is already known, and it never
-// verifies reachability itself — that is deferred to a later reconcile, once
-// the grace period has elapsed (Key Concept: Create-Then-Verify Lifecycle).
+// Backplane Config (007) and, unless the tenant is an alpha tester, that it
+// is available (Key Concept: Alpha-Tester Region Bypass), generate and store
+// the platform keypair create-only, issue CREATE ACCOUNT over the org-admin
+// connection, then record the resulting locator and creation time directly
+// on the CRD's status. It never runs when a locator is already known, and it
+// never verifies reachability itself — that is deferred to a later
+// reconcile, once the grace period has elapsed (Key Concept: Create-Then-Verify
+// Lifecycle).
 func (m *module) createAccount(ctx context.Context, mc *pipeline.ModuleContext) pipeline.Outcome {
 	cr := mc.CR()
 
-	if _, err := m.backplane.Region(cr.Spec.Region); err != nil {
+	region, err := m.backplane.Region(cr.Spec.Region)
+	if err != nil {
 		return pipeline.Rejected(err).Aborting()
+	}
+
+	isAlphaTester, err := tenant.AlphaTester(mc.NamespaceLabels())
+	if err != nil {
+		return pipeline.Rejected(err).Aborting()
+	}
+	if !region.Available && !isAlphaTester {
+		return pipeline.Rejected(internalerrors.NewUserError(fmt.Sprintf(
+			"region '%s' is not yet available; choose a different one", cr.Spec.Region))).Aborting()
 	}
 
 	resolvedName := mc.ResolvedAccountName()

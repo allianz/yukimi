@@ -47,12 +47,14 @@ func newOrgAdminMock(t *testing.T) (*sql.DB, sqlmock.Sqlmock) {
 }
 
 // testBackplaneConfig returns a *backplane.Config listing exactly regions,
-// each with no inventory/allowlist — enough for Region() lookups in the
-// fresh-create path, which never reads anything else off Region.
+// each Available and with no inventory/allowlist — enough for Region()
+// lookups in the fresh-create path. Available defaults to true here so that
+// tests unrelated to the availability gate aren't affected by it; tests of
+// the gate itself build their own backplane.Config with Available: false.
 func testBackplaneConfig(regions ...string) *backplane.Config {
 	m := make(map[string]backplane.Region, len(regions))
 	for _, r := range regions {
-		m[r] = backplane.Region{}
+		m[r] = backplane.Region{Available: true}
 	}
 	return &backplane.Config{Regions: m}
 }
@@ -378,7 +380,9 @@ func TestApply_FreshCreate_SecretPathPendingDeletion_Rejected(t *testing.T) {
 
 // A fresh create aborts with backplane.Config.Region's own user error, and no
 // side effects, when spec.region is not listed in the Backplane Config (007).
-// Available is never consulted — only existence.
+// backplane.Config.Region itself never consults Available — only existence;
+// this test exercises that existence branch, not the availability gate below
+// it (see TestApply_FreshCreate_UnavailableRegion_Rejected).
 func TestApply_FreshCreate_UnknownRegion_Rejected(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
 	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
@@ -400,5 +404,94 @@ func TestApply_FreshCreate_UnknownRegion_Rejected(t *testing.T) {
 	}
 	if cr.Status.AccountLocator != "" {
 		t.Errorf("cr.Status.AccountLocator = %q, want empty", cr.Status.AccountLocator)
+	}
+}
+
+// A fresh create aborts with a user error, and no side effects, when the
+// resolved region exists but is not available and the tenant's namespace is
+// not labeled as an alpha tester (Key Concept: Alpha-Tester Region Bypass).
+func TestApply_FreshCreate_UnavailableRegion_Rejected(t *testing.T) {
+	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
+	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
+
+	m := &module{
+		backend:     secrets.NewFakeBackend(),
+		org:         "myorg",
+		gracePeriod: 5 * time.Minute,
+		backplane:   &backplane.Config{Regions: map[string]backplane.Region{"aws-eu-central-1": {Available: false}}},
+	}
+	outcome := m.Apply(context.Background(), mc)
+
+	if outcome.State != pipeline.StateRejected {
+		t.Errorf("outcome.State = %v, want StateRejected", outcome.State)
+	}
+	if !outcome.Abort {
+		t.Error("outcome.Abort = false, want true")
+	}
+	if !internalerrors.IsUserError(outcome.Err) {
+		t.Errorf("expected a user error, got: %v", outcome.Err)
+	}
+	if outcome.Err == nil || !strings.Contains(outcome.Err.Error(), "not yet available") {
+		t.Errorf("expected the message to mention region availability, got: %v", outcome.Err)
+	}
+	if cr.Status.AccountLocator != "" {
+		t.Errorf("cr.Status.AccountLocator = %q, want empty", cr.Status.AccountLocator)
+	}
+}
+
+// A fresh create proceeds past the availability gate when the resolved
+// region is unavailable but the tenant's namespace is labeled as an alpha
+// tester, reaching CREATE ACCOUNT exactly as an available region would (Key
+// Concept: Alpha-Tester Region Bypass).
+func TestApply_FreshCreate_UnavailableRegion_AlphaTesterBypass(t *testing.T) {
+	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
+	orgAdminDB, mock := newOrgAdminMock(t)
+	fake := &fakeDBPool{orgAdminDB: orgAdminDB}
+	mc := pipeline.NewModuleContext(cr, map[string]string{"alpha-tester": "true"}, nil, fake)
+
+	mock.ExpectExec("CREATE ACCOUNT").WillReturnResult(sqlmock.NewResult(0, 0))
+	rows := sqlmock.NewRows([]string{"account_name", "account_locator"}).
+		AddRow(mc.ResolvedAccountName(), "AB12345")
+	mock.ExpectQuery("SHOW ACCOUNTS").WillReturnRows(rows)
+
+	m := &module{
+		backend:     secrets.NewFakeBackend(),
+		org:         "myorg",
+		gracePeriod: 5 * time.Minute,
+		backplane:   &backplane.Config{Regions: map[string]backplane.Region{"aws-eu-central-1": {Available: false}}},
+	}
+	outcome := m.Apply(context.Background(), mc)
+
+	if outcome.State != pipeline.StatePending {
+		t.Errorf("outcome.State = %v, want StatePending", outcome.State)
+	}
+	if cr.Status.AccountLocator != "AB12345" {
+		t.Errorf("cr.Status.AccountLocator = %q, want %q", cr.Status.AccountLocator, "AB12345")
+	}
+}
+
+// A fresh create aborts with the user error from tenant.AlphaTester, and no
+// side effects, when the namespace's alpha-tester label is present but not a
+// valid boolean.
+func TestApply_FreshCreate_AlphaTesterLabelMalformed_Rejected(t *testing.T) {
+	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
+	mc := pipeline.NewModuleContext(cr, map[string]string{"alpha-tester": "yes"}, nil, &fakeDBPool{t: t, forbidCalls: true})
+
+	m := &module{
+		backend:     secrets.NewFakeBackend(),
+		org:         "myorg",
+		gracePeriod: 5 * time.Minute,
+		backplane:   &backplane.Config{Regions: map[string]backplane.Region{"aws-eu-central-1": {Available: false}}},
+	}
+	outcome := m.Apply(context.Background(), mc)
+
+	if outcome.State != pipeline.StateRejected {
+		t.Errorf("outcome.State = %v, want StateRejected", outcome.State)
+	}
+	if !outcome.Abort {
+		t.Error("outcome.Abort = false, want true")
+	}
+	if !internalerrors.IsUserError(outcome.Err) {
+		t.Errorf("expected a user error, got: %v", outcome.Err)
 	}
 }

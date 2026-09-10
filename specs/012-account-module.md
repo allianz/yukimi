@@ -13,6 +13,8 @@ account with that key, and then remember the account's unique ID so every later 
 ## Scope
 
 This specification defines the account module that:
+- Confirms the resolved region exists in the Backplane Config (007) and, unless the tenant is an
+  alpha tester, is available, before generating any credential or issuing any SQL.
 - Generates and stores the `platform` service user's RSA keypair, create-only.
 - Issues `CREATE ACCOUNT` over the org-admin connection and captures the returned account locator.
 - Detects, on every reconcile, whether the account already exists — the pipeline's sole existence signal.
@@ -25,7 +27,6 @@ This specification defines the account module that:
 - `IdentitySyncRequest` emission (017).
 - Drift detection or repair of the account's own parameters or the `platform` key — not until Snowflake
   ships Organization Policies (design.md Appendix B).
-- Validating the region's `available` gate (020's validation phase).
 
 ## Key Concept: Create-Then-Verify Lifecycle
 
@@ -56,6 +57,15 @@ The wait is measured from `status.accountCreatedAt`, which this module sets once
 succeeds. Only this module knows when the account was really created: the resource can be admitted long
 before that, and asking Snowflake would mean reopening the org-admin connection on every reconcile. If the
 field is absent, the wait counts as already over.
+
+## Key Concept: Region Validation
+
+Before creating an account, the module checks that the requested region is listed in the Backplane
+Config (007). Normal tenants can use only regions marked `available: true`. Ops may grant selected
+tenants early access to a staged region with the `alpha-tester: "true"` namespace label.
+
+This check happens only when the account is created. The region cannot be changed afterward, so an
+existing account never needs to be checked against a different region.
 
 ## Key Concept: The Only Module With Organization-Wide Privileges
 
@@ -101,9 +111,9 @@ an operator has to restore the credential by hand.
 //     above, which is a post-create reachability delay and has nothing to do with deletion.
 //     Already bounded to 7-90 by 002's loader, so this module does not
 //     re-validate it.
-//   - bpConfig: the loaded Backplane Config (007), consulted only for region existence via
-//     Region() on the fresh-create path. Region.Available is deliberately not checked yet — a
-//     later step.
+//   - bpConfig: the loaded Backplane Config (007), consulted on the fresh-create path for region
+//     existence via Region(), and — combined with the tenant's alpha-tester namespace label
+//     (Key Concept: Region Validation) — for region availability via Region.Available.
 //
 // Returns:
 //   - pipeline.Module: never nil.
@@ -148,6 +158,12 @@ internal/account/modules/account/
 **User Errors**:
 - `spec.region` is not listed in the loaded Backplane Config (007) — surfaces as `Config.Region`'s own
   user error, passed through unchanged.
+- `spec.region` exists but its `Region.Available` is `false` and the tenant's namespace is not labeled
+  `alpha-tester: "true"` (Key Concept: Region Validation) — this module's own message,
+  wording matched to `Config.Region`'s unknown-region error so the two stay indistinguishable to the
+  tenant.
+- The namespace's `alpha-tester` label is present but not a valid boolean — surfaces as
+  `tenant.AlphaTester`'s own user error, passed through unchanged.
 - `CREATE ACCOUNT` fails because the resolved account name is already taken by another account org-wide.
 - The resolved account name does not start with a letter (backstop; Guardrails (008) is expected to
   already block this at admission).
@@ -194,13 +210,17 @@ internal/account/modules/account/
   is reserved for `CREATE ACCOUNT` and `DROP ACCOUNT` alone. Every module downstream of this one already
   needs a connection authenticated as the account's own `platform` user, so `Observe` reuses that same
   path to check existence rather than opening a more privileged one just to look.
-- **Does this module need anything from the Backplane Config (007)?** Yes, but only one call:
-  `Region(cr.Spec.Region)`, on the fresh-create path, to confirm the region exists in the loaded
-  config before any side effect (keypair generation, secret storage, or the org-admin connection).
-  `Region.Available` is still out of scope here — ignored deliberately, to be enforced in a later
-  change — so an existing-but-unavailable region is accepted by this check. The region literal
-  `CREATE ACCOUNT` renders still comes entirely from the CRD plus a fixed transform; the Backplane
-  Config only gates whether that literal is attempted at all.
+- **Does this module need anything from the Backplane Config (007)?** Yes, two calls, both on the
+  fresh-create path and both before any side effect (keypair generation, secret storage, or the
+  org-admin connection): `Region(cr.Spec.Region)`, to confirm the region exists in the loaded config,
+  and a check of the returned `Region.Available`, bypassed only for alpha-tester namespaces (Key
+  Concept: Region Validation). The region literal `CREATE ACCOUNT` renders still comes
+  entirely from the CRD plus a fixed transform; the Backplane Config only gates whether that literal
+  is attempted at all.
+- **What does a namespace's malformed `alpha-tester` label do to a fresh create?** Rejects with the
+  user error `tenant.AlphaTester` itself returns (006) — the same readability reasoning as a malformed
+  `credit-quota` label — before the region-existence check's result is even used to decide anything,
+  and before any side effect.
 - **A deletion arrives when no locator was ever recorded — what does `Teardown` do?** With no locator
   there is no account to drop and no pooled connection to evict, so both steps are skipped and only the
   credential is deleted. That clears the stray secret a crashed create leaves behind (see above); if an
@@ -230,11 +250,14 @@ internal/account/modules/account/
   `Config.Deletion.GracePeriodDays` — Contract: all three passed to `New` as plain values; this module never
   loads the config file itself, and never re-validates `GracePeriodDays`, which 002's loader has already
   bounded to 7-90.
-- **Backplane Config (007)** — Used APIs: `Config.Region()` — Contract: `bpConfig` passed to `New`;
-  the fresh-create path calls `Region(cr.Spec.Region)` once, before any side effect, and passes any
-  returned error straight into `Rejected` unmodified — the error is already tenant-appropriate and
-  user-classified by 007 itself, so this module authors no message of its own. `Region.Available` is
-  never consulted.
+- **Backplane Config (007)** — Used APIs: `Config.Region()`, `Region.Available` — Contract: `bpConfig`
+  passed to `New`; the fresh-create path calls `Region(cr.Spec.Region)` once, before any side effect,
+  and passes any returned error straight into `Rejected` unmodified — the error is already
+  tenant-appropriate and user-classified by 007 itself, so this module authors no message of its own
+  for that case. It then reads the returned `Region.Available` itself and, combined with
+  `tenant.AlphaTester`, authors its own user error when the region is unavailable and the tenant is
+  not an alpha tester (Key Concept: Region Validation), reusing 007's own unknown-region
+  wording so the two cases stay indistinguishable to the tenant.
 - **Secrets Handling (003)** — Used APIs: `GenerateKeyPair()`/`NewCredentials()`, `MarshalCredentials()`,
   `NewTenantPath()`, `Backend.Create()`, `Backend.Delete()`, `ErrPendingDeletion` — Contract: `Create` and
   `Delete` only, never `Update`; the module never reads a credential back. `Delete`'s recovery window is
@@ -248,9 +271,12 @@ internal/account/modules/account/
   `QuoteLiteral()`, `BareIdentifier()`, `*statement.Error` — Contract: every tenant-influenced value is
   rendered through one of these, never concatenated raw.
 - **SnowflakeAccount CRD (006)** — Used APIs: `SnowflakeAccountSpec.Description`, `.Contact`, `.Region`,
-  `SnowflakeAccountStatus.AccountLocator`, `.AccountCreatedAt` — Contract: reads the spec fields
-  read-only; writes `AccountLocator`/`AccountCreatedAt` directly on `ModuleContext.CR().Status` — the
-  only two status fields this module ever sets.
+  `SnowflakeAccountStatus.AccountLocator`, `.AccountCreatedAt`, `internal/account/tenant.AlphaTester()`
+  — Contract: reads the spec fields read-only; writes `AccountLocator`/`AccountCreatedAt` directly on
+  `ModuleContext.CR().Status` — the only two status fields this module ever sets. Calls
+  `tenant.AlphaTester()` once on the fresh-create path against `ModuleContext.NamespaceLabels()`,
+  before any side effect, and passes its returned error (a malformed label value) straight into
+  `Rejected` unmodified.
 - **Account Pipeline (009)** — Used APIs: `account.Module`, `Done()`/`Pending()`/`Rejected()`/`Failed()`,
   `Outcome.Aborting()`, `ModuleContext.CR()`, `.ResolvedAccountName()`, `.OrgAdminDB()`, `.TenantDB()`,
   `.EvictTenant()` — Contract: `Name()` returns `pipeline.AccountModuleName`, which is how
@@ -333,7 +359,15 @@ internal/account/modules/account/
 - **SC-027**: A fresh create calls `Config.Region(cr.Spec.Region)` before generating a keypair,
   storing any secret, or opening the org-admin connection; when `Region()` returns an error, `Apply`
   aborts with that error unchanged (`Rejected(err).Aborting()`) and performs none of those three
-  side effects. `Region.Available` is never consulted.
+  side effects.
+- **SC-028**: A fresh create aborts with a user error, generating no keypair and issuing no SQL, when
+  the resolved region exists, `Region.Available` is `false`, and the tenant's namespace is not labeled
+  `alpha-tester: "true"`.
+- **SC-029**: A fresh create proceeds past the availability check — reaching keypair generation exactly
+  as an available region would — when `Region.Available` is `false` but the tenant's namespace is
+  labeled `alpha-tester: "true"`.
+- **SC-030**: A fresh create aborts with `tenant.AlphaTester`'s own user error, generating no keypair
+  and issuing no SQL, when the namespace's `alpha-tester` label is present but not a valid boolean.
 
 ## Security Considerations
 
@@ -390,8 +424,10 @@ internal/account/modules/account/
   windows derive from.
 - **Secrets Handling**: `specs/003-secrets-handling.md` — Key Concept: Deleting a Credential Reserves Its
   Path. The concrete window computation lives in `specs/003.a-aws-secrets-backend.md`.
-- **Backplane Config**: `specs/007-backplane-config.md` — `Config.Region()`, the sole API this module
-  calls, and its Error Classification's tenant-facing "not yet available" wording.
+- **Backplane Config**: `specs/007-backplane-config.md` — `Config.Region()`, `Region.Available`, and
+  its Error Classification's tenant-facing "not yet available" wording, reused for the availability
+  check.
+- **SnowflakeAccount CRD**: `specs/006-snowflake-account-crd.md` — `internal/account/tenant.AlphaTester()`.
 
 <br/><br/><br/><br/><br/>
 

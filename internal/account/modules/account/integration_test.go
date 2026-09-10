@@ -140,7 +140,7 @@ func TestIntegration_CreateThenDestroy(t *testing.T) {
 		},
 	}
 
-	bpConfig := &backplane.Config{Regions: map[string]backplane.Region{region: {}}}
+	bpConfig := &backplane.Config{Regions: map[string]backplane.Region{region: {Available: true}}}
 	m := New(backend, org, 5*time.Minute, 3, bpConfig).(*module)
 	ctx := context.Background()
 

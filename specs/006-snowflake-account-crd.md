@@ -27,8 +27,8 @@ Snowflake at all — later specs read these fixed shapes, they don't extend them
   Snowflake's identifier limit (see Key Concept: Structural Admission Checks).
 - The `status.accountName` / `accountLocator` / `accountUrl` / `conditions` shape (§7.2).
 - The `internal/account/tenant/` package: `ResolveName` (§3.12), the `Department`/`CostCenter`/
-  `CreditQuota` namespace-label readers (chapter 2), and `AccountURL` (§7.2, built on spec 004's
-  host package).
+  `CreditQuota`/`AlphaTester` namespace-label readers (chapter 2), and `AccountURL` (§7.2, built on
+  spec 004's host package).
 
 ### Out of Scope
 
@@ -78,21 +78,21 @@ The API rejects invalid input before an account is created:
 
 These checks prevent basic input errors from reaching the controller or Snowflake.
 
-## Key Concept: Namespace as Trust Anchor & Ops-Owned Labels
+## Key Concept: Namespace Defines the Tenant Boundary
 
-Per §3.11.1, the Kubernetes namespace is the sole source of truth for tenancy — it's how secret
-paths are constructed and it's derived from the runtime environment, not from anything a tenant
-writes. Chapter 2's onboarding script labels that namespace with `department`, `cost-center`, and
-`credit-quota` at the same time it's created, and deliberately does not expose any of them as CRD
-fields: if they were CRD fields, a tenant could edit their own department or credit ceiling by
-committing a YAML change, which defeats the point of having ops set them out-of-band. `internal/
-tenant/labels.go` is the one place that reads them back out, as plain `map[string]string` label
-data rather than a Kubernetes API type — this is why `internal/account/tenant` needs no Kubernetes client
-dependency at all. `Department` is read by Guardrails (008) for target matching; `CreditQuota` is
-read by quota-check (011) for admission and quota-monitor (018) for enforcement; `CostCenter` has
-no consumer named anywhere in design.md yet, but
-the label exists and gets set on every namespace regardless, so its reader is added alongside the
-other two now rather than being bolted onto whichever spec first needs it.
+The Kubernetes namespace is the platform's trust anchor for a tenant. Platform ops creates the
+namespace during onboarding, and tenants cannot rename it or move their resources into another
+namespace. The controller always takes the namespace from the running `SnowflakeAccount`; it never
+accepts a tenant-supplied namespace value.
+
+The namespace name is part of the path where the account's platform credentials are stored
+(design.md §3.11.1). When the controller reconnects to an existing account, it builds that path
+from the account's own namespace. A tenant can therefore use credentials only for accounts created
+in their namespace. They cannot point to a `SnowflakeAccount` belonging to another tenant.
+
+Ops also sets namespace labels such as `department`, `cost-center`, `credit-quota`, and, where
+needed, `alpha-tester`. Tenants cannot change their department, credit limit, or early-access
+status by editing Git. Only platform ops can change these labels.
 
 ## Key Concept: Minimal Managed-Resource Surface
 
@@ -312,6 +312,17 @@ func CostCenter(labels map[string]string) (string, error)
 // non-negative integer — same readability reasoning as Department.
 func CreditQuota(labels map[string]string) (int, error)
 
+// AlphaTester returns whether the namespace carries the ops-set "alpha-tester"
+// label (design.md chapter 2), consumed by the account module (012) to
+// bypass a region's Backplane Config (007) availability gate. Unlike
+// Department/CostCenter/CreditQuota, this label is optional: most namespaces
+// don't carry it, so a missing or empty value means "not an alpha tester"
+// rather than an error.
+//
+// Returns: User error if the label is present but not a valid boolean —
+// same readability reasoning as CreditQuota's invalid-integer case.
+func AlphaTester(labels map[string]string) (bool, error)
+
 // AccountURL returns the SnowflakeAccount's status.accountUrl (design.md
 // 7.2): the account's login URL — host.URL's bare host plus
 // "/console/login" — built from the locator Snowflake assigned at CREATE
@@ -388,7 +399,7 @@ apis/base/v1alpha1/
 internal/account/tenant/
 ├── naming.go        # ResolveName (§3.12)
 ├── naming_test.go
-├── labels.go         # Department, CostCenter, CreditQuota (chapter 2)
+├── labels.go         # Department, CostCenter, CreditQuota, AlphaTester (chapter 2)
 ├── labels_test.go
 ├── url.go            # AccountURL: internal/snowflake/host.URL + "/console/login"
 ├── url_test.go
@@ -412,6 +423,10 @@ caller (020) already has the namespace object from its own reconcile and passes 
   carries the readable message itself (e.g. "namespace missing required label 'department';
   contact platform ops") directly onto the resource's condition, which is more useful to the
   tenant even though they can't act on it alone — and still tells them exactly who to loop in.
+  `AlphaTester` follows the same reasoning for its one error case (a present-but-malformed value),
+  but a missing or empty label is not an error at all — it is the expected state for every namespace
+  that isn't opted into alpha testing, so it returns `false, nil` rather than the required-label
+  error `Department`/`CostCenter`/`CreditQuota` return.
   `AccountURL`'s region-format error is a genuine, ordinary user error, constructed and classified
   in spec 004 (`internal/snowflake/host`); `internal/account/tenant` only passes it through unchanged.
 - **System Errors**: none originate in `internal/account/tenant`.
@@ -535,6 +550,8 @@ caller (020) already has the namespace object from its own reconcile and passes 
   is absent or empty from the input map.
 - **SC-012**: `tenant.CreditQuota` returns a user error for a non-integer or negative label value,
   and the parsed `int` otherwise.
+- **SC-012a**: `tenant.AlphaTester` returns `false, nil` when the label is absent or empty, the
+  parsed `bool` for a valid `"true"`/`"false"` value, and a user error for any other present value.
 - **SC-013**: `tenant.AccountURL`'s error path matches spec 004's `host.URL` error path exactly —
   verified by a shared test case, not a re-implementation.
 - **SC-014**: `internal/account/tenant` imports nothing beyond the Go standard library, `internal/errors`,
