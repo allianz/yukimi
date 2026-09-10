@@ -61,10 +61,9 @@ spec:
               exactly — there is no forProvider wrapper (Key Concept: Minimal
               Managed-Resource Surface).
             properties:
-              contacts:
-                items:
-                  type: string
-                type: array
+              contact:
+                pattern: ^[^\s@]+@[^\s@]+\.[^\s@]+$
+                type: string
               creditQuota:
                 description: |-
                   This account's share of the namespace's monthly credit allowance
@@ -143,7 +142,17 @@ spec:
                     type: object
                 type: object
               description:
+                description: |-
+                  Immutable after creation: Snowflake does not support altering an
+                  account's COMMENT after CREATE ACCOUNT (verified directly against
+                  Snowflake; design.md does not document this — see Key Concept:
+                  Structural Admission Checks in spec 006). Mapped to COMMENT in
+                  CREATE ACCOUNT (design.md 3.6).
+                maxLength: 1024
                 type: string
+                x-kubernetes-validations:
+                - message: description is immutable
+                  rule: self == oldSelf
               environment:
                 description: |-
                   Immutable after creation (design.md 3.11.3); selects the Guardrails
@@ -198,12 +207,20 @@ spec:
                   type: string
                 type: array
               region:
-                description: Immutable after creation (design.md 3.11.3).
+                description: |-
+                  Immutable after creation (design.md 3.11.3). Structural cloud-region
+                  shape, checked by the API server before the account ever exists.
+                  Reuses internal/config/base.orgAdminRegionPattern's cloud allowlist
+                  (002) — aws/azure/gcp are the clouds a Snowflake org's account may
+                  live on. Whether the region is actually offered is resolved later
+                  against the Backplane Config (007) / Guardrails (008), not here.
+                pattern: ^(aws|azure|gcp)-[a-z][a-z0-9-]*$
                 type: string
                 x-kubernetes-validations:
                 - message: region is immutable
                   rule: self == oldSelf
             required:
+            - contact
             - environment
             - identityIntegration
             - region
@@ -287,6 +304,15 @@ spec:
         required:
         - spec
         type: object
+        x-kubernetes-validations:
+        - message: metadata.name must be 249 characters or fewer, so the resolved
+            Snowflake account name (design.md 3.12) stays within Snowflake's 255-character
+            identifier limit
+          rule: size(self.metadata.name) <= 249
+        - message: metadata.name must start with a lowercase letter and contain only
+            lowercase letters, digits, and '-', so the resolved Snowflake account
+            name (design.md 3.12) is always a valid Snowflake identifier
+          rule: self.metadata.name.matches('^[a-z][a-z0-9-]*$')
     served: true
     storage: true
     subresources:

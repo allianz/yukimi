@@ -18,7 +18,6 @@ package host
 
 import (
 	"fmt"
-	"regexp"
 	"strings"
 
 	"github.com/allianz/yukimi/internal/errors"
@@ -29,22 +28,24 @@ const (
 	publicSuffix      = ".snowflakecomputing.com"
 )
 
-// regionPattern requires a leading cloud segment of at least 3 characters
-// (every plausible cloud identifier — "aws", "azure", "gcp" — is at least
-// that long) followed by one or more hyphen-separated region segments. This
-// rejects a bare region string missing its cloud prefix (e.g.
-// "eu-central-1": its leading segment "eu" is only 2 characters, an AWS
-// geographic region code, not a cloud identifier) without maintaining an
-// allowlist of specific cloud names.
-var regionPattern = regexp.MustCompile(`^[a-z][a-z0-9]{2,}-[a-z0-9]+(-[a-z0-9]+)*$`)
+// validClouds mirrors internal/config/base.cloudSectionKeys (002) — the same
+// three clouds a Snowflake org's account may live on. Duplicated rather than
+// imported (Key Concept: Duplicated Loaders, 002/007): neither package
+// should depend on the other just for a three-entry map. Onboarding a new
+// cloud means updating this map, base.go's cloudSectionKeys, and the CRD's
+// region Pattern (006) together — a deliberate, coordinated change.
+var validClouds = map[string]bool{"aws": true, "azure": true, "gcp": true}
 
 // regionSegment returns the hostname segment for region, e.g.
 // "eu-central-1" for "aws-eu-central-1" or "eu-west-3.aws" for
 // "aws-eu-west-3". Most regions repeat the cloud as a trailing segment after
 // the region; "aws-eu-central-1" is the one known exception and needs no
-// suffix.
+// suffix. Only checks that region starts with a known cloud — the region
+// suffix's shape is the SnowflakeAccount CRD's job (006), not re-validated
+// here.
 func regionSegment(region string) (string, error) {
-	if !regionPattern.MatchString(region) {
+	idx := strings.IndexByte(region, '-')
+	if idx < 0 || !validClouds[region[:idx]] {
 		return "", errors.NewUserError(fmt.Sprintf(
 			"region '%s' does not match the expected cloud-region format (expected: aws-eu-central-1)", region))
 	}
@@ -52,7 +53,6 @@ func regionSegment(region string) (string, error) {
 	case "aws-eu-central-1":
 		return "eu-central-1", nil
 	default:
-		idx := strings.IndexByte(region, '-')
 		return region[idx+1:] + "." + region[:idx], nil
 	}
 }

@@ -47,20 +47,18 @@ func TestRegionSegment(t *testing.T) {
 	}
 }
 
-// SC-008a: a region missing its cloud prefix, or otherwise malformed, is
-// rejected by regionSegment (and therefore by Hostname and URL) without an
-// allowlist of specific cloud names — the leading segment must simply be at
-// least 3 characters, which "eu-central-1"'s 2-character "eu" fails.
+// SC-008a: a region missing its cloud prefix, or naming a cloud outside
+// validClouds, is rejected by regionSegment (and therefore by Hostname and
+// URL). The region *suffix*'s shape is no longer checked here — that's the
+// SnowflakeAccount CRD's job (006).
 func TestRegionSegment_RejectsMalformed(t *testing.T) {
 	invalid := []string{
 		"eu-central-1", // missing cloud prefix
 		"Frankfurt!",   // garbage
 		"",
 		"AWS-eu-central-1", // uppercase cloud
-		"aws-",
 		"aws",
-		"aws--1",
-		"aws-eu-",
+		"oracle-eu-1", // well-formed shape, unrecognized cloud
 	}
 	for _, region := range invalid {
 		got, err := regionSegment(region)

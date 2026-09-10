@@ -33,13 +33,26 @@ import (
 // exactly — there is no forProvider wrapper (Key Concept: Minimal
 // Managed-Resource Surface).
 type SnowflakeAccountSpec struct {
+	// Immutable after creation: Snowflake does not support altering an
+	// account's COMMENT after CREATE ACCOUNT (verified directly against
+	// Snowflake; design.md does not document this — see Key Concept:
+	// Structural Admission Checks in spec 006). Mapped to COMMENT in
+	// CREATE ACCOUNT (design.md 3.6).
 	// +optional
+	// +kubebuilder:validation:MaxLength=1024
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="description is immutable"
 	Description string `json:"description,omitempty"`
 
-	// +optional
-	Contacts []string `json:"contacts,omitempty"`
+	// +kubebuilder:validation:Pattern=`^[^\s@]+@[^\s@]+\.[^\s@]+$`
+	Contact string `json:"contact"`
 
-	// Immutable after creation (design.md 3.11.3).
+	// Immutable after creation (design.md 3.11.3). Structural cloud-region
+	// shape, checked by the API server before the account ever exists.
+	// Reuses internal/config/base.orgAdminRegionPattern's cloud allowlist
+	// (002) — aws/azure/gcp are the clouds a Snowflake org's account may
+	// live on. Whether the region is actually offered is resolved later
+	// against the Backplane Config (007) / Guardrails (008), not here.
+	// +kubebuilder:validation:Pattern=`^(aws|azure|gcp)-[a-z][a-z0-9-]*$`
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="region is immutable"
 	Region string `json:"region"`
 
@@ -155,6 +168,8 @@ type SnowflakeAccountStatus struct {
 // +kubebuilder:printcolumn:name="AGE",type="date",JSONPath=".metadata.creationTimestamp"
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Namespaced
+// +kubebuilder:validation:XValidation:rule="size(self.metadata.name) <= 249",message="metadata.name must be 249 characters or fewer, so the resolved Snowflake account name (design.md 3.12) stays within Snowflake's 255-character identifier limit"
+// +kubebuilder:validation:XValidation:rule="self.metadata.name.matches('^[a-z][a-z0-9-]*$')",message="metadata.name must start with a lowercase letter and contain only lowercase letters, digits, and '-', so the resolved Snowflake account name (design.md 3.12) is always a valid Snowflake identifier"
 type SnowflakeAccount struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

@@ -79,11 +79,6 @@ func (m *module) Apply(ctx context.Context, mc *pipeline.ModuleContext) pipeline
 func (m *module) createAccount(ctx context.Context, mc *pipeline.ModuleContext) pipeline.Outcome {
 	cr := mc.CR()
 
-	if len(cr.Spec.Contacts) == 0 {
-		return pipeline.Rejected(internalerrors.NewUserError(
-			"spec.contacts must contain at least one address")).Aborting()
-	}
-
 	resolvedName := mc.ResolvedAccountName()
 
 	creds, err := secrets.NewCredentials("platform")
@@ -116,7 +111,7 @@ func (m *module) createAccount(ctx context.Context, mc *pipeline.ModuleContext) 
 	}
 	runner := statement.New(orgAdminDB)
 
-	locator, outcome := runCreateAccount(ctx, runner, resolvedName, cr.Spec.Region, cr.Spec.Contacts[0], cr.Spec.Description, creds.PublicKey)
+	locator, outcome := runCreateAccount(ctx, runner, resolvedName, cr.Spec.Region, cr.Spec.Contact, cr.Spec.Description, creds.PublicKey)
 	if outcome.State != pipeline.StateDone {
 		return outcome
 	}

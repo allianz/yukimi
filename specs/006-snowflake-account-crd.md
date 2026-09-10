@@ -20,7 +20,11 @@ Snowflake at all — later specs read these fixed shapes, they don't extend them
   `x-kubernetes-validations` CEL rules: `region`/`environment` immutability after creation
   (§3.11.3), the `environment` enum, `identityIntegration.roleBindings` requiring an
   `ACCOUNTADMIN` entry (§3.7), and a `customAuthRules.exceptions` entry naming at least one of
-  `rsaKeyAllowed`/`patAllowed` (§3.9).
+  `rsaKeyAllowed`/`patAllowed` (§3.9). `region` additionally carries a `Pattern` marker rejecting
+  a value with no valid cloud-region shape (e.g. `aaa`) or an unrecognized cloud, reusing spec
+  002's `base.orgAdminRegionPattern` allowlist; a root-level rule on
+  `metadata.name` rejects a name too long for the resolved Snowflake account name (§3.12) to fit
+  Snowflake's identifier limit (see Key Concept: Structural Admission Checks).
 - The `status.accountName` / `accountLocator` / `accountUrl` / `conditions` shape (§7.2).
 - The `internal/account/tenant/` package: `ResolveName` (§3.12), the `Department`/`CostCenter`/
   `CreditQuota` namespace-label readers (chapter 2), and `AccountURL` (§7.2, built on spec 004's
@@ -29,7 +33,9 @@ Snowflake at all — later specs read these fixed shapes, they don't extend them
 ### Out of Scope
 
 - Guardrails constraint/preset enforcement (naming patterns, credit ceilings, network CIDR
-  limits, allowed regions) — spec 008.
+  limits, *which* regions are actually allowed/available for a given account) — spec 008. This
+  spec only rejects a `region` that is syntactically impossible; whether a well-formed region is
+  offered at all is entirely Guardrails'/Backplane Config's call (007/008).
 - Backplane Config lookups and any bootstrapping, network, or auth SQL (§3.6, §3.8, §3.9) — specs
   007, 012, 014, 015.
 - Controller reconciliation: `Observe`/`Create`/`Update`/`Delete`, condition-setting, finalizers —
@@ -56,6 +62,21 @@ free to choose either value the first time, just not to change it afterward. `en
 immutability exists for a different reason than `region`'s: it selects which Guardrails baseline
 applies (§3.3), so leaving it mutable would let an account be created under `prod` and flipped to
 `dev` to pick up its looser network posture.
+
+## Key Concept: Structural Admission Checks
+
+The API rejects invalid input before an account is created:
+
+- `region` must have a cloud-region shape naming one of `aws`/`azure`/`gcp`, such as
+  `aws-eu-central-1`. Guardrails and Backplane Config (007/008) later decide whether that
+  specific region is supported.
+- `metadata.name` must be 249 characters or fewer, start with a lowercase letter, and contain
+  only lowercase letters, digits, and `-`. This keeps the derived Snowflake account name valid.
+- `description` must be 1024 characters or fewer and cannot be changed after creation. Snowflake
+  does not support changing an account's description later.
+- `contact` must be a valid email address. It is the Snowflake account's contact address.
+
+These checks prevent basic input errors from reaching the controller or Snowflake.
 
 ## Key Concept: Namespace as Trust Anchor & Ops-Owned Labels
 
@@ -108,13 +129,25 @@ package v1alpha1
 // exactly — there is no forProvider wrapper (Key Concept: Minimal
 // Managed-Resource Surface).
 type SnowflakeAccountSpec struct {
+	// Immutable after creation: Snowflake does not support altering an
+	// account's COMMENT after CREATE ACCOUNT (verified directly against
+	// Snowflake; design.md does not document this — see Key Concept:
+	// Structural Admission Checks). Mapped to COMMENT in CREATE ACCOUNT
+	// (design.md 3.6).
 	// +optional
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="description is immutable"
 	Description string `json:"description,omitempty"`
 
-	// +optional
-	Contacts []string `json:"contacts,omitempty"`
+	// +kubebuilder:validation:Pattern=`^[^\s@]+@[^\s@]+\.[^\s@]+$`
+	Contact string `json:"contact"`
 
-	// Immutable after creation (design.md 3.11.3).
+	// Immutable after creation (design.md 3.11.3). Structural cloud-region
+	// shape, checked by the API server before the account ever exists.
+	// Reuses internal/config/base.orgAdminRegionPattern's cloud allowlist
+	// (002) — aws/azure/gcp are the clouds a Snowflake org's account may
+	// live on. Whether the region is actually offered is resolved later
+	// against the Backplane Config (007) / Guardrails (008), not here.
+	// +kubebuilder:validation:Pattern=`^(aws|azure|gcp)-[a-z][a-z0-9-]*$`
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="region is immutable"
 	Region string `json:"region"`
 
@@ -218,6 +251,20 @@ type SnowflakeAccountStatus struct {
 	// +optional
 	AccountURL string `json:"accountUrl,omitempty"`
 }
+
+// A SnowflakeAccount is the resource a team commits to Git to describe the
+// Snowflake account they want (design.md 3.1). Both rules below are
+// root-level, not on Spec, because metadata.name isn't a field Spec defines
+// (Key Concept: Structural Admission Checks).
+// +kubebuilder:validation:XValidation:rule="size(self.metadata.name) <= 249",message="metadata.name must be 249 characters or fewer, so the resolved Snowflake account name (design.md 3.12) stays within Snowflake's 255-character identifier limit"
+// +kubebuilder:validation:XValidation:rule="self.metadata.name.matches('^[a-z][a-z0-9-]*$')",message="metadata.name must start with a lowercase letter and contain only lowercase letters, digits, and '-', so the resolved Snowflake account name (design.md 3.12) is always a valid Snowflake identifier"
+type SnowflakeAccount struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	Spec   SnowflakeAccountSpec   `json:"spec"`
+	Status SnowflakeAccountStatus `json:"status,omitempty"`
+}
 ```
 
 ```go
@@ -286,13 +333,19 @@ func AccountURL(locator, region string, usePrivateLink bool) (string, error)
 
 ## Schema Specification
 
+### Fields (metadata)
+
+| Field Path | Type | Required | Mutability | Validation/Constraints |
+|---|---|---|---|---|
+| `name` | string | Yes | Immutable (Kubernetes-enforced, no CEL needed) | Two root-level `XValidation` rules: `size(self.metadata.name) <= 249` (255, Snowflake's identifier limit, minus the 6 characters `ResolveName` (§3.12) always appends), and `self.metadata.name.matches('^[a-z][a-z0-9-]*$')` (starts with a lowercase letter, only lowercase letters/digits/`-` after — the shape `ResolveName` needs to always produce a valid Snowflake identifier) |
+
 ### Fields (spec)
 
 | Field Path | Type | Required | Mutability | Validation/Constraints |
 |---|---|---|---|---|
-| `description` | string | No | Mutable | — |
-| `contacts[]` | string | No | Mutable | — |
-| `region` | string | Yes | Immutable | Format/allowlist enforced by Guardrails (008), not here |
+| `description` | string | No | Immutable | `MaxLength`: 1024 (product choice, not a discovered Snowflake limit); `XValidation`: `self == oldSelf` (Snowflake's `COMMENT` can't be altered post-creation — see Key Concept: Structural Admission Checks) |
+| `contact` | string | Yes | Mutable | `Pattern`: `` `^[^\s@]+@[^\s@]+\.[^\s@]+$` `` — email shape, checked by the API server; carried into `CREATE ACCOUNT`'s `EMAIL` (012) |
+| `region` | string | Yes | Immutable | `Pattern`: `` `^(aws|azure|gcp)-[a-z][a-z0-9-]*$` `` — identical to 002's `base.orgAdminRegionPattern`; region availability enforced by Guardrails (008), not here |
 | `environment` | string | Yes | Immutable | Enum: `dev`, `prod` |
 | `creditQuota` | int32 | No | Mutable | Ceiling enforced by Guardrails/Quota (008/011), not here |
 | `identityIntegration` | object | Yes | Mutable | — |
@@ -375,8 +428,39 @@ caller (020) already has the namespace object from its own reconcile and passes 
   Classification for why this is a user error despite being ops-caused).
 - **Do the `region`/`environment` CEL rules block the first `CREATE`?** No — `oldSelf` doesn't
   exist yet on create, so both rules only evaluate (and can only fail) on `UPDATE`.
-- **Why no CEL rule for `metadata.name`?** Kubernetes already rejects any attempt to change an
-  object's `name`; there's nothing left for this CRD's schema to enforce.
+- **Why is `description` immutable when design.md §3.11.3 doesn't list it alongside
+  `region`/`name`/`environment`?** Because design.md is silent on `description` mutability
+  entirely, not because it calls for it to be mutable. Direct verification against Snowflake found
+  that `COMMENT` (`description`'s target, design.md §3.6) cannot be altered once `CREATE ACCOUNT`
+  has run — the same kind of gap this spec already closes elsewhere for `metadata.name` (Key
+  Concept: Structural Admission Checks), where testing found real Snowflake behavior design.md
+  never spells out.
+- **Is a malformed `region` (e.g. `aaa`) rejected the same way as a Guardrails violation?** No —
+  the `Pattern` marker is a schema check, so the API server itself rejects the write before the
+  object is ever persisted; the controller never observes it, never reconciles it, and never gets a
+  chance to report it on `Synced` (design.md §3.3). A `region` that is well-formed but simply not
+  offered is a different failure entirely: it persists, reconciles, and is rejected later by
+  Guardrails (008) with a message on `Synced`.
+- **Why no *immutability* CEL rule for `metadata.name`?** Kubernetes already rejects any attempt
+  to change an object's `name`; there's nothing left for this CRD's schema to enforce there. The
+  length rule is a separate, unrelated concern (Key Concept: Structural Admission Checks) — it
+  fires on create too, not just update.
+- **A `metadata.name` at or over the 249-character ceiling — rejected the same way as the length
+  problem found in testing?** No, and that's the point: the root-level `XValidation` rejects it at
+  admission, before the object is ever persisted, so the controller never observes it and never
+  attempts to write platform credentials or call `CREATE ACCOUNT` for it. Before this rule existed,
+  an over-long name reached a real `CREATE ACCOUNT` call, which Snowflake itself rejected for
+  exceeding its 255-character identifier limit — but only *after* the account module had already
+  written credentials to the secret store, permanently wedging the resource on retry. This rule
+  closes off that path entirely; the secret-write/retry behavior itself is a separate, known gap
+  this spec does not fix.
+- **A `metadata.name` with a leading digit (e.g. `9-team`) or a dot (e.g. `my.team`) — does
+  Kubernetes already reject these?** No — both are legal under Kubernetes' own DNS-1123-subdomain
+  name validation, and `ResolveName` never translates either away (only `-` becomes `_`). Before
+  the shape `XValidation` rule existed, both reached a live `CREATE ACCOUNT` call and failed there
+  (a leading digit fails Snowflake's bare-identifier rule; a dot is never a valid identifier
+  character) — the same wedge-bug shape as the length case above. The shape rule rejects both at
+  admission instead.
 
 ## Dependencies
 
@@ -418,8 +502,22 @@ caller (020) already has the namespace object from its own reconcile and passes 
   Specification tables above, with matching JSON names.
 - **SC-003**: `region` and `environment` carry `x-kubernetes-validations` CEL rules that reject a
   changed value on update but impose no constraint on create.
+- **SC-003a**: `region` carries a `Pattern` marker, identical to spec 002's
+  `base.orgAdminRegionPattern`, that rejects a value with no valid cloud-region shape (e.g. `aaa`)
+  or an unrecognized cloud (e.g. `oracle-eu-1`) on both create and update.
+- **SC-003b**: a root-level `XValidation` rule on `SnowflakeAccount` rejects a `metadata.name`
+  longer than 249 characters on both create and update; a name of exactly 249 characters is
+  accepted.
+- **SC-003d**: a second root-level `XValidation` rule rejects a `metadata.name` that starts with a
+  digit (e.g. `9-team`) or contains a dot (e.g. `my.team`) on both create and update;
+  `analytics-team-eu` is accepted.
+- **SC-003c**: `description` carries a `MaxLength` marker that rejects a value longer than 1024
+  characters; a description of exactly 1024 characters is accepted.
+- **SC-003e**: `description` carries an `x-kubernetes-validations` CEL rule that rejects a changed
+  value on update but imposes no constraint on create, matching Snowflake's inability to alter
+  `COMMENT` after account creation.
 - **SC-004**: attempting to change an existing `SnowflakeAccount`'s `metadata.name` is rejected by
-  the Kubernetes API server itself — no CEL rule needed or present for it.
+  the Kubernetes API server itself — no CEL rule needed or present for that.
 - **SC-005**: `environment` accepts only `dev` or `prod`; any other value is rejected at admission.
 - **SC-006**: a `SnowflakeAccount` whose `identityIntegration.roleBindings` omits `ACCOUNTADMIN` is
   rejected at admission.
@@ -514,9 +612,7 @@ metadata:
 spec:
   # --- General metadata ---
   description: "Analytics team Snowflake environment for EU operations"
-  contacts:
-    - alice.smith@company.com
-    - team-analytics@company.com
+  contact: alice.smith@company.com
   # --- Snowflake account configuration ---
   region: aws-eu-central-1
   environment: prod            # dev | prod — required, immutable (3.11.3)

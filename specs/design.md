@@ -93,9 +93,7 @@ metadata:
 spec:
   # --- General metadata ---
   description: "Analytics team Snowflake environment for EU operations"
-  contacts:
-    - alice.smith@company.com
-    - team-analytics@company.com
+  contact: alice.smith@company.com
   # --- Snowflake account configuration ---
   region: aws-eu-central-1
   environment: prod            # dev | prod — required, immutable (3.11.3); a Guardrails target key (3.3)
