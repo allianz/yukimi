@@ -33,8 +33,14 @@ import (
 // exactly — there is no forProvider wrapper (Key Concept: Minimal
 // Managed-Resource Surface).
 type SnowflakeAccountSpec struct {
+	// Immutable after creation: Snowflake does not support altering an
+	// account's COMMENT after CREATE ACCOUNT (verified directly against
+	// Snowflake; design.md does not document this — see Key Concept:
+	// Structural Admission Checks in spec 006). Mapped to COMMENT in
+	// CREATE ACCOUNT (design.md 3.6).
 	// +optional
 	// +kubebuilder:validation:MaxLength=1024
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="description is immutable"
 	Description string `json:"description,omitempty"`
 
 	// +kubebuilder:validation:Pattern=`^[^\s@]+@[^\s@]+\.[^\s@]+$`

@@ -142,8 +142,17 @@ spec:
                     type: object
                 type: object
               description:
+                description: |-
+                  Immutable after creation: Snowflake does not support altering an
+                  account's COMMENT after CREATE ACCOUNT (verified directly against
+                  Snowflake; design.md does not document this — see Key Concept:
+                  Structural Admission Checks in spec 006). Mapped to COMMENT in
+                  CREATE ACCOUNT (design.md 3.6).
                 maxLength: 1024
                 type: string
+                x-kubernetes-validations:
+                - message: description is immutable
+                  rule: self == oldSelf
               environment:
                 description: |-
                   Immutable after creation (design.md 3.11.3); selects the Guardrails
