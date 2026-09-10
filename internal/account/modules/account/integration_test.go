@@ -152,7 +152,7 @@ func TestIntegration_CreateThenDestroy(t *testing.T) {
 	t.Cleanup(func() { forceDeleteForTest(ctx, t, secretPath) })
 
 	pl := pipeline.New(m)
-	mc1 := pipeline.NewModuleContext(cr, namespace, nil, nil, nil, p)
+	mc1 := pipeline.NewModuleContext(cr, nil, nil, p)
 
 	// Real Destroy, not a hand-rolled cleanup: registered so it still runs
 	// even if an assertion below fails early, and doubling as an idempotence
@@ -199,7 +199,7 @@ func TestIntegration_CreateThenDestroy(t *testing.T) {
 
 	// The account itself is gone (restorable, not connectable): a fresh
 	// connection attempt against the same locator must now fail.
-	mc2 := pipeline.NewModuleContext(cr, namespace, nil, nil, nil, p)
+	mc2 := pipeline.NewModuleContext(cr, nil, nil, p)
 	if _, err := mc2.TenantDB(ctx); err == nil {
 		t.Error("expected the tenant connection to fail after Destroy dropped the account")
 	}

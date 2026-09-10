@@ -175,7 +175,7 @@ func TestIntegration_CreateThenDestroy(t *testing.T) {
 		if cr.Status.AccountLocator == "" {
 			return
 		}
-		mc := pipeline.NewModuleContext(cr, namespace, nil, nil, nil, p)
+		mc := pipeline.NewModuleContext(cr, nil, nil, p)
 		if err := pl.Destroy(context.Background(), mc); err != nil {
 			t.Errorf("cleanup: Destroy: %v", err)
 		}
@@ -227,7 +227,7 @@ func TestIntegration_CreateThenDestroy(t *testing.T) {
 
 	// The account itself is gone: a fresh connection attempt against the
 	// same locator must now fail.
-	mc := pipeline.NewModuleContext(cr, namespace, nil, nil, nil, p)
+	mc := pipeline.NewModuleContext(cr, nil, nil, p)
 	if _, err := mc.TenantDB(context.Background()); err == nil {
 		t.Error("expected the tenant connection to fail after Delete dropped the account")
 	}

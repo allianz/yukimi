@@ -405,7 +405,7 @@ pl := pipeline.New(
 ### Example 2: Create, wait out the grace period, then reconnect
 
 ```go
-mc := pipeline.NewModuleContext(cr, "finance", nil, nsLabels, log, pool)
+mc := pipeline.NewModuleContext(cr, nsLabels, log, pool)
 
 // First reconcile: no locator yet.
 inSync, _ := module.Observe(ctx, mc)   // inSync == false, nothing has been touched yet
@@ -415,12 +415,12 @@ outcome := module.Apply(ctx, mc)       // generates keypair, stores it, issues C
 
 // A reconcile landing inside the grace period, against the same cr (status.accountLocator and
 // status.accountCreatedAt already set by the pass above):
-mc2 := pipeline.NewModuleContext(cr, "finance", nil, nsLabels, log, pool)
+mc2 := pipeline.NewModuleContext(cr, nsLabels, log, pool)
 inSync2, outcome2 := module.Observe(ctx, mc2) // inSync2 == false, StatePending — no connection attempted
 _ = module.Apply(ctx, mc2)                    // same skip; Pending(...).Aborting(), no connection attempted
 
 // A later reconcile, once the grace period has elapsed:
-mc3 := pipeline.NewModuleContext(cr, "finance", nil, nsLabels, log, pool)
+mc3 := pipeline.NewModuleContext(cr, nsLabels, log, pool)
 inSync3, _ := module.Observe(ctx, mc3) // reconnects as platform; inSync3 == true
 outcome3 := module.Apply(ctx, mc3)     // reconnects again, no SQL issued, returns Done()
 

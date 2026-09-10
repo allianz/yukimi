@@ -44,7 +44,7 @@ func TestTeardown_NoLocator_SkipsAccountSteps_DeletesCredential(t *testing.T) {
 	}
 
 	m := &module{backend: backend, org: "myorg"}
-	mc := pipeline.NewModuleContext(cr, "ns", nil, nil, nil, fake)
+	mc := pipeline.NewModuleContext(cr, nil, nil, fake)
 
 	if err := m.Teardown(context.Background(), mc); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -67,7 +67,7 @@ func TestTeardown_KnownLocator_DropsEvictsDeletes_InOrder(t *testing.T) {
 			orgAdminDB, mock := newOrgAdminMock(t)
 			fake := &fakeDBPool{orgAdminDB: orgAdminDB}
 			backend := secrets.NewFakeBackend()
-			mc := pipeline.NewModuleContext(cr, "ns", nil, nil, nil, fake)
+			mc := pipeline.NewModuleContext(cr, nil, nil, fake)
 
 			path, err := secrets.NewTenantPath("myorg", cr.Namespace, cr.Name)
 			if err != nil {
@@ -111,7 +111,7 @@ func TestTeardown_DropAccountFails_StopsBeforeEvictOrDelete(t *testing.T) {
 	orgAdminDB, mock := newOrgAdminMock(t)
 	fake := &fakeDBPool{orgAdminDB: orgAdminDB}
 	backend := secrets.NewFakeBackend()
-	mc := pipeline.NewModuleContext(cr, "ns", nil, nil, nil, fake)
+	mc := pipeline.NewModuleContext(cr, nil, nil, fake)
 
 	path, err := secrets.NewTenantPath("myorg", cr.Namespace, cr.Name)
 	if err != nil {
@@ -143,7 +143,7 @@ func TestTeardown_OrgAdminConnectionFails_ReturnsError(t *testing.T) {
 	wantErr := errors.New("dial failed")
 	fake := &fakeDBPool{orgAdminErr: wantErr}
 	backend := secrets.NewFakeBackend()
-	mc := pipeline.NewModuleContext(cr, "ns", nil, nil, nil, fake)
+	mc := pipeline.NewModuleContext(cr, nil, nil, fake)
 
 	path, err := secrets.NewTenantPath("myorg", cr.Namespace, cr.Name)
 	if err != nil {
@@ -174,7 +174,7 @@ func TestTeardown_CredentialPathBuildFails_ReturnsError(t *testing.T) {
 	backend := secrets.NewFakeBackend()
 
 	m := &module{backend: backend, org: ""}
-	mc := pipeline.NewModuleContext(cr, "ns", nil, nil, nil, fake)
+	mc := pipeline.NewModuleContext(cr, nil, nil, fake)
 
 	if err := m.Teardown(context.Background(), mc); err == nil {
 		t.Fatal("expected an error, got nil")
@@ -194,7 +194,7 @@ func TestTeardown_CredentialAlreadyAbsent_DeleteNeverCalled(t *testing.T) {
 	}
 
 	m := &module{backend: backend, org: "myorg"}
-	mc := pipeline.NewModuleContext(cr, "ns", nil, nil, nil, fake)
+	mc := pipeline.NewModuleContext(cr, nil, nil, fake)
 
 	if err := m.Teardown(context.Background(), mc); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -220,7 +220,7 @@ func TestTeardown_CredentialGetSucceeds_DeleteFails_ReturnsError(t *testing.T) {
 	backend.OnDelete = func(secrets.Path) error { return errors.New("store unreachable") }
 
 	m := &module{backend: backend, org: "myorg"}
-	mc := pipeline.NewModuleContext(cr, "ns", nil, nil, nil, fake)
+	mc := pipeline.NewModuleContext(cr, nil, nil, fake)
 
 	if err := m.Teardown(context.Background(), mc); err == nil {
 		t.Fatal("expected an error, got nil")

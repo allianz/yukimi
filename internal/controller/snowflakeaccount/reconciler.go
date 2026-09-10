@@ -211,9 +211,9 @@ func (e *external) Observe(ctx context.Context, cr *v1alpha1.SnowflakeAccount) (
 		return managed.ExternalObservation{}, retryErr
 	}
 
-	// No backplane lookup for this cut (D-005): nothing registered ever calls
-	// ModuleContext.BackplaneRegion().
-	mc := pipeline.NewModuleContext(cr, cr.Namespace, nil, labels, log, e.pool)
+	// No backplane config wired into this cut (D-005): no registered module
+	// depends on it yet.
+	mc := pipeline.NewModuleContext(cr, labels, log, e.pool)
 	obs := e.pipeline.Observe(ctx, mc)
 	if !obs.Exists {
 		return managed.ExternalObservation{ResourceExists: false}, nil
@@ -251,7 +251,7 @@ func (e *external) apply(ctx context.Context, cr *v1alpha1.SnowflakeAccount) err
 		return log.Handle(err)
 	}
 
-	mc := pipeline.NewModuleContext(cr, cr.Namespace, nil, labels, log, e.pool)
+	mc := pipeline.NewModuleContext(cr, labels, log, e.pool)
 	result := e.pipeline.Apply(ctx, mc)
 
 	e.renderOutcomes(cr, result.Outcomes)
@@ -309,7 +309,7 @@ func (e *external) Delete(ctx context.Context, cr *v1alpha1.SnowflakeAccount) (m
 	if err != nil {
 		return managed.ExternalDelete{}, log.Handle(err)
 	}
-	mc := pipeline.NewModuleContext(cr, cr.Namespace, nil, labels, log, e.pool)
+	mc := pipeline.NewModuleContext(cr, labels, log, e.pool)
 
 	// Phase 3: every module's Teardown, in reverse — today, just the account
 	// module's DROP ACCOUNT and credential cleanup.

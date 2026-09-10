@@ -53,7 +53,7 @@ func TestApply_FreshCreate_Success(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
 	orgAdminDB, mock := newOrgAdminMock(t)
 	fake := &fakeDBPool{orgAdminDB: orgAdminDB}
-	mc := pipeline.NewModuleContext(cr, "ns", nil, nil, nil, fake)
+	mc := pipeline.NewModuleContext(cr, nil, nil, fake)
 
 	mock.ExpectExec("CREATE ACCOUNT").WillReturnResult(sqlmock.NewResult(0, 0))
 	rows := sqlmock.NewRows([]string{"account_name", "account_locator"}).
@@ -90,7 +90,7 @@ func TestApply_FreshCreate_Success(t *testing.T) {
 func TestApply_KnownLocator_NilCreatedAt_ConnectionSucceeds(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345", "a@b.com", "")
 	fake := &fakeDBPool{}
-	mc := pipeline.NewModuleContext(cr, "ns", nil, nil, nil, fake)
+	mc := pipeline.NewModuleContext(cr, nil, nil, fake)
 
 	m := &module{gracePeriod: 5 * time.Minute}
 	outcome := m.Apply(context.Background(), mc)
@@ -109,7 +109,7 @@ func TestApply_KnownLocator_PastGracePeriod_ConnectionFails(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345", "a@b.com", "")
 	cr.Status.AccountCreatedAt = &metav1.Time{Time: time.Now().Add(-10 * time.Minute)}
 	wantErr := errors.New("dial failed")
-	mc := pipeline.NewModuleContext(cr, "ns", nil, nil, nil, &fakeDBPool{tenantErr: wantErr})
+	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{tenantErr: wantErr})
 
 	m := &module{gracePeriod: 5 * time.Minute}
 	outcome := m.Apply(context.Background(), mc)
@@ -133,7 +133,7 @@ func TestApply_KnownLocator_PastGracePeriod_ConnectionFails(t *testing.T) {
 func TestApply_KnownLocator_WithinGracePeriod_NoConnectionAttempt(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345", "a@b.com", "")
 	cr.Status.AccountCreatedAt = &metav1.Time{Time: time.Now()}
-	mc := pipeline.NewModuleContext(cr, "ns", nil, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
+	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
 
 	m := &module{gracePeriod: 5 * time.Minute}
 	outcome := m.Apply(context.Background(), mc)
@@ -154,7 +154,7 @@ func TestApply_KnownLocator_PastGracePeriod_ConnectionSucceeds(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345", "a@b.com", "")
 	cr.Status.AccountCreatedAt = &metav1.Time{Time: time.Now().Add(-10 * time.Minute)}
 	fake := &fakeDBPool{}
-	mc := pipeline.NewModuleContext(cr, "ns", nil, nil, nil, fake)
+	mc := pipeline.NewModuleContext(cr, nil, nil, fake)
 
 	m := &module{gracePeriod: 5 * time.Minute}
 	outcome := m.Apply(context.Background(), mc)
@@ -172,7 +172,7 @@ func TestApply_KnownLocator_PastGracePeriod_ConnectionSucceeds(t *testing.T) {
 func TestApply_FreshCreate_DuplicateAccountName_Rejected(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
 	orgAdminDB, mock := newOrgAdminMock(t)
-	mc := pipeline.NewModuleContext(cr, "ns", nil, nil, nil, &fakeDBPool{orgAdminDB: orgAdminDB})
+	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{orgAdminDB: orgAdminDB})
 
 	mock.ExpectExec("CREATE ACCOUNT").WillReturnError(&gosnowflake.SnowflakeError{
 		Number:   2003,
@@ -198,7 +198,7 @@ func TestApply_FreshCreate_DuplicateAccountName_Rejected(t *testing.T) {
 func TestApply_FreshCreate_CreateAccountFails_SystemError(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
 	orgAdminDB, mock := newOrgAdminMock(t)
-	mc := pipeline.NewModuleContext(cr, "ns", nil, nil, nil, &fakeDBPool{orgAdminDB: orgAdminDB})
+	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{orgAdminDB: orgAdminDB})
 
 	mock.ExpectExec("CREATE ACCOUNT").WillReturnError(errors.New("connection reset"))
 
@@ -217,7 +217,7 @@ func TestApply_FreshCreate_CreateAccountFails_SystemError(t *testing.T) {
 func TestApply_FreshCreate_OrgAdminConnectionFails(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
 	wantErr := errors.New("dial failed")
-	mc := pipeline.NewModuleContext(cr, "ns", nil, nil, nil, &fakeDBPool{orgAdminErr: wantErr})
+	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{orgAdminErr: wantErr})
 
 	m := &module{backend: secrets.NewFakeBackend(), org: "myorg", gracePeriod: 5 * time.Minute}
 	outcome := m.Apply(context.Background(), mc)
@@ -237,7 +237,7 @@ func TestApply_FreshCreate_OrgAdminConnectionFails(t *testing.T) {
 func TestApply_FreshCreate_MalformedRegion_Rejected(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-1!", "", "a@b.com", "")
 	orgAdminDB, _ := newOrgAdminMock(t)
-	mc := pipeline.NewModuleContext(cr, "ns", nil, nil, nil, &fakeDBPool{orgAdminDB: orgAdminDB})
+	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{orgAdminDB: orgAdminDB})
 
 	m := &module{backend: secrets.NewFakeBackend(), org: "myorg", gracePeriod: 5 * time.Minute}
 	outcome := m.Apply(context.Background(), mc)
@@ -255,7 +255,7 @@ func TestApply_FreshCreate_MalformedRegion_Rejected(t *testing.T) {
 func TestApply_FreshCreate_LocateAccount_NoMatch(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
 	orgAdminDB, mock := newOrgAdminMock(t)
-	mc := pipeline.NewModuleContext(cr, "ns", nil, nil, nil, &fakeDBPool{orgAdminDB: orgAdminDB})
+	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{orgAdminDB: orgAdminDB})
 
 	mock.ExpectExec("CREATE ACCOUNT").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SHOW ACCOUNTS").WillReturnRows(sqlmock.NewRows([]string{"account_name", "account_locator"}))
@@ -276,7 +276,7 @@ func TestApply_FreshCreate_LocateAccount_NoMatch(t *testing.T) {
 func TestApply_FreshCreate_LocateAccount_DiscardsNonExactMatch(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
 	orgAdminDB, mock := newOrgAdminMock(t)
-	mc := pipeline.NewModuleContext(cr, "ns", nil, nil, nil, &fakeDBPool{orgAdminDB: orgAdminDB})
+	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{orgAdminDB: orgAdminDB})
 
 	mock.ExpectExec("CREATE ACCOUNT").WillReturnResult(sqlmock.NewResult(0, 0))
 	rows := sqlmock.NewRows([]string{"account_name", "account_locator"}).
@@ -300,7 +300,7 @@ func TestApply_FreshCreate_LocateAccount_DiscardsNonExactMatch(t *testing.T) {
 func TestApply_FreshCreate_SecretPathOccupied(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
 	backend := secrets.NewFakeBackend()
-	mc := pipeline.NewModuleContext(cr, "ns", nil, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
+	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
 
 	path, err := secrets.NewTenantPath("myorg", cr.Namespace, cr.Name)
 	if err != nil {
@@ -328,7 +328,7 @@ func TestApply_FreshCreate_SecretPathPendingDeletion_Rejected(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
 	backend := secrets.NewFakeBackend()
 	backend.SchedulesDeletion = true
-	mc := pipeline.NewModuleContext(cr, "ns", nil, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
+	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
 
 	path, err := secrets.NewTenantPath("myorg", cr.Namespace, cr.Name)
 	if err != nil {

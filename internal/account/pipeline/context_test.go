@@ -94,7 +94,7 @@ func newTestCR(name, namespace, region, locator string) *v1alpha1.SnowflakeAccou
 func TestTenantDB_EmptyLocator_NeverCallsPool(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "")
 	fake := &fakeDBPool{t: t, forbidCalls: true}
-	mc := NewModuleContext(cr, "ns", nil, nil, nil, fake)
+	mc := NewModuleContext(cr, nil, nil, fake)
 
 	_, err := mc.TenantDB(context.Background())
 	if err == nil {
@@ -116,7 +116,7 @@ func TestTenantDB_MemoizesSameDB(t *testing.T) {
 
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345")
 	fake := &fakeDBPool{tenantDB: db1}
-	mc := NewModuleContext(cr, "ns", nil, nil, nil, fake)
+	mc := NewModuleContext(cr, nil, nil, fake)
 
 	got1, err := mc.TenantDB(context.Background())
 	if err != nil {
@@ -146,7 +146,7 @@ func TestTenantDB_PassesRawCRNameNotResolvedName(t *testing.T) {
 
 	cr := newTestCR("analytics-team", "finance", "aws-eu-central-1", "AB12345")
 	fake := &fakeDBPool{tenantDB: db1}
-	mc := NewModuleContext(cr, "finance", nil, nil, nil, fake)
+	mc := NewModuleContext(cr, nil, nil, fake)
 
 	if _, err := mc.TenantDB(context.Background()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -184,7 +184,7 @@ func TestTenantDB_FailureNotCached(t *testing.T) {
 
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "")
 	fake := &fakeDBPool{tenantDB: db1}
-	mc := NewModuleContext(cr, "ns", nil, nil, nil, fake)
+	mc := NewModuleContext(cr, nil, nil, fake)
 
 	if _, err := mc.TenantDB(context.Background()); err == nil {
 		t.Fatal("expected an error on first call with empty locator")
@@ -211,7 +211,7 @@ func TestTenantDB_PoolError(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345")
 	wantErr := errors.New("dial failed")
 	fake := &fakeDBPool{tenantErr: wantErr}
-	mc := NewModuleContext(cr, "ns", nil, nil, nil, fake)
+	mc := NewModuleContext(cr, nil, nil, fake)
 
 	_, err := mc.TenantDB(context.Background())
 	if !errors.Is(err, wantErr) {
@@ -232,7 +232,7 @@ func TestOrgAdminDB_PassesThrough(t *testing.T) {
 
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "")
 	fake := &fakeDBPool{orgAdminDB: db1}
-	mc := NewModuleContext(cr, "ns", nil, nil, nil, fake)
+	mc := NewModuleContext(cr, nil, nil, fake)
 
 	got, err := mc.OrgAdminDB(context.Background())
 	if err != nil {
@@ -244,7 +244,7 @@ func TestOrgAdminDB_PassesThrough(t *testing.T) {
 
 	wantErr := errors.New("dial failed")
 	fake2 := &fakeDBPool{orgAdminErr: wantErr}
-	mc2 := NewModuleContext(cr, "ns", nil, nil, nil, fake2)
+	mc2 := NewModuleContext(cr, nil, nil, fake2)
 	if _, err := mc2.OrgAdminDB(context.Background()); err != wantErr {
 		t.Errorf("err = %v, want %v", err, wantErr)
 	}
@@ -255,7 +255,7 @@ func TestOrgAdminDB_PassesThrough(t *testing.T) {
 // namespace.
 func TestNewModuleContext_ResolvedAccountName(t *testing.T) {
 	cr := newTestCR("analytics-team", "finance", "aws-eu-central-1", "")
-	mc := NewModuleContext(cr, "finance", nil, nil, nil, nil)
+	mc := NewModuleContext(cr, nil, nil, nil)
 
 	want := tenant.ResolveName(cr.Name, "finance")
 	if got := mc.ResolvedAccountName(); got != want {
@@ -268,7 +268,7 @@ func TestModuleContext_Accessors(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "")
 	labels := map[string]string{"department": "analytics"}
 
-	mc := NewModuleContext(cr, "ns", nil, labels, nil, &fakeDBPool{t: t, forbidCalls: true})
+	mc := NewModuleContext(cr, labels, nil, &fakeDBPool{t: t, forbidCalls: true})
 
 	if mc.CR() != cr {
 		t.Error("CR() did not return the exact CRD pointer passed in")
@@ -279,9 +279,6 @@ func TestModuleContext_Accessors(t *testing.T) {
 	if mc.Logger() != nil {
 		t.Error("Logger() should be nil when nil was passed in")
 	}
-	if mc.BackplaneRegion() != nil {
-		t.Error("BackplaneRegion() should be nil when nil was passed in")
-	}
 }
 
 // SC-014: ModuleContext.EvictTenant calls the pool with the same namespace
@@ -289,7 +286,7 @@ func TestModuleContext_Accessors(t *testing.T) {
 func TestModuleContext_EvictTenant_UsesSameKeyAsTenantDB(t *testing.T) {
 	cr := newTestCR("analytics-team", "finance", "aws-eu-central-1", "AB12345")
 	fake := &fakeDBPool{t: t}
-	mc := NewModuleContext(cr, "finance", nil, nil, nil, fake)
+	mc := NewModuleContext(cr, nil, nil, fake)
 
 	if _, err := mc.TenantDB(context.Background()); err != nil {
 		t.Fatalf("unexpected error: %v", err)

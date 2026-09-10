@@ -30,9 +30,9 @@ This specification defines the `internal/controller/snowflakeaccount` package th
   ever invokes when the preceding `Observe` reported the account as existing; if none was ever created,
   the reconciler releases the finalizer on its own, without calling `Delete` at all — and only once this
   controller's own deletion gate (below) has separately authorized the destruction.
-- Builds one `pipeline.ModuleContext` per reconcile call, passing a `nil` `*backplane.Region` (nothing
-  registered in this cut ever reads one) and the target namespace's labels, read fresh from the
-  Kubernetes API on every call.
+- Builds one `pipeline.ModuleContext` per reconcile call, passing the target namespace's labels, read
+  fresh from the Kubernetes API on every call — `NewModuleContext` takes no backplane config; a module
+  that needs one injects its own copy at construction instead.
 - Computes and persists `status.accountName`/`status.accountUrl` itself, directly from the
   `ModuleContext` and the CRD's own already-set `status.accountLocator` — never from a module's
   `Outcome`.
@@ -325,7 +325,8 @@ network,auth,identity,quotamonitor}` (008/010/011/013–015/017/018) — none of
   `internal/config/backplane`.
 - **SC-004**: the pipeline `SetupGated` builds contains exactly one module, identified by
   `Name() == pipeline.AccountModuleName`.
-- **SC-005**: every `ModuleContext` this controller builds carries a `nil` `*backplane.Region`.
+- **SC-005**: every `pipeline.NewModuleContext` call this controller makes passes no backplane
+  config — the constructor itself accepts none.
 - **SC-006**: `Observe` on a resource with a non-nil `GetDeletionTimestamp()` reports `ResourceExists:
   cr.Status.AccountLocator != ""` and `ResourceUpToDate: true` without building a `ModuleContext` or
   calling any pipeline method.
@@ -442,9 +443,9 @@ func (e *external) Observe(ctx context.Context, cr *v1alpha1.SnowflakeAccount) (
         return managed.ExternalObservation{}, retryErr
     }
 
-    // No backplane lookup for this cut (D-005): nothing registered ever calls
-    // ModuleContext.BackplaneRegion().
-    mc := pipeline.NewModuleContext(cr, cr.Namespace, nil, labels, log, e.pool)
+    // No backplane config wired into this cut (D-005): no registered module
+    // depends on it yet.
+    mc := pipeline.NewModuleContext(cr, labels, log, e.pool)
     obs := e.pipeline.Observe(ctx, mc)
     if !obs.Exists {
         return managed.ExternalObservation{ResourceExists: false}, nil
@@ -498,7 +499,7 @@ func (e *external) apply(ctx context.Context, cr *v1alpha1.SnowflakeAccount) err
         return log.Handle(err)
     }
 
-    mc := pipeline.NewModuleContext(cr, cr.Namespace, nil, labels, log, e.pool)
+    mc := pipeline.NewModuleContext(cr, labels, log, e.pool)
     result := e.pipeline.Apply(ctx, mc)
 
     for _, mo := range result.Outcomes {
@@ -557,7 +558,7 @@ func (e *external) Delete(ctx context.Context, cr *v1alpha1.SnowflakeAccount) (m
     if err != nil {
         return managed.ExternalDelete{}, log.Handle(err)
     }
-    mc := pipeline.NewModuleContext(cr, cr.Namespace, nil, labels, log, e.pool)
+    mc := pipeline.NewModuleContext(cr, labels, log, e.pool)
 
     // Phase 3: every module's Teardown, in reverse — today, just the account
     // module's DROP ACCOUNT and credential cleanup.

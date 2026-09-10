@@ -95,7 +95,7 @@ func newTestCR(name, namespace, region, locator, contact, description string) *v
 // locator is known.
 func TestObserve_NoLocator_NoConnectionAttempt(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
-	mc := pipeline.NewModuleContext(cr, "ns", nil, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
+	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
 
 	m := &module{}
 	inSync, outcome := m.Observe(context.Background(), mc)
@@ -113,7 +113,7 @@ func TestObserve_NoLocator_NoConnectionAttempt(t *testing.T) {
 func TestObserve_KnownLocator_ConnectionSucceeds(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345", "a@b.com", "")
 	fake := &fakeDBPool{}
-	mc := pipeline.NewModuleContext(cr, "ns", nil, nil, nil, fake)
+	mc := pipeline.NewModuleContext(cr, nil, nil, fake)
 
 	m := &module{}
 	inSync, outcome := m.Observe(context.Background(), mc)
@@ -134,7 +134,7 @@ func TestObserve_KnownLocator_ConnectionSucceeds(t *testing.T) {
 func TestObserve_KnownLocator_ConnectionFails(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345", "a@b.com", "")
 	wantErr := errors.New("dial failed")
-	mc := pipeline.NewModuleContext(cr, "ns", nil, nil, nil, &fakeDBPool{tenantErr: wantErr})
+	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{tenantErr: wantErr})
 
 	m := &module{}
 	inSync, outcome := m.Observe(context.Background(), mc)
@@ -158,7 +158,7 @@ func TestObserve_KnownLocator_ConnectionFails(t *testing.T) {
 func TestObserve_WithinGracePeriod_NoConnectionAttempt(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345", "a@b.com", "")
 	cr.Status.AccountCreatedAt = &metav1.Time{Time: time.Now()}
-	mc := pipeline.NewModuleContext(cr, "ns", nil, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
+	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
 
 	m := &module{gracePeriod: 5 * time.Minute}
 	inSync, outcome := m.Observe(context.Background(), mc)
@@ -176,7 +176,7 @@ func TestObserve_PastGracePeriod_ConnectionAttempted(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345", "a@b.com", "")
 	cr.Status.AccountCreatedAt = &metav1.Time{Time: time.Now().Add(-10 * time.Minute)}
 	fake := &fakeDBPool{}
-	mc := pipeline.NewModuleContext(cr, "ns", nil, nil, nil, fake)
+	mc := pipeline.NewModuleContext(cr, nil, nil, fake)
 
 	m := &module{gracePeriod: 5 * time.Minute}
 	inSync, outcome := m.Observe(context.Background(), mc)
