@@ -9,6 +9,8 @@ on:
   push:
     # Only the default branch is supported by the action.
     branches: [ main ]
+  # Manual re-run, e.g. to verify a fix. Experimental per the action's own docs.
+  workflow_dispatch:
 
 # Least privilege by default; the job below widens only what it needs.
 permissions: read-all
