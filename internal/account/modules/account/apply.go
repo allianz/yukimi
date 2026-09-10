@@ -52,23 +52,79 @@ func withinGracePeriod(cr *v1alpha1.SnowflakeAccount, gracePeriod time.Duration)
 }
 
 // Apply re-asserts the account module's desired state: create the account on
-// the first reconcile, or re-confirm the platform can still reach it on every
-// later one. It never repeats a create once a locator is known — see Key
-// Concept: Create-Then-Verify Lifecycle, specs/012-account-module.md.
+// the first reconcile, or re-confirm the platform can still reach it — and
+// keep the platform user's EMAIL in sync with spec.Contact — on every later
+// one. It never repeats a create once a locator is known — see Key Concept:
+// Create-Then-Verify Lifecycle, specs/012-account-module.md.
 func (m *module) Apply(ctx context.Context, mc *pipeline.ModuleContext) pipeline.Outcome {
 	cr := mc.CR()
 	if cr.Status.AccountLocator != "" {
 		if withinGracePeriod(cr, m.gracePeriod) {
 			return pipeline.Pending("waiting for the account to finish provisioning before attempting to connect").Aborting()
 		}
-		if _, err := mc.TenantDB(ctx); err != nil {
+		db, err := mc.TenantDB(ctx)
+		if err != nil {
 			return pipeline.Failed(fmt.Errorf(
 				"platform connection failed for existing account locator %s: %w", cr.Status.AccountLocator, err)).Aborting()
+		}
+		if err := syncPlatformEmail(ctx, statement.New(db), cr.Spec.Contact); err != nil {
+			return pipeline.Failed(err).Aborting()
 		}
 		return pipeline.Done()
 	}
 
 	return m.createAccount(ctx, mc)
+}
+
+// syncPlatformEmail reasserts contact as the platform user's EMAIL only when
+// a live read-back shows it has drifted, so a healthy reconcile issues no
+// write and leaves no ALTER USER in Snowflake's query history. The platform
+// user is exclusively controlled by this module, so there is nothing to
+// detect here beyond "does Snowflake already have what the CRD says" — no
+// state is persisted to status for this purpose.
+func syncPlatformEmail(ctx context.Context, runner *statement.Runner, contact string) error {
+	result, err := runner.Query(ctx, "show platform user", "SHOW USERS LIKE "+statement.QuoteLiteral("platform"))
+	if err != nil {
+		return fmt.Errorf("failed to look up platform user: %w", err)
+	}
+	if currentPlatformEmail(result.Rows) == contact {
+		return nil
+	}
+
+	nameToken, err := statement.BareIdentifier("platform")
+	if err != nil {
+		return err
+	}
+	sql := fmt.Sprintf("ALTER USER %s SET EMAIL = %s", nameToken, statement.QuoteLiteral(contact))
+	if err := runner.Exec(ctx, "sync platform user email", sql); err != nil {
+		return fmt.Errorf("failed to update platform user email: %w", err)
+	}
+	return nil
+}
+
+// currentPlatformEmail returns "" — never matching a real contact — when no
+// row names the platform user or the row has no email, so either case is
+// treated as drift and ALTER USER runs rather than silently skipping.
+func currentPlatformEmail(rows []map[string]any) string {
+	for _, row := range rows {
+		var name, email string
+		for key, value := range row {
+			s, ok := value.(string)
+			if !ok {
+				continue
+			}
+			switch {
+			case strings.EqualFold(key, "name"):
+				name = s
+			case strings.EqualFold(key, "email"):
+				email = s
+			}
+		}
+		if strings.EqualFold(name, "platform") {
+			return email
+		}
+	}
+	return ""
 }
 
 // createAccount runs the fresh-create path: confirm the region exists in the

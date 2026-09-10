@@ -101,9 +101,14 @@ func TestApply_FreshCreate_Success(t *testing.T) {
 // SC-004 (backward compat): a known locator with no recorded AccountCreatedAt
 // (an account that predates this field) is treated as past the grace period —
 // Apply attempts a connection as usual.
+// SC-031: the platform user's email already matches spec.Contact, so no
+// ALTER USER is issued (sqlmock would fail the test if one were attempted).
 func TestApply_KnownLocator_NilCreatedAt_ConnectionSucceeds(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345", "a@b.com", "")
-	fake := &fakeDBPool{}
+	tenantDB, mock := newOrgAdminMock(t)
+	mock.ExpectQuery("SHOW USERS").WillReturnRows(
+		sqlmock.NewRows([]string{"name", "email"}).AddRow("platform", "a@b.com"))
+	fake := &fakeDBPool{tenantDB: tenantDB}
 	mc := pipeline.NewModuleContext(cr, nil, nil, fake)
 
 	m := &module{gracePeriod: 5 * time.Minute}
@@ -167,7 +172,10 @@ func TestApply_KnownLocator_WithinGracePeriod_NoConnectionAttempt(t *testing.T) 
 func TestApply_KnownLocator_PastGracePeriod_ConnectionSucceeds(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345", "a@b.com", "")
 	cr.Status.AccountCreatedAt = &metav1.Time{Time: time.Now().Add(-10 * time.Minute)}
-	fake := &fakeDBPool{}
+	tenantDB, mock := newOrgAdminMock(t)
+	mock.ExpectQuery("SHOW USERS").WillReturnRows(
+		sqlmock.NewRows([]string{"name", "email"}).AddRow("platform", "a@b.com"))
+	fake := &fakeDBPool{tenantDB: tenantDB}
 	mc := pipeline.NewModuleContext(cr, nil, nil, fake)
 
 	m := &module{gracePeriod: 5 * time.Minute}
@@ -178,6 +186,101 @@ func TestApply_KnownLocator_PastGracePeriod_ConnectionSucceeds(t *testing.T) {
 	}
 	if fake.tenantCalls != 1 {
 		t.Errorf("TenantAccount called %d times, want 1", fake.tenantCalls)
+	}
+}
+
+// SC-032: the platform user's email differs from spec.Contact, so Apply
+// issues ALTER USER "platform" SET EMAIL over the tenant connection.
+func TestApply_KnownLocator_EmailDrifted_AltersEmail(t *testing.T) {
+	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345", "a@b.com", "")
+	cr.Status.AccountCreatedAt = &metav1.Time{Time: time.Now().Add(-10 * time.Minute)}
+	tenantDB, mock := newOrgAdminMock(t)
+	mock.ExpectQuery("SHOW USERS").WillReturnRows(
+		sqlmock.NewRows([]string{"name", "email"}).AddRow("platform", "old@b.com"))
+	mock.ExpectExec("ALTER USER").WillReturnResult(sqlmock.NewResult(0, 0))
+	fake := &fakeDBPool{tenantDB: tenantDB}
+	mc := pipeline.NewModuleContext(cr, nil, nil, fake)
+
+	m := &module{gracePeriod: 5 * time.Minute}
+	outcome := m.Apply(context.Background(), mc)
+
+	if outcome.State != pipeline.StateDone {
+		t.Errorf("outcome.State = %v, want StateDone", outcome.State)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
+	}
+}
+
+// SC-032: a lookup that finds no row naming the platform user is treated the
+// same as a mismatch — Apply still issues ALTER USER SET EMAIL.
+func TestApply_KnownLocator_NoPlatformUserRow_AltersEmail(t *testing.T) {
+	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345", "a@b.com", "")
+	cr.Status.AccountCreatedAt = &metav1.Time{Time: time.Now().Add(-10 * time.Minute)}
+	tenantDB, mock := newOrgAdminMock(t)
+	mock.ExpectQuery("SHOW USERS").WillReturnRows(sqlmock.NewRows([]string{"name", "email"}))
+	mock.ExpectExec("ALTER USER").WillReturnResult(sqlmock.NewResult(0, 0))
+	fake := &fakeDBPool{tenantDB: tenantDB}
+	mc := pipeline.NewModuleContext(cr, nil, nil, fake)
+
+	m := &module{gracePeriod: 5 * time.Minute}
+	outcome := m.Apply(context.Background(), mc)
+
+	if outcome.State != pipeline.StateDone {
+		t.Errorf("outcome.State = %v, want StateDone", outcome.State)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
+	}
+}
+
+// SC-033: a SHOW USERS failure during the email sync is a system error and
+// aborts Apply — no ALTER USER is attempted.
+func TestApply_KnownLocator_EmailLookupFails_SystemError(t *testing.T) {
+	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345", "a@b.com", "")
+	cr.Status.AccountCreatedAt = &metav1.Time{Time: time.Now().Add(-10 * time.Minute)}
+	tenantDB, mock := newOrgAdminMock(t)
+	mock.ExpectQuery("SHOW USERS").WillReturnError(errors.New("connection reset"))
+	fake := &fakeDBPool{tenantDB: tenantDB}
+	mc := pipeline.NewModuleContext(cr, nil, nil, fake)
+
+	m := &module{gracePeriod: 5 * time.Minute}
+	outcome := m.Apply(context.Background(), mc)
+
+	if outcome.State != pipeline.StateFailed {
+		t.Errorf("outcome.State = %v, want StateFailed", outcome.State)
+	}
+	if !outcome.Abort {
+		t.Error("outcome.Abort = false, want true")
+	}
+	if internalerrors.IsUserError(outcome.Err) {
+		t.Errorf("expected a system error, got a user error: %v", outcome.Err)
+	}
+}
+
+// SC-033: an ALTER USER failure during the email sync is a system error and
+// aborts Apply.
+func TestApply_KnownLocator_EmailUpdateFails_SystemError(t *testing.T) {
+	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345", "a@b.com", "")
+	cr.Status.AccountCreatedAt = &metav1.Time{Time: time.Now().Add(-10 * time.Minute)}
+	tenantDB, mock := newOrgAdminMock(t)
+	mock.ExpectQuery("SHOW USERS").WillReturnRows(
+		sqlmock.NewRows([]string{"name", "email"}).AddRow("platform", "old@b.com"))
+	mock.ExpectExec("ALTER USER").WillReturnError(errors.New("connection reset"))
+	fake := &fakeDBPool{tenantDB: tenantDB}
+	mc := pipeline.NewModuleContext(cr, nil, nil, fake)
+
+	m := &module{gracePeriod: 5 * time.Minute}
+	outcome := m.Apply(context.Background(), mc)
+
+	if outcome.State != pipeline.StateFailed {
+		t.Errorf("outcome.State = %v, want StateFailed", outcome.State)
+	}
+	if !outcome.Abort {
+		t.Error("outcome.Abort = false, want true")
+	}
+	if internalerrors.IsUserError(outcome.Err) {
+		t.Errorf("expected a system error, got a user error: %v", outcome.Err)
 	}
 }
 

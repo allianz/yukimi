@@ -21,12 +21,18 @@ This specification defines the account module that:
 - Publishes the resolved account name and locator onto the shared `ModuleContext` for every later module.
 - Tears the account down: `DROP ACCOUNT` over the org-admin connection, eviction of the pooled
   connection to it, and deletion of the stored credential.
+- Keeps the `platform` user's `EMAIL` in sync with `spec.contact` on every `Apply` against an existing
+  account, via a live read-compare-then-write over the tenant connection (Key Concept: Contact Email
+  Kept In Sync).
 
 **Out of Scope**:
 - Authorizing a deletion (019), and the finalizer and conditions around one (020).
 - `IdentitySyncRequest` emission (017).
 - Drift detection or repair of the account's own parameters or the `platform` key — not until Snowflake
-  ships Organization Policies (design.md Appendix B).
+  ships Organization Policies (design.md Appendix B). This exclusion is about re-provisioning a rotated
+  key, an organization-wide, disruptive action; it does not cover reasserting one free-text field
+  (`EMAIL`) on a user this module already exclusively owns — see Key Concept: Contact Email Kept In
+  Sync.
 
 ## Key Concept: Create-Then-Verify Lifecycle
 
@@ -57,6 +63,12 @@ The wait is measured from `status.accountCreatedAt`, which this module sets once
 succeeds. Only this module knows when the account was really created: the resource can be admitted long
 before that, and asking Snowflake would mean reopening the org-admin connection on every reconcile. If the
 field is absent, the wait counts as already over.
+
+## Key Concept: Contact Email Kept In Sync
+
+`spec.contact` is the only account-creation field tenants can change later. It is the `EMAIL` of the
+`platform` user, not an account property. On an existing account, the module updates that user with
+`ALTER USER "platform" SET EMAIL = ...` when its current email differs from `spec.contact`.
 
 ## Key Concept: Region Validation
 
@@ -96,8 +108,8 @@ an operator has to restore the credential by hand.
 // New constructs the account module (design.md 3.6). It implements
 // internal/account/pipeline.Module's Observe/Apply/Teardown contract,
 // identified by pipeline.AccountModuleName; see Key Concept:
-// Create-Then-Verify Lifecycle and Key Concept: Post-Create Grace Period for
-// what each method does.
+// Create-Then-Verify Lifecycle, Key Concept: Post-Create Grace Period, and
+// Key Concept: Contact Email Kept In Sync for what each method does.
 //
 // Parameters:
 //   - backend: the secrets.Backend (003) the platform keypair is stored through, via Backend.Create
@@ -122,7 +134,8 @@ func New(backend secrets.Backend, org string, gracePeriod time.Duration, deletio
 
 `Observe`, `Apply` and `Teardown` themselves are unexported methods on the value `New` returns — nothing
 outside this module's own tests calls them directly, so their behavior is documented under Key Concept:
-Create-Then-Verify Lifecycle and Key Concept: Post-Create Grace Period above rather than here. All three
+Create-Then-Verify Lifecycle, Key Concept: Post-Create Grace Period, and Key Concept: Contact Email Kept
+In Sync above rather than here. All three
 read `status.accountLocator`/`status.accountCreatedAt` directly through `ModuleContext.CR()`, not through
 any `ModuleContext` accessor — `internal/account/pipeline` (009) defines none for either field.
 
@@ -182,6 +195,8 @@ internal/account/modules/account/
   unreachable).
 - `DROP ACCOUNT` fails for any reason other than the account already being absent.
 - The credential's deletion fails for any reason other than the secret path already being absent.
+- The platform user's `EMAIL` lookup (`SHOW USERS`) or update (`ALTER USER ... SET EMAIL`) fails for any
+  reason (Key Concept: Contact Email Kept In Sync).
 
 ## Edge Cases
 
@@ -217,6 +232,13 @@ internal/account/modules/account/
   Concept: Region Validation). The region literal `CREATE ACCOUNT` renders still comes
   entirely from the CRD plus a fixed transform; the Backplane Config only gates whether that literal
   is attempted at all.
+- **Why look the email up before writing it, when this module doesn't bother for anything else it
+  owns?** Unlike the RSA key or the account's own existence, `EMAIL` is compared on every single `Apply`
+  call for an existing account — not just when `spec.contact` itself changed, since the pipeline calls
+  every module's `Apply` unconditionally whenever the CRD's generation has moved, for any reason. Skipping
+  the read and reasserting unconditionally would put a same-value `ALTER USER` in Snowflake's query
+  history on nearly every reconcile of a perfectly healthy tenant; the read avoids that at the cost of one
+  extra query, and still requires no new state to be kept on `status`.
 - **What does a namespace's malformed `alpha-tester` label do to a fresh create?** Rejects with the
   user error `tenant.AlphaTester` itself returns (006) — the same readability reasoning as a malformed
   `credit-quota` label — before the region-existence check's result is even used to decide anything,
@@ -368,6 +390,14 @@ internal/account/modules/account/
   labeled `alpha-tester: "true"`.
 - **SC-030**: A fresh create aborts with `tenant.AlphaTester`'s own user error, generating no keypair
   and issuing no SQL, when the namespace's `alpha-tester` label is present but not a valid boolean.
+- **SC-031**: On the existing-account reconnect path, `Apply` issues `SHOW USERS LIKE 'platform'` over
+  the tenant connection and issues no `ALTER USER` when the looked-up `email` already equals
+  `spec.contact`.
+- **SC-032**: On the existing-account reconnect path, `Apply` issues `ALTER USER "platform" SET EMAIL =
+  spec.contact`, over the tenant connection and never the org-admin connection, whenever the looked-up
+  email differs from `spec.contact` or no row names the `platform` user at all.
+- **SC-033**: A `SHOW USERS` or `ALTER USER` failure during the email sync is classified as a system
+  error and aborts `Apply` (`Failed(...).Aborting()`).
 
 ## Security Considerations
 
@@ -405,6 +435,18 @@ internal/account/modules/account/
   can influence the grace period — deletion protection would be worthless if the party being protected
   from could shorten the window it is protected by.
 
+- **`SHOW USERS`/`ALTER USER` rendering (Key Concept: Contact Email Kept In Sync).** The fixed literal
+  `"platform"` — both in the `SHOW USERS LIKE` pattern and as the `ALTER USER` target — is rendered as a
+  quoted literal and a bare identifier respectively, passed through the same bare-identifier charset
+  check as every other fixed literal in this module, as a defense-in-depth backstop. `spec.contact` is
+  rendered as a quoted literal, identical to its `CREATE ACCOUNT` `EMAIL` rendering.
+
+  | Position | Value | Rendering |
+  | --- | --- | --- |
+  | `SHOW USERS LIKE` pattern | fixed `"platform"` | quoted literal |
+  | `ALTER USER` target | fixed `"platform"` | bare identifier |
+  | `EMAIL` | `spec.contact` (email-shape checked at admission, 006) | quoted literal |
+
 ## References
 
 - **Product design**: `specs/design.md` §3.2, §3.6, §3.11, §3.11.1, §3.12, §6.1–§6.3 (the deletion
@@ -420,6 +462,11 @@ internal/account/modules/account/
 - **Snowflake `DROP ACCOUNT` reference**: https://docs.snowflake.com/en/sql-reference/sql/drop-account
   — `GRACE_PERIOD_IN_DAYS` being required, its range of 3-90, and the account staying restorable (and its
   name taken) for that period.
+- **Snowflake `SHOW USERS` reference**: https://docs.snowflake.com/en/sql-reference/sql/show-users —
+  the `name`/`email` columns, and `LIKE`'s wildcard-only, case-insensitive matching (Key Concept: Contact
+  Email Kept In Sync).
+- **Snowflake `ALTER USER` reference**: https://docs.snowflake.com/en/sql-reference/sql/alter-user —
+  the `SET EMAIL = '<string>'` property.
 - **Base Configuration**: `specs/002-base-config.md` — `deletion.gracePeriodDays`, the single setting both
   windows derive from.
 - **Secrets Handling**: `specs/003-secrets-handling.md` — Key Concept: Deleting a Credential Reserves Its
@@ -479,7 +526,9 @@ _ = module.Apply(ctx, mc2)                    // same skip; Pending(...).Abortin
 // A later reconcile, once the grace period has elapsed:
 mc3 := pipeline.NewModuleContext(cr, nsLabels, log, pool)
 inSync3, _ := module.Observe(ctx, mc3) // reconnects as platform; inSync3 == true
-outcome3 := module.Apply(ctx, mc3)     // reconnects again, no SQL issued, returns Done()
+outcome3 := module.Apply(ctx, mc3)     // reconnects again; SHOW USERS LIKE 'platform' finds the email
+                                        // already matches spec.Contact, so no ALTER USER is issued;
+                                        // returns Done()
 
 // Deletion, reached through Pipeline.Destroy once a deletion request (019) has authorized it:
 err := module.Teardown(ctx, mc3)       // DROP ACCOUNT ... GRACE_PERIOD_IN_DAYS = 30, evicts the
