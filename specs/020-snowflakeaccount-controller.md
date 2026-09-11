@@ -166,8 +166,9 @@ package snowflakeaccount // internal/controller/snowflakeaccount
 // Parameters:
 //   - cfg: the provider's base configuration (002) — read for
 //     Snowflake.Org, Snowflake.AccountCreationGracePeriod,
-//     Snowflake.UsePrivateLink (status.accountUrl), and
-//     Deletion.GracePeriodDays.
+//     Snowflake.UsePrivateLink (status.accountUrl),
+//     Deletion.GracePeriodDays, and Deletion.Protection (the deletion
+//     gate's on/off switch, read directly by Delete).
 //   - p: the pooled Snowflake connections (004), satisfying
 //     pipeline.DBPool; shared with every other controller that ever needs
 //     one.
@@ -268,6 +269,10 @@ internal/controller/yukimi.go   # SetupGated gains cfg/pool/secretsBackend/bpCon
 - **`Pipeline.Destroy` fails partway through** — the deletion request is left `Active` (never marked
   `Consumed`), so the next reconcile retries the same teardown from the top; every module's `Teardown` is
   safe to re-run (009).
+- **`cfg.Deletion.Protection` is `false` (002)** — `Delete` skips the `FindActiveRequest` lookup entirely
+  and goes straight to Phase 3, so no `SnowflakeDeletionRequest` is required, looked up, or consumed. Any
+  `Active` request that happens to exist for that resource is simply left alone — untouched, unconsumed —
+  and either expires on its own or sits unused; this is a dev/ops opt-out, not a per-resource exception.
 - **The managed reconciler overwrites `Ready`/`Synced` again right after `Observe`, `Create`, and
   `Update` all return, every single time** — this controller relies on nothing from a prior call still
   being in effect; every `Observe` recomputes `Ready`/`Synced` in full, per Key Concept: The Ready Latch
@@ -279,8 +284,10 @@ internal/controller/yukimi.go   # SetupGated gains cfg/pool/secretsBackend/bpCon
   `Logger.Handle()` — Contract: one `*Logger` per reconcile method call; every handled error this
   controller returns has already passed through exactly one `Handle` call.
 - **`internal/config/base` (002)** — Used APIs: `base.Load()`, `Config.CloudProvider()`,
-  `Config.Snowflake.*`, `Config.Deletion.GracePeriodDays` — Contract: loaded once in `cmd/provider/main.go`
-  at startup; this package treats the result as immutable for the process's life.
+  `Config.Snowflake.*`, `Config.Deletion.GracePeriodDays`, `Config.Deletion.Protection` — Contract: loaded
+  once in `cmd/provider/main.go` at startup; this package treats the result as immutable for the process's
+  life. `Delete` reads `Config.Deletion.Protection` directly to decide whether the deletion gate runs at
+  all.
 - **`internal/secrets` (003) / `internal/secrets/aws` (003.a)** — Used APIs: `secrets.Backend`,
   `secrets.NewCachedBackend()`, `secretsaws.New()` — Contract: `main.go` constructs and wraps exactly one
   backend and passes it, already cached, into both `pool.New` and `SetupGated`.
@@ -382,6 +389,9 @@ of `internal/account/modules/{guardrailcheck,quotacheck,parameter,network,auth,i
 - **SC-020**: `integration_test.go` proves a full create-then-destroy round trip: a `SnowflakeAccount`
   reaches `Ready`, then an authorizing `SnowflakeDeletionRequest` plus its deletion together remove it —
   against a live Snowflake organization, a live AWS Secrets Manager, and a real Kubernetes API.
+- **SC-021**: when `cfg.Deletion.Protection` is `false`, `Delete` never calls `deletion.FindActiveRequest`
+  or `deletion.MarkConsumed`, never emits `DeletionBlocked`, and still calls `Pipeline.Destroy` exactly
+  once; when `true` (including the zero-config default), behavior is unchanged from SC-014–SC-016.
 
 ## Security Considerations
 
@@ -394,6 +404,10 @@ of `internal/account/modules/{guardrailcheck,quotacheck,parameter,network,auth,i
 - **Deletion's positive control is fully enforced regardless of how small the provisioning pipeline is**
   — the deletion gate depends only on 019's own lifecycle, never on which modules happen to be
   registered, so today's reduced pipeline does not weaken it.
+- **`cfg.Deletion.Protection: false` (002) removes the positive-control guarantee platform-wide** — a
+  deliberate operator opt-out (e.g. for a constantly-wiped dev cluster), not a per-resource exception;
+  every `SnowflakeAccount` in the deployment loses the deletion gate at once, with no way to re-enable it
+  for a single resource while it's off for the rest.
 - **The org-admin connection is only ever reached from inside the account module (012), through
   `ModuleContext`** — this controller itself never calls `OrgAdminDB` or holds an org-admin-scoped
   connection.
@@ -565,16 +579,22 @@ func (e *external) apply(ctx context.Context, cr *v1alpha1.SnowflakeAccount) err
 func (e *external) Delete(ctx context.Context, cr *v1alpha1.SnowflakeAccount) (managed.ExternalDelete, error) {
     log := logger.New(e.logger, cr.Namespace, "SnowflakeAccount", cr.Name, logger.OpDelete)
 
-    // Phase 2: no active request, no destruction.
-    req, err := deletion.FindActiveRequest(ctx, e.kube, cr.Namespace, v1alpha1.SnowflakeAccountKind, cr.Name)
-    if err != nil {
-        return managed.ExternalDelete{}, log.Handle(err)
-    }
-    if req == nil {
-        blockedErr := errors.NewUserError("deletion blocked: no active SnowflakeDeletionRequest authorizes this account")
-        e.record.Event(cr, event.Warning("DeletionBlocked", blockedErr))
-        cr.SetConditions(xpv1.Unavailable().WithMessage(blockedErr.Error()))
-        return managed.ExternalDelete{}, log.Handle(blockedErr)
+    // Phase 2: no active request, no destruction — unless deletion protection
+    // is disabled platform-wide (cfg.Deletion.Protection, 002), in which case
+    // this gate is skipped entirely and req stays nil.
+    var req *v1alpha1.SnowflakeDeletionRequest
+    if e.cfg.Deletion.Protection {
+        var err error
+        req, err = deletion.FindActiveRequest(ctx, e.kube, cr.Namespace, v1alpha1.SnowflakeAccountKind, cr.Name)
+        if err != nil {
+            return managed.ExternalDelete{}, log.Handle(err)
+        }
+        if req == nil {
+            blockedErr := errors.NewUserError("deletion blocked: no active SnowflakeDeletionRequest authorizes this account")
+            e.record.Event(cr, event.Warning("DeletionBlocked", blockedErr))
+            cr.SetConditions(xpv1.Unavailable().WithMessage(blockedErr.Error()))
+            return managed.ExternalDelete{}, log.Handle(blockedErr)
+        }
     }
 
     labels, err := e.namespaceLabels(ctx, cr.Namespace)
@@ -589,7 +609,10 @@ func (e *external) Delete(ctx context.Context, cr *v1alpha1.SnowflakeAccount) (m
         return managed.ExternalDelete{}, log.Handle(err)
     }
 
-    return managed.ExternalDelete{}, deletion.MarkConsumed(ctx, e.kube, req)
+    if req != nil {
+        return managed.ExternalDelete{}, deletion.MarkConsumed(ctx, e.kube, req)
+    }
+    return managed.ExternalDelete{}, nil
 }
 ```
 

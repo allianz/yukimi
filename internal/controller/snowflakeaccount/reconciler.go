@@ -294,16 +294,22 @@ func (e *external) apply(ctx context.Context, cr *v1alpha1.SnowflakeAccount) err
 func (e *external) Delete(ctx context.Context, cr *v1alpha1.SnowflakeAccount) (managed.ExternalDelete, error) {
 	log := logger.New(e.logger, cr.Namespace, "SnowflakeAccount", cr.Name, logger.OpDelete)
 
-	// Phase 2: no active request, no destruction.
-	req, err := deletion.FindActiveRequest(ctx, e.kube, cr.Namespace, v1alpha1.SnowflakeAccountKind, cr.Name)
-	if err != nil {
-		return managed.ExternalDelete{}, log.Handle(err)
-	}
-	if req == nil {
-		blockedErr := internalerrors.NewUserError("deletion blocked: no active SnowflakeDeletionRequest authorizes this account")
-		e.record.Event(cr, event.Warning("DeletionBlocked", blockedErr))
-		cr.SetConditions(xpv1.Unavailable().WithMessage(blockedErr.Error()))
-		return managed.ExternalDelete{}, log.Handle(blockedErr)
+	// Phase 2: no active request, no destruction — unless deletion protection
+	// is disabled platform-wide (deletion.protection: false, 002), in which
+	// case this gate is skipped entirely and req stays nil.
+	var req *v1alpha1.SnowflakeDeletionRequest
+	if e.cfg.Deletion.Protection {
+		var err error
+		req, err = deletion.FindActiveRequest(ctx, e.kube, cr.Namespace, v1alpha1.SnowflakeAccountKind, cr.Name)
+		if err != nil {
+			return managed.ExternalDelete{}, log.Handle(err)
+		}
+		if req == nil {
+			blockedErr := internalerrors.NewUserError("deletion blocked: no active SnowflakeDeletionRequest authorizes this account")
+			e.record.Event(cr, event.Warning("DeletionBlocked", blockedErr))
+			cr.SetConditions(xpv1.Unavailable().WithMessage(blockedErr.Error()))
+			return managed.ExternalDelete{}, log.Handle(blockedErr)
+		}
 	}
 
 	labels, err := e.namespaceLabels(ctx, cr.Namespace)
@@ -318,5 +324,8 @@ func (e *external) Delete(ctx context.Context, cr *v1alpha1.SnowflakeAccount) (m
 		return managed.ExternalDelete{}, log.Handle(err)
 	}
 
-	return managed.ExternalDelete{}, deletion.MarkConsumed(ctx, e.kube, req)
+	if req != nil {
+		return managed.ExternalDelete{}, deletion.MarkConsumed(ctx, e.kube, req)
+	}
+	return managed.ExternalDelete{}, nil
 }

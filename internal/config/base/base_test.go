@@ -890,6 +890,42 @@ func TestLoad_DisableOCSPChecks_ExplicitTrue(t *testing.T) {
 	}
 }
 
+// Deletion.Protection defaults to true when omitted.
+func TestLoad_Protection_Omitted(t *testing.T) {
+	cfg, err := Load(newConfigDir(t, wellFormedFixture))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.Deletion.Protection {
+		t.Error("Deletion.Protection = false, want true (default)")
+	}
+}
+
+// An explicit "deletion.protection: false" is honored, proving the decoder
+// distinguishes omitted from explicitly-false.
+func TestLoad_Protection_ExplicitFalse(t *testing.T) {
+	fixture := fmt.Sprintf("%s\ndeletion:\n  protection: false\n", wellFormedFixture)
+	cfg, err := Load(newConfigDir(t, fixture))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Deletion.Protection {
+		t.Error("Deletion.Protection = true, want false (explicit)")
+	}
+}
+
+// An explicit "deletion.protection: true" is honored.
+func TestLoad_Protection_ExplicitTrue(t *testing.T) {
+	fixture := fmt.Sprintf("%s\ndeletion:\n  protection: true\n", wellFormedFixture)
+	cfg, err := Load(newConfigDir(t, fixture))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.Deletion.Protection {
+		t.Error("Deletion.Protection = false, want true (explicit)")
+	}
+}
+
 // SC-008: CloudProvider() returns "aws" for a file whose only cloud section is aws:.
 func TestLoad_CloudProvider_AWS(t *testing.T) {
 	cfg, err := Load(newConfigDir(t, wellFormedFixture))

@@ -9,3 +9,6 @@ snowflake:
 
 aws:
   region: {{ .Env.AWS_REGION }}
+
+deletion:
+  protection: {{ getenv "DELETION_PROTECTION" "true" }}
