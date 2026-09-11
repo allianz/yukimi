@@ -43,8 +43,13 @@ func (failingReader) Read([]byte) (int, error) { return 0, errNoEntropy }
 // withoutEntropy swaps crypto/rand's reader for one that always fails, so the
 // key-generation failure path — otherwise unreachable — can be exercised. It is
 // restored when the test ends, so no test here may call t.Parallel.
+//
+// Since Go 1.26, rsa.GenerateKey ignores the reader it's given unless
+// GODEBUG=cryptocustomrand=1 is set; t.Setenv restores the old behavior for
+// the duration of this test only. See https://go.dev/issue/66821.
 func withoutEntropy(t *testing.T) {
 	t.Helper()
+	t.Setenv("GODEBUG", "cryptocustomrand=1")
 	original := rand.Reader
 	t.Cleanup(func() { rand.Reader = original })
 	rand.Reader = io.Reader(failingReader{})
