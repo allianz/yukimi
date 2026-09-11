@@ -16,7 +16,10 @@ limitations under the License.
 
 package tenant
 
-import "testing"
+import (
+	"regexp"
+	"testing"
+)
 
 // SC-009: matches design.md 3.12's worked example exactly.
 func TestResolveName_DesignExample(t *testing.T) {
@@ -52,4 +55,52 @@ func TestResolveName_DifferentNamespacesNoCollision(t *testing.T) {
 	if first == second {
 		t.Errorf("ResolveName() collided across namespaces: both = %q", first)
 	}
+}
+
+// validCRDName mirrors the SnowflakeAccount CRD's own XValidation pattern on
+// metadata.name (snowflakeaccount_types.go): "^[a-z][a-z0-9-]*$". ResolveName
+// itself never validates name — the CRD's admission control is its only
+// guard — so a fuzz target has no way to know which arbitrary inputs are
+// "supposed" to be reachable; it can only assert real invariants on inputs
+// the CRD would actually admit, and treat everything else as out of scope.
+var validCRDName = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
+
+// bareIdentifierCharset mirrors statement.BareIdentifier's own pattern
+// (render.go): "^[A-Za-z][A-Za-z0-9_]*$". apply.go's createAccount feeds
+// ResolveName's output straight into statement.BareIdentifier with no
+// transform of its own, so ResolveName must never produce a name
+// BareIdentifier would reject for any name the CRD itself admits — that
+// defense-in-depth check would otherwise reject a perfectly legitimate
+// tenant account name.
+var bareIdentifierCharset = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*$`)
+
+// FuzzResolveName: no panic and deterministic (same inputs, same output) for
+// any input at all — name and namespace both ultimately come from
+// Kubernetes object metadata, which ResolveName trusts rather than
+// re-validates (see its own doc comment). For the narrower case of a name
+// the CRD's own pattern would actually admit, the resolved name must also
+// satisfy statement.BareIdentifier's charset, since apply.go relies on that
+// holding without any transform in between.
+func FuzzResolveName(f *testing.F) {
+	f.Add("analytics-team-eu", "finance")
+	f.Add("dev", "ns")
+	f.Add("", "")
+	f.Add("a", "a")
+	f.Add("multi-word-account-name", "ns")
+	f.Add(`'; DROP TABLE X; --`, "ns")
+	f.Add("dev", `'; DROP TABLE X; --`)
+	f.Fuzz(func(t *testing.T, name, namespace string) {
+		got := ResolveName(name, namespace)
+
+		if again := ResolveName(name, namespace); again != got {
+			t.Fatalf("ResolveName(%q, %q) not deterministic: %q != %q", name, namespace, got, again)
+		}
+
+		if !validCRDName.MatchString(name) {
+			return
+		}
+		if !bareIdentifierCharset.MatchString(got) {
+			t.Fatalf("ResolveName(%q, %q) = %q, which statement.BareIdentifier's charset would reject", name, namespace, got)
+		}
+	})
 }

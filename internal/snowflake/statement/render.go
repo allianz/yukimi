@@ -36,12 +36,20 @@ func QuoteIdentifier(name string) string {
 }
 
 // QuoteLiteral single-quotes s for use as a rendered SQL string literal,
-// doubling any embedded single quote. Its primary caller is
+// doubling any embedded single quote and any embedded backslash. The
+// backslash doubling matters because Snowflake, unlike standard SQL, treats
+// backslash as an escape character inside single-quoted literals: an
+// un-doubled trailing backslash would let its own closing quote be consumed
+// as an escaped literal quote rather than the literal's terminator, letting
+// s run on into whatever SQL text follows (confirmed live — see
+// notes-snowflake-sql-mechanics.md §7). Its primary caller is
 // SHOW ... LIKE '<pattern>', since whether SHOW accepts a bind for its
 // pattern at all is unverified (notes-snowflake-sql-mechanics.md §7) —
 // assume rendered.
 func QuoteLiteral(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+	escaped := strings.ReplaceAll(s, `\`, `\\`)
+	escaped = strings.ReplaceAll(escaped, "'", "''")
+	return "'" + escaped + "'"
 }
 
 // BareIdentifier validates name as a bare, unquoted SQL token and returns
