@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -36,6 +37,7 @@ import (
 	"github.com/allianz/yukimi/internal/secrets"
 	secretsaws "github.com/allianz/yukimi/internal/secrets/aws"
 	"github.com/allianz/yukimi/internal/snowflake/pool"
+	"github.com/allianz/yukimi/internal/snowflake/statement"
 )
 
 // forceDeleteForTest permanently deletes the secret at path, bypassing AWS
@@ -206,4 +208,166 @@ func TestIntegration_CreateThenDestroy(t *testing.T) {
 	if _, err := mc2.TenantDB(ctx); err == nil {
 		t.Error("expected the tenant connection to fail after Destroy dropped the account")
 	}
+}
+
+// fuzzedName is metadata.name for TestIntegration_CreateWithFuzzedFields:
+// every character class the CRD's own `^[a-z][a-z0-9-]*$` allows, interleaved
+// with hyphens, so ResolveName (006) and the BareIdentifier render it passes
+// through (apply.go) both see letters, digits and separators mixed rather
+// than the short, tidy name every other test in this file uses.
+//
+// Deliberately not sized anywhere near the CRD's own 249-character ceiling —
+// a first attempt at that size discovered a real, tighter Snowflake limit
+// this codebase's specs don't mention anywhere: CREATE ACCOUNT rejects the
+// combined "<org>-<resolved-account-name>" once it exceeds 63 characters
+// ("...exceeds the maximum DNS label length of 63 characters"), well below
+// what the resolved name's own 255-character SQL-identifier ceiling
+// (snowflakeaccount_types.go's own comment) would suggest is safe. Kept
+// short enough here to stay well clear of that limit for any real org name,
+// since demonstrating it is not this test's job — reproduce it by making
+// this string as long as the CRD alone allows.
+var fuzzedName = fmt.Sprintf("fuzz-a1b2-c3d4-e5f6-g7h8-i9j0-%d", time.Now().Unix())
+
+// fuzzedContact is spec.Contact for TestIntegration_CreateWithFuzzedFields:
+// every separator character permitted by both the CRD's email Pattern and a
+// real email address's syntax (dot, hyphen, plus-tag, underscore, a
+// multi-label domain) packed into one address, deliberately without a quote,
+// semicolon, or comment marker — those are permitted by the CRD's Pattern
+// but not by Snowflake's own server-side EMAIL validation, so including them
+// would fail CREATE ACCOUNT for a reason unrelated to SQL escaping (see
+// TestIntegration_CreateWithFuzzedFields's own doc comment).
+const fuzzedContact = "yukimi.fuzz-test+integration_01@sub-domain.example-test.co.io"
+
+// fuzzedDescription is spec.Description for
+// TestIntegration_CreateWithFuzzedFields: as much injection- and
+// encoding-shaped content as fits in the CRD's 1024-character MaxLength,
+// packed into the one field CREATE ACCOUNT renders via
+// statement.QuoteLiteral (runCreateAccount in apply.go) with no format
+// constraint of its own — unlike spec.Contact and spec.Region, both
+// restricted by a CRD Pattern and, for Contact, by Snowflake's own
+// server-side validation too.
+const fuzzedDescription = `quotes: ' '' "" ; -- SQL line comment /* SQL block comment */ backslash: \ \\ ` +
+	`unicode: héllo wörld 日本語 emoji 🐍🔥 café naïve ` +
+	`whitespace: tab->` + "\t" + `<- newline->` + "\n" + `<-end control chars done`
+
+// TestIntegration_CreateWithFuzzedFields only runs via `make
+// test-integration` (skipped whenever tests run with -short). It creates a
+// second real, throwaway Snowflake account exactly like
+// TestIntegration_CreateThenDestroy's happy path, except every field this
+// module actually renders into CREATE ACCOUNT — metadata.name (via
+// ResolveName, 006), spec.Contact, and spec.Description — is filled with as
+// much fuzz as each field's own validation allows while still expecting
+// CREATE ACCOUNT to succeed; spec.Region and the namespace stay fixed since
+// they must match the real Backplane Config (007) and test infrastructure
+// this test runs against, not something safe to fuzz. A real CREATE ACCOUNT
+// succeeding at all already shows fuzzedDescription didn't break out of its
+// literal and corrupt the statement; reading COMMENT back through SHOW
+// ACCOUNTS additionally proves Snowflake stored the exact bytes this test
+// sent, not a truncated or mangled variant. Otherwise mirrors
+// TestIntegration_CreateThenDestroy's env vars, config, and teardown.
+func TestIntegration_CreateWithFuzzedFields(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test — run via `make test-integration`")
+	}
+	_ = godotenv.Load("../../../../.env")
+
+	awsBackend, err := secretsaws.New(os.Getenv("AWS_REGION"), "", 30)
+	if err != nil {
+		t.Fatalf("secretsaws.New: %v", err)
+	}
+	backend := secrets.NewCachedBackend(awsBackend, 5*time.Minute)
+
+	org := os.Getenv("SNOWFLAKE_ORG")
+	cfg := &base.Config{
+		Snowflake: base.SnowflakeSettings{
+			Org:                    org,
+			OrgAdminAccount:        os.Getenv("SNOWFLAKE_ORG_ADMIN_ACCOUNT"),
+			OrgAdminAccountLocator: os.Getenv("SNOWFLAKE_ORG_ADMIN_ACCOUNT_LOCATOR"),
+			OrgAdminAccountRegion:  os.Getenv("SNOWFLAKE_ORG_ADMIN_ACCOUNT_REGION"),
+			UsePrivateLink:         os.Getenv("SNOWFLAKE_USE_PRIVATELINK") == "true",
+			DisableOCSPChecks:      os.Getenv("SNOWFLAKE_DISABLE_OCSP_CHECKS") == "true",
+			ConnectionProbeTimeout: 5 * time.Second,
+		},
+		Secrets: base.SecretsSettings{RotationInterval: 24 * time.Hour},
+	}
+	p := pool.New(backend, cfg)
+	t.Cleanup(func() { _ = p.Close() })
+
+	namespace := os.Getenv("SAMPLE_CUSTOMER_NAMESPACE")
+	region := os.Getenv("SAMPLE_CUSTOMER_ACCOUNT_REGION")
+	cr := &v1alpha1.SnowflakeAccount{
+		ObjectMeta: metav1.ObjectMeta{Name: fuzzedName, Namespace: namespace},
+		Spec: v1alpha1.SnowflakeAccountSpec{
+			Region:      region,
+			Contact:     fuzzedContact,
+			Description: fuzzedDescription,
+		},
+	}
+
+	bpConfig := &backplane.Config{Regions: map[string]backplane.Region{region: {Available: true}}}
+	m := New(backend, org, 5*time.Minute, 3, bpConfig).(*module)
+	ctx := context.Background()
+
+	secretPath, err := secrets.NewTenantPath(org, namespace, fuzzedName)
+	if err != nil {
+		t.Fatalf("secrets.NewTenantPath: %v", err)
+	}
+	t.Cleanup(func() { forceDeleteForTest(ctx, t, secretPath) })
+
+	pl := pipeline.New(m)
+	mc := pipeline.NewModuleContext(cr, nil, nil, p)
+
+	t.Cleanup(func() {
+		if cr.Status.AccountLocator == "" {
+			return
+		}
+		if err := pl.Destroy(ctx, mc); err != nil {
+			t.Errorf("cleanup: Destroy: %v", err)
+		}
+	})
+
+	outcome := m.Apply(ctx, mc)
+	if outcome.State != pipeline.StatePending || !outcome.Abort {
+		t.Fatalf("Apply (fresh create with fuzzed fields) = %+v, want Pending().Aborting()", outcome)
+	}
+	if cr.Status.AccountLocator == "" {
+		t.Fatal("Apply succeeded but cr.Status.AccountLocator is still empty")
+	}
+
+	orgAdminDB, err := mc.OrgAdminDB(ctx)
+	if err != nil {
+		t.Fatalf("OrgAdminDB: %v", err)
+	}
+	result, err := statement.New(orgAdminDB).Query(ctx, "read back created account",
+		"SHOW ACCOUNTS LIKE "+statement.QuoteLiteral(mc.ResolvedAccountName()))
+	if err != nil {
+		t.Fatalf("SHOW ACCOUNTS: %v", err)
+	}
+	if len(result.Rows) != 1 {
+		t.Fatalf("len(Rows) = %d, want 1", len(result.Rows))
+	}
+	comment, ok := commentValue(result.Rows[0])
+	if !ok {
+		t.Fatal("SHOW ACCOUNTS row has no comment column")
+	}
+	if comment != fuzzedDescription {
+		t.Fatalf("stored comment = %q, want %q — the fuzzed payload was corrupted or truncated in storage", comment, fuzzedDescription)
+	}
+
+	if err := pl.Destroy(ctx, mc); err != nil {
+		t.Fatalf("Destroy: %v", err)
+	}
+}
+
+// commentValue extracts the comment column from a SHOW ACCOUNTS row,
+// matching the key case-insensitively for the same reason
+// accountNameAndLocator does in apply.go.
+func commentValue(row map[string]any) (string, bool) {
+	for key, value := range row {
+		if strings.EqualFold(key, "comment") {
+			s, ok := value.(string)
+			return s, ok
+		}
+	}
+	return "", false
 }

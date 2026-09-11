@@ -132,3 +132,59 @@ func TestHostnameAndURL_RejectMalformedRegion(t *testing.T) {
 		}
 	}
 }
+
+// FuzzHostnameAndURL: locator is documented as opaque and never validated
+// (Hostname's doc comment), so it is not this fuzz target's job to reject
+// any locator shape — only to confirm Hostname/URL never panic on one, and
+// that their few real invariants hold regardless of what locator contains:
+// on a malformed region, both still return ("", a user error); on a
+// well-formed one, the result is always built from exactly Hostname's own
+// pieces (locator, a dot, the region segment, the suffix usePrivateLink
+// selects), and URL is always "https://" prefixed onto that same Hostname.
+func FuzzHostnameAndURL(f *testing.F) {
+	f.Add("xc19114", "aws-eu-central-1", false)
+	f.Add("xc19114", "aws-eu-west-3", true)
+	f.Add("", "aws-eu-central-1", false)
+	f.Add(`loc"; DROP TABLE X; --`, "aws-eu-central-1", false)
+	f.Add("xc19114/../etc", "aws-eu-central-1", false)
+	f.Add("xc19114", "not-a-cloud", false)
+	f.Add("xc19114", "", false)
+	f.Add("xc19114", "AWS-eu-central-1", false)
+	f.Fuzz(func(t *testing.T, locator, region string, usePrivateLink bool) {
+		host, err := Hostname(locator, region, usePrivateLink)
+		if err != nil {
+			if !errors.IsUserError(err) {
+				t.Fatalf("Hostname(%q, %q, %v) returned a non-user error: %v", locator, region, usePrivateLink, err)
+			}
+			if host != "" {
+				t.Fatalf("Hostname(%q, %q, %v) = %q on error, want \"\"", locator, region, usePrivateLink, host)
+			}
+			if url, err := URL(locator, region, usePrivateLink); err == nil || !errors.IsUserError(err) || url != "" {
+				t.Fatalf("URL(%q, %q, %v) = (%q, %v), want (\"\", the same user error) once Hostname itself errors",
+					locator, region, usePrivateLink, url, err)
+			}
+			return
+		}
+
+		suffix := publicSuffix
+		if usePrivateLink {
+			suffix = privateLinkSuffix
+		}
+		segment, segErr := regionSegment(region)
+		if segErr != nil {
+			t.Fatalf("Hostname(%q, %q, %v) succeeded but regionSegment itself errors: %v", locator, region, usePrivateLink, segErr)
+		}
+		want := locator + "." + segment + suffix
+		if host != want {
+			t.Fatalf("Hostname(%q, %q, %v) = %q, want %q", locator, region, usePrivateLink, host, want)
+		}
+
+		url, err := URL(locator, region, usePrivateLink)
+		if err != nil {
+			t.Fatalf("URL(%q, %q, %v) errored after Hostname succeeded: %v", locator, region, usePrivateLink, err)
+		}
+		if url != "https://"+host {
+			t.Fatalf("URL(%q, %q, %v) = %q, want %q", locator, region, usePrivateLink, url, "https://"+host)
+		}
+	})
+}
