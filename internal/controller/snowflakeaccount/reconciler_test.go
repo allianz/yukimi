@@ -145,7 +145,7 @@ func newExternal(t *testing.T, m pipeline.Module, objs ...client.Object) (*exter
 		kube:     c,
 		pool:     nil, // fakeModule never touches the ModuleContext's pool
 		pipeline: pipeline.New(m),
-		cfg:      &base.Config{Snowflake: base.SnowflakeSettings{UsePrivateLink: true}},
+		cfg:      &base.Config{Snowflake: base.SnowflakeSettings{UsePrivateLink: true}, Deletion: base.DeletionSettings{Protection: true}},
 		logger:   logging.NewNopLogger(),
 		record:   &fakeRecorder{},
 	}
@@ -669,5 +669,46 @@ func TestDelete_NamespaceLabelsError_AfterActiveRequest(t *testing.T) {
 
 	if _, err := e.Delete(context.Background(), cr); err == nil {
 		t.Fatal("expected an error, got nil")
+	}
+}
+
+// deletion.protection: false skips the gate entirely: no active request is
+// required, none is looked up, and destruction proceeds straight through.
+func TestDelete_ProtectionDisabled_SkipsGate(t *testing.T) {
+	m := &fakeModule{name: pipeline.AccountModuleName}
+	e, _ := newExternal(t, m, newTestNamespace("ns", nil))
+	e.cfg = &base.Config{Deletion: base.DeletionSettings{Protection: false}}
+	cr := newTestCR("acct", "ns", "aws-eu-central-1")
+
+	if _, err := e.Delete(context.Background(), cr); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if m.teardownCalled != 1 {
+		t.Fatalf("expected Teardown to be called once, got %d", m.teardownCalled)
+	}
+	if rec := e.record.(*fakeRecorder); len(rec.events) != 0 {
+		t.Fatalf("expected no events, got %+v", rec.events)
+	}
+}
+
+// Even when an Active request happens to exist, a disabled gate ignores it:
+// destruction proceeds without consulting or consuming it.
+func TestDelete_ProtectionDisabled_IgnoresExistingActiveRequest(t *testing.T) {
+	req := newTestDeletionRequest("req", "ns", "acct", "Active", time.Now())
+	m := &fakeModule{name: pipeline.AccountModuleName}
+	e, kube := newExternal(t, m, newTestNamespace("ns", nil), req)
+	e.cfg = &base.Config{Deletion: base.DeletionSettings{Protection: false}}
+	cr := newTestCR("acct", "ns", "aws-eu-central-1")
+
+	if _, err := e.Delete(context.Background(), cr); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var persisted v1alpha1.SnowflakeDeletionRequest
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(req), &persisted); err != nil {
+		t.Fatalf("unexpected error fetching persisted request: %v", err)
+	}
+	if persisted.Status.State != "Active" {
+		t.Fatalf("expected request to remain untouched (Active), got %q", persisted.Status.State)
 	}
 }

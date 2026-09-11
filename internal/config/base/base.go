@@ -141,7 +141,8 @@ type SecretsSettings struct {
 // created account is given to become reachable. Despite the similar name, that one is about
 // creation and is a Duration; this one is about deletion and is a count of days.
 type DeletionSettings struct {
-	GracePeriodDays int // days a dropped account and its credential stay restorable (003, 012); defaults to 30 when omitted, allowed range 7-90
+	GracePeriodDays int  // days a dropped account and its credential stay restorable (003, 012); defaults to 30 when omitted, allowed range 7-90
+	Protection      bool // when true, SnowflakeAccount's Delete (020) requires an Active SnowflakeDeletionRequest (019) before it will destroy an account; defaults to true when omitted
 }
 
 // AWSSettings holds AWS-specific settings, consumed only by 003.a.
@@ -190,7 +191,8 @@ type rawSecrets struct {
 }
 
 type rawDeletion struct {
-	GracePeriodDays *int `yaml:"gracePeriodDays"`
+	GracePeriodDays *int  `yaml:"gracePeriodDays"`
+	Protection      *bool `yaml:"protection"`
 }
 
 // Load reads, parses, and validates "<configDir>/base.yaml".
@@ -357,6 +359,11 @@ func Load(configDir string) (*Config, error) {
 		return nil, err
 	}
 
+	deletionProtection := true
+	if raw.Deletion.Protection != nil {
+		deletionProtection = *raw.Deletion.Protection
+	}
+
 	return &Config{
 		Snowflake: SnowflakeSettings{
 			Org:                    raw.Snowflake.Org,
@@ -383,6 +390,7 @@ func Load(configDir string) (*Config, error) {
 		},
 		Deletion: DeletionSettings{
 			GracePeriodDays: deletionGracePeriodDays,
+			Protection:      deletionProtection,
 		},
 		cloudProvider: cloudSections[0],
 	}, nil
