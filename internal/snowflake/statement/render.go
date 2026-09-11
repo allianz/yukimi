@@ -30,7 +30,7 @@ var bareIdentifierPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*$`)
 // doubling any embedded double quote. Use only where IDENTIFIER(?) binding
 // has been confirmed, at the calling module's spec-writing time, not to
 // work for that statement position (e.g. CREATE ACCOUNT's account name, if
-// found unsupported there — notes-snowflake-sql-mechanics.md §7).
+// found unsupported there).
 func QuoteIdentifier(name string) string {
 	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
@@ -38,8 +38,7 @@ func QuoteIdentifier(name string) string {
 // QuoteLiteral single-quotes s for use as a rendered SQL string literal,
 // doubling any embedded single quote. Its primary caller is
 // SHOW ... LIKE '<pattern>', since whether SHOW accepts a bind for its
-// pattern at all is unverified (notes-snowflake-sql-mechanics.md §7) —
-// assume rendered.
+// pattern at all is unverified — assume rendered.
 func QuoteLiteral(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }
@@ -48,10 +47,9 @@ func QuoteLiteral(s string) string {
 // it unchanged, or a user error if it does not match the expected charset.
 // Its one known caller is the parameter name in ALTER ACCOUNT SET <param> =
 // <value>: that position is keyword-like rather than a true object name, so
-// neither IDENTIFIER(?) nor quoting is believed to apply
-// (notes-snowflake-sql-mechanics.md §7) — this check is the only defense
-// against an operator-supplied parameter name reaching SQL text unescaped,
-// and is the load-bearing rendering case in this package.
+// neither IDENTIFIER(?) nor quoting is believed to apply — this check is
+// the only defense against an operator-supplied parameter name reaching SQL
+// text unescaped, and is the load-bearing rendering case in this package.
 func BareIdentifier(name string) (string, error) {
 	if !bareIdentifierPattern.MatchString(name) {
 		return "", errors.NewUserError(fmt.Sprintf(

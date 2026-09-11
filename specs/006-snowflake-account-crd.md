@@ -12,43 +12,6 @@ tenant uses once their account exists. This spec covers definitions and helpers 
 controller: nothing here talks to the Kubernetes API at runtime, and nothing here talks to
 Snowflake at all — later specs read these fixed shapes, they don't extend them.
 
-## Scope
-
-- The `SnowflakeAccount` CRD type in `apis/base/v1alpha1/`, group `base.snowflake.yukimi.io`,
-  version `v1alpha1` (design.md §3.1).
-- Structural validation drawn directly from this chapter, expressed as
-  `x-kubernetes-validations` CEL rules: `region`/`environment` immutability after creation
-  (§3.11.3), the `environment` enum, `identityIntegration.roleBindings` requiring an
-  `ACCOUNTADMIN` entry (§3.7), and a `customAuthRules.exceptions` entry naming at least one of
-  `rsaKeyAllowed`/`patAllowed` (§3.9). `region` additionally carries a `Pattern` marker rejecting
-  a value with no valid cloud-region shape (e.g. `aaa`) or an unrecognized cloud, reusing spec
-  002's `base.orgAdminRegionPattern` allowlist; a root-level rule on
-  `metadata.name` rejects a name too long for the resolved Snowflake account name (§3.12) to fit
-  Snowflake's identifier limit (see Key Concept: Structural Admission Checks).
-- The `status.accountName` / `accountLocator` / `accountUrl` / `conditions` shape (§7.2).
-- The `internal/account/tenant/` package: `ResolveName` (§3.12), the `Department`/`CostCenter`/
-  `CreditQuota`/`AlphaTester` namespace-label readers (chapter 2), and `AccountURL` (§7.2, built on
-  spec 004's host package).
-
-### Out of Scope
-
-- Guardrails constraint/preset enforcement (naming patterns, credit ceilings, network CIDR
-  limits, *which* regions are actually allowed/available for a given account) — spec 008. This
-  spec only rejects a `region` that is syntactically impossible; whether a well-formed region is
-  offered at all is entirely Guardrails'/Backplane Config's call (007/008).
-- Backplane Config lookups and any bootstrapping, network, or auth SQL (§3.6, §3.8, §3.9) — specs
-  007, 012, 014, 015.
-- Controller reconciliation: `Observe`/`Create`/`Update`/`Delete`, condition-setting, finalizers —
-  spec 020.
-- Quota admission math (011), quota enforcement (018), identity sync (016/017), deletion requests
-  (019), replication (021).
-- Duplicate-connection detection within `customNetworkRules` (§3.8). Expressing "no repeated
-  connection name in this list" in CEL is disproportionately complex for a check that's simple to
-  make once a Go module exists to call it; deferred to the network module (014).
-- Cross-referencing `identityIntegration.roleBindings` values against `identityIntegration.groups`
-  entries — deferred to the identity module (017), which is the first module that actually needs
-  both sides of that mapping to be true.
-
 ## Key Concept: Immutable Identity
 
 Design.md §3.11.3 asks for `region`, `name`, and `environment` to be immutable, so that a tenant
@@ -430,6 +393,49 @@ caller (020) already has the namespace object from its own reconcile and passes 
   `AccountURL`'s region-format error is a genuine, ordinary user error, constructed and classified
   in spec 004 (`internal/snowflake/host`); `internal/account/tenant` only passes it through unchanged.
 - **System Errors**: none originate in `internal/account/tenant`.
+
+<br/><br/><br/><br/><br/>
+
+================
+
+## Appendix: Code Generation Details
+
+## Scope
+
+- The `SnowflakeAccount` CRD type in `apis/base/v1alpha1/`, group `base.snowflake.yukimi.io`,
+  version `v1alpha1` (design.md §3.1).
+- Structural validation drawn directly from this chapter, expressed as
+  `x-kubernetes-validations` CEL rules: `region`/`environment` immutability after creation
+  (§3.11.3), the `environment` enum, `identityIntegration.roleBindings` requiring an
+  `ACCOUNTADMIN` entry (§3.7), and a `customAuthRules.exceptions` entry naming at least one of
+  `rsaKeyAllowed`/`patAllowed` (§3.9). `region` additionally carries a `Pattern` marker rejecting
+  a value with no valid cloud-region shape (e.g. `aaa`) or an unrecognized cloud, reusing spec
+  002's `base.orgAdminRegionPattern` allowlist; a root-level rule on
+  `metadata.name` rejects a name too long for the resolved Snowflake account name (§3.12) to fit
+  Snowflake's identifier limit (see Key Concept: Structural Admission Checks).
+- The `status.accountName` / `accountLocator` / `accountUrl` / `conditions` shape (§7.2).
+- The `internal/account/tenant/` package: `ResolveName` (§3.12), the `Department`/`CostCenter`/
+  `CreditQuota`/`AlphaTester` namespace-label readers (chapter 2), and `AccountURL` (§7.2, built on
+  spec 004's host package).
+
+### Out of Scope
+
+- Guardrails constraint/preset enforcement (naming patterns, credit ceilings, network CIDR
+  limits, *which* regions are actually allowed/available for a given account) — spec 008. This
+  spec only rejects a `region` that is syntactically impossible; whether a well-formed region is
+  offered at all is entirely Guardrails'/Backplane Config's call (007/008).
+- Backplane Config lookups and any bootstrapping, network, or auth SQL (§3.6, §3.8, §3.9) — specs
+  007, 012, 014, 015.
+- Controller reconciliation: `Observe`/`Create`/`Update`/`Delete`, condition-setting, finalizers —
+  spec 020.
+- Quota admission math (011), quota enforcement (018), identity sync (016/017), deletion requests
+  (019), replication (021).
+- Duplicate-connection detection within `customNetworkRules` (§3.8). Expressing "no repeated
+  connection name in this list" in CEL is disproportionately complex for a check that's simple to
+  make once a Go module exists to call it; deferred to the network module (014).
+- Cross-referencing `identityIntegration.roleBindings` values against `identityIntegration.groups`
+  entries — deferred to the identity module (017), which is the first module that actually needs
+  both sides of that mapping to be true.
 
 ## Edge Cases
 

@@ -6,26 +6,6 @@
 
 This package is the only place in the codebase that reaches that secret manager. It generates the keypairs, decides the path each one is stored at, and caches values briefly so the same credential is not re-fetched on every reconcile. Those paths are what isolates one tenant from another (design.md 3.11.1), so this package constructs and validates them itself instead of trusting callers. The secret manager itself is pluggable: this spec defines only the `Backend` interface and the behavior every implementation owes its callers, with AWS Secrets Manager as the first implementation (003.a).
 
-## Scope
-
-This specification defines the `internal/secrets/` package that:
-- Defines the `Backend` interface — a string-valued keystore — and the per-method success and failure conditions every implementation owes its callers.
-- Constructs and validates the two secret paths design.md 3.11.1 requires: the tenant `platform` credential path and the org-admin credential path.
-- Generates RSA keypairs and defines the JSON shape credentials are stored in.
-- Wraps any `Backend` in an in-memory, TTL-based, lazily-evicted cache.
-- Derives, once and for every backend, the recovery window a deleted credential may sit in — never longer than the account grace period it belongs to (002).
-- Exports an in-memory fake `Backend`, with injectable per-method failures, for every other package to test against.
-- Classifies every failure this package can produce into a user or system error per 001's model.
-
-**Out of Scope**:
-- Any concrete store or vendor SDK. `go.mod` gains no AWS dependency from this spec — that is `003.a-aws-secrets-backend.md`.
-- Constructing or selecting a `Backend`. That is `cmd/provider/main.go`'s job, switching on `Config.CloudProvider()` (002).
-- A singleton or `Initialize`/`GetInstance` access pattern. Every function takes a `Backend` explicitly; `main.go` owns the only instance.
-- Reconciling an occupied path against the world outside the store — a credential whose Snowflake account was never created, or one inherited from a deleted account whose name a new one reuses. `Create` reports the collision and stops; this package cannot see the account behind a path.
-- Credential rotation, including pushing a rotated public key into Snowflake (`ALTER USER ... SET RSA_PUBLIC_KEY`). That is the connection pool's job (004), calling this package's key generation and `Backend.Update` directly rather than a rotation primitive here.
-- A `HealthCheck` method.
-- Validating `PrivateKey`/`PublicKey` contents beyond non-emptiness — whether a key actually parses is the first consumer's (004's) problem.
-
 ## Key Concept: The `Backend` Interface and the Path Grammar
 
 A `Backend` sees paths and opaque value strings, nothing else. It never parses a credential, never caches, and never logs — it returns a plainly worded error naming the path it failed on. Its four methods are the narrow set any keystore can implement: `Get`, `Create` (fails if occupied), `Update` (fails if absent), `Delete`. `Create` and `Update` are separate rather than one upsert because create-if-absent must be **atomic in the store**: a retried request must never overwrite the key a live account authenticates with. `Get` additionally returns the time the store last wrote that value, as a second return value rather than a field inside the value — the backend still never looks inside.
@@ -267,6 +247,32 @@ internal/secrets/
 - Any other store fault — access denied, throttling, a request timeout, a connection failure, or a vendor condition this package has no opinion about: `failed to read secret at <path>: %w`
 - Key generation failure: `failed to generate RSA key pair: %w`
 - Malformed stored JSON: `failed to unmarshal credentials: %w`
+
+<br/><br/><br/><br/><br/>
+
+================
+
+## Appendix: Code Generation Details
+
+## Scope
+
+This specification defines the `internal/secrets/` package that:
+- Defines the `Backend` interface — a string-valued keystore — and the per-method success and failure conditions every implementation owes its callers.
+- Constructs and validates the two secret paths design.md 3.11.1 requires: the tenant `platform` credential path and the org-admin credential path.
+- Generates RSA keypairs and defines the JSON shape credentials are stored in.
+- Wraps any `Backend` in an in-memory, TTL-based, lazily-evicted cache.
+- Derives, once and for every backend, the recovery window a deleted credential may sit in — never longer than the account grace period it belongs to (002).
+- Exports an in-memory fake `Backend`, with injectable per-method failures, for every other package to test against.
+- Classifies every failure this package can produce into a user or system error per 001's model.
+
+**Out of Scope**:
+- Any concrete store or vendor SDK. `go.mod` gains no AWS dependency from this spec — that is `003.a-aws-secrets-backend.md`.
+- Constructing or selecting a `Backend`. That is `cmd/provider/main.go`'s job, switching on `Config.CloudProvider()` (002).
+- A singleton or `Initialize`/`GetInstance` access pattern. Every function takes a `Backend` explicitly; `main.go` owns the only instance.
+- Reconciling an occupied path against the world outside the store — a credential whose Snowflake account was never created, or one inherited from a deleted account whose name a new one reuses. `Create` reports the collision and stops; this package cannot see the account behind a path.
+- Credential rotation, including pushing a rotated public key into Snowflake (`ALTER USER ... SET RSA_PUBLIC_KEY`). That is the connection pool's job (004), calling this package's key generation and `Backend.Update` directly rather than a rotation primitive here.
+- A `HealthCheck` method.
+- Validating `PrivateKey`/`PublicKey` contents beyond non-emptiness — whether a key actually parses is the first consumer's (004's) problem.
 
 ## Edge Cases
 

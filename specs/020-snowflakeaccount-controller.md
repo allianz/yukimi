@@ -13,66 +13,6 @@ provisioning pipeline, and the two-key deletion safeguard all exist so that this
 them. Because it is the first controller in this codebase that needs a live connection to both Snowflake
 and a cloud secret store, it is also where the remaining startup wiring gets finished.
 
-## Scope
-
-For this first working version, this controller wires in only the one step that creates and destroys the
-account itself — the steps that would enforce naming rules, credit limits, network access,
-authentication exceptions, and identity import are deliberately left for later, so an account created
-today gets nothing beyond its own existence and a login for the platform's own service user.
-
-This specification defines the `internal/controller/snowflakeaccount` package that:
-
-- Registers a pipeline (009) of exactly one module for this cut — the account module (012) — via
-  `pipeline.New`. Guardrail-check, quota-check, parameters, network, auth, identity, and quota-monitor
-  (010, 011, 013–015, 017, 018) are not registered because none of them is written yet.
-- Calls `Pipeline.Observe` from the controller's `Observe` and `Pipeline.Apply` from both `Create` and
-  `Update` (one shared body). Calls `Pipeline.Destroy` from `Delete` — which the managed reconciler only
-  ever invokes when the preceding `Observe` reported the account as existing; if none was ever created,
-  the reconciler releases the finalizer on its own, without calling `Delete` at all — and only once this
-  controller's own deletion gate (below) has separately authorized the destruction.
-- Builds one `pipeline.ModuleContext` per reconcile call, passing the target namespace's labels, read
-  fresh from the Kubernetes API on every call — `NewModuleContext` takes no backplane config; a module
-  that needs one injects its own copy at construction instead.
-- Computes and persists `status.accountName`/`status.accountUrl` itself, directly from the
-  `ModuleContext` and the CRD's own already-set `status.accountLocator` — never from a module's
-  `Outcome`.
-- Renders every module's `Outcome.Condition`/`Outcome.Event` onto the resource, advances
-  `status.observedGeneration` only once a run's `Result.AllDone()` is true, and returns the pipeline's
-  first handled module error from `Create`/`Update` so a rejection or failure lands on `Synced` instead
-  of being silently overwritten.
-- Implements the deletion gate (design.md §6.3 Phases 2–3): looks up an `Active`
-  `SnowflakeDeletionRequest` (019) before honoring a `SnowflakeAccount` deletion, blocks and emits
-  `Warning: DeletionBlocked` when none is found, and marks the request `Consumed` once `Pipeline.Destroy`
-  succeeds.
-- Finishes `cmd/provider/main.go`'s startup wiring: a `--configDir` flag, `base.Load` (002),
-  `backplane.Load` (007), a cloud-provider switch constructing the AWS secrets backend (003.a),
-  `secrets.NewCachedBackend` (003), and `pool.New` (004) — then forwards `Config`, the pool, the
-  cached backend, and the loaded `*backplane.Config` into this package's own `SetupGated`, which
-  forwards the latter unchanged into the account module's own constructor (012); this package's own
-  controller logic never calls `Region()`/`Connection()` itself. Immediately after constructing the
-  pool, `main.go` also calls `Pool.OrgAdmin` once, bounded by a short timeout, and exits fatally if it
-  errors, so a broken AWS session or an unreachable org-admin Snowflake connection fails the process at
-  startup rather than on the first reconcile.
-
-**Out of Scope**:
-
-- Guardrail admission (008/010), quota admission (011), account parameters (013), network rules (014),
-  auth exceptions (015), identity import (017), quota-monitor enforcement (018), and the backplane
-  region's `available` gate (007) — all deliberately absent from this cut, not merely deferred within it;
-  see Edge Cases for exactly what that leaves unenforced today. The backplane region's *existence* check
-  is in scope (see below) — only `Available` stays out.
-- Any mechanism that forces a later-registered module to apply itself against a `SnowflakeAccount` that
-  already reached `Ready` under today's smaller pipeline — left to each future module's own `Observe`
-  (see Edge Cases).
-- Calling `internal/config/backplane`'s `Region`/`Connection` itself — this package only calls `Load`
-  in `main.go` and forwards the result unchanged through `SetupGated`/`Setup` into the account module's
-  constructor (012), which is the sole caller of `Region()` in this cut. No per-reconcile region check
-  runs in this controller's own code; the check runs inside the pipeline, as one module's own step.
-- Executing any SQL, or deciding what SQL to execute — entirely the account module's (012) job, reached
-  only through the pipeline (009).
-- Drift detection or repair of anything already applied — not attempted anywhere in this pipeline until
-  Snowflake ships Organization Policies (design.md Appendix B).
-
 ## Key Concept: A Deliberately Partial Pipeline
 
 This controller's pipeline carries one module today: the account module (012), which alone is enough to
@@ -229,6 +169,72 @@ internal/controller/yukimi.go   # SetupGated gains cfg/pool/secretsBackend/bpCon
 - `tenant.AccountURL`'s region-format error, on the rare occasion it fires despite `CREATE ACCOUNT`
   having already succeeded with that same region string (see Edge Cases) — logged via `log.Handle`, but
   never allowed to fail the reconcile on its own.
+
+<br/><br/><br/><br/><br/>
+
+================
+
+## Appendix: Code Generation Details
+
+## Scope
+
+For this first working version, this controller wires in only the one step that creates and destroys the
+account itself — the steps that would enforce naming rules, credit limits, network access,
+authentication exceptions, and identity import are deliberately left for later, so an account created
+today gets nothing beyond its own existence and a login for the platform's own service user.
+
+This specification defines the `internal/controller/snowflakeaccount` package that:
+
+- Registers a pipeline (009) of exactly one module for this cut — the account module (012) — via
+  `pipeline.New`. Guardrail-check, quota-check, parameters, network, auth, identity, and quota-monitor
+  (010, 011, 013–015, 017, 018) are not registered because none of them is written yet.
+- Calls `Pipeline.Observe` from the controller's `Observe` and `Pipeline.Apply` from both `Create` and
+  `Update` (one shared body). Calls `Pipeline.Destroy` from `Delete` — which the managed reconciler only
+  ever invokes when the preceding `Observe` reported the account as existing; if none was ever created,
+  the reconciler releases the finalizer on its own, without calling `Delete` at all — and only once this
+  controller's own deletion gate (below) has separately authorized the destruction.
+- Builds one `pipeline.ModuleContext` per reconcile call, passing the target namespace's labels, read
+  fresh from the Kubernetes API on every call — `NewModuleContext` takes no backplane config; a module
+  that needs one injects its own copy at construction instead.
+- Computes and persists `status.accountName`/`status.accountUrl` itself, directly from the
+  `ModuleContext` and the CRD's own already-set `status.accountLocator` — never from a module's
+  `Outcome`.
+- Renders every module's `Outcome.Condition`/`Outcome.Event` onto the resource, advances
+  `status.observedGeneration` only once a run's `Result.AllDone()` is true, and returns the pipeline's
+  first handled module error from `Create`/`Update` so a rejection or failure lands on `Synced` instead
+  of being silently overwritten.
+- Implements the deletion gate (design.md §6.3 Phases 2–3): looks up an `Active`
+  `SnowflakeDeletionRequest` (019) before honoring a `SnowflakeAccount` deletion, blocks and emits
+  `Warning: DeletionBlocked` when none is found, and marks the request `Consumed` once `Pipeline.Destroy`
+  succeeds.
+- Finishes `cmd/provider/main.go`'s startup wiring: a `--configDir` flag, `base.Load` (002),
+  `backplane.Load` (007), a cloud-provider switch constructing the AWS secrets backend (003.a),
+  `secrets.NewCachedBackend` (003), and `pool.New` (004) — then forwards `Config`, the pool, the
+  cached backend, and the loaded `*backplane.Config` into this package's own `SetupGated`, which
+  forwards the latter unchanged into the account module's own constructor (012); this package's own
+  controller logic never calls `Region()`/`Connection()` itself. Immediately after constructing the
+  pool, `main.go` also calls `Pool.OrgAdmin` once, bounded by a short timeout, and exits fatally if it
+  errors, so a broken AWS session or an unreachable org-admin Snowflake connection fails the process at
+  startup rather than on the first reconcile.
+
+**Out of Scope**:
+
+- Guardrail admission (008/010), quota admission (011), account parameters (013), network rules (014),
+  auth exceptions (015), identity import (017), quota-monitor enforcement (018), and the backplane
+  region's `available` gate (007) — all deliberately absent from this cut, not merely deferred within it;
+  see Edge Cases for exactly what that leaves unenforced today. The backplane region's *existence* check
+  is in scope (see below) — only `Available` stays out.
+- Any mechanism that forces a later-registered module to apply itself against a `SnowflakeAccount` that
+  already reached `Ready` under today's smaller pipeline — left to each future module's own `Observe`
+  (see Edge Cases).
+- Calling `internal/config/backplane`'s `Region`/`Connection` itself — this package only calls `Load`
+  in `main.go` and forwards the result unchanged through `SetupGated`/`Setup` into the account module's
+  constructor (012), which is the sole caller of `Region()` in this cut. No per-reconcile region check
+  runs in this controller's own code; the check runs inside the pipeline, as one module's own step.
+- Executing any SQL, or deciding what SQL to execute — entirely the account module's (012) job, reached
+  only through the pipeline (009).
+- Drift detection or repair of anything already applied — not attempted anywhere in this pipeline until
+  Snowflake ships Organization Policies (design.md Appendix B).
 
 ## Edge Cases
 

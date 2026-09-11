@@ -14,29 +14,6 @@ account, and marks the window used once it does. The technical approach is a sma
 and controller pair plus a lookup package, entirely independent of the account provisioning
 pipeline (009).
 
-## Scope
-
-This specification defines the deletion-request subsystem that:
-- Defines the `SnowflakeDeletionRequest` CRD type in `apis/base/v1alpha1/` (design.md §6.1): the
-  target to destroy, the time-boxed window, and the audit reason.
-- Runs a dedicated controller, `internal/controller/snowflakedeletionrequest/`, that computes and
-  advances the request's own time-boxed lifecycle (`Active` → `Expired`/`Consumed`), independent of
-  any other reconcile loop in this platform.
-- Provides `internal/deletion/`'s lookup and consumption API (`FindActiveRequest`, `MarkConsumed`)
-  — the only point of contact between this spec and account provisioning, called by 020's deletion
-  gate.
-
-**Out of Scope**:
-- Intercepting a `SnowflakeAccount`'s own deletion, blocking it without an active request, emitting the
-  `DeletionBlocked` event, or tearing the account down — all owned by 020, which reaches the teardown
-  through the account pipeline (009) (design.md §6.3 Phases 2-3).
-- Any `targetRef.kind` beyond `SnowflakeAccount` — v1alpha1 accepts only that one kind (see Schema
-  Specification); widening later, once a second destructible resource kind exists, is additive.
-- Preventing an approved request from being edited after the fact. Nothing enforces this at the
-  schema level (see Security Considerations); that control is left to RBAC or a git-review process
-  outside this provider's code, and none is defined anywhere in this repository today.
-- Any replication-related deletion request (021, not yet written).
-
 ## Key Concept: The Deletion Request's Lifecycle
 
 A deletion request moves through three states — `Active`, `Expired`, `Consumed` — only ever
@@ -214,6 +191,35 @@ non-empty requirement are both CEL rules enforced at admission — by the time a
 - No system error originates in `internal/controller/snowflakedeletionrequest` — its
   `Observe`/`Create`/`Update`/`Delete` compute only from fields already present on the object handed
   to them; nothing they do can fail.
+
+<br/><br/><br/><br/><br/>
+
+================
+
+## Appendix: Code Generation Details
+
+## Scope
+
+This specification defines the deletion-request subsystem that:
+- Defines the `SnowflakeDeletionRequest` CRD type in `apis/base/v1alpha1/` (design.md §6.1): the
+  target to destroy, the time-boxed window, and the audit reason.
+- Runs a dedicated controller, `internal/controller/snowflakedeletionrequest/`, that computes and
+  advances the request's own time-boxed lifecycle (`Active` → `Expired`/`Consumed`), independent of
+  any other reconcile loop in this platform.
+- Provides `internal/deletion/`'s lookup and consumption API (`FindActiveRequest`, `MarkConsumed`)
+  — the only point of contact between this spec and account provisioning, called by 020's deletion
+  gate.
+
+**Out of Scope**:
+- Intercepting a `SnowflakeAccount`'s own deletion, blocking it without an active request, emitting the
+  `DeletionBlocked` event, or tearing the account down — all owned by 020, which reaches the teardown
+  through the account pipeline (009) (design.md §6.3 Phases 2-3).
+- Any `targetRef.kind` beyond `SnowflakeAccount` — v1alpha1 accepts only that one kind (see Schema
+  Specification); widening later, once a second destructible resource kind exists, is additive.
+- Preventing an approved request from being edited after the fact. Nothing enforces this at the
+  schema level (see Security Considerations); that control is left to RBAC or a git-review process
+  outside this provider's code, and none is defined anywhere in this repository today.
+- Any replication-related deletion request (021, not yet written).
 
 ## Edge Cases
 

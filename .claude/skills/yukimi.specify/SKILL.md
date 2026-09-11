@@ -49,7 +49,7 @@ If the gap is broad enough that it needs real research or would reopen several d
 
 ## 6. Draft the spec
 
-Write the full content of `specs/<NNN>-<slug>.md` following `specs/000-template.md`'s section order: Overview, Scope, Key Concept(s), Public API, Schema Specification (if the resource has one), Project Structure, Error Classification, Edge Cases, Dependencies, Integration Points, Success Criteria, Security Considerations, Performance Considerations, References, Appendix: Usage Examples.
+Write the full content of `specs/<NNN>-<slug>.md` following `specs/000-template.md`'s section order: Overview, Key Concept(s), Public API, Schema Specification (if the resource has one), Project Structure, Error Classification — then, past the `## Appendix: Code Generation Details` divider, Scope, Edge Cases, Dependencies, Integration Points, Success Criteria, Security Considerations, Performance Considerations, References — then, past the final divider, Appendix: Usage Examples. The template's own divider placement is the human/detail/examples split; don't move it.
 
 - Every `D-xxx` in the wip record should land somewhere in this structure — use its "Affects spec section" note as the starting point, but use judgment where a decision spans more than one section.
 - State the contract and the mental model; leave the supporting detail (the full enumeration, the worked example, the rejected alternatives) in the wip record rather than reproducing it here — that's why the wip record stays alive until the code lands.

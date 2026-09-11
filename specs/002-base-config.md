@@ -4,20 +4,6 @@
 
 `internal/config/base/` loads the controller's base configuration — `base.yaml`, read from a mounted directory at startup — into an immutable `Config` struct. It carries the Snowflake organization identity plus exactly what's needed to reach the cloud provider the controller runs on and that provider's own secret manager. It is a plain file loader: no Kubernetes API calls, no CRD, no reconciliation. Failing fast here means a misconfigured deployment never reaches a reconcile loop.
 
-## Scope
-
-This specification defines the `internal/config/base/` package that:
-- Loads `<configDir>/base.yaml` at startup, where `configDir` is a directory path resolved elsewhere (see Integration Points).
-- Exposes the parsed, validated result as an immutable `Config` struct.
-- Validates required fields, raising `errors.NewUserError` for missing or malformed values, so the process fails fast at startup rather than once per reconcile.
-
-**Out of Scope**:
-- No CRD, no controller, no reconciler, no Kubernetes watch. This is not a Crossplane `ProviderConfig`.
-- No interpretation of any field's meaning. Fields owned by other components are checked for existence and shape only; e.g. whether `aws.region` names a real region is 003.a's concern, never this package's.
-- No knowledge of environment variables, `.env`, or how a Makefile might materialize `base.yaml` for local development. `Load` only ever reads a file from disk.
-- No credential fields of any kind, and no "auth mode" switch. Workload identity in-cluster versus environment-variable or profile credentials locally is resolved entirely inside the cloud SDK's own default credential chain (003.a); nothing in this package branches on where the controller runs.
-- No check of `CloudProvider()`'s result against the set of backends actually compiled into the binary. That check — and the fatal rejection of a cloud section with no backend — belongs to `cmd/provider/main.go`, not this package.
-
 ## Key Concept: Shared Settings, Structural Validation Only
 
 Almost every field in `base.yaml` belongs to another component — `aws.region` to 003.a, the `snowflake` block to 003, 004 and 006 — as will fields added later. One shared file for the whole controller weakens encapsulation deliberately: this package names fields it never reads, and in return a bad value fails once at startup instead of at each package's first reconcile.
@@ -136,6 +122,14 @@ func Load(configDir string) (*Config, error)
 
 Every field is freely editable and the whole file is reloaded wholesale on the next pod restart, so there is no per-field mutability rule to enforce.
 
+## Project Structure
+
+```text
+internal/config/base/
+├── base.go        # Config, SnowflakeSettings, AWSSettings, Load()
+└── base_test.go   # Unit tests
+```
+
 ## Error Classification
 
 **User Errors** (use `errors.NewUserError()`), one per violated schema rule, each naming the field path and the offending value:
@@ -156,6 +150,26 @@ The shape message names the format by example, so the expected form is readable 
 
 **System Errors**: this package makes no network calls and has no retryable infrastructure dependency, so it classifies no scenario as a system error on its own. An unexpected filesystem error (e.g. a permissions problem on the mounted volume) surfaces as a raw wrapped error (`fmt.Errorf("reading base.yaml: %w", err)`); the caller's error handling (001) treats it as a system error by default, since `Load` never wraps it in `errors.NewUserError`. This is intentionally minimal — this package does not attempt to distinguish every possible OS-level failure mode.
 
+<br/><br/><br/><br/><br/>
+
+================
+
+## Appendix: Code Generation Details
+
+## Scope
+
+This specification defines the `internal/config/base/` package that:
+- Loads `<configDir>/base.yaml` at startup, where `configDir` is a directory path resolved elsewhere (see Integration Points).
+- Exposes the parsed, validated result as an immutable `Config` struct.
+- Validates required fields, raising `errors.NewUserError` for missing or malformed values, so the process fails fast at startup rather than once per reconcile.
+
+**Out of Scope**:
+- No CRD, no controller, no reconciler, no Kubernetes watch. This is not a Crossplane `ProviderConfig`.
+- No interpretation of any field's meaning. Fields owned by other components are checked for existence and shape only; e.g. whether `aws.region` names a real region is 003.a's concern, never this package's.
+- No knowledge of environment variables, `.env`, or how a Makefile might materialize `base.yaml` for local development. `Load` only ever reads a file from disk.
+- No credential fields of any kind, and no "auth mode" switch. Workload identity in-cluster versus environment-variable or profile credentials locally is resolved entirely inside the cloud SDK's own default credential chain (003.a); nothing in this package branches on where the controller runs.
+- No check of `CloudProvider()`'s result against the set of backends actually compiled into the binary. That check — and the fatal rejection of a cloud section with no backend — belongs to `cmd/provider/main.go`, not this package.
+
 ## Edge Cases
 
 - **What happens when an optional key is omitted?** - It takes the default in the schema table; each field defaults independently. Omitting a whole section (`secrets:`, `deletion:`) is identical to omitting every key in it, and a section present but empty is indistinguishable from absent — the decoder yields the same zero-value struct either way, and there is no reason to tell them apart.
@@ -165,14 +179,6 @@ The shape message names the format by example, so the expected form is readable 
 - **What if no cloud section is present, or more than one?** - Both are user errors from `Load`: exactly one of `aws` / `azure` / `gcp` is required, so `CloudProvider()` is always unambiguous.
 - **What if the cloud section has no backend compiled in (e.g. `azure:` today)?** - `Load` accepts it and `CloudProvider()` returns `"azure"` — this package has no notion of which backends exist. `cmd/provider/main.go` is the one that fails fast, listing the cloud providers actually compiled in.
 - **What differs when the controller runs outside the cluster (local development)?** - Nothing in this package. `Load` reads and validates `base.yaml` identically either way; only the cloud SDK's underlying credential resolution differs beneath 003.a, and that difference is invisible here.
-
-## Project Structure
-
-```text
-internal/config/base/
-├── base.go        # Config, SnowflakeSettings, AWSSettings, Load()
-└── base_test.go   # Unit tests
-```
 
 ## Dependencies
 
