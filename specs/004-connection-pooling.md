@@ -6,25 +6,6 @@ This specification covers two packages: `internal/snowflake/pool` (pooled Snowfl
 
 `internal/snowflake/pool/` keeps one already-authenticated connection open per account it manages for the whole life of the controller process, instead of connecting and disconnecting on every reconcile. It solves a scaling problem: the platform manages many Snowflake accounts at once, and a reconcile's own cadence swings from once every few minutes in steady state down to several times a second during error backoff, so paying a fresh login cost on every call would be both slow and wasteful. It also gives every tenant account its own connection, separate from the one used for account creation and deletion — the security motivation for that split is detailed in the Key Concepts below. The technical approach is to keep one open connection handle per distinct target — one for the powerful connection, one per tenant account — opened the first time it is needed and kept for later reuse rather than closed after use, with credentials read fresh from the secret store only when a handle is first created. Host construction sits in a small leaf package of its own, `internal/snowflake/host`, because 006 builds a tenant's `status.accountUrl` from the same host. It also drives inline credential rotation: because both scopes already hold an authenticated connection, this package is where a stale credential's replacement gets pushed into Snowflake, using that same connection rather than a separate process.
 
-## Scope
-
-This specification defines the `internal/snowflake/pool/` and `internal/snowflake/host/` packages that:
-- Maintains pooled `*sql.DB` connections to Snowflake, authenticated with JWT keypair credentials read through the secrets backend interface (003) — never through a concrete backend package.
-- Checks a stored credential's age on every `OrgAdmin`/`TenantAccount` call and, once it exceeds a fixed threshold, rotates it inline via Snowflake's unused key slot over the connection already in hand, rather than in a background process that could race an active session.
-- Offers two connection scopes reflecting the privilege step-down of design.md 3.11: a single organization-admin connection used only for `CREATE ACCOUNT`/`DROP ACCOUNT`, and a per-tenant-account connection, keyed the same way as a tenant's secret path, used for everything else.
-- Builds the Snowflake connection host and account URL from a locator and a cloud-region string in `internal/snowflake/host`, serving `gosnowflake.Config.Host` here and `status.accountUrl` in 006, with the PrivateLink decision passed in by the caller.
-- Opens each connection lazily on first use, keeps it open for later reuse rather than closing it after each call, and only ever closes it on explicit eviction or process shutdown.
-- Runs a lightweight health probe using the raw driver when a connection is first established, so a bad credential or host fails immediately rather than on some later caller's first real query.
-- Introduces this repository's only dependency on the Snowflake Go driver (`gosnowflake`) and registers it.
-
-**Out of Scope**:
-- SQL statement semantics, safe rendering, and error decoration — that is 005's job. This package hands 005 a plain `*sql.DB`; it never imports `internal/snowflake/statement`, and 005 never imports this package (see Key Concept below).
-- Any concrete secrets backend — this package takes a `secrets.Backend` as a constructor parameter and never imports `internal/secrets/aws` or any other backend package.
-- Generating the keypair or defining the credential's JSON shape — still 003's job (`secrets.GenerateKeyPair`, `Credentials`); provisioning a tenant's *first* credential remains 012's job. This package only owns *when* a stored credential is due for rotation and pushing its replacement into Snowflake (see Key Concept below).
-- Anything about which SQL statements run once a connection is obtained — that is every downstream module's business (012–015, 017, 018, 021), never this package's.
-- Deciding *whether* PrivateLink is in use: callers pass that flag (today `Config.Snowflake.UsePrivateLink`, 002), and `internal/snowflake/host` never reads configuration itself.
-- The `SnowflakeAccount` status field `accountUrl` (006) — this spec builds the string; 006 owns the field, the CRD schema, and when it is written.
-
 ## Key Concept: Two Connection Scopes and the Privilege Step-Down
 
 A `Pool` never exposes more than two kinds of connection, matching design.md 3.11's own split. The **org-admin scope** is a single connection, authenticated as the organization-level credential at the org-admin secret path (003), used only for `CREATE ACCOUNT` and `DROP ACCOUNT` (design.md 3.6, 6.3). The **tenant scope** is one connection per Snowflake account, authenticated as that account's `platform` service user (design.md 3.6, Appendix B X1) at the tenant secret path — the same `(org, namespace, accountName)` tuple 003 already uses to build that path. Every other operation this platform performs — parameters, network rules, identity import, quotas — goes through a tenant connection, never the org-admin one.
@@ -200,7 +181,7 @@ internal/snowflake/pool/
 
 `internal/snowflake/host` imports only the standard library and `internal/errors` (001) — never `internal/config/base`, never `github.com/snowflakedb/gosnowflake`, never `internal/snowflake/pool`. That leaf position is what lets `internal/account/tenant` (006) build `status.accountUrl` from the same code without inheriting a driver, a secret store, or configuration.
 
-`internal/snowflake/pool` must never import `internal/snowflake/statement` (005) or `internal/secrets/aws` (003.a). The only imports outside the standard library are `internal/snowflake/host`, `internal/config/base` (002), `internal/secrets` (003), `internal/errors` (001), and `github.com/snowflakedb/gosnowflake`, pinned at **v1.18.1** — the version `specs/notes-snowflake-sql-mechanics.md`'s driver findings were verified against; an upgrade means re-verifying those findings before relying on them.
+`internal/snowflake/pool` must never import `internal/snowflake/statement` (005) or `internal/secrets/aws` (003.a). The only imports outside the standard library are `internal/snowflake/host`, `internal/config/base` (002), `internal/secrets` (003), `internal/errors` (001), and `github.com/snowflakedb/gosnowflake`, pinned at **v1.18.1** — the version this spec's driver findings were verified against; an upgrade means re-verifying those findings before relying on them.
 
 ## Error Classification
 
@@ -215,6 +196,31 @@ internal/snowflake/pool/
 - Credential read failure: `failed to read org-admin credentials: %w` / `failed to read tenant credentials for finance/analytics-team-eu: %w`
 - Stored private key does not parse: `failed to parse private key for finance/analytics-team-eu: %w`
 - Connection cannot be established or the health probe fails: `failed to connect to xc19114.eu-central-1.privatelink.snowflakecomputing.com: %w`
+
+<br/><br/><br/><br/><br/>
+
+================
+
+## Appendix: Code Generation Details
+
+## Scope
+
+This specification defines the `internal/snowflake/pool/` and `internal/snowflake/host/` packages that:
+- Maintains pooled `*sql.DB` connections to Snowflake, authenticated with JWT keypair credentials read through the secrets backend interface (003) — never through a concrete backend package.
+- Checks a stored credential's age on every `OrgAdmin`/`TenantAccount` call and, once it exceeds a fixed threshold, rotates it inline via Snowflake's unused key slot over the connection already in hand, rather than in a background process that could race an active session.
+- Offers two connection scopes reflecting the privilege step-down of design.md 3.11: a single organization-admin connection used only for `CREATE ACCOUNT`/`DROP ACCOUNT`, and a per-tenant-account connection, keyed the same way as a tenant's secret path, used for everything else.
+- Builds the Snowflake connection host and account URL from a locator and a cloud-region string in `internal/snowflake/host`, serving `gosnowflake.Config.Host` here and `status.accountUrl` in 006, with the PrivateLink decision passed in by the caller.
+- Opens each connection lazily on first use, keeps it open for later reuse rather than closing it after each call, and only ever closes it on explicit eviction or process shutdown.
+- Runs a lightweight health probe using the raw driver when a connection is first established, so a bad credential or host fails immediately rather than on some later caller's first real query.
+- Introduces this repository's only dependency on the Snowflake Go driver (`gosnowflake`) and registers it.
+
+**Out of Scope**:
+- SQL statement semantics, safe rendering, and error decoration — that is 005's job. This package hands 005 a plain `*sql.DB`; it never imports `internal/snowflake/statement`, and 005 never imports this package (see Key Concept below).
+- Any concrete secrets backend — this package takes a `secrets.Backend` as a constructor parameter and never imports `internal/secrets/aws` or any other backend package.
+- Generating the keypair or defining the credential's JSON shape — still 003's job (`secrets.GenerateKeyPair`, `Credentials`); provisioning a tenant's *first* credential remains 012's job. This package only owns *when* a stored credential is due for rotation and pushing its replacement into Snowflake (see Key Concept below).
+- Anything about which SQL statements run once a connection is obtained — that is every downstream module's business (012–015, 017, 018, 021), never this package's.
+- Deciding *whether* PrivateLink is in use: callers pass that flag (today `Config.Snowflake.UsePrivateLink`, 002), and `internal/snowflake/host` never reads configuration itself.
+- The `SnowflakeAccount` status field `accountUrl` (006) — this spec builds the string; 006 owns the field, the CRD schema, and when it is written.
 
 ## Edge Cases
 
@@ -300,8 +306,7 @@ internal/snowflake/pool/
 - **SnowflakeAccount CRD (006, not yet written)**: `specs/scope-006-snowflake-account-crd.md` - `internal/account/tenant`, the second consumer of `internal/snowflake/host`, which builds `status.accountUrl` from `host.URL`.
 - **Secrets Handling (003)**: `specs/003-secrets-handling.md` - `Backend`, `Path`, `NewOrgAdminPath()`, `NewTenantPath()`, `Credentials`, `UnmarshalCredentials()`.
 - **Base Config (002)**: `specs/002-base-config.md` - `SnowflakeSettings`, in particular `OrgAdminAccountLocator`, `OrgAdminAccountRegion`, `UsePrivateLink`.
-- **Snowflake SQL mechanics**: `specs/notes-snowflake-sql-mechanics.md` - the gosnowflake version (v1.18.1) this spec pins, and the reasoning 005 relies on for why it must consume this package's `*sql.DB` rather than construct its own.
-- **Driver documentation**: `github.com/snowflakedb/gosnowflake` (`godoc`) - `Config`, `NewConnector`, `DSN`, `AuthTypeJwt`; consult the pinned version's source before implementation, per this repo's own convention of verifying vendor behavior rather than assuming it (see the Snowflake SQL mechanics note above).
+- **Driver documentation**: `github.com/snowflakedb/gosnowflake` (`godoc`) - `Config`, `NewConnector`, `DSN`, `AuthTypeJwt`; consult the pinned version's source before implementation, per this repo's own convention of verifying vendor behavior rather than assuming it.
 
 <br/><br/><br/><br/><br/>
 

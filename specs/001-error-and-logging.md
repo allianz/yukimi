@@ -6,20 +6,6 @@ This specification covers two packages: `internal/errors` (user error types) and
 
 This specification defines the error handling system for the Crossplane provider that distinguishes between user errors (configuration mistakes users can fix) and system errors (infrastructure failures requiring operator intervention). The system ensures appropriate logging levels, retry behavior, and seamless integration with Crossplane's managed resource pattern. By providing clear, actionable feedback for configuration errors and generating unique incident IDs for system errors, it enables self-service resolution while facilitating operator troubleshooting of infrastructure failures.
 
-## Scope
-
-This specification defines the error handling system that:
-- Distinguishes between user errors and system errors
-- Generates unique incident IDs for system error correlation
-- Enables appropriate logging levels based on error classification
-- Integrates seamlessly with Crossplane's managed resource pattern
-- Supports error wrapping and context preservation
-
-**Out of Scope**:
-- Error recovery strategies (handled by Crossplane retry logic)
-- Status condition management (handled by Crossplane runtime)
-- Metric collection for error rates
-
 ## Key Concept: Error Classification
 
 The error handling system categorizes errors into two types: **user errors** and **system errors**. User errors represent configuration mistakes that users can fix by editing their CRD (e.g., invalid region format, malformed CIDR). These are logged at Debug level and include specific field paths and expected formats to enable self-service resolution. System errors represent infrastructure failures that users cannot fix (e.g., Snowflake API unreachable, AWS Secrets Manager timeout). These are logged at Info level with unique incident IDs for correlation between user status messages and operator logs.
@@ -166,6 +152,26 @@ internal/logger/
 - AWS Secrets Manager timeout: `failed to retrieve secret: context deadline exceeded`
 - SQL execution failure: `failed to execute SQL: permission denied`
 - Network connection error: `failed to dial Snowflake at xyz.snowflakecomputing.com`
+
+<br/><br/><br/><br/><br/>
+
+================
+
+## Appendix: Code Generation Details
+
+## Scope
+
+This specification defines the error handling system that:
+- Distinguishes between user errors and system errors
+- Generates unique incident IDs for system error correlation
+- Enables appropriate logging levels based on error classification
+- Integrates seamlessly with Crossplane's managed resource pattern
+- Supports error wrapping and context preservation
+
+**Out of Scope**:
+- Error recovery strategies (handled by Crossplane retry logic)
+- Status condition management (handled by Crossplane runtime)
+- Metric collection for error rates
 
 ## Edge Cases
 

@@ -10,30 +10,6 @@ creating an account requires organization-wide privileges that no other part of 
 The approach is simple: generate a fresh login key, save it safely first, ask Snowflake to create the
 account with that key, and then remember the account's unique ID so every later step can find it again.
 
-## Scope
-
-This specification defines the account module that:
-- Confirms the resolved region exists in the Backplane Config (007) and, unless the tenant is an
-  alpha tester, is available, before generating any credential or issuing any SQL.
-- Generates and stores the `platform` service user's RSA keypair, create-only.
-- Issues `CREATE ACCOUNT` over the org-admin connection and captures the returned account locator.
-- Detects, on every reconcile, whether the account already exists — the pipeline's sole existence signal.
-- Publishes the resolved account name and locator onto the shared `ModuleContext` for every later module.
-- Tears the account down: `DROP ACCOUNT` over the org-admin connection, eviction of the pooled
-  connection to it, and deletion of the stored credential.
-- Keeps the `platform` user's `EMAIL` in sync with `spec.contact` on every `Apply` against an existing
-  account, via a live read-compare-then-write over the tenant connection (Key Concept: Contact Email
-  Kept In Sync).
-
-**Out of Scope**:
-- Authorizing a deletion (019), and the finalizer and conditions around one (020).
-- `IdentitySyncRequest` emission (017).
-- Drift detection or repair of the account's own parameters or the `platform` key — not until Snowflake
-  ships Organization Policies (design.md Appendix B). This exclusion is about re-provisioning a rotated
-  key, an organization-wide, disruptive action; it does not cover reasserting one free-text field
-  (`EMAIL`) on a user this module already exclusively owns — see Key Concept: Contact Email Kept In
-  Sync.
-
 ## Key Concept: Create-Then-Verify Lifecycle
 
 A tenant's Snowflake account is created exactly once. Before doing anything else, this module checks
@@ -197,6 +173,36 @@ internal/account/modules/account/
 - The credential's deletion fails for any reason other than the secret path already being absent.
 - The platform user's `EMAIL` lookup (`SHOW USERS`) or update (`ALTER USER ... SET EMAIL`) fails for any
   reason (Key Concept: Contact Email Kept In Sync).
+
+<br/><br/><br/><br/><br/>
+
+================
+
+## Appendix: Code Generation Details
+
+## Scope
+
+This specification defines the account module that:
+- Confirms the resolved region exists in the Backplane Config (007) and, unless the tenant is an
+  alpha tester, is available, before generating any credential or issuing any SQL.
+- Generates and stores the `platform` service user's RSA keypair, create-only.
+- Issues `CREATE ACCOUNT` over the org-admin connection and captures the returned account locator.
+- Detects, on every reconcile, whether the account already exists — the pipeline's sole existence signal.
+- Publishes the resolved account name and locator onto the shared `ModuleContext` for every later module.
+- Tears the account down: `DROP ACCOUNT` over the org-admin connection, eviction of the pooled
+  connection to it, and deletion of the stored credential.
+- Keeps the `platform` user's `EMAIL` in sync with `spec.contact` on every `Apply` against an existing
+  account, via a live read-compare-then-write over the tenant connection (Key Concept: Contact Email
+  Kept In Sync).
+
+**Out of Scope**:
+- Authorizing a deletion (019), and the finalizer and conditions around one (020).
+- `IdentitySyncRequest` emission (017).
+- Drift detection or repair of the account's own parameters or the `platform` key — not until Snowflake
+  ships Organization Policies (design.md Appendix B). This exclusion is about re-provisioning a rotated
+  key, an organization-wide, disruptive action; it does not cover reasserting one free-text field
+  (`EMAIL`) on a user this module already exclusively owns — see Key Concept: Contact Email Kept In
+  Sync.
 
 ## Edge Cases
 

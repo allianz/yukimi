@@ -4,16 +4,6 @@
 
 {Write 3-5 sentences that answer: (1) What does this subsystem do? (2) What problem does it solve? (3) Why is it needed in the provider? (4) What's the high-level technical approach? One idea per sentence, in plain English a non-native speaker can follow — no jargon, no type names, field names, or cross-references to other specs; that detail belongs in the sections below.}
 
-## Scope
-
-This specification defines the {subsystem name} that:
-- {Capability 1}
-- {Capability 2}
-- {Capability 3}
-
-**Out of Scope**:
-- {What this does NOT cover}
-
 ## Key Concept: {Topic Name}
 
 <!--
@@ -34,7 +24,6 @@ without being able to implement it.
 {Explanation of key concept}
 
 **Important**: {Critical requirement or constraint}
- 
 
 ## Public API
 
@@ -139,6 +128,22 @@ internal/{feature}/
 - {Description of infrastructure failure scenario}
 - {Description of infrastructure failure scenario}
 - {Description of infrastructure failure scenario}
+
+<br/><br/><br/><br/><br/>
+
+================
+
+## Appendix: Code Generation Details
+
+## Scope
+
+This specification defines the {subsystem name} that:
+- {Capability 1}
+- {Capability 2}
+- {Capability 3}
+
+**Out of Scope**:
+- {What this does NOT cover}
 
 ## Edge Cases
 

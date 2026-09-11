@@ -11,39 +11,6 @@ concern at once, and so each concern can be built and tested on its own. A modul
 a small, fixed set of outcomes — done, pending, rejected, or failed — so the controller can turn what
 happened into Kubernetes conditions without understanding what any individual module actually did.
 
-## Scope
-
-- An ordered list of modules, run strictly in sequence.
-- Three entry points: a read-only `Observe` that mutates nothing in Snowflake, a mutating `Apply` that
-  re-asserts every module's desired state, and a `Destroy` that tears the account down in reverse.
-- A shared, per-reconcile context that carries what every module needs — the CRD, the namespace's
-  labels, a scoped logger, and a lazily-resolved account connection — so no module recomputes or
-  disagrees with another about any of it. Static, binary-lifetime dependencies (e.g. backplane
-  config) are not carried here; a module that needs one injects its own copy at construction.
-- A fixed outcome vocabulary (`Done`, `Pending`, `Rejected`, `Failed`) that every module reports
-  through, plus a generic signal any module's outcome can carry to stop the run early.
-- Collecting what ran into one `Result`, and surfacing the first `Pending` module's reason from it
-  (`PendingReason`) — the one piece of `Ready`'s logic that belongs here. Whether the resource is
-  *already* `Ready` is the controller's (020) call, keyed off the CRD's own already-persisted `Ready`
-  condition, not a table keyed by any module's own condition.
-
-**Out of Scope**:
-- Executing any SQL itself. Every statement belongs to a module (012–015, 017, 018); this package only
-  sequences calls into them. guardrail-check (010) and quota-check (011) execute no SQL at all — neither
-  ever opens a Snowflake connection, which is what lets them run ahead of the account module.
-- Classifying any error as a user or system error. Each module is the only code that knows why its
-  own call failed, so each module classifies its own failures before reporting an `Outcome`.
-- Detecting or repairing drift. No module reads Snowflake state back to compare and repair it;
-  Organization Policies will make that state org-owned, so the work would not survive to be used. The
-  one read-back sanctioned here is a pruning module's enumeration of objects the CRD no longer lists —
-  it drops, it never repairs (see Key Concept below).
-- Authorizing a destruction. Whether an account may be destroyed at all is decided by the deletion
-  request's own two-key gate (019), and the finalizer and conditions around it belong to 020. This
-  package only sequences the teardown, once asked.
-- Adding any field to the `SnowflakeAccount` CRD's schema. A module may still add its own named
-  `status` field where it genuinely needs to remember something across reconciles (017's sync start
-  timestamp is the known case) — that is the module's own spec to state, not this package's.
-
 ## Key Concept: Sequential Modules, One Abort Signal
 
 Modules run strictly one at a time, in registration order — never in parallel, never calling one
@@ -389,6 +356,45 @@ error this package itself can produce is `ModuleContext.TenantDB`'s error when
 `CR().Status.AccountLocator` is still empty — every other failure surfacing from `OrgAdminDB`/`TenantDB`
 is `internal/snowflake/pool`'s (004) own error, passed through unwrapped for the calling module to
 classify. `Destroy` likewise returns a module's `Teardown` error exactly as that module built it.
+
+<br/><br/><br/><br/><br/>
+
+================
+
+## Appendix: Code Generation Details
+
+## Scope
+
+- An ordered list of modules, run strictly in sequence.
+- Three entry points: a read-only `Observe` that mutates nothing in Snowflake, a mutating `Apply` that
+  re-asserts every module's desired state, and a `Destroy` that tears the account down in reverse.
+- A shared, per-reconcile context that carries what every module needs — the CRD, the namespace's
+  labels, a scoped logger, and a lazily-resolved account connection — so no module recomputes or
+  disagrees with another about any of it. Static, binary-lifetime dependencies (e.g. backplane
+  config) are not carried here; a module that needs one injects its own copy at construction.
+- A fixed outcome vocabulary (`Done`, `Pending`, `Rejected`, `Failed`) that every module reports
+  through, plus a generic signal any module's outcome can carry to stop the run early.
+- Collecting what ran into one `Result`, and surfacing the first `Pending` module's reason from it
+  (`PendingReason`) — the one piece of `Ready`'s logic that belongs here. Whether the resource is
+  *already* `Ready` is the controller's (020) call, keyed off the CRD's own already-persisted `Ready`
+  condition, not a table keyed by any module's own condition.
+
+**Out of Scope**:
+- Executing any SQL itself. Every statement belongs to a module (012–015, 017, 018); this package only
+  sequences calls into them. guardrail-check (010) and quota-check (011) execute no SQL at all — neither
+  ever opens a Snowflake connection, which is what lets them run ahead of the account module.
+- Classifying any error as a user or system error. Each module is the only code that knows why its
+  own call failed, so each module classifies its own failures before reporting an `Outcome`.
+- Detecting or repairing drift. No module reads Snowflake state back to compare and repair it;
+  Organization Policies will make that state org-owned, so the work would not survive to be used. The
+  one read-back sanctioned here is a pruning module's enumeration of objects the CRD no longer lists —
+  it drops, it never repairs (see Key Concept below).
+- Authorizing a destruction. Whether an account may be destroyed at all is decided by the deletion
+  request's own two-key gate (019), and the finalizer and conditions around it belong to 020. This
+  package only sequences the teardown, once asked.
+- Adding any field to the `SnowflakeAccount` CRD's schema. A module may still add its own named
+  `status` field where it genuinely needs to remember something across reconciles (017's sync start
+  timestamp is the known case) — that is the module's own spec to state, not this package's.
 
 ## Edge Cases
 

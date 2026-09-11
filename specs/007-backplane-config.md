@@ -12,25 +12,6 @@ ranges, that only exist once Ops has finished a region's one-time Terraform roll
 approach is a small YAML file, read once at startup into an immutable in-memory structure, plus a
 few lookup and validation helpers that other packages call directly.
 
-## Scope
-
-This specification defines the `internal/config/backplane/` package that:
-- Loads `<configDir>/backplane.yaml` at startup, where `configDir` is the same directory path
-  `002` reads `base.yaml` from.
-- Exposes the parsed, validated result as an immutable `Config` struct.
-- Looks up a region by name, and a connection by name within a region's inventory.
-- Provides a CIDR-containment helper reused by the network module (014).
-- Validates the file's internal consistency at load time: allowlist entries reference real
-  connections, and every CIDR is well-formed and falls within its declared ceiling.
-
-**Out of Scope**:
-- Applying any of this configuration to Snowflake — pushing `globalParameters` /
-  `regionalParameters` is 013's job, and turning `inventory` / `regionalAllowlist` into network
-  rules and policies is 014's.
-- Deciding what an unavailable or unknown region means for a given `SnowflakeAccount` request —
-  this package only reports what the file says; 009/020 own that admission decision.
-- No CRD, no controller, no Kubernetes watch — this is a plain file loader, exactly like `002`.
-
 ## Key Concept: The Availability Gate
 
 Each region has an `available` flag. Ops uses it to keep a new region closed while its backplane is
@@ -173,6 +154,31 @@ internal/config/backplane/
 system error on its own. An unexpected filesystem error surfaces as a raw wrapped error
 (`fmt.Errorf("reading backplane.yaml: %w", err)`); the caller's error handling (001) treats it as
 a system error by default, since `Load` never wraps it in `errors.NewUserError`.
+
+<br/><br/><br/><br/><br/>
+
+================
+
+## Appendix: Code Generation Details
+
+## Scope
+
+This specification defines the `internal/config/backplane/` package that:
+- Loads `<configDir>/backplane.yaml` at startup, where `configDir` is the same directory path
+  `002` reads `base.yaml` from.
+- Exposes the parsed, validated result as an immutable `Config` struct.
+- Looks up a region by name, and a connection by name within a region's inventory.
+- Provides a CIDR-containment helper reused by the network module (014).
+- Validates the file's internal consistency at load time: allowlist entries reference real
+  connections, and every CIDR is well-formed and falls within its declared ceiling.
+
+**Out of Scope**:
+- Applying any of this configuration to Snowflake — pushing `globalParameters` /
+  `regionalParameters` is 013's job, and turning `inventory` / `regionalAllowlist` into network
+  rules and policies is 014's.
+- Deciding what an unavailable or unknown region means for a given `SnowflakeAccount` request —
+  this package only reports what the file says; 009/020 own that admission decision.
+- No CRD, no controller, no Kubernetes watch — this is a plain file loader, exactly like `002`.
 
 ## Edge Cases
 

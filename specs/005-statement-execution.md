@@ -4,23 +4,6 @@
 
 This specification defines `internal/snowflake/statement/`, the shared mechanics every account-provisioning module (012–015, 017, 018, 021) uses to talk to Snowflake: running one SQL statement at a time against an injected connection, materializing whatever rows come back, and decorating a failure with the driver's own diagnostic fields. It binds values and object names wherever Snowflake accepts a bind, and owns the handful of rendering primitives needed for the few positions that require literal SQL text instead — so escaping is solved once, here, rather than five times over in the modules that actually decide what SQL to emit.
 
-## Scope
-
-This specification defines the `internal/snowflake/statement/` package that:
-- Executes SQL against an **injected `Executor`** — the subset of `*sql.DB` this package needs (`ExecContext`, `QueryContext`). It never opens a connection itself and never imports `internal/snowflake/pool` (004); 004 documents the mirror-image rule and never imports this package either.
-- Offers **two execution paths**: `Exec`, for statements that return no rows (DDL and non-`SELECT` DML), and `Query`, for statements that do (`SHOW ... LIKE` existence checks, drift read-backs). Which path a given statement uses is each calling module's decision, not this package's.
-- **Materializes every row-returning result** before returning it: column names plus rows keyed by column name, values as `any`. Deliberately thin — no accessor or coercion tier. Every caller already knows its own query's shape and casts at the call site with a comma-ok assertion.
-- **Binds first, renders only where binding is impossible.** Supplies three rendering primitives — a quoted identifier, a quoted string literal, and a charset-validated bare identifier — for the small set of statement positions that cannot be bound.
-- **Runs statements in order, one per call, and stops on the first error.** No batching, no multi-statement execution, no rollback.
-- **Decorates a failure with structured fields only**: a caller-supplied label, the statement text, and — when the underlying error is a `*gosnowflake.SnowflakeError` — its `Number`, `SQLState`, and `QueryID`. Never the bound arguments.
-
-**Out of Scope**:
-- **Which SQL to emit, and in what order, for any given operation.** That is every downstream module's business (012–015, 017, 018, 021), not this package's.
-- **Whether `IDENTIFIER(?)` binding works at a given statement position.** `notes-snowflake-sql-mechanics.md` §7 marks several of these positions "Unconfirmed" — the account name in `CREATE ACCOUNT` (3.6), and the policy-name value in `ALTER USER ... SET NETWORK_POLICY` (3.8) and `ALTER USER ... SET AUTHENTICATION_POLICY` (3.9). This package does not adjudicate those questions. It supplies the rendering primitives and the bind-first policy; the module that actually emits each statement (006, and the network/auth modules of 014/015) decides, at its own spec-writing time, whether to attempt a bind there or go straight to a renderer — including a live check against a real account if it chooses to attempt the bind first. This division is deliberate, not an oversight left for later.
-- **Accessor or coercion helpers** on the materialized `Result` beyond a caller's own comma-ok type assertion.
-- **Retries.** No retry logic lives in this package or anywhere in this codebase's business logic; a failure is returned as-is and the caller (ultimately Kubernetes/Crossplane, per project-wide policy) decides whether to try again.
-- **Connections, credentials, and pooling** — entirely 004's job. This package accepts an already-open `Executor` and never asks how it got that way.
-
 ## Key Concept: Bind First, Render Only Where Binding Is Impossible
 
 Snowflake accepts `?` binds for both values and object names (the latter via `IDENTIFIER(?)`) across queries, DML, and DDL alike, so the default shape for every statement in this design is something like `ALTER USER IDENTIFIER(?) SET NETWORK_POLICY = ?` — nothing interpolated, nothing to escape. Interpolating text directly into a statement is the exception, not the default, and this package owns every place it happens so that escaping is solved once rather than re-derived by each module that needs it.
@@ -109,24 +92,22 @@ func (r *Runner) Query(ctx context.Context, label, sql string, args ...any) (Res
 // doubling any embedded double quote. Use only where IDENTIFIER(?) binding
 // has been confirmed, at the calling module's spec-writing time, not to
 // work for that statement position (e.g. CREATE ACCOUNT's account name, if
-// found unsupported there — notes-snowflake-sql-mechanics.md §7).
+// found unsupported there).
 func QuoteIdentifier(name string) string
 
 // QuoteLiteral single-quotes s for use as a rendered SQL string literal,
 // doubling any embedded single quote. Its primary caller is
 // SHOW ... LIKE '<pattern>', since whether SHOW accepts a bind for its
-// pattern at all is unverified (notes-snowflake-sql-mechanics.md §7) —
-// assume rendered.
+// pattern at all is unverified — assume rendered.
 func QuoteLiteral(s string) string
 
 // BareIdentifier validates name as a bare, unquoted SQL token and returns
 // it unchanged, or a user error if it does not match the expected charset.
 // Its one known caller is the parameter name in ALTER ACCOUNT SET <param> =
 // <value>: that position is keyword-like rather than a true object name, so
-// neither IDENTIFIER(?) nor quoting is believed to apply
-// (notes-snowflake-sql-mechanics.md §7) — this check is the only defense
-// against an operator-supplied parameter name reaching SQL text unescaped,
-// and is the load-bearing rendering case in this package.
+// neither IDENTIFIER(?) nor quoting is believed to apply — this check is
+// the only defense against an operator-supplied parameter name reaching SQL
+// text unescaped, and is the load-bearing rendering case in this package.
 //
 // Returns:
 //   - name unchanged if it matches ^[A-Za-z][A-Za-z0-9_]*$
@@ -188,6 +169,29 @@ Production code here depends only on `internal/errors` (001) and never imports `
 **System Errors** (as `*Error`, from `Exec`/`Query`):
 - Any failure the `Executor` returns — a compilation error, a permissions error, a network failure, a context deadline — arrives wrapped in `*Error` with `Label` and `Statement` always set, and `Number`/`SQLState`/`QueryID` set when the underlying error is a `*gosnowflake.SnowflakeError`.
 
+<br/><br/><br/><br/><br/>
+
+================
+
+## Appendix: Code Generation Details
+
+## Scope
+
+This specification defines the `internal/snowflake/statement/` package that:
+- Executes SQL against an **injected `Executor`** — the subset of `*sql.DB` this package needs (`ExecContext`, `QueryContext`). It never opens a connection itself and never imports `internal/snowflake/pool` (004); 004 documents the mirror-image rule and never imports this package either.
+- Offers **two execution paths**: `Exec`, for statements that return no rows (DDL and non-`SELECT` DML), and `Query`, for statements that do (`SHOW ... LIKE` existence checks, drift read-backs). Which path a given statement uses is each calling module's decision, not this package's.
+- **Materializes every row-returning result** before returning it: column names plus rows keyed by column name, values as `any`. Deliberately thin — no accessor or coercion tier. Every caller already knows its own query's shape and casts at the call site with a comma-ok assertion.
+- **Binds first, renders only where binding is impossible.** Supplies three rendering primitives — a quoted identifier, a quoted string literal, and a charset-validated bare identifier — for the small set of statement positions that cannot be bound.
+- **Runs statements in order, one per call, and stops on the first error.** No batching, no multi-statement execution, no rollback.
+- **Decorates a failure with structured fields only**: a caller-supplied label, the statement text, and — when the underlying error is a `*gosnowflake.SnowflakeError` — its `Number`, `SQLState`, and `QueryID`. Never the bound arguments.
+
+**Out of Scope**:
+- **Which SQL to emit, and in what order, for any given operation.** That is every downstream module's business (012–015, 017, 018, 021), not this package's.
+- **Whether `IDENTIFIER(?)` binding works at a given statement position.** Several of these positions remain unconfirmed — the account name in `CREATE ACCOUNT` (3.6), and the policy-name value in `ALTER USER ... SET NETWORK_POLICY` (3.8) and `ALTER USER ... SET AUTHENTICATION_POLICY` (3.9). This package does not adjudicate those questions. It supplies the rendering primitives and the bind-first policy; the module that actually emits each statement (006, and the network/auth modules of 014/015) decides, at its own spec-writing time, whether to attempt a bind there or go straight to a renderer — including a live check against a real account if it chooses to attempt the bind first. This division is deliberate, not an oversight left for later.
+- **Accessor or coercion helpers** on the materialized `Result` beyond a caller's own comma-ok type assertion.
+- **Retries.** No retry logic lives in this package or anywhere in this codebase's business logic; a failure is returned as-is and the caller (ultimately Kubernetes/Crossplane, per project-wide policy) decides whether to try again.
+- **Connections, credentials, and pooling** — entirely 004's job. This package accepts an already-open `Executor` and never asks how it got that way.
+
 ## Edge Cases
 
 - **What does `Query` return when the statement matches no rows?** - `Result{}, nil`. A `SHOW ... LIKE` that finds nothing is the routine case for an existence check, not a failure.
@@ -195,7 +199,7 @@ Production code here depends only on `internal/errors` (001) and never imports `
 - **What if the underlying error isn't a `*gosnowflake.SnowflakeError`?** - `Number`, `SQLState` and `QueryID` stay at their zero values; `Label` and `Statement` are still set, so the decoration degrades gracefully rather than failing to construct.
 - **Can bound arguments ever end up in a returned `*Error` or its `Error()` string?** - No, by construction — `Error` has no field for them, and none of this package's code paths reads `args` after passing them to the `Executor`.
 - **How does a module run several statements in sequence?** - It calls `Exec`/`Query` once per statement in its own loop and stops at the first non-nil error; this package has no multi-statement call of its own.
-- **Does this package decide whether `IDENTIFIER(?)` works for `CREATE ACCOUNT`'s account name, or the policy-name positions of 3.8/3.9?** - No. Those are marked Unconfirmed in `notes-snowflake-sql-mechanics.md` §7 and are left to whichever future module (006 for `CREATE ACCOUNT`; the network/auth modules for 3.8/3.9) emits that statement, at its own spec-writing time.
+- **Does this package decide whether `IDENTIFIER(?)` works for `CREATE ACCOUNT`'s account name, or the policy-name positions of 3.8/3.9?** - No. Those remain unconfirmed and are left to whichever future module (006 for `CREATE ACCOUNT`; the network/auth modules for 3.8/3.9) emits that statement, at its own spec-writing time.
 - **Is a `*Runner` safe for concurrent use?** - Exactly when its `Executor` is — true of a shared `*sql.DB`, not of a shared `*sql.Tx`. `Runner` itself holds no mutable state beyond the `Executor`.
 
 ## Dependencies
@@ -237,7 +241,6 @@ Production code here depends only on `internal/errors` (001) and never imports `
 ## References
 
 - **Product design**: `specs/design.md` 3.5–3.10 — the account bootstrapping, network, auth and identity SQL this package's callers render and bind.
-- **Snowflake SQL mechanics**: `specs/notes-snowflake-sql-mechanics.md` — §1 for the verified `SnowflakeError` field set and `QueryID`/`IncludeQueryID` behavior, §4 for the no-batching rationale, §5 for per-statement idempotency, §7 for the verified/unconfirmed binding and rendering facts this spec builds on.
 - **Error Handling**: `specs/001-error-and-logging.md` — `errors.NewUserError`, consumed by `BareIdentifier`.
 - **Connection Pooling**: `specs/004-connection-pooling.md` — the `Executor`'s production source (`Pool.OrgAdmin`, `Pool.TenantAccount`) and the two-way import-avoidance rule this spec mirrors.
 
