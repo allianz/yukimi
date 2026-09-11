@@ -1,0 +1,3 @@
+[[IgnoredVulns]]
+id = "GO-2026-5932"
+reason = "Flagged because golang.org/x/crypto contains the unmaintained openpgp package, not because it's used. Verified via `go list -deps ./...` that nothing in this repo or its dependency tree imports golang.org/x/crypto/openpgp or its subpackages. No fixed version exists for this advisory."
