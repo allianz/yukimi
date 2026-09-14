@@ -34,3 +34,9 @@ Thumbs.db
 # Personal local-dev setup (Minikube helper Makefile + generated config)
 /Makefile.local
 /local/
+
+# Site-specific deployment values. Both name a real Snowflake organization, AWS
+# account or corporate proxy; the committed .example counterparts are the
+# templates. Same convention as .env / .env.example above.
+/deploy/config.yaml
+/deploy/overlays/site/

@@ -1,0 +1,188 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: yukimi-controller
+  labels:
+    app.kubernetes.io/component: controller
+spec:
+  # One replica plus leader election plus Recreate is a single interlocking
+  # decision, not three independent ones.
+  #
+  # CREATE ACCOUNT in Snowflake is slow, synchronous, billable and not
+  # idempotent. Two controllers acting on the same SnowflakeAccount could
+  # produce two accounts. Leader election makes a second replica passive, and
+  # `Recreate` means a rollout terminates the old pod before starting the new
+  # one -- with RollingUpdate there would be two live pods during every single
+  # deploy, which is precisely the window leader election exists to close.
+  #
+  # The cost is a gap of a few seconds during rollouts where nothing reconciles.
+  # That is the right trade: reconciliation is level-triggered and resumes from
+  # the resource's actual state, so nothing is lost by pausing it.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      # FROZEN. spec.selector is immutable on a live Deployment: changing it
+      # makes `kubectl apply` fail with a field-is-immutable error and the only
+      # remedy is deleting and recreating the Deployment.
+      #
+      # This is also why kustomization.yaml sets includeSelectors: false. If
+      # common labels were stamped into the selector, adding a label later would
+      # silently produce an install.yaml that cannot be applied over an existing
+      # install -- and it would only be discovered by the person upgrading.
+      app.kubernetes.io/name: yukimi
+      app.kubernetes.io/component: controller
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: yukimi
+        app.kubernetes.io/component: controller
+    spec:
+      serviceAccountName: yukimi-controller
+      # Long enough for one in-flight reconcile to finish. A SIGTERM stops the
+      # manager accepting new work and waits for active reconciles; an account
+      # creation that is interrupted mid-way leaves Snowflake state that the next
+      # reconcile has to reconcile rather than simply create.
+      terminationGracePeriodSeconds: 120
+      securityContext:
+        runAsNonRoot: true
+        # Numeric, not a username. runAsNonRoot is verified by the kubelet
+        # before the image is inspected, so a distroless image whose USER is the
+        # name `nonroot` fails to start with
+        # "container has runAsNonRoot and image has non-numeric user".
+        # 65532 is the nonroot user in distroless base images.
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: yukimi
+          # Hand-edited literal, bumped as part of cutting a release.
+          #
+          # Deliberately NOT $(VERSION) or any build-time substitution. VERSION
+          # comes from `git describe`, so every commit would change this line,
+          # every commit would show a diff in the generated install.yaml, and
+          # `make check-diff` would be permanently red. A committed rendered
+          # manifest has to be a function of the source tree only.
+          #
+          # Fully qualified: a bare `yukimi` resolves to docker.io/library/yukimi,
+          # which is a name anyone could claim. Pinned tag, never :latest, so a
+          # pod rescheduled onto a new node runs the same code as its neighbours.
+          image: ghcr.io/allianz/yukimi:v0.1.0
+          imagePullPolicy: IfNotPresent
+          args:
+            # Required as an argument, not merely wished for: the flag defaults
+            # to false and only reads the LEADER_ELECTION environment variable.
+            - --leader-election
+            # Equal to the flag's own default. Stated anyway so the coupling
+            # between this argument and the volumeMount below is visible in the
+            # rendered manifest, where the two are hundreds of lines apart.
+            - --configDir=/etc/yukimi/config
+            # NOTE on --max-reconcile-rate (default 10, intentionally left
+            # alone). It is not just a concurrency limit; one value feeds three
+            # things at once:
+            #   MaxConcurrentReconciles = 10  (parallel reconciles)
+            #   workqueue rate limit    = 10/s, burst 100
+            #   Kubernetes client       = 50 QPS, burst 100
+            # So setting it to 1 to serialise account creation would also throttle
+            # this controller's API-server traffic to 5 QPS -- slowing every watch
+            # resync and status write to fix a problem it does not actually fix,
+            # since 10 concurrent reconciles are 10 *different* resources and a
+            # single resource is never reconciled concurrently with itself.
+          env:
+            # gosnowflake writes an OCSP certificate-revocation response cache to
+            # disk. With readOnlyRootFilesystem it has nowhere to put it, and
+            # falls back to a warning on every single connection. Pointing both
+            # HOME and the explicit cache directory at the /tmp emptyDir keeps
+            # the log clean and OCSP verification effective.
+            - name: HOME
+              value: /tmp
+            - name: SF_OCSP_RESPONSE_CACHE_DIR
+              value: /tmp
+            # No AWS_REGION here. base.yaml's aws.region is passed to the SDK as
+            # config.WithRegion(), which takes precedence -- setting it here
+            # would look authoritative and do nothing.
+          ports:
+            - name: metrics
+              containerPort: 8080
+              protocol: TCP
+          # controller-runtime's metrics listener on :8080 is the only socket
+          # this process opens, and mgr.Start() binds it last -- after the
+          # ConfigMap has parsed, the AWS Secrets Manager backend has been built
+          # and the org-admin Snowflake connection has succeeded. A TCP connect
+          # therefore genuinely means "fully started".
+          #
+          # There is no HTTP probe because there is no health endpoint:
+          # cmd/provider/main.go does not set HealthProbeBindAddress, so nothing
+          # serves /healthz or /readyz. An httpGet probe against 8080 would hit
+          # the metrics handler and pass for the wrong reason.
+          startupProbe:
+            tcpSocket:
+              port: 8080
+            periodSeconds: 5
+            # 24 x 5s = 120s. Startup does real network work before it listens:
+            # Secrets Manager (and KMS, if a customer-managed key is configured)
+            # followed by a Snowflake connect with its own 30s ceiling. Failing
+            # faster than that turns a slow network into a crash-loop.
+            failureThreshold: 24
+          readinessProbe:
+            tcpSocket:
+              port: 8080
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            tcpSocket:
+              port: 8080
+            periodSeconds: 20
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              # No CPU limit, on purpose. A CPU limit throttles rather than
+              # queues, and this workload is bursty-then-idle: it spends almost
+              # all its time blocked on Snowflake and AWS, then briefly wants
+              # whatever CPU is going. Throttling it would stretch reconciles
+              # without protecting the node, which the request already does.
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: config
+              mountPath: /etc/yukimi/config
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        # yukimi-config is NOT part of install.yaml -- it is applied separately
+        # from deploy/config.yaml, so re-applying install.yaml during an upgrade
+        # can never overwrite the operator's real values with placeholders.
+        #
+        # Until it exists the pod stays in ContainerCreating with a FailedMount
+        # event naming the ConfigMap, and starts on its own once it appears.
+        #
+        # Both files are read once at startup. After editing the ConfigMap:
+        #   kubectl -n yukimi-system rollout restart deployment/yukimi-controller
+        - name: config
+          configMap:
+            name: yukimi-config
+            # Fail loudly on a ConfigMap that exists but is missing a key,
+            # rather than starting with one file mounted and crash-looping on
+            # the other.
+            items:
+              - key: base.yaml
+                path: base.yaml
+              - key: backplane.yaml
+                path: backplane.yaml
+        # Required by readOnlyRootFilesystem: the OCSP cache above, plus Go's
+        # default temporary directory.
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi

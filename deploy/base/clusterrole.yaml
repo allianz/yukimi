@@ -1,0 +1,99 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: yukimi-controller
+rules:
+  # The resources this controller reconciles. Cluster-scoped rather than
+  # namespaced because tenants create SnowflakeAccounts in their own namespaces
+  # and the controller has to watch all of them.
+  #
+  # `update` is not optional even though the controller never edits a tenant's
+  # spec: the crossplane-runtime managed reconciler adds and removes its
+  # finalizer and writes critical annotations through the main resource, not the
+  # status subresource. Without it, deletion hangs on the finalizer forever.
+  - apiGroups:
+      - base.snowflake.yukimi.io
+    resources:
+      - snowflakeaccounts
+      - snowflakedeletionrequests
+    verbs:
+      - get
+      - list
+      - watch
+      - update
+      - patch
+
+  # Conditions, observed generation and the account locator all live in status.
+  - apiGroups:
+      - base.snowflake.yukimi.io
+    resources:
+      - snowflakeaccounts/status
+      - snowflakedeletionrequests/status
+    verbs:
+      - get
+      - update
+      - patch
+
+  # Tenant metadata -- department, cost-center, credit-quota and alpha-tester --
+  # is carried on the namespace, so account naming and the quota check read the
+  # namespace object.
+  #
+  # Only Get is ever called, but it goes through the manager's cached client,
+  # which backs every Get with a cluster-wide informer. Dropping list/watch
+  # would fail at cache startup, not at the call site.
+  - apiGroups:
+      - ""
+    resources:
+      - namespaces
+    verbs:
+      - get
+      - list
+      - watch
+
+  # Kubernetes Events are how a tenant sees progress and failures on their own
+  # resource without cluster-wide log access.
+  - apiGroups:
+      - ""
+    resources:
+      - events
+    verbs:
+      - create
+      - patch
+
+  # The crossplane-runtime "safe start" gate watches CRDs and only starts a
+  # controller once its CRD is established. This is what lets the Deployment be
+  # applied in the same pass as the CRDs without a restart loop.
+  - apiGroups:
+      - apiextensions.k8s.io
+    resources:
+      - customresourcedefinitions
+    verbs:
+      - get
+      - list
+      - watch
+
+  # ---------------------------------------------------------------------------
+  # Deliberately NOT granted. Each of these is a permission a Crossplane
+  # provider usually holds, so their absence is a decision, not an oversight:
+  #
+  #   * secrets -- the controller reads and writes Snowflake credentials in AWS
+  #     Secrets Manager only. It never touches a Kubernetes Secret through the
+  #     API, so a compromised controller cannot enumerate cluster secrets. This
+  #     is the most valuable line in this file. Note the local overlay mounts a
+  #     Secret as a volume, which the kubelet resolves -- that needs no RBAC.
+  #
+  #   * configmaps -- its own configuration arrives as a mounted volume, again
+  #     resolved by the kubelet.
+  #
+  #   * create/delete on snowflakeaccounts -- tenants create them; the
+  #     controller only ever reconciles what it is given.
+  #
+  #   * providerconfigs and their usages -- Crossplane's credential-injection
+  #     model is unused here. Configuration comes from the ConfigMap and
+  #     credentials from the pod's AWS identity.
+  #
+  #   * tokenreviews/subjectaccessreviews -- the metrics endpoint is served
+  #     unauthenticated on :8080 (see deployment.yaml) with no authn/authz
+  #     filter in front of it, so the delegated-auth permissions that
+  #     kube-rbac-proxy setups need do not apply.
+  # ---------------------------------------------------------------------------

@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: yukimi-system
+  labels:
+    # Pod Security Admission. The controller runs unprivileged, non-root, with a
+    # read-only root filesystem and all capabilities dropped, so it already
+    # satisfies the strictest built-in profile -- enforcing it here means a
+    # future patch that quietly adds a privileged sidecar is rejected by the API
+    # server instead of merely reviewed.
+    #
+    # enforce-version: latest pins to the cluster's newest known profile rather
+    # than a fixed release, so tightening in a future Kubernetes version applies
+    # automatically. It cannot silently loosen: the profile is versioned, and
+    # `restricted` requirements are only ever added.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
