@@ -1,0 +1,15 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: yukimi-controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: yukimi-controller
+subjects:
+  - kind: ServiceAccount
+    name: yukimi-controller
+    # Kustomize rewrites this from the `namespace:` field in kustomization.yaml,
+    # so changing the install namespace is a one-line edit rather than a
+    # find-and-replace that is easy to half-finish.
+    namespace: yukimi-system

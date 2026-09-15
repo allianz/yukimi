@@ -1,0 +1,25 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: yukimi-leader-election
+rules:
+  # Leader election only. Namespaced, because the manager creates its Lease in
+  # its own namespace -- the one derived from the ServiceAccount token, not from
+  # a flag -- so a ClusterRole would grant more than is ever used.
+  #
+  # The lock is `crossplane-leader-election-yukimi`, and it is Leases-only:
+  # cmd/provider/main.go sets LeaderElectionResourceLock explicitly, overriding
+  # controller-runtime's ConfigMapsLeases default. That is why there is no
+  # `configmaps` rule here, and why removing one would be a silent regression if
+  # that setting ever changed.
+  - apiGroups:
+      - coordination.k8s.io
+    resources:
+      - leases
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch

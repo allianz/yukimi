@@ -1,0 +1,190 @@
+# Site configuration for the Yukimi controller.
+#
+#   cp deploy/config.example.yaml deploy/config.yaml
+#   # replace the five REPLACE_ME values
+#   kubectl apply -f deploy/install.yaml -f deploy/config.yaml
+#
+# deploy/config.yaml is gitignored, because the real values name your Snowflake
+# organization, org-admin account and account locator. Same convention as
+# .env / .env.example.
+#
+# This is a separate file from install.yaml on purpose: install.yaml is generated
+# and meant to be applied as-is, so re-applying it to upgrade can never overwrite
+# your values with the placeholders below.
+#
+# ---------------------------------------------------------------------------
+# THINGS THAT WILL BITE YOU, because none of them produce an error message:
+#
+#  * Unknown keys are SILENTLY IGNORED. Both documents are parsed with a
+#    non-strict YAML decoder, so a typo like `useprivatelink` or `costCenter` is
+#    dropped and you get the default instead. There is no warning and no
+#    "effective config" log line. Check spelling against the comments below.
+#
+#  * Both files are read ONCE at startup. Editing this ConfigMap does nothing
+#    until you run:
+#      kubectl -n yukimi-system rollout restart deployment/yukimi-controller
+#
+#  * usePrivateLink defaults to TRUE. From a laptop cluster the PrivateLink
+#    hostname does not resolve, so set it to false for local testing.
+#
+#  * deletion.protection defaults to TRUE, meaning a SnowflakeAccount cannot be
+#    deleted without also creating a SnowflakeDeletionRequest naming it.
+#    Convenient safety in production, awkward while testing.
+#
+#  * The keys under `data:` must be exactly `base.yaml` and `backplane.yaml`.
+#    internal/config/base and internal/config/backplane read them by that name
+#    from the mounted directory, and the volume in install.yaml mounts only
+#    those two keys.
+#
+#  * Startup is fail-fast. A missing required field, an unreadable org-admin
+#    secret or an unreachable Snowflake all produce a crash-looping pod, not a
+#    degraded one. `kubectl -n yukimi-system logs deployment/yukimi-controller`
+#    names the cause on the last line.
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: yukimi-config
+  namespace: yukimi-system
+  labels:
+    app.kubernetes.io/name: yukimi
+    app.kubernetes.io/part-of: yukimi
+    app.kubernetes.io/component: controller
+data:
+  # Provider-wide settings. See specs/002-base-config.md.
+  base.yaml: |
+    snowflake:
+      # Your Snowflake organization name. Load-bearing in three separate places,
+      # which all have to agree:
+      #   1. the org-admin login identifier, <org>-<orgAdminAccount>
+      #   2. the AWS Secrets Manager paths, snowflake/org/<org>/... and
+      #      snowflake/tenant/<org>/...
+      #   3. the account-name budget: len(org) + 1 + len(accountName) <= 63, so a
+      #      long organization name shortens every tenant account name allowed.
+      # Must match ^[A-Za-z][A-Za-z0-9_]*$ and is case-sensitive.
+      org: REPLACE_ME
+
+      # The account used for organization-level work such as CREATE ACCOUNT.
+      # Together with `org` this determines where the controller looks for its own
+      # credentials in AWS Secrets Manager:
+      #   snowflake/org/<org>/<orgAdminAccount>/org-admin-credentials
+      # That secret MUST already exist -- the controller exits at startup if it
+      # cannot read it. Its JSON value needs the keys username, public_key and
+      # private_key, and the user must hold the GLOBALORGADMIN role.
+      orgAdminAccount: REPLACE_ME
+
+      # The org-admin account's own locator and cloud region. These are static
+      # configuration rather than discovered, because CREATE ACCOUNT is never run
+      # for this account -- it already exists. Locator matches ^[A-Za-z0-9]+$
+      # (e.g. xc19114); region is <cloud>-<region-id> (e.g. aws-eu-central-1).
+      orgAdminAccountLocator: REPLACE_ME
+      orgAdminAccountRegion: REPLACE_ME
+
+      # false connects to <locator>.<region>.snowflakecomputing.com;
+      # true uses the .privatelink. hostname, which only resolves from inside a
+      # VPC that has the Snowflake VPC endpoint. DEFAULTS TO TRUE, so set it
+      # explicitly to false for kind/minikube.
+      usePrivateLink: true
+
+      # Skip OCSP certificate-revocation checks. Testing and emergencies only.
+      disableOcspChecks: false
+
+      # Connection pool tuning. Shown with their defaults; all optional.
+      # maxConnectionPoolSize: 10
+      # maxIdleConnections: 2
+      # connectionMaxLifetime: 30m
+      # connectionMaxIdleTime: 5m
+      # connectionProbeTimeout: 10s
+
+      # How long after CREATE ACCOUNT the controller tolerates Snowflake not yet
+      # reporting the new account. Optional, default 5m.
+      # accountCreationGracePeriod: 5m
+
+    # Exactly ONE cloud section must be present -- one of aws:, azure: or gcp:.
+    # There is no `cloudProvider` key; the section's presence IS the selection,
+    # and zero sections or more than one is a fatal startup error. Only aws has a
+    # secrets backend compiled in today.
+    aws:
+      # Region of the Secrets Manager instance holding the Snowflake credentials.
+      # Documented as optional but effectively required: building the AWS backend
+      # fails when it is empty.
+      #
+      # This is the single place the region is set. It is passed to the SDK as
+      # config.WithRegion() and therefore OVERRIDES the AWS_REGION environment
+      # variable -- setting AWS_REGION on the Deployment has no effect.
+      region: REPLACE_ME
+
+      # Customer-managed KMS key for encrypting the secrets this controller
+      # creates. Omit to use the AWS-managed key. Accepts a key UUID,
+      # alias/<name>, or a full ARN. If you set this, the controller's IAM
+      # identity also needs kms:Encrypt, kms:Decrypt and kms:GenerateDataKey.
+      # kmsKeyId: alias/yukimi-secrets
+
+    # secrets:
+    #   # How long a fetched credential is cached in memory. Default 5m.
+    #   cacheTtl: 5m
+    #   # How old a tenant keypair may get before it is rotated. Default 4320h
+    #   # (about six months).
+    #   rotationInterval: 4320h
+
+    deletion:
+      # Recovery window on deleted tenant secrets in Secrets Manager: the secret
+      # is soft-deleted for this many days rather than destroyed. Must be 7-90.
+      gracePeriodDays: 30
+
+      # When true, deleting a SnowflakeAccount also requires an active
+      # SnowflakeDeletionRequest naming it -- the "positive control" in
+      # specs/019-deletion-request.md. DEFAULTS TO TRUE. Set it to false while
+      # testing so `kubectl delete` is a single step.
+      protection: true
+
+  # Per-region inventory: which regions tenants may pick, which network
+  # connections exist there, and which account parameters to enforce.
+  # See specs/007-backplane-config.md.
+  #
+  # NOTE: these keys are TOP-LEVEL. specs/design.md section 3.5 shows them nested
+  # under a `backplane:` key -- that is an error in the document, and the loader
+  # rejects it. This file is the shape the code reads.
+  backplane.yaml: |
+    # Account parameters enforced in every region. Applied by the parameter
+    # module (spec 013, not implemented yet), so this can stay empty for now.
+    globalParameters: {}
+
+    regions:
+      # The key must match a SnowflakeAccount's spec.region EXACTLY, in
+      # <cloud>-<region-id> form. Any region a tenant names that is absent from
+      # this map is rejected. Usually the same value as orgAdminAccountRegion
+      # above, at least to begin with.
+      REPLACE_ME:
+        # The controller-side release gate. false blocks normal tenants from
+        # creating accounts here, which lets ops run a controlled early-access
+        # trial first -- a namespace labelled alpha-tester="true" may use a
+        # staged region before general release.
+        #
+        # DEFAULTS TO FALSE when omitted, so this must be set explicitly.
+        available: true
+
+        # Network connections available in this region, used by the network
+        # module (spec 014, not implemented yet) to validate tenant network
+        # rules. `connection` and `type` are required, connection names must be
+        # unique within the region, and every maxCidrs entry must parse as a
+        # CIDR. maxCidrs is the widest range a tenant may narrow within.
+        #
+        # inventory:
+        #   - connection: public
+        #     type: internet
+        #     maxCidrs: ["0.0.0.0/0"]
+        #   - connection: corporate
+        #     type: privatelink
+        #     vpceId: vpce-0123456789abcdef0
+        #     maxCidrs: ["172.16.0.0/12"]
+        inventory: []
+
+        # Account parameters enforced only in this region, merged over
+        # globalParameters.
+        regionalParameters: {}
+
+        # Baseline IPs allowed in this region regardless of what tenants ask for.
+        # Each `connection` must exist in `inventory` above, and each allowedIPs
+        # entry must sit inside that connection's maxCidrs.
+        regionalAllowlist: []

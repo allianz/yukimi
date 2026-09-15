@@ -1,0 +1,100 @@
+# Local development overlay: kind or minikube on a laptop.
+#
+#   kubectl apply -k deploy/overlays/local
+#
+# Differences from the base, all of which exist because a laptop cluster is not
+# an EKS cluster: a locally built image, debug logging, and AWS credentials from
+# a file instead of IRSA.
+#
+# Build with `make manifests.overlays`, or directly with
+#   kustomize build --load-restrictor=LoadRestrictionsNone deploy/overlays/local
+# (the restrictor is needed because the base references ../../package/crds).
+#
+# Prerequisites, in order:
+#
+#  1. deploy/config.yaml applied, with `usePrivateLink: false`. The PrivateLink
+#     hostname does not resolve from outside a VPC with the Snowflake endpoint,
+#     and the failure mode is a 30-second startup timeout and a crash-loop, not
+#     a DNS error you would recognise.
+#
+#  2. The aws-credentials Secret in yukimi-system:
+#       NAMESPACE=yukimi-system hack/dev/sync-aws-credentials.sh
+#     That script exports your current CLI or SSO session -- including the
+#     session token -- into a Secret with a single `credentials` key in AWS
+#     credentials-file format. SSO tokens expire, so re-run it and restart the
+#     pod when the controller starts failing to reach Secrets Manager.
+#
+#  3. A locally built image tagged and loaded into the cluster. `make build`
+#     tags into a per-checkout registry name, so retag it to something stable:
+#       make build
+#       REG=$(make -s build.vars | grep ^BUILD_REGISTRY= | cut -d= -f2)
+#       docker tag "$REG/yukimi-amd64:latest" localhost/yukimi:dev
+#       kind load docker-image localhost/yukimi:dev --name yukimi-dev
+#     (minikube: `minikube image load localhost/yukimi:dev`)
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+images:
+  - name: ghcr.io/allianz/yukimi
+    newName: localhost/yukimi
+    # The localhost/ prefix is not cosmetic: without a registry component Docker
+    # resolves the name to docker.io/library/yukimi, and a cluster that fails to
+    # find the image locally would try to pull that.
+    newTag: dev
+
+patches:
+  - target:
+      kind: Deployment
+      name: yukimi-controller
+    patch: |
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: yukimi-controller
+      spec:
+        template:
+          spec:
+            containers:
+              - name: yukimi
+                # args is restated IN FULL. Strategic-merge treats a plain list
+                # of scalars as a replacement, not a merge, so listing only
+                # --debug here would drop --leader-election and --configDir and
+                # the pod would look fine while reading /etc/yukimi/config by
+                # luck (it is the flag default) and running without a lease.
+                args:
+                  - --leader-election
+                  - --configDir=/etc/yukimi/config
+                  - --debug
+                env:
+                  # env DOES merge, keyed on `name`, so the base's HOME and
+                  # SF_OCSP_RESPONSE_CACHE_DIR survive this patch.
+                  #
+                  # The AWS SDK's default credential chain checks this variable
+                  # before it looks for IRSA or instance metadata, so pointing it
+                  # at the mounted Secret is the whole change. internal/secrets/aws
+                  # calls config.LoadDefaultConfig and reads no environment
+                  # variable itself -- nothing in the Go code is dev-aware.
+                  - name: AWS_SHARED_CREDENTIALS_FILE
+                    value: /etc/aws/credentials
+                volumeMounts:
+                  # volumeMounts merges on mountPath, volumes on name, so only
+                  # the additions need listing.
+                  - name: aws-credentials
+                    mountPath: /etc/aws
+                    readOnly: true
+            volumes:
+              - name: aws-credentials
+                secret:
+                  secretName: aws-credentials
+                  # The kubelet mounts this; it needs no RBAC on secrets, which
+                  # is why the ClusterRole still has none.
+                  #
+                  # 0440, not 0400: the kubelet owns secret volume files as
+                  # root:fsGroup, so the container's uid 65532 reaches them
+                  # through the group bit that the base's fsGroup: 65532 sets.
+                  # With 0400 the AWS SDK would get a permission-denied opening
+                  # the credentials file.
+                  defaultMode: 0440

@@ -1,0 +1,140 @@
+# Template overlay for a real cluster. COPY IT, do not edit it in place:
+#
+#   cp -r deploy/overlays/site.example deploy/overlays/site
+#   # replace the REPLACE_ME values in deploy/overlays/site/kustomization.yaml
+#   kubectl apply -k deploy/overlays/site -f deploy/config.yaml
+#
+# deploy/overlays/site/ is gitignored. Everything in it -- an IAM role ARN, a
+# proxy hostname, an internal registry -- identifies a specific AWS account and
+# corporate network, which is exactly what does not belong in a public
+# repository. This copy is committed with placeholders so CI can build it and
+# prove the overlay has not rotted against the base.
+#
+# It holds four knobs and nothing else. If you find yourself adding a fifth,
+# consider whether it belongs in the base instead.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+# ---------------------------------------------------------------------------
+# 1. Image. Point at an internal mirror if the cluster cannot reach ghcr.io, and
+#    pin by digest if your policy requires it (newTag and newName can be
+#    replaced by `digest: sha256:...`).
+# ---------------------------------------------------------------------------
+images:
+  - name: ghcr.io/allianz/yukimi
+    newName: REPLACE_ME.dkr.ecr.eu-central-1.amazonaws.com/yukimi
+    newTag: v0.1.0
+
+patches:
+  # -------------------------------------------------------------------------
+  # 2. IRSA. This annotation is the entire AWS credential story on EKS: the
+  #    pod-identity webhook sees it, injects AWS_ROLE_ARN and
+  #    AWS_WEB_IDENTITY_TOKEN_FILE plus a projected service-account token, and
+  #    the SDK's default credential chain in internal/secrets/aws picks them up.
+  #    No mounted secret, no environment variable in the Deployment, no code path
+  #    that knows about any of it.
+  #
+  #    The role's trust policy must name this exact ServiceAccount:
+  #      "sub": "system:serviceaccount:yukimi-system:yukimi-controller"
+  #    and it needs secretsmanager Get/Create/Put/Delete on
+  #    snowflake/org/<org>/* and snowflake/tenant/<org>/* -- those four calls are
+  #    all internal/secrets/aws makes -- plus kms Encrypt/Decrypt/GenerateDataKey
+  #    if base.yaml sets aws.kmsKeyId.
+  #
+  #    If this is wrong the pod crash-loops at startup with an
+  #    AccessDeniedException naming the secret path, which is at least a good
+  #    error message.
+  # -------------------------------------------------------------------------
+  - target:
+      kind: ServiceAccount
+      name: yukimi-controller
+    patch: |
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: yukimi-controller
+        annotations:
+          eks.amazonaws.com/role-arn: arn:aws:iam::REPLACE_ME:role/yukimi-controller
+
+  # -------------------------------------------------------------------------
+  # 3. Egress proxy. Delete this patch entirely if the cluster has direct egress.
+  #
+  #    NO_PROXY is the value to get right, and it depends on usePrivateLink in
+  #    config.yaml:
+  #      usePrivateLink: true  -> the controller resolves
+  #        <locator>.<region>.privatelink.snowflakecomputing.com, which must
+  #        BYPASS the proxy. Node-level noProxy settings on Allianz clusters
+  #        already cover .privatelink.snowflakecomputing.com, but a pod does not
+  #        inherit them -- these variables are per-process.
+  #      usePrivateLink: false -> the controller resolves the public
+  #        .snowflakecomputing.com host, which must GO THROUGH the proxy, so it
+  #        must not appear in NO_PROXY.
+  #
+  #    Getting this backwards produces a 30-second connect timeout and a
+  #    crash-loop rather than a proxy error, so check it before blaming
+  #    Snowflake. The AWS Secrets Manager and KMS endpoints go through the proxy
+  #    in both cases unless the VPC has interface endpoints for them.
+  #
+  #    Both cases are set, upper and lower, because Go's net/http honours
+  #    HTTP_PROXY/HTTPS_PROXY/NO_PROXY but some libraries only read the
+  #    lowercase forms.
+  # -------------------------------------------------------------------------
+  - target:
+      kind: Deployment
+      name: yukimi-controller
+    patch: |
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: yukimi-controller
+      spec:
+        template:
+          spec:
+            containers:
+              - name: yukimi
+                # env merges on `name`, so the base's HOME and
+                # SF_OCSP_RESPONSE_CACHE_DIR are preserved.
+                env:
+                  - name: HTTPS_PROXY
+                    value: http://REPLACE_ME:8080
+                  - name: https_proxy
+                    value: http://REPLACE_ME:8080
+                  - name: HTTP_PROXY
+                    value: http://REPLACE_ME:8080
+                  - name: http_proxy
+                    value: http://REPLACE_ME:8080
+                  # Cluster-internal traffic and the API server must never go
+                  # through the proxy. Extend with your VPC CIDR and, when
+                  # usePrivateLink is true, .privatelink.snowflakecomputing.com.
+                  - name: NO_PROXY
+                    value: localhost,127.0.0.1,169.254.169.254,10.0.0.0/8,.svc,.svc.cluster.local,.cluster.local,.amazonaws.com
+                  - name: no_proxy
+                    value: localhost,127.0.0.1,169.254.169.254,10.0.0.0/8,.svc,.svc.cluster.local,.cluster.local,.amazonaws.com
+
+  # -------------------------------------------------------------------------
+  # 4. Network zone. Allianz CRP clusters run an admission webhook that requires
+  #    a network zone; without it the pod can be rejected at admission, which
+  #    surfaces as a Deployment with zero pods and an event on the ReplicaSet
+  #    rather than anything on the pod.
+  #
+  #    Labelling the namespace is preferred over the per-pod alternative (a pod
+  #    label plus a matching nodeSelector): it is one line instead of three, and
+  #    we own the Namespace object, so nothing has to be threaded through the
+  #    Deployment's pod template.
+  #
+  #    Delete this patch on any cluster without that webhook -- the label is
+  #    harmless but misleading there.
+  # -------------------------------------------------------------------------
+  - target:
+      kind: Namespace
+      name: yukimi-system
+    patch: |
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: yukimi-system
+        labels:
+          crp.allianz.io/default-network-zone: transitional
