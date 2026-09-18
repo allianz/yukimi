@@ -1,0 +1,107 @@
+name: Bug report
+description: Something behaves differently from what its spec or the docs describe.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Thanks for the report. Please do not include real account locators,
+        organization names, private keys or credentials in anything you paste
+        below. If this is a security vulnerability, stop and follow
+        [SECURITY.md](https://github.com/allianz/yukimi/blob/main/SECURITY.md)
+        instead.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you observed, and what you expected instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: >-
+        Steps, plus the resource you applied. Redact org names and locators.
+      render: yaml
+      placeholder: |
+        apiVersion: base.snowflake.yukimi.io/v1alpha1
+        kind: SnowflakeAccount
+        metadata:
+          name: example
+        spec:
+          ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: conditions
+    attributes:
+      label: Resource status conditions
+      description: >-
+        Usually the fastest way to diagnose this. Paste the output of
+        `kubectl get snowflakeaccount <name> -o jsonpath='{.status}' | jq`,
+        or the whole `status:` block.
+      render: yaml
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Provider logs
+      description: >-
+        `kubectl logs -n yukimi-system deploy/yukimi-controller`. Re-run with `--debug` if
+        you can: user errors are logged at debug level and are invisible
+        without it. If a log line carries an 8-character incident ID, include
+        it -- it correlates the whole failed operation.
+      render: shell
+    validations:
+      required: false
+
+  - type: input
+    id: version
+    attributes:
+      label: Yukimi version
+      description: >-
+        Image tag, or the `git describe` output if you built it yourself. There
+        is no tagged release yet, so this is usually a commit SHA.
+      placeholder: v0.0.0-86-g377f88f
+    validations:
+      required: true
+
+  - type: input
+    id: kubernetes
+    attributes:
+      label: Kubernetes version
+      description: '`kubectl version --short`, server side.'
+      placeholder: v1.33.3
+    validations:
+      required: true
+
+  - type: dropdown
+    id: cloud
+    attributes:
+      label: Snowflake cloud region
+      description: Which cloud the affected account lives in.
+      options:
+        - AWS
+        - Azure
+        - GCP
+        - Not applicable / do not know
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues for a duplicate.
+          required: true
+        - label: >-
+            I removed real credentials, account locators and organization names
+            from everything I pasted.
+          required: true

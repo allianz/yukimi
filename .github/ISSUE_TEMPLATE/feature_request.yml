@@ -1,0 +1,50 @@
+name: Feature request
+description: Propose a capability Yukimi does not have yet.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Yukimi is built spec-first: `specs/design.md` is the product blueprint,
+        and each part of it becomes a numbered spec that is implemented in
+        ascending order. Roughly half the numbered specs are still unimplemented
+        — please check the spec table in
+        [CLAUDE.md](https://github.com/allianz/yukimi/blob/main/CLAUDE.md)
+        before filing, in case your request is already designed and queued.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: >-
+        What can you not do today? Describe the situation, not the solution --
+        it makes the design discussion much better.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like to happen
+      description: If you have a concrete shape in mind, sketch it.
+    validations:
+      required: true
+
+  - type: input
+    id: spec
+    attributes:
+      label: Related spec
+      description: >-
+        If this belongs to an existing numbered spec or scope note, name it.
+      placeholder: specs/scope-014-network-module.md
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+      description: >-
+        Including any workaround you are using now, and why it is not enough.
+    validations:
+      required: false

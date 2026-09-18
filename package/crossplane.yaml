@@ -3,11 +3,14 @@ kind: Provider
 metadata:
   name: yukimi
   annotations:
-    meta.crossplane.io/maintainer: Crossplane Maintainers <info@crossplane.io>
+    meta.crossplane.io/maintainer: The Yukimi Authors <https://github.com/allianz/yukimi/blob/main/MAINTAINERS.md>
     meta.crossplane.io/source: github.com/allianz/yukimi
     meta.crossplane.io/license: Apache-2.0
     meta.crossplane.io/description: |
-      A yukimi that can be used to create Crossplane providers.
+      Self-service Snowflake provisioning with built-in security and policy
+      enforcement. Teams request a Snowflake account as a Kubernetes resource;
+      Yukimi creates it against pre-prepared regional infrastructure and keeps
+      the organization's security and compliance baseline applied to it.
 spec:
   capabilities:
     - safe-start

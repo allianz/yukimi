@@ -1,0 +1,36 @@
+# Normalize everything to LF, in the repository *and* in the working tree.
+#
+# Without the `eol=lf`, a Windows clone with the default `core.autocrlf=true`
+# checks Go files out with CRLF line endings. `gofmt` then reports every single
+# file as "not properly formatted", so `make lint` fails locally on 90+ files
+# that CI, running on Linux, considers clean. That is a full day lost to a
+# non-problem, so the working tree is pinned rather than left to a global setting.
+#
+# This does not rewrite history: the committed blobs are already LF, and adding
+# this file shows no diff, because git normalizes on the way in either way. What
+# it does not do by itself is rewrite a working tree that was already checked out
+# with CRLF. To convert one, from a clean tree (commit or stash first -- the
+# reset discards uncommitted work):
+#
+#     git rm --cached -r . && git reset --hard
+#
+* text=auto eol=lf
+
+# Binary files: never touched, never diffed as text.
+*.png  binary
+*.jpg  binary
+*.jpeg -text
+*.gif  binary
+*.ico  binary
+*.pdf  binary
+*.exe  binary
+*.gz   binary
+*.zip  binary
+
+# Generated Go code. Marking it linguist-generated collapses it in pull request
+# diffs, which is the whole point: nobody reviews deepcopy methods by hand.
+**/zz_generated.*.go linguist-generated=true
+
+# Generated Kubernetes manifests. Still reviewed (a CRD change matters), so they
+# are not marked generated -- but they are committed artifacts, see the Makefile.
+deploy/install.yaml linguist-generated=true

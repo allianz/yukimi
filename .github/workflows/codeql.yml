@@ -1,0 +1,61 @@
+# Static application security testing.
+#
+# Until this workflow existed the repository ran no SAST at all: the only
+# reference to codeql-action was `upload-sarif` in scorecard.yml, which publishes
+# Scorecard's own results and analyses nothing. That is also the OpenSSF Scorecard
+# SAST check, whose badge the README carries.
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  # New queries ship without our code changing, so re-analyse on a schedule.
+  # Saturday 02:30 UTC, an hour after the Scorecard run.
+  schedule:
+    - cron: '30 2 * * 6'
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze Go
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      # Required to upload the analysis result to the Code scanning dashboard.
+      security-events: write
+      # Required by codeql-action to read the workflow run status on private
+      # repositories; harmless here and recommended by the action's own docs.
+      actions: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # CodeQL's autobuild for Go runs `go build ./...`, which needs the
+      # toolchain go.mod asks for. Without this it silently falls back to
+      # whatever version the runner image ships.
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
+        with:
+          languages: go
+          # security-extended over the default query suite: this controller holds
+          # Snowflake credentials and builds SQL, so the extra taint-tracking
+          # queries are the ones worth having. Not security-and-quality -- the
+          # quality queries duplicate golangci-lint and would double-report.
+          queries: security-extended
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
+        with:
+          category: /language:go

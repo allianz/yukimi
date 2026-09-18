@@ -20,6 +20,18 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # The build submodule downloads its own pinned binaries (golangci-lint,
+      # kustomize, the Crossplane CLI, kind, kubectl) into .cache/tools on every
+      # run. Nothing about them depends on our code, only on the versions pinned
+      # in the Makefile and in build/makelib/k8s_tools.mk -- so those files are
+      # the cache key.
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: .cache/tools
+          key: tools-${{ runner.os }}-${{ hashFiles('Makefile', 'build/makelib/k8s_tools.mk') }}
+          restore-keys: |
+            tools-${{ runner.os }}-
+
       - run: make reviewable
 
       # `make generate` regenerates package/crds and deploy/install.yaml, so this
@@ -45,3 +57,60 @@ jobs:
         with:
           entrypoint: /kubeconform
           args: -strict -summary -skip CustomResourceDefinition deploy/install.yaml
+
+      # Coverage is computed by `make test` and would otherwise be written into
+      # _output and thrown away with the runner. Kept as an artifact so a reviewer
+      # can see what a pull request did to it. Deliberately not a gate: the specs
+      # state a 95% target in prose, and turning that into a hard threshold is a
+      # maintainer decision, not a side effect of wiring up an upload.
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage
+          path: _output/tests/*/coverage.txt
+          retention-days: 14
+          if-no-files-found: warn
+
+  # Separate job: the fuzz targets are the only tests here whose runtime is a
+  # dial rather than a fact, so they must not sit on the critical path of the
+  # gate. `go test -run=^$ -fuzz=...` runs one target at a time by design, hence
+  # the explicit list -- a new FuzzXxx needs a line here to be exercised in CI.
+  fuzz:
+    name: Fuzz
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+
+      # 30s each is smoke-testing, not a fuzzing campaign: enough to catch a
+      # panic introduced by the change under review, and short enough that nobody
+      # is tempted to delete the job. Real campaigns are run out of band.
+      #
+      # A crash writes a reproducer into testdata/fuzz/, which the failing run
+      # uploads below -- commit it as a regression case.
+      - name: Fuzz identifier and literal rendering
+        run: |
+          set -euo pipefail
+          go test ./internal/snowflake/statement/ -run='^$' -fuzz=FuzzQuoteIdentifier -fuzztime=30s
+          go test ./internal/snowflake/statement/ -run='^$' -fuzz=FuzzQuoteLiteral    -fuzztime=30s
+          go test ./internal/snowflake/statement/ -run='^$' -fuzz=FuzzBareIdentifier  -fuzztime=30s
+
+      - name: Fuzz account naming and host construction
+        run: |
+          set -euo pipefail
+          go test ./internal/account/tenant/ -run='^$' -fuzz=FuzzResolveName     -fuzztime=30s
+          go test ./internal/snowflake/host/ -run='^$' -fuzz=FuzzHostnameAndURL  -fuzztime=30s
+
+      - name: Upload fuzz reproducers
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-reproducers
+          path: "**/testdata/fuzz/**"
+          retention-days: 30
+          if-no-files-found: ignore

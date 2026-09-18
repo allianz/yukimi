@@ -1,0 +1,26 @@
+# Code owners are requested for review automatically on any pull request that
+# touches a matching path. See MAINTAINERS.md for the people behind the handles.
+#
+# Last match wins, so the catch-all goes first.
+
+*                       @cheld @leticat
+
+# Specs are authoritative for the packages they own -- a change here is a design
+# change and always needs a maintainer's eyes.
+/specs/                 @cheld @leticat
+
+# Install manifests, RBAC and the provider's own security posture.
+/deploy/                 @cheld @leticat
+/cluster/                @cheld @leticat
+
+# Supply chain: workflows, dependency policy, vulnerability suppressions.
+/.github/workflows/      @cheld @leticat
+/.github/dependabot.yml  @cheld @leticat
+/osv-scanner.toml        @cheld @leticat
+
+# Licensing and community health.
+/LICENSE                 @cheld @leticat
+/NOTICE                  @cheld @leticat
+/DCO                     @cheld @leticat
+/SECURITY.md             @cheld @leticat
+/MAINTAINERS.md          @cheld @leticat

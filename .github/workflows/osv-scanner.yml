@@ -1,0 +1,50 @@
+# Dependency vulnerability scanning against the OSV database.
+#
+# `osv-scanner.toml` has been in the repository for a while, holding one
+# suppression with a written justification -- but nothing ran the scanner, so the
+# config was documentation rather than a control and the suppression was never
+# exercised. This is what makes it load-bearing.
+#
+# Deliberately a `go run` of a pinned module version rather than
+# google/osv-scanner-action: the module version is verified through the Go
+# checksum database, which is a stronger guarantee than an action SHA, and it is
+# the same command a contributor runs locally (see below).
+name: OSV Scanner
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # A new advisory lands without our code changing, which is the case a
+  # pull-request-only scan misses entirely. Saturday 03:30 UTC.
+  schedule:
+    - cron: '30 3 * * 6'
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: Scan Go dependencies
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+
+      # Run the same thing locally with:
+      #   go run github.com/google/osv-scanner/v2/cmd/osv-scanner@v2.6.0 \
+      #     scan source --config=osv-scanner.toml .
+      #
+      # Exits non-zero on any unsuppressed vulnerability, which is the gate. A
+      # finding is fixed by upgrading, or -- if it genuinely does not apply --
+      # by adding an [[IgnoredVulns]] entry to osv-scanner.toml with a reason
+      # that says how that was established, in the style of the entry already
+      # there.
+      - name: Run osv-scanner
+        run: |
+          go run github.com/google/osv-scanner/v2/cmd/osv-scanner@v2.6.0 \
+            scan source --config=osv-scanner.toml .
