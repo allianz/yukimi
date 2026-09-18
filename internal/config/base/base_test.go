@@ -43,7 +43,7 @@ const wellFormedFixture = `
 snowflake:
   org: my_org_name
   orgAdminAccount: my_org_admin_account_name
-  orgAdminAccountLocator: xc19114
+  orgAdminAccountLocator: xy12345
   orgAdminAccountRegion: aws-eu-central-1
   usePrivateLink: true
 
@@ -66,8 +66,8 @@ func TestLoad_WellFormed(t *testing.T) {
 	if cfg.Snowflake.OrgAdminAccount != "my_org_admin_account_name" {
 		t.Errorf("Snowflake.OrgAdminAccount = %q, want %q", cfg.Snowflake.OrgAdminAccount, "my_org_admin_account_name")
 	}
-	if cfg.Snowflake.OrgAdminAccountLocator != "xc19114" {
-		t.Errorf("Snowflake.OrgAdminAccountLocator = %q, want %q", cfg.Snowflake.OrgAdminAccountLocator, "xc19114")
+	if cfg.Snowflake.OrgAdminAccountLocator != "xy12345" {
+		t.Errorf("Snowflake.OrgAdminAccountLocator = %q, want %q", cfg.Snowflake.OrgAdminAccountLocator, "xy12345")
 	}
 	if cfg.Snowflake.OrgAdminAccountRegion != "aws-eu-central-1" {
 		t.Errorf("Snowflake.OrgAdminAccountRegion = %q, want %q", cfg.Snowflake.OrgAdminAccountRegion, "aws-eu-central-1")
@@ -177,7 +177,7 @@ func TestLoad_PoolAndCacheExplicitValues(t *testing.T) {
 snowflake:
   org: my_org_name
   orgAdminAccount: my_org_admin_account_name
-  orgAdminAccountLocator: xc19114
+  orgAdminAccountLocator: xy12345
   orgAdminAccountRegion: aws-eu-central-1
   maxConnectionPoolSize: 25
   maxIdleConnections: 0
@@ -384,7 +384,7 @@ func wellFormedFixtureWith(extraSnowflakeLines string) string {
 snowflake:
   org: my_org_name
   orgAdminAccount: my_org_admin_account_name
-  orgAdminAccountLocator: xc19114
+  orgAdminAccountLocator: xy12345
   orgAdminAccountRegion: aws-eu-central-1
   usePrivateLink: true
 ` + extraSnowflakeLines + `
@@ -607,7 +607,7 @@ func TestLoad_MissingOrgAdminAccountRegion_Absent(t *testing.T) {
 snowflake:
   org: my_org_name
   orgAdminAccount: my_org_admin_account_name
-  orgAdminAccountLocator: xc19114
+  orgAdminAccountLocator: xy12345
 aws:
   region: eu-central-1
 `
@@ -627,7 +627,7 @@ func TestLoad_MissingOrgAdminAccountRegion_Empty(t *testing.T) {
 snowflake:
   org: my_org_name
   orgAdminAccount: my_org_admin_account_name
-  orgAdminAccountLocator: xc19114
+  orgAdminAccountLocator: xy12345
   orgAdminAccountRegion: ""
 aws:
   region: eu-central-1
@@ -646,13 +646,13 @@ func TestLoad_MalformedOrgAdminAccountLocator(t *testing.T) {
 snowflake:
   org: my_org_name
   orgAdminAccount: my_org_admin_account_name
-  orgAdminAccountLocator: "xc-19114!"
+  orgAdminAccountLocator: "xy-12345!"
   orgAdminAccountRegion: aws-eu-central-1
 aws:
   region: eu-central-1
 `
 	_, err := Load(newConfigDir(t, fixture))
-	want := "snowflake.orgAdminAccountLocator 'xc-19114!' does not match the expected format (expected: xc19114)"
+	want := "snowflake.orgAdminAccountLocator 'xy-12345!' does not match the expected format (expected: xy12345)"
 	if err == nil || err.Error() != want {
 		t.Errorf("error = %v, want %q", err, want)
 	}
@@ -668,7 +668,7 @@ func TestLoad_MalformedOrgAdminAccountRegion(t *testing.T) {
 snowflake:
   org: my_org_name
   orgAdminAccount: my_org_admin_account_name
-  orgAdminAccountLocator: xc19114
+  orgAdminAccountLocator: xy12345
   orgAdminAccountRegion: "Frankfurt!"
 aws:
   region: eu-central-1
@@ -690,7 +690,7 @@ func TestLoad_OrgAdminAccountRegion_AzureStyleAccepted(t *testing.T) {
 snowflake:
   org: my_org_name
   orgAdminAccount: my_org_admin_account_name
-  orgAdminAccountLocator: xc19114
+  orgAdminAccountLocator: xy12345
   orgAdminAccountRegion: azure-westeurope
 aws:
   region: eu-central-1
@@ -711,7 +711,7 @@ func TestLoad_OrgAdminAccountRegion_MissingCloudPrefix(t *testing.T) {
 snowflake:
   org: my_org_name
   orgAdminAccount: my_org_admin_account_name
-  orgAdminAccountLocator: xc19114
+  orgAdminAccountLocator: xy12345
   orgAdminAccountRegion: eu-central-1
 aws:
   region: eu-central-1
@@ -807,7 +807,7 @@ func TestLoad_UsePrivateLink_Omitted(t *testing.T) {
 snowflake:
   org: my_org_name
   orgAdminAccount: my_org_admin_account_name
-  orgAdminAccountLocator: xc19114
+  orgAdminAccountLocator: xy12345
   orgAdminAccountRegion: aws-eu-central-1
 aws:
   region: eu-central-1
@@ -828,7 +828,7 @@ func TestLoad_UsePrivateLink_ExplicitFalse(t *testing.T) {
 snowflake:
   org: my_org_name
   orgAdminAccount: my_org_admin_account_name
-  orgAdminAccountLocator: xc19114
+  orgAdminAccountLocator: xy12345
   orgAdminAccountRegion: aws-eu-central-1
   usePrivateLink: false
 aws:
@@ -943,7 +943,7 @@ func TestLoad_CloudProvider_Azure(t *testing.T) {
 snowflake:
   org: my_org_name
   orgAdminAccount: my_org_admin_account_name
-  orgAdminAccountLocator: xc19114
+  orgAdminAccountLocator: xy12345
   orgAdminAccountRegion: aws-eu-central-1
 azure:
   subscriptionId: some-id
@@ -963,7 +963,7 @@ func TestLoad_CloudProvider_GCP(t *testing.T) {
 snowflake:
   org: my_org_name
   orgAdminAccount: my_org_admin_account_name
-  orgAdminAccountLocator: xc19114
+  orgAdminAccountLocator: xy12345
   orgAdminAccountRegion: aws-eu-central-1
 gcp:
   project: some-project
@@ -992,7 +992,7 @@ aws:
 snowflake:
   org: my_org_name
   orgAdminAccount: my_org_admin_account_name
-  orgAdminAccountLocator: xc19114
+  orgAdminAccountLocator: xy12345
   orgAdminAccountRegion: aws-eu-central-1
 `,
 		},
@@ -1002,7 +1002,7 @@ snowflake:
 snowflake:
   org: my_org_name
   orgAdminAccount: my_org_admin_account_name
-  orgAdminAccountLocator: xc19114
+  orgAdminAccountLocator: xy12345
   orgAdminAccountRegion: aws-eu-central-1
 aws:
   region: eu-central-1
@@ -1029,7 +1029,7 @@ func TestLoad_AWSRegionAbsent(t *testing.T) {
 snowflake:
   org: my_org_name
   orgAdminAccount: my_org_admin_account_name
-  orgAdminAccountLocator: xc19114
+  orgAdminAccountLocator: xy12345
   orgAdminAccountRegion: aws-eu-central-1
 aws: {}
 `
@@ -1048,7 +1048,7 @@ func TestLoad_AWSRegionWellFormedNonexistent(t *testing.T) {
 snowflake:
   org: my_org_name
   orgAdminAccount: my_org_admin_account_name
-  orgAdminAccountLocator: xc19114
+  orgAdminAccountLocator: xy12345
   orgAdminAccountRegion: aws-eu-central-1
 aws:
   region: xx-nowhere-9
@@ -1068,7 +1068,7 @@ func TestLoad_AWSRegionMalformed(t *testing.T) {
 snowflake:
   org: my_org_name
   orgAdminAccount: my_org_admin_account_name
-  orgAdminAccountLocator: xc19114
+  orgAdminAccountLocator: xy12345
   orgAdminAccountRegion: aws-eu-central-1
 aws:
   region: Frankfurt!
@@ -1112,7 +1112,7 @@ func TestLoad_AWSKmsKeyIdWellFormed(t *testing.T) {
 snowflake:
   org: my_org_name
   orgAdminAccount: my_org_admin_account_name
-  orgAdminAccountLocator: xc19114
+  orgAdminAccountLocator: xy12345
   orgAdminAccountRegion: aws-eu-central-1
 aws:
   region: eu-central-1
@@ -1135,7 +1135,7 @@ func TestLoad_AWSKmsKeyIdMalformed(t *testing.T) {
 snowflake:
   org: my_org_name
   orgAdminAccount: my_org_admin_account_name
-  orgAdminAccountLocator: xc19114
+  orgAdminAccountLocator: xy12345
   orgAdminAccountRegion: aws-eu-central-1
 aws:
   region: eu-central-1
@@ -1166,7 +1166,7 @@ func TestLoad_UnrecognizedNestedKey(t *testing.T) {
 snowflake:
   org: my_org_name
   orgAdminAccount: my_org_admin_account_name
-  orgAdminAccountLocator: xc19114
+  orgAdminAccountLocator: xy12345
   orgAdminAccountRegion: aws-eu-central-1
   someFutureSetting: 10
 aws:

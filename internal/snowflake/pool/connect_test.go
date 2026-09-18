@@ -53,7 +53,7 @@ func TestBuildSnowflakeConfig(t *testing.T) {
 		disableOCSPChecks bool
 	}{
 		{"org-admin", "xc00000", "xc00000.eu-central-1.snowflakecomputing.com", "platform", "GLOBALORGADMIN", false},
-		{"tenant", "xc19114", "xc19114.eu-central-1.privatelink.snowflakecomputing.com", "platform", "ACCOUNTADMIN", true},
+		{"tenant", "xy12345", "xy12345.eu-central-1.privatelink.snowflakecomputing.com", "platform", "ACCOUNTADMIN", true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

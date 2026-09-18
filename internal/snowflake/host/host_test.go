@@ -82,11 +82,11 @@ func TestHostname_SelectsSuffix(t *testing.T) {
 		usePrivateLink bool
 		want           string
 	}{
-		{true, "xc19114.eu-central-1.privatelink.snowflakecomputing.com"},
-		{false, "xc19114.eu-central-1.snowflakecomputing.com"},
+		{true, "xy12345.eu-central-1.privatelink.snowflakecomputing.com"},
+		{false, "xy12345.eu-central-1.snowflakecomputing.com"},
 	}
 	for _, c := range cases {
-		got, err := Hostname("xc19114", "aws-eu-central-1", c.usePrivateLink)
+		got, err := Hostname("xy12345", "aws-eu-central-1", c.usePrivateLink)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -98,11 +98,11 @@ func TestHostname_SelectsSuffix(t *testing.T) {
 
 // SC-007a: design.md 7.2's example, verbatim.
 func TestURL_MatchesDesignExample(t *testing.T) {
-	got, err := URL("xc19114", "aws-eu-central-1", true)
+	got, err := URL("xy12345", "aws-eu-central-1", true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := "https://xc19114.eu-central-1.privatelink.snowflakecomputing.com"
+	want := "https://xy12345.eu-central-1.privatelink.snowflakecomputing.com"
 	if got != want {
 		t.Errorf("URL() = %q, want %q", got, want)
 	}
@@ -110,11 +110,11 @@ func TestURL_MatchesDesignExample(t *testing.T) {
 
 // URL carries no path beyond scheme+host (design.md 7.2).
 func TestURL_HasNoTrailingPath(t *testing.T) {
-	got, err := URL("xc19114", "aws-eu-west-3", false)
+	got, err := URL("xy12345", "aws-eu-west-3", false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := "https://xc19114.eu-west-3.aws.snowflakecomputing.com"
+	want := "https://xy12345.eu-west-3.aws.snowflakecomputing.com"
 	if got != want {
 		t.Errorf("URL() = %q, want %q", got, want)
 	}
@@ -124,10 +124,10 @@ func TestURL_HasNoTrailingPath(t *testing.T) {
 // a malformed region.
 func TestHostnameAndURL_RejectMalformedRegion(t *testing.T) {
 	for _, region := range []string{"eu-central-1", "Frankfurt!"} {
-		if got, err := Hostname("xc19114", region, true); err == nil || !errors.IsUserError(err) || got != "" {
+		if got, err := Hostname("xy12345", region, true); err == nil || !errors.IsUserError(err) || got != "" {
 			t.Errorf("Hostname(%q): got (%q, %v), want (\"\", user error)", region, got, err)
 		}
-		if got, err := URL("xc19114", region, true); err == nil || !errors.IsUserError(err) || got != "" {
+		if got, err := URL("xy12345", region, true); err == nil || !errors.IsUserError(err) || got != "" {
 			t.Errorf("URL(%q): got (%q, %v), want (\"\", user error)", region, got, err)
 		}
 	}
@@ -142,14 +142,14 @@ func TestHostnameAndURL_RejectMalformedRegion(t *testing.T) {
 // pieces (locator, a dot, the region segment, the suffix usePrivateLink
 // selects), and URL is always "https://" prefixed onto that same Hostname.
 func FuzzHostnameAndURL(f *testing.F) {
-	f.Add("xc19114", "aws-eu-central-1", false)
-	f.Add("xc19114", "aws-eu-west-3", true)
+	f.Add("xy12345", "aws-eu-central-1", false)
+	f.Add("xy12345", "aws-eu-west-3", true)
 	f.Add("", "aws-eu-central-1", false)
 	f.Add(`loc"; DROP TABLE X; --`, "aws-eu-central-1", false)
-	f.Add("xc19114/../etc", "aws-eu-central-1", false)
-	f.Add("xc19114", "not-a-cloud", false)
-	f.Add("xc19114", "", false)
-	f.Add("xc19114", "AWS-eu-central-1", false)
+	f.Add("xy12345/../etc", "aws-eu-central-1", false)
+	f.Add("xy12345", "not-a-cloud", false)
+	f.Add("xy12345", "", false)
+	f.Add("xy12345", "AWS-eu-central-1", false)
 	f.Fuzz(func(t *testing.T, locator, region string, usePrivateLink bool) {
 		host, err := Hostname(locator, region, usePrivateLink)
 		if err != nil {

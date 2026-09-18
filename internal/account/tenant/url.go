@@ -27,7 +27,7 @@ const loginPath = "/console/login"
 // internal/snowflake/host.URL (004); adds no validation beyond that call.
 //
 // Parameters:
-//   - locator: the account locator returned by CREATE ACCOUNT (e.g. "xc19114").
+//   - locator: the account locator returned by CREATE ACCOUNT (e.g. "xy12345").
 //   - region: the CRD's spec.region (e.g. "aws-eu-central-1").
 //   - usePrivateLink: from the controller's base config (002), supplied by
 //     the caller (020) — not read from the Backplane Config, which carries

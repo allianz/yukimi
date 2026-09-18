@@ -409,7 +409,7 @@ ALTER ACCOUNT SET NETWORK_POLICY = 'PLATFORM_ACCOUNT_POLICY';
 
 ```
 
-`CREATE ACCOUNT` returns the account locator Snowflake assigns (for example `xc19114`); the controller captures it here and builds `status.accountUrl` (7.2) from it, since the URL Snowflake returns omits the PrivateLink segment. Whether PrivateLink applies is a provider-wide setting in the controller's base configuration (`base.yaml`); it changes only the domain suffix, not whether the locator is used.
+`CREATE ACCOUNT` returns the account locator Snowflake assigns (for example `xy12345`); the controller captures it here and builds `status.accountUrl` (7.2) from it, since the URL Snowflake returns omits the PrivateLink segment. Whether PrivateLink applies is a provider-wide setting in the controller's base configuration (`base.yaml`); it changes only the domain suffix, not whether the locator is used.
 
 **Note:** Snowflake is expected to release a new feature/syntax called Organization Policies, which will let this same network policy be enforced centrally on the account rather than via the `ALTER ACCOUNT` commands above. Once that syntax is available, this implementation will be swapped to use it — the enforced policy stays the same, but tenants will no longer be able to modify or unset it themselves. Not yet released as of this writing.
 
@@ -818,7 +818,7 @@ Individual resource types may surface further conditions specific to their own c
 ```yaml
 status:
   accountName: "analytics_team_eu_5k3wf"
-  accountUrl: "https://xc19114.eu-central-1.privatelink.snowflakecomputing.com/console/login"
+  accountUrl: "https://xy12345.eu-central-1.privatelink.snowflakecomputing.com/console/login"
   conditions:
     - type: Ready
       status: "True"

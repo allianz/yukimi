@@ -283,7 +283,7 @@ func TestObserve_Deleting_WithLocator_KeepsFinalizer(t *testing.T) {
 	m := &fakeModule{name: pipeline.AccountModuleName, forbidApply: true}
 	e, _ := newExternal(t, m)
 	cr := newTestCR("acct", "ns", "aws-eu-central-1")
-	cr.Status.AccountLocator = "xc19114"
+	cr.Status.AccountLocator = "xy12345"
 	now := metav1.NewTime(time.Now())
 	cr.DeletionTimestamp = &now
 
@@ -342,7 +342,7 @@ func TestObserve_RendersOutcomesAndStatus(t *testing.T) {
 	}
 	e, _ := newExternal(t, m, newTestNamespace("ns", map[string]string{"department": "acme"}))
 	cr := newTestCR("acct", "ns", "aws-eu-central-1")
-	cr.Status.AccountLocator = "xc19114"
+	cr.Status.AccountLocator = "xy12345"
 	cr.Generation = 3
 
 	got, err := e.Observe(context.Background(), cr)
@@ -425,7 +425,7 @@ func TestCreateUpdate_BothDelegateToApply(t *testing.T) {
 // once Result.AllDone() is true.
 func TestApply_AllDone_AdvancesGenerationAndSetsStatus(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1")
-	cr.Status.AccountLocator = "xc19114"
+	cr.Status.AccountLocator = "xy12345"
 	cr.Generation = 7
 	m := &fakeModule{name: pipeline.AccountModuleName, applyOut: pipeline.Done()}
 	e, _ := newExternal(t, m, newTestNamespace("ns", nil), cr)
@@ -617,7 +617,7 @@ func assertNewSystemError() error { return stderrors.New("boom") }
 // swallowed, never failing the caller (Edge Cases).
 func TestApply_AccountURLError_LoggedAndSwallowed(t *testing.T) {
 	cr := newTestCR("acct", "ns", "not a region")
-	cr.Status.AccountLocator = "xc19114"
+	cr.Status.AccountLocator = "xy12345"
 	m := &fakeModule{name: pipeline.AccountModuleName, applyOut: pipeline.Done()}
 	e, _ := newExternal(t, m, newTestNamespace("ns", nil), cr)
 

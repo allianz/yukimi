@@ -66,9 +66,8 @@ configured secrets backend, so the following are all in scope:
 
 **Out of scope:**
 
-- Vulnerabilities in Snowflake itself — report those to
-  [Snowflake](https://www.snowflake.com/en/trust-center/). Note that
-  `specs/design.md` Appendix B already documents, deliberately and publicly,
+- Vulnerabilities in Snowflake itself — report those to Snowflake directly.
+  Note that `specs/design.md` Appendix B already documents, deliberately and publicly,
   where Snowflake's current feature set cannot enforce a control that Yukimi
   wants enforced. Those are known product gaps, not vulnerabilities in Yukimi.
 - Misconfiguration of a self-managed deployment — for example granting the

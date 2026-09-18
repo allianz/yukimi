@@ -25,11 +25,11 @@ import (
 
 // Spec 006 Appendix Example 2, verbatim.
 func TestAccountURL_MatchesDesignExample(t *testing.T) {
-	got, err := AccountURL("xc19114", "aws-eu-central-1", true)
+	got, err := AccountURL("xy12345", "aws-eu-central-1", true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := "https://xc19114.eu-central-1.privatelink.snowflakecomputing.com/console/login"
+	want := "https://xy12345.eu-central-1.privatelink.snowflakecomputing.com/console/login"
 	if got != want {
 		t.Errorf("AccountURL() = %q, want %q", got, want)
 	}
@@ -37,11 +37,11 @@ func TestAccountURL_MatchesDesignExample(t *testing.T) {
 
 // AccountURL appends the console login path on top of host.URL's bare host.
 func TestAccountURL_AppendsLoginPath(t *testing.T) {
-	got, err := AccountURL("xc19114", "aws-eu-west-3", false)
+	got, err := AccountURL("xy12345", "aws-eu-west-3", false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := "https://xc19114.eu-west-3.aws.snowflakecomputing.com/console/login"
+	want := "https://xy12345.eu-west-3.aws.snowflakecomputing.com/console/login"
 	if got != want {
 		t.Errorf("AccountURL() = %q, want %q", got, want)
 	}
@@ -52,8 +52,8 @@ func TestAccountURL_AppendsLoginPath(t *testing.T) {
 func TestAccountURL_ErrorPathMatchesHost(t *testing.T) {
 	const region = "eu-central-1" // missing cloud prefix
 
-	tenantGot, tenantErr := AccountURL("xc19114", region, true)
-	hostGot, hostErr := host.URL("xc19114", region, true)
+	tenantGot, tenantErr := AccountURL("xy12345", region, true)
+	hostGot, hostErr := host.URL("xy12345", region, true)
 
 	if tenantGot != hostGot {
 		t.Errorf("AccountURL() = %q, host.URL() = %q, want equal", tenantGot, hostGot)
