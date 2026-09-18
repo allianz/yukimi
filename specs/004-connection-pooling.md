@@ -42,10 +42,10 @@ Host and URL construction from an account locator and a cloud-region string. No 
 package host
 
 // Hostname returns the Snowflake connection host for an account, e.g.
-// "xc19114.eu-central-1.privatelink.snowflakecomputing.com".
+// "xy12345.eu-central-1.privatelink.snowflakecomputing.com".
 //
 // Parameters:
-//   - locator: the Snowflake account locator (design.md 3.6), e.g. "xc19114";
+//   - locator: the Snowflake account locator (design.md 3.6), e.g. "xy12345";
 //     opaque, and never validated here
 //   - region: the account's cloud-region string (e.g. "aws-eu-central-1",
 //     design.md 3.1)
@@ -195,7 +195,7 @@ internal/snowflake/pool/
 **System Errors** (use `fmt.Errorf("context: %w", err)`):
 - Credential read failure: `failed to read org-admin credentials: %w` / `failed to read tenant credentials for finance/analytics-team-eu: %w`
 - Stored private key does not parse: `failed to parse private key for finance/analytics-team-eu: %w`
-- Connection cannot be established or the health probe fails: `failed to connect to xc19114.eu-central-1.privatelink.snowflakecomputing.com: %w`
+- Connection cannot be established or the health probe fails: `failed to connect to xy12345.eu-central-1.privatelink.snowflakecomputing.com: %w`
 
 <br/><br/><br/><br/><br/>
 
@@ -261,7 +261,7 @@ This specification defines the `internal/snowflake/pool/` and `internal/snowflak
 - **SC-005**: Two `TenantAccount` calls with identical `namespace`/`accountName`/`locator`/`region` return the identical `*sql.DB` pointer; a call with a different `namespace` or `accountName` returns a distinct one.
 - **SC-006**: `host.regionSegment("aws-eu-central-1")` returns `"eu-central-1"`; `host.regionSegment("aws-eu-west-3")` returns `"eu-west-3.aws"`.
 - **SC-007**: `host.Hostname` appends `.privatelink.snowflakecomputing.com` when `usePrivateLink` is true and `.snowflakecomputing.com` when false, and the locator forms the leading label in both.
-- **SC-007a**: `host.URL("xc19114", "aws-eu-central-1", true)` returns `https://xc19114.eu-central-1.privatelink.snowflakecomputing.com` — design.md 7.2's example verbatim, with no trailing path.
+- **SC-007a**: `host.URL("xy12345", "aws-eu-central-1", true)` returns `https://xy12345.eu-central-1.privatelink.snowflakecomputing.com` — design.md 7.2's example verbatim, with no trailing path.
 - **SC-008**: `TenantAccount` returns a user error for a `region` missing its cloud prefix (e.g. `"eu-central-1"`) or otherwise malformed, and never attempts a connection in that case — satisfied by its call to `host.Hostname` preceding any credential read or dial.
 - **SC-008a**: `host.Hostname` and `host.URL` both return an empty string and a user error for a region missing its cloud prefix or otherwise malformed.
 - **SC-009**: A failed credential read, key parse, dial, or health probe on the first call for a key leaves nothing cached — the next call for the same key retries in full.
@@ -345,7 +345,7 @@ func main() {
 
     // ... later, inside a controller's Observe/Create/Update, once the account's
     // locator is known (design.md 3.6, 7.2):
-    db, err := p.TenantAccount(context.Background(), "finance", "analytics-team-eu", "xc19114", "aws-eu-central-1")
+    db, err := p.TenantAccount(context.Background(), "finance", "analytics-team-eu", "xy12345", "aws-eu-central-1")
     if err != nil {
         log.Fatalf("failed to get tenant connection: %v", err)
     }
@@ -401,11 +401,11 @@ func TestTenantAccount_CachesByKey(t *testing.T) {
     seedTenantCredential(t, p, "finance", "analytics-team-eu")
 
     ctx := context.Background()
-    first, err := p.TenantAccount(ctx, "finance", "analytics-team-eu", "xc19114", "aws-eu-central-1")
+    first, err := p.TenantAccount(ctx, "finance", "analytics-team-eu", "xy12345", "aws-eu-central-1")
     if err != nil {
         t.Fatalf("first call: %v", err)
     }
-    second, err := p.TenantAccount(ctx, "finance", "analytics-team-eu", "xc19114", "aws-eu-central-1")
+    second, err := p.TenantAccount(ctx, "finance", "analytics-team-eu", "xy12345", "aws-eu-central-1")
     if err != nil {
         t.Fatalf("second call: %v", err)
     }
@@ -431,6 +431,6 @@ func accountURL(locator, region string, usePrivateLink bool) (string, error) {
     if err != nil {
         return "", err // user error for a malformed region, reported on the CRD
     }
-    return url, nil // https://xc19114.eu-central-1.privatelink.snowflakecomputing.com
+    return url, nil // https://xy12345.eu-central-1.privatelink.snowflakecomputing.com
 }
 ```

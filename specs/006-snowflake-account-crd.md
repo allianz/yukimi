@@ -294,7 +294,7 @@ func AlphaTester(labels map[string]string) (bool, error)
 // internal/snowflake/host.URL (004); adds no validation beyond that call.
 //
 // Parameters:
-//   - locator: the account locator returned by CREATE ACCOUNT (e.g. "xc19114").
+//   - locator: the account locator returned by CREATE ACCOUNT (e.g. "xy12345").
 //   - region: the CRD's spec.region (e.g. "aws-eu-central-1").
 //   - usePrivateLink: from the controller's base config (002), supplied by
 //     the caller (020) — not read from the Backplane Config, which carries
@@ -604,11 +604,11 @@ name := tenant.ResolveName("analytics-team-eu", "finance")
 **Example 2: Building an account's browser login URL**
 
 ```go
-url, err := tenant.AccountURL("xc19114", "aws-eu-central-1", true)
+url, err := tenant.AccountURL("xy12345", "aws-eu-central-1", true)
 if err != nil {
     return err // user error: malformed region, per spec 004
 }
-// url == "https://xc19114.eu-central-1.privatelink.snowflakecomputing.com/console/login"
+// url == "https://xy12345.eu-central-1.privatelink.snowflakecomputing.com/console/login"
 ```
 
 **Example 3: Reading onboarding metadata from a namespace's labels**

@@ -73,7 +73,7 @@ var (
 	kmsKeyIDPattern = regexp.MustCompile(`^(arn:aws:kms:[a-z0-9-]+:\d{12}:(key|alias)/[A-Za-z0-9/_-]+|alias/[A-Za-z0-9/_-]+|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$`)
 
 	// accountLocatorPattern matches the loose shape of a Snowflake account locator
-	// (e.g. "xc19114", design.md 3.6). Snowflake publishes no strict grammar, so this
+	// (e.g. "xy12345", design.md 3.6). Snowflake publishes no strict grammar, so this
 	// only rejects whitespace/punctuation, never judges realness.
 	accountLocatorPattern = regexp.MustCompile(`^[A-Za-z0-9]+$`)
 
@@ -110,7 +110,7 @@ func (c *Config) CloudProvider() string {
 type SnowflakeSettings struct {
 	Org                    string // organization name; used in account identifiers, secret paths, and accountUrl
 	OrgAdminAccount        string // account used for org-level operations
-	OrgAdminAccountLocator string // Snowflake account locator for OrgAdminAccount (e.g. "xc19114"); static config because, unlike a tenant account, the controller never runs CREATE ACCOUNT for it (design.md 3.6)
+	OrgAdminAccountLocator string // Snowflake account locator for OrgAdminAccount (e.g. "xy12345"); static config because, unlike a tenant account, the controller never runs CREATE ACCOUNT for it (design.md 3.6)
 	OrgAdminAccountRegion  string // Snowflake region OrgAdminAccount lives in, cloud-region form (e.g. "aws-eu-central-1" or "azure-westeurope"); paired with OrgAdminAccountLocator to build the org-admin connection host (004)
 	UsePrivateLink         bool   // affects the connection host (004); defaults to true when omitted
 	DisableOCSPChecks      bool   // disables OCSP certificate-revocation checking on Snowflake connections (004); testing/emergency use only. Defaults to false when omitted
@@ -272,7 +272,7 @@ func Load(configDir string) (*Config, error) {
 	}
 	if !accountLocatorPattern.MatchString(raw.Snowflake.OrgAdminAccountLocator) {
 		return nil, errors.NewUserError(fmt.Sprintf(
-			"snowflake.orgAdminAccountLocator '%s' does not match the expected format (expected: xc19114)",
+			"snowflake.orgAdminAccountLocator '%s' does not match the expected format (expected: xy12345)",
 			raw.Snowflake.OrgAdminAccountLocator))
 	}
 

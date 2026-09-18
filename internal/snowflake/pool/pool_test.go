@@ -426,7 +426,7 @@ func TestTenantAccount_BuildsPath(t *testing.T) {
 	p := New(backend, cfg)
 	p.dial = dialer.dial
 
-	if _, err := p.TenantAccount(context.Background(), "finance", "analytics-team-eu", "xc19114", "aws-eu-central-1"); err != nil {
+	if _, err := p.TenantAccount(context.Background(), "finance", "analytics-team-eu", "xy12345", "aws-eu-central-1"); err != nil {
 		t.Fatalf("TenantAccount: %v", err)
 	}
 	if gotPath != path {
@@ -450,11 +450,11 @@ func TestTenantAccount_CachesByFullKey(t *testing.T) {
 	p.dial = dialer.dial
 
 	ctx := context.Background()
-	first, err := p.TenantAccount(ctx, "finance", "a", "xc19114", "aws-eu-central-1")
+	first, err := p.TenantAccount(ctx, "finance", "a", "xy12345", "aws-eu-central-1")
 	if err != nil {
 		t.Fatalf("first call: %v", err)
 	}
-	second, err := p.TenantAccount(ctx, "finance", "a", "xc19114", "aws-eu-central-1")
+	second, err := p.TenantAccount(ctx, "finance", "a", "xy12345", "aws-eu-central-1")
 	if err != nil {
 		t.Fatalf("second call: %v", err)
 	}
@@ -500,7 +500,7 @@ func TestTenantAccount_MalformedRegion_NoConnectionAttempt(t *testing.T) {
 	p := New(backend, testConfig())
 	p.dial = dialer.dial
 
-	_, err := p.TenantAccount(context.Background(), "finance", "a", "xc19114", "eu-central-1")
+	_, err := p.TenantAccount(context.Background(), "finance", "a", "xy12345", "eu-central-1")
 	if err == nil || !errors.IsUserError(err) {
 		t.Fatalf("expected a user error, got %v", err)
 	}
@@ -517,7 +517,7 @@ func TestTenantAccount_MalformedRegion_NoConnectionAttempt(t *testing.T) {
 func TestTenantAccount_InvalidPathSegment(t *testing.T) {
 	backend := secrets.NewFakeBackend()
 	p := New(backend, testConfig())
-	if _, err := p.TenantAccount(context.Background(), "finance/eu", "a", "xc19114", "aws-eu-central-1"); err == nil || !errors.IsUserError(err) {
+	if _, err := p.TenantAccount(context.Background(), "finance/eu", "a", "xy12345", "aws-eu-central-1"); err == nil || !errors.IsUserError(err) {
 		t.Fatalf("expected a user error, got %v", err)
 	}
 }
@@ -543,10 +543,10 @@ func TestTenantAccount_CredentialReadFailureNotCached(t *testing.T) {
 	p.dial = dialer.dial
 
 	ctx := context.Background()
-	if _, err := p.TenantAccount(ctx, "finance", "a", "xc19114", "aws-eu-central-1"); err == nil {
+	if _, err := p.TenantAccount(ctx, "finance", "a", "xy12345", "aws-eu-central-1"); err == nil {
 		t.Fatal("expected an error on the first, failing credential read")
 	}
-	if _, err := p.TenantAccount(ctx, "finance", "a", "xc19114", "aws-eu-central-1"); err != nil {
+	if _, err := p.TenantAccount(ctx, "finance", "a", "xy12345", "aws-eu-central-1"); err != nil {
 		t.Fatalf("retry: %v", err)
 	}
 	if dialer.callCount() != 1 {
@@ -565,7 +565,7 @@ func TestTenantAccount_UnmarshalFailure(t *testing.T) {
 	}
 
 	p := New(backend, cfg)
-	if _, err := p.TenantAccount(context.Background(), "finance", "a", "xc19114", "aws-eu-central-1"); err == nil {
+	if _, err := p.TenantAccount(context.Background(), "finance", "a", "xy12345", "aws-eu-central-1"); err == nil {
 		t.Fatal("expected an error for a credential that does not unmarshal")
 	}
 }
@@ -585,7 +585,7 @@ func TestTenantAccount_ParsePrivateKeyFailure(t *testing.T) {
 	}
 
 	p := New(backend, cfg)
-	if _, err := p.TenantAccount(context.Background(), "finance", "a", "xc19114", "aws-eu-central-1"); err == nil {
+	if _, err := p.TenantAccount(context.Background(), "finance", "a", "xy12345", "aws-eu-central-1"); err == nil {
 		t.Fatal("expected an error for a private key that does not parse")
 	}
 }
@@ -608,14 +608,14 @@ func TestTenantAccount_FailedDialNotCached(t *testing.T) {
 	p.dial = dialer.dial
 
 	ctx := context.Background()
-	if _, err := p.TenantAccount(ctx, "finance", "a", "xc19114", "aws-eu-central-1"); err == nil {
+	if _, err := p.TenantAccount(ctx, "finance", "a", "xy12345", "aws-eu-central-1"); err == nil {
 		t.Fatal("expected an error on the first, failing dial")
 	}
-	if _, ok := p.cachedTenant(tenantKey{"finance", "a"}, "xc19114", "aws-eu-central-1"); ok {
+	if _, ok := p.cachedTenant(tenantKey{"finance", "a"}, "xy12345", "aws-eu-central-1"); ok {
 		t.Error("a failed dial must not be cached")
 	}
 
-	if _, err := p.TenantAccount(ctx, "finance", "a", "xc19114", "aws-eu-central-1"); err != nil {
+	if _, err := p.TenantAccount(ctx, "finance", "a", "xy12345", "aws-eu-central-1"); err != nil {
 		t.Fatalf("retry: %v", err)
 	}
 	if dialer.callCount() != 2 {
@@ -643,7 +643,7 @@ func TestTenantAccount_ConcurrentSameKey_OneDial(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			results[i], errs[i] = p.TenantAccount(context.Background(), "finance", "a", "xc19114", "aws-eu-central-1")
+			results[i], errs[i] = p.TenantAccount(context.Background(), "finance", "a", "xy12345", "aws-eu-central-1")
 		}(i)
 	}
 	wg.Wait()
@@ -730,7 +730,7 @@ func TestTenantAccount_SelfHealsOnLocatorChange(t *testing.T) {
 	p.dial = dialer.dial
 
 	ctx := context.Background()
-	first, err := p.TenantAccount(ctx, "finance", "a", "xc19114", "aws-eu-central-1")
+	first, err := p.TenantAccount(ctx, "finance", "a", "xy12345", "aws-eu-central-1")
 	if err != nil {
 		t.Fatalf("first call: %v", err)
 	}
@@ -761,11 +761,11 @@ func TestTenantAccount_SelfHealsOnRegionChange(t *testing.T) {
 	p.dial = dialer.dial
 
 	ctx := context.Background()
-	first, err := p.TenantAccount(ctx, "finance", "a", "xc19114", "aws-eu-central-1")
+	first, err := p.TenantAccount(ctx, "finance", "a", "xy12345", "aws-eu-central-1")
 	if err != nil {
 		t.Fatalf("first call: %v", err)
 	}
-	second, err := p.TenantAccount(ctx, "finance", "a", "xc19114", "aws-eu-west-3")
+	second, err := p.TenantAccount(ctx, "finance", "a", "xy12345", "aws-eu-west-3")
 	if err != nil {
 		t.Fatalf("second call (new region): %v", err)
 	}
@@ -792,21 +792,21 @@ func TestEvictTenant_ClosesAndDialsAgain(t *testing.T) {
 	p.dial = dialer.dial
 
 	ctx := context.Background()
-	first, err := p.TenantAccount(ctx, "finance", "a", "xc19114", "aws-eu-central-1")
+	first, err := p.TenantAccount(ctx, "finance", "a", "xy12345", "aws-eu-central-1")
 	if err != nil {
 		t.Fatalf("first call: %v", err)
 	}
 
 	p.EvictTenant("finance", "a")
 
-	if _, ok := p.cachedTenant(tenantKey{"finance", "a"}, "xc19114", "aws-eu-central-1"); ok {
+	if _, ok := p.cachedTenant(tenantKey{"finance", "a"}, "xy12345", "aws-eu-central-1"); ok {
 		t.Error("expected the entry to be removed after eviction")
 	}
 	if err := first.Ping(); err == nil {
 		t.Error("expected the evicted connection to be closed")
 	}
 
-	second, err := p.TenantAccount(ctx, "finance", "a", "xc19114", "aws-eu-central-1")
+	second, err := p.TenantAccount(ctx, "finance", "a", "xy12345", "aws-eu-central-1")
 	if err != nil {
 		t.Fatalf("second call: %v", err)
 	}

@@ -363,7 +363,7 @@ func TestTenantAccount_RotationFailureDoesNotFailCall(t *testing.T) {
 	p := New(backend, cfg)
 	p.dial = func(dialConfig) (*sql.DB, error) { return rotDB, nil }
 
-	db, err := p.TenantAccount(context.Background(), "finance", "a", "xc19114", "aws-eu-central-1")
+	db, err := p.TenantAccount(context.Background(), "finance", "a", "xy12345", "aws-eu-central-1")
 	if err != nil {
 		t.Fatalf("TenantAccount must not fail even though rotation itself fails: %v", err)
 	}

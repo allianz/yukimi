@@ -40,7 +40,7 @@ func (c *Config) CloudProvider() string
 type SnowflakeSettings struct {
     Org                    string // organization name; used in account identifiers, secret paths, and accountUrl
     OrgAdminAccount        string // account used for org-level operations
-    OrgAdminAccountLocator string // Snowflake account locator for OrgAdminAccount (e.g. "xc19114"); static config because, unlike a tenant account, the controller never runs CREATE ACCOUNT for it (design.md 3.6)
+    OrgAdminAccountLocator string // Snowflake account locator for OrgAdminAccount (e.g. "xy12345"); static config because, unlike a tenant account, the controller never runs CREATE ACCOUNT for it (design.md 3.6)
     OrgAdminAccountRegion  string // Snowflake region OrgAdminAccount lives in, cloud-region form (e.g. "aws-eu-central-1" or "azure-westeurope"); paired with OrgAdminAccountLocator to build the org-admin connection host (004)
     UsePrivateLink         bool   // affects the connection host (004); defaults to true when omitted
     DisableOCSPChecks      bool   // disables OCSP certificate-revocation checking on Snowflake connections (004); testing/emergency use only. Defaults to false when omitted
@@ -102,7 +102,7 @@ func Load(configDir string) (*Config, error)
 | ---------- | ---- | -------- | ------------------------ |
 | `snowflake.org` | string | **Yes** | Non-empty; matches `^[A-Za-z][A-Za-z0-9_]*$` (Snowflake identifier form, design.md 3.12). Used in account identifiers, secret paths, and `accountUrl` (design.md 3.11.1, 3.12, 7.2). |
 | `snowflake.orgAdminAccount` | string | **Yes** | Non-empty; matches `^[A-Za-z][A-Za-z0-9_]*$`. Used in the org-admin secret path (design.md 3.11.1). |
-| `snowflake.orgAdminAccountLocator` | string | **Yes** | Non-empty; matches `^[A-Za-z0-9]+$` (Snowflake account locator form, e.g. `xc19114`). Static because, unlike a tenant account, there is no `CREATE ACCOUNT` response to capture it from (design.md 3.6). Paired with `orgAdminAccountRegion` to build the org-admin connection host (004). |
+| `snowflake.orgAdminAccountLocator` | string | **Yes** | Non-empty; matches `^[A-Za-z0-9]+$` (Snowflake account locator form, e.g. `xy12345`). Static because, unlike a tenant account, there is no `CREATE ACCOUNT` response to capture it from (design.md 3.6). Paired with `orgAdminAccountRegion` to build the org-admin connection host (004). |
 | `snowflake.orgAdminAccountRegion` | string | **Yes** | Non-empty; matches `^(aws\|azure\|gcp)-[a-z][a-z0-9-]*$` — the cloud-region form used by the Backplane Config's region keys and the SnowflakeAccount CRD's `region` field (e.g. `aws-eu-central-1`, `azure-westeurope`; design.md 3.1, 3.5). |
 | `snowflake.usePrivateLink` | bool | No | Affects the Snowflake connection host (design.md 3.6). Default: `true` when omitted. |
 | `snowflake.disableOcspChecks` | bool | No | Disables OCSP certificate-revocation checking on Snowflake connections (004); testing/emergency use only. Default: `false` when omitted. |
@@ -146,7 +146,7 @@ internal/config/base/
 | Duration unparseable | `snowflake.connectionMaxLifetime 'not-a-duration' does not match the expected format (expected: a Go duration string, e.g. 30m)` |
 | Duration not positive | `snowflake.connectionMaxLifetime '0s' must be a positive duration` |
 
-The shape message names the format by example, so the expected form is readable without consulting the regex: `orgAdminAccountLocator` suggests `xc19114`, `orgAdminAccountRegion` suggests `aws-eu-central-1 or azure-westeurope`, `kmsKeyId` suggests `a KMS key ID, alias, or ARN, e.g. alias/my-key`.
+The shape message names the format by example, so the expected form is readable without consulting the regex: `orgAdminAccountLocator` suggests `xy12345`, `orgAdminAccountRegion` suggests `aws-eu-central-1 or azure-westeurope`, `kmsKeyId` suggests `a KMS key ID, alias, or ARN, e.g. alias/my-key`.
 
 **System Errors**: this package makes no network calls and has no retryable infrastructure dependency, so it classifies no scenario as a system error on its own. An unexpected filesystem error (e.g. a permissions problem on the mounted volume) surfaces as a raw wrapped error (`fmt.Errorf("reading base.yaml: %w", err)`); the caller's error handling (001) treats it as a system error by default, since `Load` never wraps it in `errors.NewUserError`. This is intentionally minimal — this package does not attempt to distinguish every possible OS-level failure mode.
 
@@ -199,7 +199,7 @@ This specification defines the `internal/config/base/` package that:
 - **SC-002**: `Load` returns a user error when `<configDir>/base.yaml` does not exist.
 - **SC-003**: `Load` returns a user error when the file is not valid YAML.
 - **SC-004**: `Load` returns a user error when any required field — `snowflake.org`, `orgAdminAccount`, `orgAdminAccountLocator`, `orgAdminAccountRegion` — is empty or absent.
-- **SC-005**: `Load` returns a user error when a required field violates its documented shape: `org` or `orgAdminAccount` outside the Snowflake identifier form (`my-org`), a malformed locator (`xc-19114!`), a malformed region (`Frankfurt!`), or a region missing its cloud prefix (`eu-central-1`). It accepts a well-formed region under any of the three cloud prefixes (e.g. `azure-westeurope`).
+- **SC-005**: `Load` returns a user error when a required field violates its documented shape: `org` or `orgAdminAccount` outside the Snowflake identifier form (`my-org`), a malformed locator (`xy-12345!`), a malformed region (`Frankfurt!`), or a region missing its cloud prefix (`eu-central-1`). It accepts a well-formed region under any of the three cloud prefixes (e.g. `azure-westeurope`).
 - **SC-006**: `Load` returns a user error when the file carries no cloud section, and another when it carries more than one.
 - **SC-007**: `CloudProvider()` returns the name of whichever single cloud section is present — including `"azure"`, whose backend is not compiled in — regardless of where that section sits among the file's top-level keys.
 - **SC-008**: `Load` accepts an absent `aws.region`, accepts a well-formed but non-existent one (`xx-nowhere-9`), and returns a user error for a malformed one (`Frankfurt!`).
@@ -272,7 +272,7 @@ func main() {
 snowflake:
   org: my_org_name
   orgAdminAccount: my_org_admin_account_name
-  orgAdminAccountLocator: xc19114
+  orgAdminAccountLocator: xy12345
   orgAdminAccountRegion: aws-eu-central-1
   usePrivateLink: true
   # disableOcspChecks: false        # optional, default shown (004); testing/emergency use only

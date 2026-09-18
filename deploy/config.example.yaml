@@ -76,7 +76,7 @@ data:
       # The org-admin account's own locator and cloud region. These are static
       # configuration rather than discovered, because CREATE ACCOUNT is never run
       # for this account -- it already exists. Locator matches ^[A-Za-z0-9]+$
-      # (e.g. xc19114); region is <cloud>-<region-id> (e.g. aws-eu-central-1).
+      # (e.g. xy12345); region is <cloud>-<region-id> (e.g. aws-eu-central-1).
       orgAdminAccountLocator: REPLACE_ME
       orgAdminAccountRegion: REPLACE_ME
 

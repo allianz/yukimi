@@ -58,10 +58,10 @@ func regionSegment(region string) (string, error) {
 }
 
 // Hostname returns the Snowflake connection host for an account, e.g.
-// "xc19114.eu-central-1.privatelink.snowflakecomputing.com".
+// "xy12345.eu-central-1.privatelink.snowflakecomputing.com".
 //
 // Parameters:
-//   - locator: the Snowflake account locator (design.md 3.6), e.g. "xc19114";
+//   - locator: the Snowflake account locator (design.md 3.6), e.g. "xy12345";
 //     opaque, and never validated here
 //   - region: the account's cloud-region string (e.g. "aws-eu-central-1",
 //     design.md 3.1)
