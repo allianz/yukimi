@@ -13,7 +13,7 @@ require (
 	github.com/alecthomas/kingpin/v2 v2.4.0
 	github.com/aws/aws-sdk-go-v2 v1.47.0
 	github.com/aws/aws-sdk-go-v2/config v1.33.5
-	github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.44.6
+	github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.49.0
 	github.com/crossplane/crossplane-runtime/v2 v2.0.0
 	github.com/google/uuid v1.6.0
 	github.com/joho/godotenv v1.5.1
