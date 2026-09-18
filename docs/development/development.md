@@ -1,29 +1,34 @@
 # Development Guide
 
-This document provides a comprehensive guide for developing the Snowflake Crossplane provider.
+This document is the reference for developing Yukimi. For the contribution process — sign-off, pull
+requests, review — see [CONTRIBUTING.md](../../CONTRIBUTING.md).
 
 ## Prerequisites
 
 ### Required Software
 
-Before you begin development, ensure you have the following software installed:
-
-- **Go**: Version 1.23.0 or later (project uses toolchain go1.23.8)
-- **Docker**: For building container images and running local clusters
+- **Go**: the version in [`go.mod`](../../go.mod) or later. `go.mod` is the single source of truth for
+  this; at the time of writing it pins `go 1.26.0` with `toolchain go1.26.8`.
+- **Docker**: for building container images and running local clusters.
+- **Linux or macOS**: the Crossplane `build` submodule that drives the Makefile refuses to run on a
+  Windows host (`build only supported on linux and darwin host currently`). On Windows, work inside
+  WSL2 — or edit and run `go build` / `go test` directly and let CI run `make reviewable` for you.
 
 ### Optional Binaries (Automatically Installed)
 
-The following tools are **automatically downloaded and installed** by the build pipeline when needed. You do **NOT** need to install these manually:
+The following tools are **automatically downloaded and installed** by the build pipeline when needed.
+You do **NOT** need to install these manually. Versions come from
+[`build/makelib/k8s_tools.mk`](../../build/makelib/k8s_tools.mk) in the submodule and from the
+Makefile, so treat those as authoritative rather than the numbers below:
 
-- **kind** (v0.23.0): Kubernetes in Docker for local testing
-- **kubectl** (v1.24.3): Kubernetes command-line tool
-- **Crossplane CLI** (v1.20.0): For building and managing Crossplane packages
-- **Helm** (v3.9.1): Kubernetes package manager (installed when needed)
-- **golangci-lint** (v1.61.0): Go linting tool
-- **kustomize** (v4.5.5): Kubernetes configuration management
-- **gomplate** (v3.10.0): Template rendering tool
-- **istioctl** (v1.12.9): Istio service mesh CLI
-- **kcl** (v0.10.0): KCL configuration language
+- **kind**: Kubernetes in Docker for local testing
+- **kubectl**: Kubernetes command-line tool
+- **Crossplane CLI**: for building and managing Crossplane packages
+- **Helm**: Kubernetes package manager (installed when needed)
+- **golangci-lint** (v2.13.2, pinned in the `Makefile`): Go linting tool
+- **kustomize**: renders `deploy/base` into `deploy/install.yaml`
+- **gomplate** (v3.10.0, pinned in the `Makefile`): template rendering, used by `provider.addtype`
+- **istioctl**, **kcl**: pulled in by the submodule; unused by this project
 
 These tools are downloaded to `.cache/tools/`.
 
@@ -35,13 +40,13 @@ These tools are downloaded to `.cache/tools/`.
 
 - **`make dev`**: Start local development (creates kind cluster if needed, then runs provider with debug logging)
 - **`make dev-clean`**: Clean up local development environment (deletes kind cluster)
-- **`make test`**: Run unit tests
-- **`make reviewable`**: Ensures PR readiness
+- **`make test`**: Run unit tests (with `-short`, which skips integration tests)
+- **`make test-integration`**: Run integration tests only. **Requires real AWS and Snowflake access** via `.env`
+- **`make reviewable`**: Ensures PR readiness — `generate`, `lint`, `test`. This is what CI gates on
 
 #### Code Quality & Testing
 
 - **`make lint`**: Run linting and code analysis tools
-- **`make e2e`**: Tests packaging and deployment of the provider to a real cluster. (currently disabled)
 - **`make check-diff`**: Ensure no untracked changes after `make reviewable`
 
 #### Code Generation
@@ -49,6 +54,14 @@ These tools are downloaded to `.cache/tools/`.
 - **`make generate`**: Regenerate all auto-generated code
   - Required after API changes
   - Generates deepcopy methods, managed resource interfaces, etc.
+  - Also regenerates `deploy/install.yaml` from `deploy/base`, so `check-diff` fails if the committed
+    copy is stale
+
+#### Manifests
+
+- **`make manifests`**: Render `deploy/base` into the committed `deploy/install.yaml`
+- **`make manifests.check`**: Fail if `deploy/install.yaml` is stale. Runs as part of `check-diff`
+- **`make manifests.overlays`**: Verify the kustomize overlays under `deploy/overlays` still build
 
 #### Release & Publishing
 

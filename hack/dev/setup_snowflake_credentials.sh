@@ -1,4 +1,19 @@
 #!/usr/bin/env bash
+
+# Copyright 2026 The Yukimi Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 #
 # setup-snowflake-credentials.sh - Generate and store RSA key pairs for Snowflake
 #
@@ -40,7 +55,7 @@ AWS_REGION="${AWS_REGION:-eu-central-1}"
 AWS_PROFILE="${AWS_PROFILE:-}"
 SNOWFLAKE_ORG="${SNOWFLAKE_ORG:-}"
 SNOWFLAKE_ORG_ADMIN_ACCOUNT="${SNOWFLAKE_ORG_ADMIN_ACCOUNT:-orgadmin}"
-SAMPLE_CUSTOMER_ACCOUNT="${SAMPLE_CUSTOMER_ACCOUNT:-platform_dev_internal}"
+SAMPLE_CUSTOMER_ACCOUNT="${SAMPLE_CUSTOMER_ACCOUNT:-sample_tenant}"
 SAMPLE_CUSTOMER_NAMESPACE="${SAMPLE_CUSTOMER_NAMESPACE:-default}"
 
 # Fixed username for all secrets
@@ -95,7 +110,7 @@ Environment Variables (from .env or environment):
 
   The following are only required with --generate-test-keys:
   SAMPLE_CUSTOMER_NAMESPACE            Simulated customer's namespace (default: default)
-  SAMPLE_CUSTOMER_ACCOUNT              Simulated customer's account name (default: platform_dev_internal)
+  SAMPLE_CUSTOMER_ACCOUNT              Simulated customer's account name (default: sample_tenant)
 
 Generated Secrets:
   Always:

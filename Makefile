@@ -115,10 +115,24 @@ DOCKER_REGISTRY := localhost
 # ====================================================================================
 # Setup XPKG
 
-XPKG_REG_ORGS ?= xpkg.upbound.io/crossplane
-# NOTE(hasheddan): skip promoting on xpkg.upbound.io as channel tags are
-# inferred.
-XPKG_REG_ORGS_NO_PROMOTE ?= xpkg.upbound.io/crossplane
+# The registry the package would be pushed to. The template shipped
+# `xpkg.upbound.io/crossplane` -- the Crossplane org on Upbound, which is not ours
+# and which we have no rights to push to. Yukimi's artifacts belong beside the
+# repository, so this points at GHCR, matching the image
+# `deploy/base/deployment.yaml` already references.
+#
+# Nothing pushes anywhere yet: `publish` and `promote` are disabled below, and
+# the release pipeline is still to be built. This value exists so that when it is,
+# it is not silently aimed at somebody else's namespace.
+XPKG_REG_ORGS ?= ghcr.io/allianz
+XPKG_REG_ORGS_NO_PROMOTE ?= ghcr.io/allianz
+
+# The submodule defaults this to $(ROOT_DIR)/examples; this repository's directory
+# is `example`, singular. Left unset, `crossplane xpkg build --examples-root`
+# points at a directory that does not exist -- a latent packaging bug that only
+# surfaces once the package is actually built.
+XPKG_EXAMPLES_DIR := $(ROOT_DIR)/example
+
 XPKGS = yukimi
 -include build/makelib/xpkg.mk
 
@@ -183,7 +197,7 @@ dev-clean: $(KIND) $(KUBECTL)
 	@$(INFO) Deleting kind cluster
 	@$(KIND) delete cluster --name=$(PROJECT_NAME)-dev
 
-.PHONY: submodules fallthrough run dev dev-clean publish promote tag release.tag e2e.automated e2e.manual
+.PHONY: submodules fallthrough run dev dev-clean publish promote tag release.tag e2e e2e.run test-integration
 
 # ====================================================================================
 # Disabled Targets
@@ -202,35 +216,30 @@ tag:
 	@exit 1
 
 release.tag:
-	@echo "ERROR: 'make tag' has been disabled for this project"
+	@echo "ERROR: 'make release.tag' has been disabled for this project"
 	@exit 1
 
+# There is no end-to-end suite. The template's e2e machinery deploys a built
+# package to a kind cluster, which cannot work here: the package is not published
+# and the controller needs a real Snowflake organization and AWS Secrets Manager
+# to get past startup. Anything needing those is covered by `make
+# test-integration` instead, which is why those tests are guarded by
+# testing.Short() rather than run in CI.
+#
+# Both targets fail loudly rather than being deleted, because the submodule
+# defines them and a silent inherited definition is worse than an explicit no.
 e2e:
-	@echo "ERROR: 'make e2e' has been disabled for this project"
+	@echo "ERROR: 'make e2e' is not supported for this project -- there is no e2e suite."
+	@echo "       For tests against real Snowflake and AWS, use 'make test-integration'."
 	@exit 1
 
-e2e.run:
-	@echo "ERROR: 'make e2e.run' has been disabled for this project"
-	@echo "Use 'make e2e' or 'make e2e.automated' instead"
-	@exit 1
+e2e.run: e2e
 
 test-integration:
 	@$(INFO) go test integration-tests
 	@mkdir -p $(GO_TEST_OUTPUT)
 	@CGO_ENABLED=$(GO_CGO_ENABLED) $(GOHOST) test -v -run Integration $(GO_TEST_FLAGS) $(GO_STATIC_FLAGS) $(GO_PACKAGES) 2>&1 | tee $(GO_TEST_OUTPUT)/integration-tests.log || $(FAIL)
 	@$(OK) go test integration-tests
-
-# New e2e test targets
-e2e.automated:
-	@$(INFO) Running fully automated e2e tests
-	@$(ROOT_DIR)/cluster/local/e2e_automated.sh || $(FAIL)
-	@$(OK) e2e tests passed
-
-e2e.manual:
-	@$(INFO) Running e2e tests against running provider
-	@$(INFO) Make sure 'make dev' is running in another terminal
-	@$(ROOT_DIR)/test/e2e/e2e_tests.sh || $(FAIL)
-	@$(OK) e2e tests passed
 
 # Override go.test.unit to add -short flag for skipping integration tests
 go.test.unit:
@@ -256,16 +265,6 @@ $(GOMPLATE):
 
 export GOMPLATE
 
-# This target prepares repo for your provider by replacing all "snowflake"
-# occurrences with your provider name.
-# This target can only be run once, if you want to rerun for some reason,
-# consider stashing/resetting your git state.
-# Arguments:
-#   provider: Camel case name of your provider, e.g. GitHub, PlanetScale
-#provider.prepare:
-#	@[ "${provider}" ] || ( echo "argument \"provider\" is not set"; exit 1 )
-#	@PROVIDER=$(provider) ./hack/helpers/prepare.sh
-
 # This target adds a new api type and its controller.
 # You would still need to register new api in "apis/<provider>.go" and
 # controller in "internal/controller/<provider>.go".
@@ -289,6 +288,10 @@ Manifest Targets:
     manifests             Render deploy/base into the committed deploy/install.yaml.
     manifests.check       Fail if deploy/install.yaml is stale. Runs as part of check-diff.
     manifests.overlays    Verify the kustomize overlays under deploy/overlays still build.
+
+Test Targets:
+    test                  Unit tests only (-short, which skips the integration tests).
+    test-integration      Integration tests only. Needs real AWS and Snowflake access via .env.
 
 endef
 # The reason CROSSPLANE_MAKE_HELP is used instead of CROSSPLANE_HELP is because the crossplane

@@ -12,6 +12,14 @@
 - [Appendix A: Open TODOs](#appendix-a-open-todos)
 - [Appendix B: Organization Policy Requirements](#appendix-b-organization-policy-requirements)
 
+> **A note on the examples in this document.** Yukimi originated as an internal Allianz platform and
+> was then opened up, so the worked examples here still carry that deployment's vocabulary — the
+> `GIAM` identity system, `agn` connection names, an `Allianz_DE` organization, the onboarding runbook,
+> the data-residency rule. **All of it is configuration, not API.** Identity system names are free-form
+> strings, connection and organization names come from the operator's own backplane configuration, and
+> the residency rules are policy an operator writes. Nothing named here is hardcoded in a CRD schema or
+> in the controllers. Read them as one concrete instantiation of the model, and substitute your own.
+
 
 ## 1. Introduction
 
@@ -830,7 +838,7 @@ Items flagged inline throughout this document (3.10, 3.11.2).
 
 ## Appendix B: Organization Policy Requirements
 
-This appendix is addressed to Snowflake as input while Organization Policies are being designed.
+This appendix is addressed to Snowflake as input while Organization Policies are being designed. It is a feature request, not a defect list: the **Today** column records the documented Snowflake mechanism that exists at the time of writing and the limitation Yukimi therefore works around. None of it describes a bug in Snowflake or in Yukimi. Where a requirement lands in Snowflake, the corresponding Yukimi workaround is retired and the referenced section is updated.
 
 ### B.1 Network
 

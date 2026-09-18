@@ -88,6 +88,7 @@ func (m *module) deleteCredential(ctx context.Context, mc *pipeline.ModuleContex
 	}
 
 	if _, _, err := m.backend.Get(ctx, path); err != nil {
+		//nolint:nilerr // Intentional: an unreadable path is nothing left to delete. See the doc comment above.
 		return nil
 	}
 

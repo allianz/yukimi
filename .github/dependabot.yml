@@ -1,0 +1,70 @@
+# Dependabot configuration.
+#
+# Before this file existed, the only Dependabot activity on the repository came
+# from org-level security updates -- so nothing kept ordinary dependencies or the
+# pinned action SHAs current. Both ecosystems below are also graded by OpenSSF
+# Scorecard (Dependency-Update-Tool), whose badge the README carries.
+version: 2
+
+updates:
+  # ----------------------------------------------------------------------------
+  # Go modules
+  # ----------------------------------------------------------------------------
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "05:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - go
+    commit-message:
+      prefix: "deps"
+    groups:
+      # The k8s.io/* and sigs.k8s.io/* modules are released in lockstep and are
+      # not independently upgradable: bumping one without the others produces a
+      # build that does not compile. One pull request per release train.
+      kubernetes:
+        patterns:
+          - "k8s.io/*"
+          - "sigs.k8s.io/*"
+      crossplane:
+        patterns:
+          - "github.com/crossplane/*"
+      aws-sdk:
+        patterns:
+          - "github.com/aws/aws-sdk-go-v2*"
+      # Everything else, patch-only, batched -- these are the updates nobody
+      # wants to review one at a time.
+      patch:
+        update-types:
+          - patch
+
+  # ----------------------------------------------------------------------------
+  # GitHub Actions
+  # ----------------------------------------------------------------------------
+  #
+  # Every `uses:` in this repository is pinned to a commit SHA rather than a tag,
+  # because Scorecard counts a mutable tag as an unpinned dependency. A SHA does
+  # not float, so without Dependabot the actions silently rot. Dependabot updates
+  # the SHA and keeps the `# vX.Y.Z` comment beside it in step.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "05:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - github-actions
+    commit-message:
+      prefix: "ci"
+    groups:
+      actions:
+        patterns:
+          - "*"

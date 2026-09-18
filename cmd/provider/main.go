@@ -120,7 +120,7 @@ func main() {
 		// warns about doesn't apply here: this manager's lifetime is the
 		// entire process (mgr.Start blocks until shutdown below), so the
 		// broadcaster never outlives it.
-		EventBroadcaster: record.NewBroadcasterWithCorrelatorOptions(record.CorrelatorOptions{MaxEvents: 3}), //nolint:staticcheck
+		EventBroadcaster: record.NewBroadcasterWithCorrelatorOptions(record.CorrelatorOptions{MaxEvents: 3}), //nolint:staticcheck // Deprecated, but the leak it warns about cannot happen here -- see above.
 	})
 	kingpin.FatalIfError(err, "Cannot create controller manager")
 

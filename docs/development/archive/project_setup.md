@@ -3,13 +3,15 @@
 This project was bootstrapped from the official Crossplane provider template:
 https://github.com/crossplane/provider-template
 
-This document records what was done during the initial setup so future contributors understand the divergence from upstream. See also:
-
-- `docs/development/ADDING_A_NEW_TYPE.md` – how to scaffold and implement new managed resource types.
+This document records what was done during the initial setup, so that a contributor who wonders why
+this repository diverges from upstream can find the answer. It is history, not instructions — none of
+it needs to be repeated. To add a new resource type today, see
+[docs/development/development.md](../development.md).
 
 ## Summary of bootstrap actions
 
-1. Copied contents of the upstream template repository into this repo, then removed the `build/` directory (it is a submodule, not plain files).
+1. Copied contents of the upstream template repository into this repo, then removed the `build/`
+   directory (it is a submodule, not plain files).
 2. Added and initialized the `build` submodule:
    ```shell
    git submodule add https://github.com/crossplane/build build
@@ -19,19 +21,18 @@ This document records what was done during the initial setup so future contribut
    ```shell
    make submodules
    ```
-3. Ran provider preparation to rename and stamp project metadata:
-   ```shell
-   make provider.prepare provider=Snowflake
-   ```
-4. Changed API group domain suffix from `.crossplane.io` to `.allianz.io` across:
+3. Ran the template's one-shot `provider.prepare` target to rename and stamp project metadata. That
+   target and its script (`hack/helpers/prepare.sh`) have since been deleted: they only ever ran once,
+   and leaving them in place invited someone to re-run a rename over an already-renamed repository.
+4. Changed the API group domain suffix from `.crossplane.io` to `.yukimi.io` across:
    - API type templates under `hack/helpers/apis/`
    - Generated API package files under `apis/`
    - CRD YAMLs under `package/crds/`
-   - Example manifests under `examples/`
-
+   - Example manifests under `example/`
 
 ## Domain suffix change rationale
 
-Organizational ownership required CRDs to live under `.allianz.io`. All future type generation uses the modified templates. If upstream template updates are pulled in, re-apply the suffix change before regenerating.
-
-
+The API groups had to be owned by this project rather than by Crossplane, so CRDs live under
+`.yukimi.io` — today `base.snowflake.yukimi.io` and `base.identity.yukimi.io`. All type generation
+uses the modified templates in `hack/helpers/apis/`. If upstream template updates are ever pulled in,
+re-apply the suffix change before regenerating.

@@ -22,7 +22,7 @@ import (
 	"testing"
 )
 
-// SC-001: NewUserError creates errors that IsUserError recognises.
+// SC-001: NewUserError creates errors that IsUserError recognizes.
 func TestNewUserError_IsUserError(t *testing.T) {
 	err := NewUserError("invalid region")
 	if !IsUserError(err) {

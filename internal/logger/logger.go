@@ -84,7 +84,8 @@ func (l *Logger) Handle(err error) error {
 
 	if errors.IsUserError(err) {
 		l.log.Debug(err.Error(), l.contextFields()...)
-		return fmt.Errorf("%s", err.Error()) //nolint:err113
+		//nolint:err113 // Deliberate: strips the *UserError type so callers cannot branch on it, keeping only the message.
+		return fmt.Errorf("%s", err.Error())
 	}
 
 	incidentID := generateIncidentID()

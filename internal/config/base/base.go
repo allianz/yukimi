@@ -26,8 +26,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/allianz/yukimi/internal/errors"
 	"gopkg.in/yaml.v3"
+
+	"github.com/allianz/yukimi/internal/errors"
 )
 
 const (
@@ -421,14 +422,14 @@ func resolveNonNegativeInt(fieldPath string, raw *int, def int) (int, error) {
 }
 
 // resolveIntInRange returns def when raw is nil, and otherwise returns *raw if it lies within
-// [min, max] inclusive or a user error naming fieldPath if it does not.
-func resolveIntInRange(fieldPath string, raw *int, def, min, max int) (int, error) {
+// [lo, hi] inclusive or a user error naming fieldPath if it does not.
+func resolveIntInRange(fieldPath string, raw *int, def, lo, hi int) (int, error) {
 	if raw == nil {
 		return def, nil
 	}
-	if *raw < min || *raw > max {
+	if *raw < lo || *raw > hi {
 		return 0, errors.NewUserError(fmt.Sprintf(
-			"%s '%d' must be between %d and %d", fieldPath, *raw, min, max))
+			"%s '%d' must be between %d and %d", fieldPath, *raw, lo, hi))
 	}
 	return *raw, nil
 }
