@@ -129,6 +129,13 @@ The following files are auto-generated and should never be manually edited:
 - `**/zz_generated.managed.go` - Managed resource interfaces
 - `**/zz_generated.managedlist.go` - Managed resource list types
 
+### Scaffolding Templates
+
+`make provider.addtype` and `make generate` render templates rather than generating code from scratch:
+- API scaffolding uses templates in `hack/helpers/apis/` with gomplate substitution
+- Controller scaffolding uses templates in `hack/helpers/controller/`
+- Templates support environment variables: `PROVIDER`, `GROUP`, `KIND`, `APIVERSION`
+
 ## Project Structure
 
 See CLAUDE.md's "Directory Structure" section for the canonical, up-to-date project layout.

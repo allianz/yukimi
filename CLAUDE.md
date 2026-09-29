@@ -11,16 +11,33 @@ This project builds a self-service platform for provisioning and managing Snowfl
 ### Directory Structure
 ```
 apis/
-├── v1alpha1/            # Provider config & usage types (currently registers no API types)
+├── base/v1alpha1/       # SnowflakeAccount and SnowflakeDeletionRequest types
+├── v1alpha1/            # Group metadata for snowflake.yukimi.io (registers no API types)
 └── yukimi.go            # API group registration
 
 internal/
-├── controller/          # Controller registration (per-resource controllers are added here as specs land)
+├── account/
+│   ├── modules/account/ # CREATE ACCOUNT and platform user bootstrapping
+│   ├── pipeline/        # Module interface, outcomes, condition aggregation
+│   └── tenant/          # Account naming, namespace labels, account URLs
+├── config/
+│   ├── backplane/       # Per-region backplane inventory, parameters, allowlist
+│   └── base/            # Platform-wide settings from a mounted ConfigMap
+├── controller/          # Controller registration (yukimi.go), one subpackage per resource
+│   ├── snowflakeaccount/
+│   └── snowflakedeletionrequest/
+├── deletion/            # Deletion request lookup and consumption (positive control)
 ├── errors/              # User error types (NewUserError, IsUserError)
 ├── logger/              # Operation-scoped logging and error handling (Handle, incident IDs)
+├── secrets/             # Backend interface, secret paths, RSA keypairs, TTL cache
+│   └── aws/             # AWS Secrets Manager backend
+├── snowflake/
+│   ├── host/            # Connection host and account URL construction
+│   ├── pool/            # Pooled JWT keypair connections, org-admin vs per-account scopes
+│   └── statement/       # SQL execution, safe rendering, materialized rows
 └── version/             # Version information
 
-cmd/provider/            # Main provider binary
+cmd/provider/            # Main controller binary (directory name is scaffolding legacy)
 package/                 # Crossplane package manifests & CRDs
 hack/helpers/            # Code generation templates
 ```
@@ -43,7 +60,7 @@ The two transient documents are deleted at different points:
 | Spec | Package | Description |
 |------|---------|-------------|
 | `001-error-and-logging.md` | `internal/errors/` + `internal/logger/` | User vs system errors, incident IDs, operation-scoped logging |
-| `002-base-config.md` | `internal/config/base/` | Provider-wide settings loaded from a mounted ConfigMap |
+| `002-base-config.md` | `internal/config/base/` | Platform-wide settings loaded from a mounted ConfigMap |
 | `003-secrets-handling.md` | `internal/secrets/` | Backend interface, secret paths, RSA keypairs, TTL cache |
 | `003.a-aws-secrets-backend.md` | `internal/secrets/aws/` | AWS Secrets Manager implementation of the 003 backend interface |
 | `004-connection-pooling.md` | `internal/snowflake/pool/` + `internal/snowflake/host/` | Pooled JWT keypair connections, org-admin vs per-account scopes; connection host and account URL construction |
@@ -66,31 +83,15 @@ The two transient documents are deleted at different points:
 | `021-replication.md` | `apis/base/v1alpha1/` + `internal/replication/` | SnowflakeReplication setup, auto-repair, manual failover |
 
 
-## Crossplane Controller Types
+## Controller Guidelines
 
-This provider uses the standard Crossplane managed resource reconciler (`crossplane-runtime`). Each resource type has its own controller in `internal/controller/`, registered in `internal/controller/snowflake.go`. There are three distinct controller patterns that differ in how they handle external state.
+These controllers use the standard Crossplane managed resource reconciler (`crossplane-runtime`). Each resource type has its own controller in `internal/controller/`, registered in `internal/controller/yukimi.go`.
 
-### Validation-Only Controllers
-
-- No external resource to manage — all logic lives in Observe
-- Create, Update, and Delete are no-ops
-- Observe always returns `ResourceExists: true` and `ResourceUpToDate: true` so the reconciler never calls Create or Update
-- Only run validation when the spec has changed (`ObservedGeneration != Generation`); skip validation and return early otherwise to save CPU cycles
-- In Observe, detect deletion by checking `GetDeletionTimestamp()` and return `ResourceExists: false` to release the finalizer
-
-### Standard Controllers with External State (e.g., SnowflakeAccount)
-
-- Observe queries the external system to determine whether the resource exists and whether it has drifted
-- Create, Update, and Delete interact with the external system directly
-- Errors in Create/Update/Delete return `retryErr` so the framework sets appropriate conditions
-
-### Shared Across All Controller Types
-
-- On successful observation, set condition to `xpv1.Available()`
+- Set `xpv1.Available()` in exactly one place per controller — usually after a successful apply. Ready means provisioned and normally latches: once true it stays true, and a spec that can no longer be applied reports `Synced=False` rather than going un-Ready.
 - On error in Observe, set `xpv1.Unavailable().WithMessage(userMsg)` and return the handled error, not nil — nil only sets `Synced=True` and, with a zero-value `ExternalObservation`, can trigger a spurious `Create`.
 - Do not implement retries in controller code. On error, return and let Kubernetes handle the retry.
 - **Error handling in Observe**: create a `Logger` at method start, call `log.Handle(err)` to get `retryErr`, set `xpv1.Unavailable().WithMessage(retryErr.Error())`, and return `retryErr`.
-- **Error handling in Create/Update/Delete**: call `log.Handle(err)` and return the result. The framework automatically sets conditions when these methods return an error, so the controller should not set conditions itself.
+- **Error handling in Create/Update/Delete**: call `log.Handle(err)` and return the result — the framework turns that into `Synced`, so never set `Synced` yourself. `Ready` and any resource-specific conditions remain the controller's to set, on both the success and error paths.
 
 
 ## Error Handling
@@ -120,10 +121,10 @@ if err := snowflakeClient.Execute(sql); err != nil {
 ```go
 import "github.com/allianz/yukimi/internal/logger"
 
-func (e *external) Observe(ctx context.Context, mg resource.Managed) (managed.ExternalObservation, error) {
+func (e *external) Observe(ctx context.Context, cr *v1alpha1.SnowflakeAccount) (managed.ExternalObservation, error) {
     log := logger.New(e.logger, cr.Namespace, "SnowflakeAccount", cr.Name, logger.OpObserve)
 
-    result, err := e.policy.BuildTargetState(ctx, cr)
+    labels, err := e.namespaceLabels(ctx, cr.Namespace)
     if err != nil {
         retryErr := log.Handle(err)
         return managed.ExternalObservation{}, retryErr // returning nil would report Synced=True
@@ -191,46 +192,15 @@ make reviewable         # Run full validation: generate, lint, test
 ### Integration Tests
 `TestIntegration...` tests load `.env` themselves (e.g. via `godotenv.Load`), so they also run directly from an IDE's test runner (single-click "run test"), not just via `make test-integration`. Resources they create use a `test-`/`integration-test-` prefix, with a timestamp suffix where useful to avoid collisions.
 
-### Code Generation
-```bash
-make generate           # Regenerate all auto-generated code (run after API changes)
-```
-
 ### Local Development
 ```bash
-make dev                # Create kind cluster and run provider with debug logging
+make dev                # Create kind cluster and run the controllers with debug logging
 make dev-clean          # Clean up local development cluster
 ```
 
-### Adding New Resource Types
-- Uses `.yukimi.io` domain
-- API groups (per specs/design.md): `base.snowflake.yukimi.io` (SnowflakeAccount, SnowflakeReplication, SnowflakeDeletionRequest) and `base.identity.yukimi.io` (IdentitySyncRequest — emitted by this platform's controller, fulfilled by a company-specific controller outside this repo)
-- Today's code has not yet migrated: `apis/v1alpha1/` (group `snowflake.yukimi.io`) currently registers no API types
-- All APIs currently at v1alpha1 version
-
-Use the scaffolding system instead of manual creation:
-```bash
-export type=SnowflakeAccount   # CamelCase kind, per specs/design.md
-make provider.addtype provider=Snowflake group=base kind=${type}
-make reviewable         # Regenerate and validate
-```
-
-After scaffolding:
-1. Update `apis/yukimi.go` to register the new API group
-2. Update `internal/controller/yukimi.go` to register the new controller
-3. Implement the actual controller logic in the generated files
-
-#### Generated Files (Never Edit)
-All files matching `zz_generated.*` are auto-generated:
-- `**/zz_generated.deepcopy.go` - Deep copy methods
-- `**/zz_generated.managed.go` - Managed resource interfaces
-- `**/zz_generated.managedlist.go` - Managed resource list types
-
-#### Templates
-- API scaffolding uses templates in `hack/helpers/apis/` with gomplate substitution
-- Controller scaffolding uses templates in `hack/helpers/controller/`
-- Templates support environment variables: `PROVIDER`, `GROUP`, `KIND`, `APIVERSION`
-
+### Code Generation & Adding New Resource Types
+See [docs/development/development.md](docs/development/development.md#adding-new-managed-resource-types)
+for regenerating auto-generated code (`make generate`) and scaffolding a new managed resource type.
 
 ### E2E Tests
 
@@ -239,4 +209,5 @@ All files matching `zz_generated.*` are auto-generated:
 
 ### General Reference Specs
 - `specs/design.md` - Product requirements, resource schemas, and behavior specifications
+- `docs/development/development.md` - Development setup, Makefile targets, and scaffolding new managed resource types
 
