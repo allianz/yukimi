@@ -1,5 +1,11 @@
 # Specification: {Feature Name} ({NNN})
 
+<!--
+`## Overview` and `## Key Concept` are for humans, not implementers: a reader should be able to
+predict how this subsystem behaves without opening the code. Keep both conceptual, on every later
+edit too — detail belongs in the sections below them.
+-->
+
 ## Overview
 
 {Write 3-5 sentences that answer: (1) What does this subsystem do? (2) What problem does it solve? (3) Why is it needed in the provider? (4) What's the high-level technical approach? One idea per sentence, in plain English a non-native speaker can follow — no jargon, no type names, field names, or cross-references to other specs; that detail belongs in the sections below.}
