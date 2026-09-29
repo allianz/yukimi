@@ -26,8 +26,9 @@ import (
 	"path/filepath"
 	"sort"
 
-	"github.com/allianz/yukimi/internal/errors"
 	"gopkg.in/yaml.v3"
+
+	"github.com/allianz/yukimi/internal/errors"
 )
 
 // Config is the immutable, validated Backplane Config loaded at startup.
