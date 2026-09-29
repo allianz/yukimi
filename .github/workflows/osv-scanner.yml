@@ -39,6 +39,8 @@ jobs:
       #   go run github.com/google/osv-scanner/v2/cmd/osv-scanner@v2.6.0 \
       #     scan source --config=osv-scanner.toml .
       #
+      # v2.6.0 requires go >= 1.27.0, which this repo's go directive satisfies.
+      #
       # Exits non-zero on any unsuppressed vulnerability, which is the gate. A
       # finding is fixed by upgrading, or -- if it genuinely does not apply --
       # by adding an [[IgnoredVulns]] entry to osv-scanner.toml with a reason

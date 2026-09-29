@@ -21,6 +21,7 @@ import (
 	"reflect"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/crossplane/crossplane-runtime/v2/apis/common"
@@ -241,5 +242,9 @@ var (
 )
 
 func init() {
-	SchemeBuilder.Register(&SnowflakeAccount{}, &SnowflakeAccountList{})
+	SchemeBuilder.Register(func(s *runtime.Scheme) error {
+		s.AddKnownTypes(SchemeGroupVersion, &SnowflakeAccount{}, &SnowflakeAccountList{})
+		metav1.AddToGroupVersion(s, SchemeGroupVersion)
+		return nil
+	})
 }

@@ -8,7 +8,7 @@ requests, review — see [CONTRIBUTING.md](../../CONTRIBUTING.md).
 ### Required Software
 
 - **Go**: the version in [`go.mod`](../../go.mod) or later. `go.mod` is the single source of truth for
-  this; at the time of writing it pins `go 1.26.0` with `toolchain go1.26.8`.
+  this; at the time of writing it pins `go 1.27.0` with `toolchain go1.27.1`.
 - **Docker**: for building container images and running local clusters.
 - **Linux or macOS**: the Crossplane `build` submodule that drives the Makefile refuses to run on a
   Windows host (`build only supported on linux and darwin host currently`). On Windows, work inside

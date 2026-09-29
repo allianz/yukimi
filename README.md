@@ -10,7 +10,7 @@
 <br />
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-22C2FF.svg)](LICENSE)
-[![Go Version](https://img.shields.io/badge/Go-1.26-22C2FF.svg)](https://golang.org/doc/go1.26)
+[![Go Version](https://img.shields.io/badge/Go-1.27-22C2FF.svg)](https://golang.org/doc/go1.27)
 [![GitHub Stars](https://img.shields.io/github/stars/allianz/yukimi?color=22C2FF)](https://github.com/allianz/yukimi/stargazers)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/allianz/yukimi/badge)](https://scorecard.dev/viewer/?uri=github.com/allianz/yukimi)
 
@@ -136,7 +136,7 @@ ServiceAccount trust policy, and each failure mode.
 
 ### Building from source
 
-Requires Go 1.26+, Docker, and **Linux or macOS** — the Crossplane build
+Requires Go 1.27+, Docker, and **Linux or macOS** — the Crossplane build
 submodule that drives the Makefile does not support Windows hosts.
 
 ```bash

@@ -30,14 +30,14 @@ import (
 
 // spyLogger records every log call for inspection in tests.
 type spyLogger struct {
-	mu     sync.Mutex
-	calls  []logCall
+	mu    sync.Mutex
+	calls []logCall
 }
 
 type logCall struct {
-	level  string // "info" or "debug"
-	msg    string
-	contextFields    []any
+	level         string // "info" or "debug"
+	msg           string
+	contextFields []any
 }
 
 func (s *spyLogger) Info(msg string, contextFields ...any) {

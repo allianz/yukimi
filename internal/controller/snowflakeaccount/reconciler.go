@@ -66,7 +66,7 @@ func Setup(mgr ctrl.Manager, o controller.Options, cfg *base.Config, p *pool.Poo
 
 	pl := pipeline.New(accountmodule.New(
 		secretsBackend, cfg.Snowflake.Org, cfg.Snowflake.AccountCreationGracePeriod, cfg.Deletion.GracePeriodDays, bpConfig))
-	rec := event.NewAPIRecorder(mgr.GetEventRecorderFor(name))
+	rec := event.NewAPIRecorder(mgr.GetEventRecorderFor(name)) //nolint:staticcheck // event.NewAPIRecorder only accepts the old record.EventRecorder GetEventRecorderFor returns; no migration path until crossplane-runtime supports the new events API
 	opLogger := o.Logger.WithValues("controller", name)
 
 	conn := &connector{
