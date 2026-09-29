@@ -61,7 +61,7 @@ func Setup(mgr ctrl.Manager, o controller.Options) error {
 		managed.WithTypedExternalConnector[*v1alpha1.SnowflakeDeletionRequest](&connector{}),
 		managed.WithLogger(o.Logger.WithValues("controller", name)),
 		managed.WithPollInterval(o.PollInterval),
-		managed.WithRecorder(event.NewAPIRecorder(mgr.GetEventRecorderFor(name))),
+		managed.WithRecorder(event.NewAPIRecorder(mgr.GetEventRecorderFor(name))), //nolint:staticcheck // event.NewAPIRecorder only accepts the old record.EventRecorder GetEventRecorderFor returns; no migration path until crossplane-runtime supports the new events API
 	}
 
 	if o.Features.Enabled(feature.EnableBetaManagementPolicies) {
