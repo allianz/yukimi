@@ -51,3 +51,17 @@ func IsUserError(err error) bool {
 	var ue *userError
 	return stderrors.As(err, &ue)
 }
+
+// Is reports whether any error in err's chain matches target. It re-exports
+// the standard library's errors.Is so callers do not need a second, aliased
+// import alongside this package's error helpers.
+func Is(err, target error) bool {
+	return stderrors.Is(err, target)
+}
+
+// As finds the first error in err's chain that matches target, and if so,
+// sets target to that error value and returns true. It re-exports the
+// standard library's errors.As.
+func As(err error, target any) bool {
+	return stderrors.As(err, target)
+}

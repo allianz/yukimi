@@ -51,6 +51,16 @@ func NewUserError(msg string) error
 // Returns:
 //   - bool: true if the error chain contains a user error
 func IsUserError(err error) bool
+
+// Is reports whether any error in err's chain matches target. It re-exports
+// the standard library's errors.Is so callers do not need a second, aliased
+// import alongside this package's error helpers.
+func Is(err, target error) bool
+
+// As finds the first error in err's chain that matches target, and if so,
+// sets target to that error value and returns true. It re-exports the
+// standard library's errors.As.
+func As(err error, target any) bool
 ```
 
 ### Package `internal/logger`

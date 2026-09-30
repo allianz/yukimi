@@ -18,7 +18,6 @@ package secretsaws
 
 import (
 	"context"
-	stderrors "errors"
 	"fmt"
 	"log"
 	"strings"
@@ -158,7 +157,7 @@ func (b *Backend) Create(ctx context.Context, path secrets.Path, value string) e
 // returned error also wraps secrets.ErrPendingDeletion.
 func isPendingDeletion(err error) bool {
 	var invalidReq *smtypes.InvalidRequestException
-	if !stderrors.As(err, &invalidReq) {
+	if !errors.As(err, &invalidReq) {
 		return false
 	}
 	return strings.Contains(strings.ToLower(invalidReq.ErrorMessage()), "scheduled for deletion")
