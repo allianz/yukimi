@@ -1,20 +1,18 @@
 # Specification: Base Config (002)
 
+This specification covers the package: `internal/config/base/`. 
+
 ## Overview
 
-`internal/config/base/` loads the controller's base configuration — `base.yaml`, read from a mounted directory at startup — into an immutable `Config` struct. It carries the Snowflake organization identity plus exactly what's needed to reach the cloud provider the controller runs on and that provider's own secret manager. It is a plain file loader: no Kubernetes API calls, no CRD, no reconciliation. Failing fast here means a misconfigured deployment never reaches a reconcile loop.
+At startup, this package reads `base.yaml` and makes platform-wide Snowflake, cloud-provider, secrets, and deletion settings available to the controller. It checks that required settings are present and that values follow their expected formats before the controller begins reconciling tenant resources. A missing or malformed file stops the controller at startup instead of causing failures while provisioning tenant accounts.
 
-## Key Concept: Shared Settings, Structural Validation Only
+## Key Concept: Structural Validation Only
 
-Almost every field in `base.yaml` belongs to another component — `aws.region` to 003.a, the `snowflake` block to 003, 004 and 006 — as will fields added later. One shared file for the whole controller weakens encapsulation deliberately: this package names fields it never reads, and in return a bad value fails once at startup instead of at each package's first reconcile.
+Validation here is structural: required fields must be present, and values must match their documented forms, such as a Snowflake identifier or cloud-region name. For example, `aws.region: "Frankfurt!"` is rejected because it is malformed, while `aws.region: "xx-nowhere-9"` passes the format check even if AWS does not offer that region. The AWS secrets backend determines whether it can use the region when it needs it. This keeps service-specific checks with the components that know how to interpret each setting.
 
-What this package checks is therefore limited to structure: **existence** (present, non-empty) and **shape** (a regex, per the schema table below). Meaning stays with the owner — whether the value names something real, cross-field consistency, anything needing a network call. `Load` rejects `aws.region: "Frankfurt!"` on shape but accepts `aws.region: "xx-nowhere-9"`; only 003.a can reject that.
+## Key Concept: One `--configDir`, Separate Config Files
 
-## Key Concept: Shared `--configDir`, Duplicated Loaders
-
-`base.yaml` is one of several files this platform reads from a single mounted directory — sibling files will hold the Backplane Config (007) and the Guardrails config (008). All are addressed through one directory path, conventionally supplied to `cmd/provider/main.go` via a `--configDir` flag; this package takes only the resolved directory string, not the flag.
-
-Each of those packages reads its own well-known filename from that directory independently. This package defines no shared multi-file loader, no common YAML-decoding helper, and no validation framework for the others to build on — the "open file → parse → validate" logic is fully duplicated across 002, 007 and 008. That is deliberate: the loaders are small and their validation rules differ enough that a shared abstraction would cost more than the duplication it removes.
+The controller uses one `--configDir` option for all its configuration files, so operators need to provide only one directory path. This spec covers `base.yaml`; other specs introduce files for the regional backplane and guardrails that use the same directory. Each configuration area still reads its own file and applies its own validation rules. There is no shared loader code because reading each file takes only a small amount of code.
 
 ## Public API
 
@@ -40,40 +38,40 @@ func (c *Config) CloudProvider() string
 type SnowflakeSettings struct {
     Org                    string // organization name; used in account identifiers, secret paths, and accountUrl
     OrgAdminAccount        string // account used for org-level operations
-    OrgAdminAccountLocator string // Snowflake account locator for OrgAdminAccount (e.g. "xy12345"); static config because, unlike a tenant account, the controller never runs CREATE ACCOUNT for it (design.md 3.6)
-    OrgAdminAccountRegion  string // Snowflake region OrgAdminAccount lives in, cloud-region form (e.g. "aws-eu-central-1" or "azure-westeurope"); paired with OrgAdminAccountLocator to build the org-admin connection host (004)
-    UsePrivateLink         bool   // affects the connection host (004); defaults to true when omitted
-    DisableOCSPChecks      bool   // disables OCSP certificate-revocation checking on Snowflake connections (004); testing/emergency use only. Defaults to false when omitted
+    OrgAdminAccountLocator string // Snowflake account locator for OrgAdminAccount; static because, unlike a tenant account, the controller never runs CREATE ACCOUNT for it (design.md 3.6)
+    OrgAdminAccountRegion  string // Snowflake region OrgAdminAccount lives in, cloud-region form; paired with OrgAdminAccountLocator to build the org-admin connection host (004)
+    UsePrivateLink         bool   // affects the connection host (004)
+    DisableOCSPChecks      bool   // disables OCSP certificate-revocation checking on Snowflake connections (004); testing/emergency use only
 
-    MaxConnectionPoolSize  int           // max open connections per pooled *sql.DB target (004); defaults to 10 when omitted
-    MaxIdleConnections     int           // max idle connections kept per pooled *sql.DB target (004); defaults to 2 when omitted
-    ConnectionMaxLifetime  time.Duration // max lifetime of a physical connection before it is recycled (004); defaults to 30m when omitted
-    ConnectionMaxIdleTime  time.Duration // max time a physical connection may sit idle before being closed (004); defaults to 5m when omitted
-    ConnectionProbeTimeout time.Duration // timeout for the health probe run on first dial (004); defaults to 10s when omitted
+    MaxConnectionPoolSize  int           // max open connections per pooled *sql.DB target (004)
+    MaxIdleConnections     int           // max idle connections kept per pooled *sql.DB target (004)
+    ConnectionMaxLifetime  time.Duration // max lifetime of a physical connection before it is recycled (004)
+    ConnectionMaxIdleTime  time.Duration // max time a physical connection may sit idle before being closed (004)
+    ConnectionProbeTimeout time.Duration // timeout for the health probe run on first dial (004)
 
-    AccountCreationGracePeriod time.Duration // how long a fresh account is given to become reachable before the first post-create connection attempt (012); defaults to 5m when omitted
+    AccountCreationGracePeriod time.Duration // how long a fresh account is given to become reachable before the first post-create connection attempt (012)
 }
 
 // AWSSettings holds AWS-specific settings, consumed only by 003.a.
 type AWSSettings struct {
-    Region   string // optional here, shape-checked if set; an empty region is a user error in 003.a, not here
-    KmsKeyId string // optional; reference to a customer-managed KMS key for encrypting/decrypting
+    Region   string // shape-checked here; whether it's required at all is 003.a's call
+    KmsKeyId string // reference to a customer-managed KMS key for encrypting/decrypting
                     // secrets in AWS Secrets Manager (003.a); shape-checked here only, not interpreted
 }
 
 // SecretsSettings holds settings for the secrets cache decorator (003), consumed by whoever
 // wraps a Backend in secrets.NewCachedBackend — today cmd/provider/main.go.
 type SecretsSettings struct {
-    CacheTTL         time.Duration // TTL for the in-memory secrets cache (003); defaults to 5m when omitted
-    RotationInterval time.Duration // age past which OrgAdmin/TenantAccount rotate a stored credential inline (004); defaults to 4320h (~6 months) when omitted
+    CacheTTL         time.Duration // TTL for the in-memory secrets cache (003)
+    RotationInterval time.Duration // age past which OrgAdmin/TenantAccount rotate a stored credential inline (004)
 }
 
 // DeletionSettings holds the one operator-owned deletion window. Both stores that reserve a
 // tenant's deterministic identifier derive their own clock from it (003, 012), so a credential
 // never outlives the account it belongs to.
 type DeletionSettings struct {
-    GracePeriodDays int  // days a dropped account and its credential stay restorable (003, 012); defaults to 30 when omitted, allowed range 7-90
-    Protection      bool // when true, SnowflakeAccount's Delete (020) requires an Active SnowflakeDeletionRequest (019) before it will destroy an account; defaults to true when omitted
+    GracePeriodDays int  // days a dropped account and its credential stay restorable (003, 012)
+    Protection      bool // when true, SnowflakeAccount's Delete (020) requires an Active SnowflakeDeletionRequest (019) before it will destroy an account
 }
 
 // Load reads, parses, and validates "<configDir>/base.yaml".
@@ -204,17 +202,14 @@ This specification defines the `internal/config/base/` package that:
 - **SC-007**: `CloudProvider()` returns the name of whichever single cloud section is present — including `"azure"`, whose backend is not compiled in — regardless of where that section sits among the file's top-level keys.
 - **SC-008**: `Load` accepts an absent `aws.region`, accepts a well-formed but non-existent one (`xx-nowhere-9`), and returns a user error for a malformed one (`Frankfurt!`).
 - **SC-009**: `Load` accepts an absent `aws.kmsKeyId`, accepts each well-formed KMS identifier form (bare key ID, `alias/<name>`, key ARN, alias ARN), and returns a user error for a malformed one.
-- **SC-010**: `Load` defaults `Snowflake.UsePrivateLink` to `true` and `Snowflake.DisableOCSPChecks` to `false` when the keys are omitted, and honors an explicit value for each when given.
-- **SC-011**: For every optional integer and duration field, `Load` applies the schema table's default when the key is omitted and honors an explicit value when given: `MaxConnectionPoolSize` `10`, `MaxIdleConnections` `2`, `ConnectionMaxLifetime` `30m`, `ConnectionMaxIdleTime` `5m`, `ConnectionProbeTimeout` `10s`, `AccountCreationGracePeriod` `5m`, `Secrets.CacheTTL` `5m`, `Secrets.RotationInterval` `4320h`.
-- **SC-012**: `Load` returns a user error when `snowflake.maxConnectionPoolSize` is not a positive integer, or when `snowflake.maxIdleConnections` is negative.
-- **SC-013**: For every duration field, `Load` returns a user error when the value does not parse as a Go duration string, and another when it parses to a non-positive duration.
-- **SC-014**: `Load` defaults `Deletion.GracePeriodDays` to `30` when the `deletion:` section is absent and when it is present but empty, and honors an explicit value at either end of the band (`7`, `90`).
-- **SC-015**: `Load` returns a user error when `deletion.gracePeriodDays` lies outside `7`–`90` inclusive (`-1`, `0`, `6`, `91`).
-- **SC-016**: An unrecognized top-level YAML key does not cause `Load` to fail.
-- **SC-017**: The returned `*Config` is safe for concurrent read-only use by multiple goroutines after `Load` returns.
-- **SC-018**: `internal/config/base` imports only `internal/errors` among this repository's packages.
-- **SC-019**: Unit test coverage exceeds 95%.
-- **SC-025**: `Load` defaults `Deletion.Protection` to `true` when `deletion.protection` is omitted, and honors an explicit `true`/`false`.
+- **SC-010**: For every optional bool, integer, and duration field, `Load` applies the schema table's default when the key is omitted and honors an explicit value when given: `UsePrivateLink` `true`, `DisableOCSPChecks` `false`, `MaxConnectionPoolSize` `10`, `MaxIdleConnections` `2`, `ConnectionMaxLifetime` `30m`, `ConnectionMaxIdleTime` `5m`, `ConnectionProbeTimeout` `10s`, `AccountCreationGracePeriod` `5m`, `Secrets.CacheTTL` `5m`, `Secrets.RotationInterval` `4320h`.
+- **SC-011**: `Load` returns a user error when `snowflake.maxConnectionPoolSize` is not a positive integer, or when `snowflake.maxIdleConnections` is negative.
+- **SC-012**: For every duration field, `Load` returns a user error when the value does not parse as a Go duration string, and another when it parses to a non-positive duration.
+- **SC-013**: `Load` defaults `Deletion.GracePeriodDays` to `30` when the `deletion:` section is absent and when it is present but empty, and honors an explicit value at either end of the band (`7`, `90`).
+- **SC-014**: `Load` returns a user error when `deletion.gracePeriodDays` lies outside `7`–`90` inclusive (`-1`, `0`, `6`, `91`).
+- **SC-015**: An unrecognized top-level YAML key does not cause `Load` to fail.
+- **SC-016**: Unit test coverage exceeds 95%.
+- **SC-017**: `Load` defaults `Deletion.Protection` to `true` when `deletion.protection` is omitted, and honors an explicit `true`/`false`.
 
 ## References
 
