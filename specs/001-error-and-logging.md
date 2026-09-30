@@ -18,6 +18,10 @@ For every system error, the error handling system generates a unique 8-character
 
 IDs are UUID-based: globally unique, stateless, and safe to generate concurrently across multiple pods.
 
+## Key Concept: Dimensional Logging
+
+The Logger is created once per controller call, tagged with dimensions like namespace, resource kind/name, and operation, and then threaded through business logic so every log line it produces carries those same tags automatically. Since those dimensions show up as structured fields on every log entry, an operator can later slice logs in the monitoring tool by any of them — e.g. "show me everything for namespace X" or "just create operations" — without grepping free text.
+
 ## Public API
 
 The system spans two packages with a one-way dependency: `internal/logger` imports `internal/errors` (to classify errors via `IsUserError`); `internal/errors` imports nothing internal.
