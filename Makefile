@@ -122,34 +122,6 @@ IMAGES = yukimi
 # Set Docker registry for local development
 DOCKER_REGISTRY := localhost
 
-# ====================================================================================
-# Setup XPKG
-
-# The registry the package would be pushed to. The template shipped
-# `xpkg.upbound.io/crossplane` -- the Crossplane org on Upbound, which is not ours
-# and which we have no rights to push to. Yukimi's artifacts belong beside the
-# repository, so this points at GHCR, matching the image
-# `deploy/base/deployment.yaml` already references.
-#
-# Nothing pushes anywhere yet: `publish` and `promote` are disabled below, and
-# the release pipeline is still to be built. This value exists so that when it is,
-# it is not silently aimed at somebody else's namespace.
-XPKG_REG_ORGS ?= ghcr.io/allianz
-XPKG_REG_ORGS_NO_PROMOTE ?= ghcr.io/allianz
-
-# The submodule defaults this to $(ROOT_DIR)/examples; this repository's directory
-# is `example`, singular. Left unset, `crossplane xpkg build --examples-root`
-# points at a directory that does not exist -- a latent packaging bug that only
-# surfaces once the package is actually built.
-XPKG_EXAMPLES_DIR := $(ROOT_DIR)/example
-
-XPKGS = yukimi
--include build/makelib/xpkg.mk
-
-# NOTE(hasheddan): we force image building to happen prior to xpkg build so that
-# we ensure image is present in daemon.
-xpkg.build.yukimi: do.build.images
-
 fallthrough: submodules
 	@echo Initial setup complete. Running make again . . .
 	@make
@@ -170,11 +142,6 @@ go.cachedir:
 
 go.mod.cachedir:
 	@go env GOMODCACHE
-
-# NOTE(hasheddan): we must ensure up is installed in tool cache prior to build
-# as including the k8s_tools machinery prior to the xpkg machinery sets UP to
-# point to tool cache.
-build.init: $(CROSSPLANE_CLI)
 
 # This is for running out-of-cluster locally with the binary. Use if you want to test the build
 run: go.build

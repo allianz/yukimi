@@ -23,7 +23,6 @@ Makefile, so treat those as authoritative rather than the numbers below:
 
 - **kind**: Kubernetes in Docker for local testing
 - **kubectl**: Kubernetes command-line tool
-- **Crossplane CLI**: for building and managing Crossplane packages
 - **Helm**: Kubernetes package manager (installed when needed)
 - **golangci-lint** (v2.13.2, pinned in the `Makefile`): Go linting tool
 - **kustomize**: renders `deploy/base` into `deploy/install.yaml`
