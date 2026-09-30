@@ -1,6 +1,6 @@
 # Specification: Error Handling (001)
 
-This specification covers two packages: `internal/errors` (user error types) and `internal/logger` (operation-scoped structured logging and error handling). They are documented together because the logger's `Handle` method is the consumer that ties error classification to logging behavior.
+This specification covers two packages: `internal/errors` and `internal/logger`. 
 
 ## Overview
 
