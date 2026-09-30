@@ -4,6 +4,17 @@ PROJECT_NAME := yukimi
 PROJECT_REPO := github.com/allianz/$(PROJECT_NAME)
 
 PLATFORMS ?= linux_amd64 linux_arm64
+
+# ====================================================================================
+# Tool Versions
+#
+# Every version-pinned tool this Makefile downloads or invokes, in one place. Tools
+# pinned in build/makelib/k8s_tools.mk (kind, kubectl, the Crossplane CLI, ...) live
+# in that submodule instead, since it is shared build tooling rather than ours to edit.
+GOLANGCILINT_VERSION = 2.13.2
+OSV_SCANNER_VERSION := v2.6.0
+GOMPLATE_VERSION := 3.10.0
+
 -include build/makelib/common.mk
 
 # ====================================================================================
@@ -20,7 +31,6 @@ GO_STATIC_PACKAGES = $(GO_PROJECT)/cmd/provider
 GO_LDFLAGS += -X $(GO_PROJECT)/internal/version.Version=$(VERSION)
 GO_SUBDIRS += cmd internal apis
 GO111MODULE = on
-GOLANGCILINT_VERSION = 2.13.2
 -include build/makelib/golang.mk
 
 # ====================================================================================
@@ -250,10 +260,26 @@ go.test.unit:
 	@$(OK) go test unit-tests
 
 # ====================================================================================
+# Setup Security Scanning
+
+# Exits non-zero on any unsuppressed vulnerability against the OSV database. A
+# finding is fixed by upgrading, or -- if it genuinely does not apply -- by adding
+# an [[IgnoredVulns]] entry to osv-scanner.toml with a reason that says how that
+# was established, in the style of the entry already there.
+
+osv-scan:
+	@$(INFO) osv-scanner
+	@go run github.com/google/osv-scanner/v2/cmd/osv-scanner@$(OSV_SCANNER_VERSION) scan source --config=osv-scanner.toml . || $(FAIL)
+	@$(OK) osv-scanner
+
+lint.run: osv-scan
+
+.PHONY: osv-scan
+
+# ====================================================================================
 # Special Targets
 
 # Install gomplate
-GOMPLATE_VERSION := 3.10.0
 GOMPLATE := $(TOOLS_HOST_DIR)/gomplate-$(GOMPLATE_VERSION)
 
 $(GOMPLATE):

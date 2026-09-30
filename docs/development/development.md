@@ -47,6 +47,7 @@ These tools are downloaded to `.cache/tools/`.
 #### Code Quality & Testing
 
 - **`make lint`**: Run linting and code analysis tools
+- **`make osv-scan`**: Scan Go dependencies against the OSV database (`osv-scanner.toml` holds suppressions); runs automatically as part of `make lint`
 - **`make check-diff`**: Ensure no untracked changes after `make reviewable`
 
 #### Code Generation

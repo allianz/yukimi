@@ -48,7 +48,7 @@ If you cloned without `--recurse-submodules`, run `make submodules` first.
 
 | Command | What it does |
 | --- | --- |
-| `make reviewable` | Everything CI gates on: `generate`, `lint`, `test`. |
+| `make reviewable` | Everything CI gates on: `generate`, `lint` (incl. dependency vulnerability scanning), `test`. |
 | `make test` | Unit tests only. Runs with `-short`, which skips integration tests. |
 | `make test-integration` | Integration tests. **Needs real AWS and Snowflake access** via `.env`. |
 | `make generate` | Regenerates CRDs and `deploy/install.yaml`. Run after any API change. |
@@ -65,14 +65,16 @@ so in the pull request — CI cannot check it, and a reviewer will need to.
 
 ### What else CI runs
 
-`make reviewable` is the gate, but three more workflows run alongside it. Each is reproducible
+`make reviewable` is the gate, but two more workflows run alongside it. Each is reproducible
 locally, which is the point — a red check should never be a mystery:
 
 | Workflow | What it does | Run it yourself |
 | --- | --- | --- |
 | `codeql.yml` | CodeQL SAST, `security-extended` queries | Not practical locally; read the finding in the Security tab |
-| `osv-scanner.yml` | Dependency advisories, with `osv-scanner.toml` suppressions | `go run github.com/google/osv-scanner/v2/cmd/osv-scanner@v2.6.0 scan source --config=osv-scanner.toml .` |
 | `ci.yml` (fuzz job) | 30 s per fuzz target, smoke-testing for panics | `go test ./internal/snowflake/statement/ -run='^$' -fuzz=FuzzQuoteIdentifier -fuzztime=30s` |
+
+Dependency advisories (`osv-scanner.toml` suppressions) are checked by `make osv-scan`, which runs as
+part of `make lint`/`make reviewable` rather than as a separate workflow.
 
 Linting is configured in [`.golangci.yml`](.golangci.yml). Two of the enabled linters exist to enforce
 conventions stated below rather than generic style: `nilerr` (never return `nil` after checking an
