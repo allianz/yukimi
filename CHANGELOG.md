@@ -28,8 +28,9 @@ unreleased; the container image `ghcr.io/allianz/yukimi` referenced by
   had scheduled updates before; every action is pinned by commit SHA, so without
   this they silently rot.
 - CodeQL analysis (`security-extended`). The repository ran no SAST at all.
-- An OSV scanner workflow, which makes the pre-existing `osv-scanner.toml` and
-  its one justified suppression load-bearing rather than decorative.
+- `make osv-scan`, wired into `make lint`/`make reviewable`, which makes the
+  pre-existing `osv-scanner.toml` and its one justified suppression
+  load-bearing rather than decorative.
 - A fuzz job running each of the five existing fuzz targets for 30 s, and a
   coverage artifact on every CI run.
 - `.gitattributes` normalizing the tree to LF. Without it a Windows clone with
