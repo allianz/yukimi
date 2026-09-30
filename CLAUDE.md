@@ -38,7 +38,7 @@ internal/
 └── version/             # Version information
 
 cmd/provider/            # Main controller binary (directory name is scaffolding legacy)
-package/                 # Crossplane package manifests & CRDs
+package/                 # Generated CRD manifests
 hack/helpers/            # Code generation templates
 ```
 
