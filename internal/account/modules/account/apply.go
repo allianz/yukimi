@@ -18,7 +18,6 @@ package account
 
 import (
 	"context"
-	stderrors "errors"
 	"fmt"
 	"strings"
 	"time"
@@ -28,7 +27,7 @@ import (
 	v1alpha1 "github.com/allianz/yukimi/apis/base/v1alpha1"
 	"github.com/allianz/yukimi/internal/account/pipeline"
 	"github.com/allianz/yukimi/internal/account/tenant"
-	internalerrors "github.com/allianz/yukimi/internal/errors"
+	"github.com/allianz/yukimi/internal/errors"
 	"github.com/allianz/yukimi/internal/secrets"
 	"github.com/allianz/yukimi/internal/snowflake/statement"
 )
@@ -149,7 +148,7 @@ func (m *module) createAccount(ctx context.Context, mc *pipeline.ModuleContext) 
 		return pipeline.Rejected(err).Aborting()
 	}
 	if !region.Available && !isAlphaTester {
-		return pipeline.Rejected(internalerrors.NewUserError(fmt.Sprintf(
+		return pipeline.Rejected(errors.NewUserError(fmt.Sprintf(
 			"region '%s' is not yet available; choose a different one", cr.Spec.Region))).Aborting()
 	}
 
@@ -171,8 +170,8 @@ func (m *module) createAccount(ctx context.Context, mc *pipeline.ModuleContext) 
 	}
 
 	if err := m.backend.Create(ctx, path, marshaled); err != nil {
-		if stderrors.Is(err, secrets.ErrPendingDeletion) {
-			return pipeline.Rejected(internalerrors.NewUserError(fmt.Sprintf(
+		if errors.Is(err, secrets.ErrPendingDeletion) {
+			return pipeline.Rejected(errors.NewUserError(fmt.Sprintf(
 				"account %q was deleted recently and is still within its deletion recovery "+
 					"window; wait for the recovery window to elapse, then try again", cr.Name))).Aborting()
 		}
@@ -223,8 +222,8 @@ func runCreateAccount(ctx context.Context, runner *statement.Runner, resolvedNam
 
 	if err := runner.Exec(ctx, "create account", sql); err != nil {
 		var stmtErr *statement.Error
-		if stderrors.As(err, &stmtErr) && stmtErr.SQLState == duplicateAccountSQLState {
-			return "", pipeline.Rejected(internalerrors.NewUserError(fmt.Sprintf(
+		if errors.As(err, &stmtErr) && stmtErr.SQLState == duplicateAccountSQLState {
+			return "", pipeline.Rejected(errors.NewUserError(fmt.Sprintf(
 				"account name '%s' is already in use by another account in the organization; rename this resource and try again", resolvedName))).Aborting()
 		}
 		return "", pipeline.Failed(fmt.Errorf("failed to create account: %w", err)).Aborting()

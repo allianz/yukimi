@@ -1,22 +1,22 @@
 # Specification: Error Handling (001)
 
-This specification covers two packages: `internal/errors` (user error types) and `internal/logger` (operation-scoped structured logging and error handling). They are documented together because the logger's `Handle` method is the consumer that ties error classification to logging behavior.
+This specification covers two packages: `internal/errors` and `internal/logger`. 
 
 ## Overview
 
-This specification defines the error handling system for the Crossplane provider that distinguishes between user errors (configuration mistakes users can fix) and system errors (infrastructure failures requiring operator intervention). The system ensures appropriate logging levels, retry behavior, and seamless integration with Crossplane's managed resource pattern. By providing clear, actionable feedback for configuration errors and generating unique incident IDs for system errors, it enables self-service resolution while facilitating operator troubleshooting of infrastructure failures.
+When a tenant configures a Snowflake account, Yukimi must distinguish a fixable input problem, such as an invalid region, from a platform failure, such as an unreachable Snowflake service. The first should tell the tenant what to correct; the second should signal that operator help is needed without exposing internal diagnostics. A short incident reference connects that status to the detailed explanation in operator logs. Those logs also identify the tenant resource and activity involved, so operators can filter events instead of searching message text.
 
 ## Key Concept: Error Classification
 
-The error handling system categorizes errors into two types: **user errors** and **system errors**. User errors represent configuration mistakes that users can fix by editing their CRD (e.g., invalid region format, malformed CIDR). These are logged at Debug level and include specific field paths and expected formats to enable self-service resolution. System errors represent infrastructure failures that users cannot fix (e.g., Snowflake API unreachable, AWS Secrets Manager timeout). These are logged at Info level with unique incident IDs for correlation between user status messages and operator logs.
-
-**Important**: User errors must be created explicitly using `errors.NewUserError()`, while system errors are implicit (any raw error). The logging level distinction is critical: Debug-level logging for user errors prevents noise in production logs, while Error-level logging for system errors ensures operator visibility for infrastructure failures.
+Errors fall into two categories: configuration problems tenants can fix and platform failures that need operator attention. An invalid region or malformed network address should lead to a message that helps the tenant correct their account request. If Snowflake cannot be reached, the tenant instead sees that an internal failure occurred, while operators can see the diagnostic details. This distinction helps tenants act on problems they control and recognize when they need platform support.
 
 ## Key Concept: Incident Correlation
 
-For every system error, the error handling system generates a unique 8-character incident ID derived from a random UUID (e.g. `f47ac10b`). This ID appears in both the user-facing status message and the operator logs, enabling correlation: when a user reports `"An internal error occurred (f47ac10b)"`, operators can search logs for `f47ac10b` to find the full error details including stack traces and internal context.
+System failures include a short incident reference that connects the tenant-visible status to the fuller explanation in operator logs. For example, a Snowflake timeout might appear in status as "An internal error occurred (f47ac10b)", while the matching log entry records the timeout. The tenant can share the reference when asking for help, and the operator can use it to find the relevant event without putting internal diagnostics in the status message.
 
-IDs are UUID-based: globally unique, stateless, and safe to generate concurrently across multiple pods.
+## Key Concept: Dimensional Logging
+
+Each log entry carries structured context about the tenant namespace, the resource, and the action underway, such as creating or updating an account. An operator can use that context to find, for example, all update events for one tenant's account without searching through message text. Keeping this context consistent across entries makes it easier to follow an issue from one step to the next.
 
 ## Public API
 
@@ -51,6 +51,16 @@ func NewUserError(msg string) error
 // Returns:
 //   - bool: true if the error chain contains a user error
 func IsUserError(err error) bool
+
+// Is reports whether any error in err's chain matches target. It re-exports
+// the standard library's errors.Is so callers do not need a second, aliased
+// import alongside this package's error helpers.
+func Is(err, target error) bool
+
+// As finds the first error in err's chain that matches target, and if so,
+// sets target to that error value and returns true. It re-exports the
+// standard library's errors.As.
+func As(err error, target any) bool
 ```
 
 ### Package `internal/logger`

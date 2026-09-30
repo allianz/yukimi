@@ -18,9 +18,9 @@ That is the whole task. You are rewriting prose that already exists, not produci
 
 ## Who these two sections are for
 
-A reader who will never open the code. After reading the Overview and the Key Concepts, they should be able to **roughly predict how the subsystem behaves** — and should still **not** be able to implement it. That is the test for every sentence you write: if it only makes sense to someone about to write the package, it belongs in a lower section, not here.
+A reader who will never open the code. After reading the Overview and the Key Concepts, they should be able to **roughly predict how the subsystem behaves** — and should still **not** be able to implement it. Use concrete examples when they help the reader picture what a tenant or operator would see or do. You may explain concepts that appear later in the Public API section when they describe the subsystem's externally visible behavior. That is the test for every sentence you write: if it only makes sense to someone about to write the package, it belongs in a lower section, not here.
 
-Concretely, these sections carry the mental model and the reasons the subsystem is shaped that way, in the platform's own domain terms. Nothing else.
+Concretely, these sections carry the mental model and the reasons the subsystem is shaped that way, in the platform's own domain terms. Examples should illustrate the contract, not add new behavior or list every possible case. Explain public concepts in plain language; do not include code identifiers or mechanics that require reading the implementation.
 
 ## The failure modes you are fixing
 
