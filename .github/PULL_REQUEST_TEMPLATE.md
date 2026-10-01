@@ -12,6 +12,16 @@ the imperative mood, no trailing period. For example:
 See CONTRIBUTING.md for details.
 -->
 
+## What this changes
+
+<!--
+Summarize the changes in 3-10 bullet points. Review and tweak any AI draft by hand.
+-->
+
+## Why
+
+<!-- The problem this solves. Link the issue if there is one: Fixes #123 -->
+
 ## PR type
 
 <!--
@@ -23,17 +33,6 @@ The type is used to label the PR and to group it in the changelog.
 - [ ] Bugfix
 - [ ] Maintenance (refactoring, build-related changes)
 - [ ] Documentation content change
-
-## What this changes
-
-<!--
-Summarize the changes in 3-10 bullet points. Review and tweak any AI draft by hand.
--->
-
-## Why
-
-<!-- The problem this solves. Link the issue if there is one: Fixes #123 -->
-
 
 ## Checklist
 
