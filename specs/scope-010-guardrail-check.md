@@ -43,7 +43,7 @@ the pipeline spec they depend on.
   there is nothing Snowflake-side to observe and nothing that can drift.
 - Needs no k8s lister and no `OrgAdminDB`/`TenantDB` — only `ModuleContext.CR()` and
   `NamespaceLabels()`, plus the loaded 008 config/exceptions instance injected into this module's own
-  constructor (the same pattern the account module's constructor uses for `secrets.Backend` and
+  constructor (the same pattern the account module's constructor uses for `*secrets.KeyManager` and
   `Config.Snowflake.Org`).
 
 ## Decisions from design conversation

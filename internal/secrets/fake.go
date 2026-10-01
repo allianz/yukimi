@@ -32,13 +32,13 @@ type fakeEntry struct {
 	pendingDeletion bool
 }
 
-// FakeBackend is an in-memory Backend for tests, exported (not a _test.go
+// FakeKeyStore is an in-memory KeyStore for tests, exported (not a _test.go
 // file) so 004, 012, and every other consumer can depend on it without a real
 // store. Each hook, if set and returning a non-nil error, short-circuits the
 // call before any state mutation — this lets a test flip behavior mid-run
 // (e.g. "OnCreate fails once, then is cleared") in a way a construction-time
 // option cannot.
-type FakeBackend struct {
+type FakeKeyStore struct {
 	OnGet    func(path Path) error
 	OnCreate func(path Path) error
 	OnUpdate func(path Path) error
@@ -60,17 +60,17 @@ type FakeBackend struct {
 	entries map[Path]fakeEntry
 }
 
-var _ Backend = (*FakeBackend)(nil)
+var _ KeyStore = (*FakeKeyStore)(nil)
 
-// NewFakeBackend returns an empty FakeBackend that deletes outright. Delete
+// NewFakeKeyStore returns an empty FakeKeyStore that deletes outright. Delete
 // removes the entry and is idempotent, so a Create on a deleted path succeeds
 // and a Get on one fails exactly as it would on a path nothing was ever stored
 // at. Set SchedulesDeletion to exercise the pending-deletion state instead.
-func NewFakeBackend() *FakeBackend {
-	return &FakeBackend{entries: make(map[Path]fakeEntry), Clock: time.Now}
+func NewFakeKeyStore() *FakeKeyStore {
+	return &FakeKeyStore{entries: make(map[Path]fakeEntry), Clock: time.Now}
 }
 
-func (f *FakeBackend) Get(_ context.Context, path Path) (string, time.Time, error) {
+func (f *FakeKeyStore) Get(_ context.Context, path Path) (string, time.Time, error) {
 	if f.OnGet != nil {
 		if err := f.OnGet(path); err != nil {
 			return "", time.Time{}, err
@@ -90,7 +90,7 @@ func (f *FakeBackend) Get(_ context.Context, path Path) (string, time.Time, erro
 	return entry.value, entry.modifiedAt, nil
 }
 
-func (f *FakeBackend) Create(_ context.Context, path Path, value string) error {
+func (f *FakeKeyStore) Create(_ context.Context, path Path, value string) error {
 	if f.OnCreate != nil {
 		if err := f.OnCreate(path); err != nil {
 			return err
@@ -112,7 +112,7 @@ func (f *FakeBackend) Create(_ context.Context, path Path, value string) error {
 	return nil
 }
 
-func (f *FakeBackend) Update(_ context.Context, path Path, value string) error {
+func (f *FakeKeyStore) Update(_ context.Context, path Path, value string) error {
 	if f.OnUpdate != nil {
 		if err := f.OnUpdate(path); err != nil {
 			return err
@@ -133,7 +133,7 @@ func (f *FakeBackend) Update(_ context.Context, path Path, value string) error {
 	return nil
 }
 
-func (f *FakeBackend) Delete(_ context.Context, path Path) error {
+func (f *FakeKeyStore) Delete(_ context.Context, path Path) error {
 	if f.OnDelete != nil {
 		if err := f.OnDelete(path); err != nil {
 			return err
@@ -164,7 +164,7 @@ func (f *FakeBackend) Delete(_ context.Context, path Path) error {
 // Returns:
 //   - Error if nothing at path is scheduled for deletion, whether because the
 //     path is empty or because the entry is live
-func (f *FakeBackend) Restore(path Path) error {
+func (f *FakeKeyStore) Restore(path Path) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 

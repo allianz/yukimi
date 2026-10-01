@@ -42,13 +42,13 @@ func TestIntegration_TenantAccount(t *testing.T) {
 	// (internal/snowflake/pool), so the repo-root .env is 3 levels up.
 	_ = godotenv.Load("../../../.env")
 
-	// 30 is base.Config's default deletion grace period (002), which the backend derives its
+	// 30 is base.Config's default deletion grace period (002), which the key store derives its
 	// recovery window from; nothing here deletes a secret.
-	backend, err := secretsaws.New(os.Getenv("AWS_REGION"), "", 30)
+	awsStore, err := secretsaws.New(os.Getenv("AWS_REGION"), "", 30)
 	if err != nil {
 		t.Fatalf("secretsaws.New: %v", err)
 	}
-	cached := secrets.NewCachedBackend(backend, 5*time.Minute)
+	keyManager := secrets.NewKeyManager(awsStore, 5*time.Minute)
 
 	cfg := &base.Config{
 		Snowflake: base.SnowflakeSettings{
@@ -63,7 +63,7 @@ func TestIntegration_TenantAccount(t *testing.T) {
 		// interval (see the same note in account/integration_test.go).
 		Secrets: base.SecretsSettings{RotationInterval: 24 * time.Hour},
 	}
-	p := New(cached, cfg)
+	p := New(keyManager, cfg)
 	t.Cleanup(func() { _ = p.Close() })
 
 	ctx := context.Background()
@@ -101,9 +101,9 @@ func TestIntegration_TenantAccount_RotatesStaleCredential(t *testing.T) {
 	}
 	_ = godotenv.Load("../../../.env")
 
-	// 30 is base.Config's default deletion grace period (002), which the backend derives its
+	// 30 is base.Config's default deletion grace period (002), which the key store derives its
 	// recovery window from; nothing here deletes a secret.
-	backend, err := secretsaws.New(os.Getenv("AWS_REGION"), "", 30)
+	awsStore, err := secretsaws.New(os.Getenv("AWS_REGION"), "", 30)
 	if err != nil {
 		t.Fatalf("secretsaws.New: %v", err)
 	}
@@ -122,7 +122,8 @@ func TestIntegration_TenantAccount_RotatesStaleCredential(t *testing.T) {
 		// fake connection.
 		Secrets: base.SecretsSettings{RotationInterval: time.Nanosecond},
 	}
-	p := New(backend, cfg)
+	keyManager := secrets.NewKeyManager(awsStore, 5*time.Minute)
+	p := New(keyManager, cfg)
 	t.Cleanup(func() { _ = p.Close() })
 
 	namespace := os.Getenv("SAMPLE_CUSTOMER_NAMESPACE")
@@ -137,7 +138,7 @@ func TestIntegration_TenantAccount_RotatesStaleCredential(t *testing.T) {
 
 	ctx := context.Background()
 
-	beforeRaw, beforeRotatedAt, err := backend.Get(ctx, path)
+	beforeRaw, beforeRotatedAt, err := awsStore.Get(ctx, path)
 	if err != nil {
 		t.Fatalf("reading the credential before rotation: %v", err)
 	}
@@ -158,7 +159,7 @@ func TestIntegration_TenantAccount_RotatesStaleCredential(t *testing.T) {
 		t.Fatalf("CURRENT_ROLE() = %q, want ACCOUNTADMIN", role)
 	}
 
-	afterRaw, afterRotatedAt, err := backend.Get(ctx, path)
+	afterRaw, afterRotatedAt, err := awsStore.Get(ctx, path)
 	if err != nil {
 		t.Fatalf("reading the credential after rotation: %v", err)
 	}

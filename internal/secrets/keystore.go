@@ -27,15 +27,15 @@ import (
 // only: the failure it wraps is still an ordinary system error by
 // default; a caller with more context may catch it via errors.Is and
 // classify it differently. This is the first entry in a small taxonomy of
-// such errors (see Key Concept: A Backend Error Taxonomy, specs/003).
+// such errors (see Key Concept: A KeyStore Error Taxonomy, specs/003).
 var ErrPendingDeletion = errors.New("secrets: path pending deletion")
 
-// Backend is a string-valued keystore. It never parses a credential, never
+// KeyStore is a string-valued keystore. It never parses a credential, never
 // caches, and never logs — every method reports failure as an ordinary error
 // whose message names the path it failed on, and no caller branches on an
 // error's identity. How the value string is persisted is each implementation's
 // own choice.
-type Backend interface {
+type KeyStore interface {
 	// Get returns the value stored at path, along with the time the backend
 	// last wrote that value — creation time if never overwritten,
 	// modification time otherwise. It fails if nothing is stored there, and

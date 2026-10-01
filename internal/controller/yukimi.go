@@ -31,9 +31,9 @@ import (
 
 // SetupGated creates all Yukimi controllers with safe-start support and adds them to
 // the supplied manager.
-func SetupGated(mgr ctrl.Manager, o controller.Options, cfg *base.Config, p *pool.Pool, secretsBackend secrets.Backend, bpConfig *backplane.Config) error {
+func SetupGated(mgr ctrl.Manager, o controller.Options, cfg *base.Config, p *pool.Pool, keyManager *secrets.KeyManager, bpConfig *backplane.Config) error {
 	if err := snowflakedeletionrequest.SetupGated(mgr, o); err != nil {
 		return err
 	}
-	return snowflakeaccount.SetupGated(mgr, o, cfg, p, secretsBackend, bpConfig)
+	return snowflakeaccount.SetupGated(mgr, o, cfg, p, keyManager, bpConfig)
 }

@@ -48,13 +48,13 @@ func sampleTenantDB(t *testing.T) (db *sql.DB, ctx context.Context) {
 	// (internal/snowflake/statement), so the repo-root .env is 3 levels up.
 	_ = godotenv.Load("../../../.env")
 
-	// 30 is base.Config's default deletion grace period (002), which the backend derives its
+	// 30 is base.Config's default deletion grace period (002), which the key store derives its
 	// recovery window from; nothing here deletes a secret.
-	backend, err := secretsaws.New(os.Getenv("AWS_REGION"), "", 30)
+	awsStore, err := secretsaws.New(os.Getenv("AWS_REGION"), "", 30)
 	if err != nil {
 		t.Fatalf("secretsaws.New: %v", err)
 	}
-	cached := secrets.NewCachedBackend(backend, 5*time.Minute)
+	keyManager := secrets.NewKeyManager(awsStore, 5*time.Minute)
 
 	cfg := &base.Config{
 		Snowflake: base.SnowflakeSettings{
@@ -70,7 +70,7 @@ func sampleTenantDB(t *testing.T) (db *sql.DB, ctx context.Context) {
 		// account/integration_test.go).
 		Secrets: base.SecretsSettings{RotationInterval: 24 * time.Hour},
 	}
-	p := pool.New(cached, cfg)
+	p := pool.New(keyManager, cfg)
 	t.Cleanup(func() { _ = p.Close() })
 
 	ctx = context.Background()

@@ -99,13 +99,13 @@ func TestIntegration_CreateThenDestroy(t *testing.T) {
 	// (internal/account/modules/account), so the repo-root .env is 4 levels up.
 	_ = godotenv.Load("../../../../.env")
 
-	// 30 is base.Config's default deletion grace period (002), which the backend derives its
+	// 30 is base.Config's default deletion grace period (002), which the key store derives its
 	// recovery window from; nothing here deletes a secret.
-	awsBackend, err := secretsaws.New(os.Getenv("AWS_REGION"), "", 30)
+	awsStore, err := secretsaws.New(os.Getenv("AWS_REGION"), "", 30)
 	if err != nil {
 		t.Fatalf("secretsaws.New: %v", err)
 	}
-	backend := secrets.NewCachedBackend(awsBackend, 5*time.Minute)
+	keyManager := secrets.NewKeyManager(awsStore, 5*time.Minute)
 
 	org := os.Getenv("SNOWFLAKE_ORG")
 	cfg := &base.Config{
@@ -127,7 +127,7 @@ func TestIntegration_CreateThenDestroy(t *testing.T) {
 		// at all, so give it a real interval.
 		Secrets: base.SecretsSettings{RotationInterval: 24 * time.Hour},
 	}
-	p := pool.New(backend, cfg)
+	p := pool.New(keyManager, cfg)
 	t.Cleanup(func() { _ = p.Close() })
 
 	namespace := os.Getenv("SAMPLE_CUSTOMER_NAMESPACE")
@@ -143,7 +143,7 @@ func TestIntegration_CreateThenDestroy(t *testing.T) {
 	}
 
 	bpConfig := &backplane.Config{Regions: map[string]backplane.Region{region: {Available: true}}}
-	m := New(backend, org, 5*time.Minute, 3, bpConfig).(*module)
+	m := New(keyManager, org, 5*time.Minute, 3, bpConfig).(*module)
 	ctx := context.Background()
 
 	// Registered before Apply ever runs: the module stores this secret
@@ -198,7 +198,7 @@ func TestIntegration_CreateThenDestroy(t *testing.T) {
 	// derived from gracePeriodDays=30 via secretsaws.New above) — a
 	// scheduled-for-deletion path is unreadable immediately, which is enough
 	// to prove the delete step ran for real.
-	if _, _, err := awsBackend.Get(ctx, secretPath); err == nil {
+	if _, _, err := awsStore.Get(ctx, secretPath); err == nil {
 		t.Error("platform credential still readable after Destroy")
 	}
 
@@ -271,11 +271,11 @@ func TestIntegration_CreateWithFuzzedFields(t *testing.T) {
 	}
 	_ = godotenv.Load("../../../../.env")
 
-	awsBackend, err := secretsaws.New(os.Getenv("AWS_REGION"), "", 30)
+	awsStore, err := secretsaws.New(os.Getenv("AWS_REGION"), "", 30)
 	if err != nil {
 		t.Fatalf("secretsaws.New: %v", err)
 	}
-	backend := secrets.NewCachedBackend(awsBackend, 5*time.Minute)
+	keyManager := secrets.NewKeyManager(awsStore, 5*time.Minute)
 
 	org := os.Getenv("SNOWFLAKE_ORG")
 	cfg := &base.Config{
@@ -290,7 +290,7 @@ func TestIntegration_CreateWithFuzzedFields(t *testing.T) {
 		},
 		Secrets: base.SecretsSettings{RotationInterval: 24 * time.Hour},
 	}
-	p := pool.New(backend, cfg)
+	p := pool.New(keyManager, cfg)
 	t.Cleanup(func() { _ = p.Close() })
 
 	namespace := os.Getenv("SAMPLE_CUSTOMER_NAMESPACE")
@@ -305,7 +305,7 @@ func TestIntegration_CreateWithFuzzedFields(t *testing.T) {
 	}
 
 	bpConfig := &backplane.Config{Regions: map[string]backplane.Region{region: {Available: true}}}
-	m := New(backend, org, 5*time.Minute, 3, bpConfig).(*module)
+	m := New(keyManager, org, 5*time.Minute, 3, bpConfig).(*module)
 	ctx := context.Background()
 
 	secretPath, err := secrets.NewTenantPath(org, namespace, fuzzedName)

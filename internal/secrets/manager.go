@@ -30,26 +30,26 @@ type cacheEntry struct {
 	expires    time.Time
 }
 
-// CachedBackend wraps a Backend with an in-memory, TTL-based, lazily-evicted
-// cache. It implements Backend itself, so callers depend on the interface,
+// KeyManager wraps a KeyStore with an in-memory, TTL-based, lazily-evicted
+// cache. It implements KeyStore itself, so callers depend on the interface,
 // never on this concrete type.
-type CachedBackend struct {
-	backend Backend
-	ttl     time.Duration
+type KeyManager struct {
+	store KeyStore
+	ttl   time.Duration
 
 	mu      sync.Mutex
 	entries map[Path]cacheEntry
 }
 
-var _ Backend = (*CachedBackend)(nil)
+var _ KeyStore = (*KeyManager)(nil)
 
-// NewCachedBackend wraps b. Every concrete Backend should be wrapped exactly
+// NewKeyManager wraps store. Every concrete KeyStore should be wrapped exactly
 // once, at construction time in cmd/provider/main.go.
-func NewCachedBackend(b Backend, ttl time.Duration) *CachedBackend {
-	return &CachedBackend{backend: b, ttl: ttl, entries: make(map[Path]cacheEntry)}
+func NewKeyManager(store KeyStore, ttl time.Duration) *KeyManager {
+	return &KeyManager{store: store, ttl: ttl, entries: make(map[Path]cacheEntry)}
 }
 
-func (c *CachedBackend) Get(ctx context.Context, path Path) (string, time.Time, error) {
+func (c *KeyManager) Get(ctx context.Context, path Path) (string, time.Time, error) {
 	c.mu.Lock()
 	entry, ok := c.entries[path]
 	c.mu.Unlock()
@@ -57,7 +57,7 @@ func (c *CachedBackend) Get(ctx context.Context, path Path) (string, time.Time, 
 		return entry.value, entry.modifiedAt, nil
 	}
 
-	value, modifiedAt, err := c.backend.Get(ctx, path)
+	value, modifiedAt, err := c.store.Get(ctx, path)
 	if err != nil {
 		return "", time.Time{}, err // never cache a failure, not even a missing path
 	}
@@ -68,24 +68,24 @@ func (c *CachedBackend) Get(ctx context.Context, path Path) (string, time.Time, 
 	return value, modifiedAt, nil
 }
 
-func (c *CachedBackend) Create(ctx context.Context, path Path, value string) error {
-	if err := c.backend.Create(ctx, path, value); err != nil {
+func (c *KeyManager) Create(ctx context.Context, path Path, value string) error {
+	if err := c.store.Create(ctx, path, value); err != nil {
 		return err
 	}
 	c.Invalidate(path)
 	return nil
 }
 
-func (c *CachedBackend) Update(ctx context.Context, path Path, value string) error {
-	if err := c.backend.Update(ctx, path, value); err != nil {
+func (c *KeyManager) Update(ctx context.Context, path Path, value string) error {
+	if err := c.store.Update(ctx, path, value); err != nil {
 		return err
 	}
 	c.Invalidate(path)
 	return nil
 }
 
-func (c *CachedBackend) Delete(ctx context.Context, path Path) error {
-	if err := c.backend.Delete(ctx, path); err != nil {
+func (c *KeyManager) Delete(ctx context.Context, path Path) error {
+	if err := c.store.Delete(ctx, path); err != nil {
 		return err
 	}
 	c.Invalidate(path)
@@ -93,9 +93,9 @@ func (c *CachedBackend) Delete(ctx context.Context, path Path) error {
 }
 
 // Invalidate clears path's cache entry without touching the underlying
-// Backend. Exposed for a caller that needs a path forced cold without going
+// KeyStore. Exposed for a caller that needs a path forced cold without going
 // through Create/Update/Delete.
-func (c *CachedBackend) Invalidate(path Path) {
+func (c *KeyManager) Invalidate(path Path) {
 	c.mu.Lock()
 	delete(c.entries, path)
 	c.mu.Unlock()

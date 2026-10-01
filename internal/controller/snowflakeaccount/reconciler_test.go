@@ -181,10 +181,11 @@ func testBaseConfig() *base.Config {
 func TestSetup_Default(t *testing.T) {
 	mgr := newTestManager(t)
 	cfg := testBaseConfig()
-	p := pool.New(secrets.NewFakeBackend(), cfg)
+	keyManager := secrets.NewKeyManager(secrets.NewFakeKeyStore(), time.Hour)
+	p := pool.New(keyManager, cfg)
 	o := controller.Options{Logger: logging.NewNopLogger(), Features: &feature.Flags{}}
 
-	if err := Setup(mgr, o, cfg, p, secrets.NewFakeBackend(), &backplane.Config{}); err != nil {
+	if err := Setup(mgr, o, cfg, p, keyManager, &backplane.Config{}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -192,7 +193,8 @@ func TestSetup_Default(t *testing.T) {
 func TestSetup_AllOptionalFeaturesEnabled(t *testing.T) {
 	mgr := newTestManager(t)
 	cfg := testBaseConfig()
-	p := pool.New(secrets.NewFakeBackend(), cfg)
+	keyManager := secrets.NewKeyManager(secrets.NewFakeKeyStore(), time.Hour)
+	p := pool.New(keyManager, cfg)
 
 	features := &feature.Flags{}
 	features.Enable(feature.EnableBetaManagementPolicies)
@@ -204,7 +206,7 @@ func TestSetup_AllOptionalFeaturesEnabled(t *testing.T) {
 		ChangeLogOptions: &controller.ChangeLogOptions{},
 		MetricOptions:    &controller.MetricOptions{},
 	}
-	if err := Setup(mgr, o, cfg, p, secrets.NewFakeBackend(), &backplane.Config{}); err != nil {
+	if err := Setup(mgr, o, cfg, p, keyManager, &backplane.Config{}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -224,11 +226,12 @@ func (g *fakeGate) Set(_ schema.GroupVersionKind, _ bool) bool { return false }
 func TestSetupGated_RegistersAndRuns(t *testing.T) {
 	mgr := newTestManager(t)
 	cfg := testBaseConfig()
-	p := pool.New(secrets.NewFakeBackend(), cfg)
+	keyManager := secrets.NewKeyManager(secrets.NewFakeKeyStore(), time.Hour)
+	p := pool.New(keyManager, cfg)
 	gate := &fakeGate{}
 	o := controller.Options{Logger: logging.NewNopLogger(), Features: &feature.Flags{}, Gate: gate}
 
-	if err := SetupGated(mgr, o, cfg, p, secrets.NewFakeBackend(), &backplane.Config{}); err != nil {
+	if err := SetupGated(mgr, o, cfg, p, keyManager, &backplane.Config{}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(gate.registered) != 1 || gate.registered[0] != v1alpha1.SnowflakeAccountGroupVersionKind {

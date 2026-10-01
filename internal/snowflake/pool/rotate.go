@@ -48,7 +48,7 @@ func credentialDue(rotatedAt time.Time, interval time.Duration) bool {
 // caller is about to return regardless of whether rotation succeeds, and
 // the same check simply runs again on the next call.
 func (p *Pool) maybeRotateLocked(ctx context.Context, db *sql.DB, path secrets.Path) {
-	raw, rotatedAt, err := p.backend.Get(ctx, path)
+	raw, rotatedAt, err := p.keyManager.Get(ctx, path)
 	if err != nil || !credentialDue(rotatedAt, p.cfg.Secrets.RotationInterval) {
 		return
 	}
@@ -89,7 +89,7 @@ func (p *Pool) rotateCredential(ctx context.Context, db *sql.DB, path secrets.Pa
 	if err != nil {
 		return fmt.Errorf("failed to marshal rotated credentials for %s: %w", username, err)
 	}
-	if err := p.backend.Update(ctx, path, value); err != nil {
+	if err := p.keyManager.Update(ctx, path, value); err != nil {
 		return fmt.Errorf("failed to store rotated credentials for %s: %w", username, err)
 	}
 	return nil

@@ -88,8 +88,8 @@ an operator has to restore the credential by hand.
 // Key Concept: Contact Email Kept In Sync for what each method does.
 //
 // Parameters:
-//   - backend: the secrets.Backend (003) the platform keypair is stored through, via Backend.Create
-//     and, on teardown, Backend.Delete — this module never calls Update.
+//   - keyManager: the *secrets.KeyManager (003) the platform keypair is stored through, via
+//     KeyManager.Create and, on teardown, KeyManager.Delete — this module never calls Update.
 //   - org: Config.Snowflake.Org (002), used to build the tenant secret path (003) exactly as
 //     internal/snowflake/pool does.
 //   - gracePeriod: Config.Snowflake.AccountCreationGracePeriod (002) — how long a fresh account is
@@ -105,7 +105,7 @@ an operator has to restore the credential by hand.
 //
 // Returns:
 //   - pipeline.Module: never nil.
-func New(backend secrets.Backend, org string, gracePeriod time.Duration, deletionGracePeriodDays int, bpConfig *backplane.Config) pipeline.Module
+func New(keyManager *secrets.KeyManager, org string, gracePeriod time.Duration, deletionGracePeriodDays int, bpConfig *backplane.Config) pipeline.Module
 ```
 
 `Observe`, `Apply` and `Teardown` themselves are unexported methods on the value `New` returns — nothing
@@ -117,7 +117,7 @@ any `ModuleContext` accessor — `internal/account/pipeline` (009) defines none 
 
 `Teardown` runs three steps in a fixed order: `DROP ACCOUNT ... GRACE_PERIOD_IN_DAYS = <configured>` over
 the org-admin connection, then `ModuleContext.EvictTenant()` so no stale pooled connection to a dropped
-account survives, then `Backend.Delete` on the tenant secret path. Each step runs only once the one before
+account survives, then `KeyManager.Delete` on the tenant secret path. Each step runs only once the one before
 it succeeded, and a step whose object is already absent counts as success, so the whole sequence is safe to
 re-run.
 
@@ -287,9 +287,9 @@ This specification defines the account module that:
   not an alpha tester (Key Concept: Region Validation), reusing 007's own unknown-region
   wording so the two cases stay indistinguishable to the tenant.
 - **Secrets Handling (003)** — Used APIs: `GenerateKeyPair()`/`NewCredentials()`, `MarshalCredentials()`,
-  `NewTenantPath()`, `Backend.Create()`, `Backend.Delete()`, `ErrPendingDeletion` — Contract: `Create` and
+  `NewTenantPath()`, `KeyManager.Create()`, `KeyManager.Delete()`, `ErrPendingDeletion` — Contract: `Create` and
   `Delete` only, never `Update`; the module never reads a credential back. `Delete`'s recovery window is
-  the backend's own business — this module passes no window and cannot choose one. Matches `Create`'s
+  the key store's own business — this module passes no window and cannot choose one. Matches `Create`'s
   error against `ErrPendingDeletion` via `errors.Is` and decides its own classification and message for
   that case.
 - **Connection Pooling (004)** — Used APIs: `ModuleContext.OrgAdminDB()`, `ModuleContext.TenantDB()`,
@@ -315,7 +315,7 @@ This specification defines the account module that:
 ## Integration Points
 
 - **SnowflakeAccount Controller (020)** — Registers this module in the pipeline via
-  `account.New(secretsBackend, baseConfig.Snowflake.Org, baseConfig.Snowflake.AccountCreationGracePeriod,
+  `account.New(keyManager, baseConfig.Snowflake.Org, baseConfig.Snowflake.AccountCreationGracePeriod,
   baseConfig.Deletion.GracePeriodDays, bpConfig)`,
   after the guardrail-check (010) and quota-check (011) modules. After `Pipeline.Apply` returns, reads
   `ModuleContext.ResolvedAccountName()` directly — never from this module's `Outcome` — plus
@@ -459,7 +459,7 @@ This specification defines the account module that:
   flow this module's teardown is the last phase of), Appendix B (X1).
 - **Account Pipeline**: `internal/account/pipeline/module.go`, `context.go`, `pipeline.go` — the `Module`
   interface, `Outcome` vocabulary, and shared `ModuleContext` this module implements against.
-- **Secrets Handling**: `internal/secrets/backend.go`, `path.go`, `credentials.go`.
+- **Secrets Handling**: `internal/secrets/keystore.go`, `manager.go`, `path.go`, `credentials.go`.
 - **Statement Execution**: `internal/snowflake/statement/statement.go`, `render.go`, `errors.go`.
 - **Snowflake `CREATE ACCOUNT` reference**: https://docs.snowflake.com/en/sql-reference/sql/create-account
   — required parameters, and which parameter positions are quoted string literals versus bare tokens.
@@ -502,7 +502,7 @@ pl := pipeline.New(
     // 012 — the two grace periods are unrelated: the duration is a post-create
     // reachability delay, the int is DROP ACCOUNT's GRACE_PERIOD_IN_DAYS.
     accountmodule.New(
-        secretsBackend,
+        keyManager,
         baseConfig.Snowflake.Org,
         baseConfig.Snowflake.AccountCreationGracePeriod,
         baseConfig.Deletion.GracePeriodDays,

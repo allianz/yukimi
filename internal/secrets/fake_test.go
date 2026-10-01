@@ -25,7 +25,7 @@ import (
 	internalerrors "github.com/allianz/yukimi/internal/errors"
 )
 
-// errStoreFault is the error every test injects through FakeBackend's hooks. It
+// errStoreFault is the error every test injects through FakeKeyStore's hooks. It
 // stands for any store-level fault; the fake propagates a hook's error
 // unchanged, so a test asserts on this value rather than on anything the
 // package exports.
@@ -41,9 +41,9 @@ func testPath(t *testing.T) Path {
 }
 
 // SC-015: A failing OnGet hook short-circuits before any state mutation.
-func TestFakeBackend_HookShortCircuitsBeforeMutation_Get(t *testing.T) {
+func TestFakeKeyStore_HookShortCircuitsBeforeMutation_Get(t *testing.T) {
 	ctx := t.Context()
-	b := NewFakeBackend()
+	b := NewFakeKeyStore()
 	path := testPath(t)
 	b.OnGet = func(Path) error { return errStoreFault }
 
@@ -54,9 +54,9 @@ func TestFakeBackend_HookShortCircuitsBeforeMutation_Get(t *testing.T) {
 
 // SC-015: A failing OnCreate hook short-circuits before any state mutation —
 // nothing gets stored, so a subsequent unhooked Get still misses.
-func TestFakeBackend_HookShortCircuitsBeforeMutation_Create(t *testing.T) {
+func TestFakeKeyStore_HookShortCircuitsBeforeMutation_Create(t *testing.T) {
 	ctx := t.Context()
-	b := NewFakeBackend()
+	b := NewFakeKeyStore()
 	path := testPath(t)
 	b.OnCreate = func(Path) error { return errStoreFault }
 
@@ -72,9 +72,9 @@ func TestFakeBackend_HookShortCircuitsBeforeMutation_Create(t *testing.T) {
 
 // SC-015: A failing OnUpdate hook short-circuits before any state mutation —
 // the previously stored value survives untouched.
-func TestFakeBackend_HookShortCircuitsBeforeMutation_Update(t *testing.T) {
+func TestFakeKeyStore_HookShortCircuitsBeforeMutation_Update(t *testing.T) {
 	ctx := t.Context()
-	b := NewFakeBackend()
+	b := NewFakeKeyStore()
 	path := testPath(t)
 	if err := b.Create(ctx, path, "original"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -96,9 +96,9 @@ func TestFakeBackend_HookShortCircuitsBeforeMutation_Update(t *testing.T) {
 }
 
 // SC-015: A failing OnDelete hook short-circuits before any state mutation.
-func TestFakeBackend_HookShortCircuitsBeforeMutation_Delete(t *testing.T) {
+func TestFakeKeyStore_HookShortCircuitsBeforeMutation_Delete(t *testing.T) {
 	ctx := t.Context()
-	b := NewFakeBackend()
+	b := NewFakeKeyStore()
 	path := testPath(t)
 	if err := b.Create(ctx, path, "value"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -118,9 +118,9 @@ func TestFakeBackend_HookShortCircuitsBeforeMutation_Delete(t *testing.T) {
 // SC-016a: Get returns the timestamp Create/Update most recently recorded,
 // taken from Clock — which defaults to something close to time.Now and is
 // overridable for a deterministic RotatedAt.
-func TestFakeBackend_Clock(t *testing.T) {
+func TestFakeKeyStore_Clock(t *testing.T) {
 	ctx := t.Context()
-	b := NewFakeBackend()
+	b := NewFakeKeyStore()
 	path := testPath(t)
 
 	before := time.Now()
@@ -152,9 +152,9 @@ func TestFakeBackend_Clock(t *testing.T) {
 // SC-016: Delete removes the entry outright, so a following Get fails as it
 // would on a path nothing was ever stored at and a following Create on the same
 // path succeeds.
-func TestFakeBackend_DeleteRemovesOutright(t *testing.T) {
+func TestFakeKeyStore_DeleteRemovesOutright(t *testing.T) {
 	ctx := t.Context()
-	b := NewFakeBackend()
+	b := NewFakeKeyStore()
 	path := testPath(t)
 
 	if err := b.Create(ctx, path, "original"); err != nil {
@@ -175,9 +175,9 @@ func TestFakeBackend_DeleteRemovesOutright(t *testing.T) {
 // SC-021: with SchedulesDeletion set, Delete schedules the removal instead of performing it,
 // and the path stays occupied — unreadable, un-updatable, and not reusable by Create. This is
 // the blockade the invariant bounds.
-func TestFakeBackend_DeleteSchedulesRemoval(t *testing.T) {
+func TestFakeKeyStore_DeleteSchedulesRemoval(t *testing.T) {
 	ctx := t.Context()
-	b := NewFakeBackend()
+	b := NewFakeKeyStore()
 	b.SchedulesDeletion = true
 	path := testPath(t)
 
@@ -210,9 +210,9 @@ func TestFakeBackend_DeleteSchedulesRemoval(t *testing.T) {
 
 // Create on a path occupied by a live secret never wraps ErrPendingDeletion — only the
 // pending-deletion sub-case does.
-func TestFakeBackend_CreateOnLivePathDoesNotWrapErrPendingDeletion(t *testing.T) {
+func TestFakeKeyStore_CreateOnLivePathDoesNotWrapErrPendingDeletion(t *testing.T) {
 	ctx := t.Context()
-	b := NewFakeBackend()
+	b := NewFakeKeyStore()
 	path := testPath(t)
 
 	if err := b.Create(ctx, path, "original"); err != nil {
@@ -230,9 +230,9 @@ func TestFakeBackend_CreateOnLivePathDoesNotWrapErrPendingDeletion(t *testing.T)
 
 // SC-021: a second Delete of an already-pending path neither fails nor releases the path — a
 // retried teardown converges instead of tripping over its own first attempt.
-func TestFakeBackend_DeleteOnPendingPathIsIdempotent(t *testing.T) {
+func TestFakeKeyStore_DeleteOnPendingPathIsIdempotent(t *testing.T) {
 	ctx := t.Context()
-	b := NewFakeBackend()
+	b := NewFakeKeyStore()
 	b.SchedulesDeletion = true
 	path := testPath(t)
 
@@ -257,9 +257,9 @@ func TestFakeBackend_DeleteOnPendingPathIsIdempotent(t *testing.T) {
 
 // SC-021: Delete on an absent path stays a no-op success in pending mode too, and schedules
 // nothing that a later Create would trip over.
-func TestFakeBackend_DeleteOnAbsentPathIsNoopInPendingMode(t *testing.T) {
+func TestFakeKeyStore_DeleteOnAbsentPathIsNoopInPendingMode(t *testing.T) {
 	ctx := t.Context()
-	b := NewFakeBackend()
+	b := NewFakeKeyStore()
 	b.SchedulesDeletion = true
 	path := testPath(t)
 
@@ -273,9 +273,9 @@ func TestFakeBackend_DeleteOnAbsentPathIsNoopInPendingMode(t *testing.T) {
 
 // SC-024: Restore cancels a pending deletion, returning the path to exactly the state it was
 // in before — the store-side half of the manual repair 012 documents.
-func TestFakeBackend_RestoreCancelsPendingDeletion(t *testing.T) {
+func TestFakeKeyStore_RestoreCancelsPendingDeletion(t *testing.T) {
 	ctx := t.Context()
-	b := NewFakeBackend()
+	b := NewFakeKeyStore()
 	b.SchedulesDeletion = true
 	path := testPath(t)
 
@@ -303,9 +303,9 @@ func TestFakeBackend_RestoreCancelsPendingDeletion(t *testing.T) {
 
 // SC-024: Restore fails when nothing at the path is scheduled for deletion, whether the path
 // is empty or holds a live value.
-func TestFakeBackend_RestoreWithoutPendingDeletionFails(t *testing.T) {
+func TestFakeKeyStore_RestoreWithoutPendingDeletionFails(t *testing.T) {
 	ctx := t.Context()
-	b := NewFakeBackend()
+	b := NewFakeKeyStore()
 	b.SchedulesDeletion = true
 	path := testPath(t)
 
@@ -322,9 +322,9 @@ func TestFakeBackend_RestoreWithoutPendingDeletionFails(t *testing.T) {
 }
 
 // SC-016: Delete on a path nothing was ever stored at is a no-op success.
-func TestFakeBackend_DeleteOnAbsentPathIsNoop(t *testing.T) {
+func TestFakeKeyStore_DeleteOnAbsentPathIsNoop(t *testing.T) {
 	ctx := t.Context()
-	b := NewFakeBackend()
+	b := NewFakeKeyStore()
 	path := testPath(t)
 
 	if err := b.Delete(ctx, path); err != nil {
@@ -333,9 +333,9 @@ func TestFakeBackend_DeleteOnAbsentPathIsNoop(t *testing.T) {
 }
 
 // Update on a deleted path is treated as not-there.
-func TestFakeBackend_UpdateOnDeletedPathFails(t *testing.T) {
+func TestFakeKeyStore_UpdateOnDeletedPathFails(t *testing.T) {
 	ctx := t.Context()
-	b := NewFakeBackend()
+	b := NewFakeKeyStore()
 	path := testPath(t)
 
 	if err := b.Create(ctx, path, "original"); err != nil {
@@ -350,9 +350,9 @@ func TestFakeBackend_UpdateOnDeletedPathFails(t *testing.T) {
 }
 
 // Update on a path nothing was ever stored at fails; Update never creates.
-func TestFakeBackend_UpdateOnAbsentPathFails(t *testing.T) {
+func TestFakeKeyStore_UpdateOnAbsentPathFails(t *testing.T) {
 	ctx := t.Context()
-	b := NewFakeBackend()
+	b := NewFakeKeyStore()
 	path := testPath(t)
 
 	if err := b.Update(ctx, path, "new"); err == nil || !strings.Contains(err.Error(), "no secret stored") {

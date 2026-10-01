@@ -52,20 +52,20 @@ import (
 // this cut — the account module (012) — since guardrail-check, quota-check,
 // parameters, network, auth, identity, and quota-monitor (010, 011, 013-015,
 // 017, 018) are not written yet.
-func SetupGated(mgr ctrl.Manager, o controller.Options, cfg *base.Config, p *pool.Pool, secretsBackend secrets.Backend, bpConfig *backplane.Config) error {
+func SetupGated(mgr ctrl.Manager, o controller.Options, cfg *base.Config, p *pool.Pool, keyManager *secrets.KeyManager, bpConfig *backplane.Config) error {
 	o.Gate.Register(func() {
-		if err := Setup(mgr, o, cfg, p, secretsBackend, bpConfig); err != nil {
+		if err := Setup(mgr, o, cfg, p, keyManager, bpConfig); err != nil {
 			panic(errors.Wrap(err, "cannot setup SnowflakeAccount controller"))
 		}
 	}, v1alpha1.SnowflakeAccountGroupVersionKind)
 	return nil
 }
 
-func Setup(mgr ctrl.Manager, o controller.Options, cfg *base.Config, p *pool.Pool, secretsBackend secrets.Backend, bpConfig *backplane.Config) error {
+func Setup(mgr ctrl.Manager, o controller.Options, cfg *base.Config, p *pool.Pool, keyManager *secrets.KeyManager, bpConfig *backplane.Config) error {
 	name := managed.ControllerName(v1alpha1.SnowflakeAccountGroupKind)
 
 	pl := pipeline.New(accountmodule.New(
-		secretsBackend, cfg.Snowflake.Org, cfg.Snowflake.AccountCreationGracePeriod, cfg.Deletion.GracePeriodDays, bpConfig))
+		keyManager, cfg.Snowflake.Org, cfg.Snowflake.AccountCreationGracePeriod, cfg.Deletion.GracePeriodDays, bpConfig))
 	rec := event.NewAPIRecorder(mgr.GetEventRecorderFor(name)) //nolint:staticcheck // event.NewAPIRecorder only accepts the old record.EventRecorder GetEventRecorderFor returns; no migration path until crossplane-runtime supports the new events API
 	opLogger := o.Logger.WithValues("controller", name)
 

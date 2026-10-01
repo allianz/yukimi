@@ -79,18 +79,18 @@ func NewCredentials(username string) (*Credentials, error) {
 	return &Credentials{Username: username, PublicKey: pub, PrivateKey: priv, RotatedAt: time.Now()}, nil
 }
 
-// MarshalCredentials converts c to the JSON string a Backend stores. It never
+// MarshalCredentials converts c to the JSON string a KeyStore stores. It never
 // serializes RotatedAt.
 func MarshalCredentials(c *Credentials) (string, error) {
 	data, err := json.Marshal(c)
 	return string(data), err
 }
 
-// UnmarshalCredentials converts the JSON string a Backend stores back into a
+// UnmarshalCredentials converts the JSON string a KeyStore stores back into a
 // Credentials value. It rejects a value with any of the three JSON fields
 // empty; it does not otherwise validate PublicKey or PrivateKey contents. It
 // sets the returned Credentials' RotatedAt to rotatedAt — ordinarily whatever
-// Backend.Get just returned alongside value.
+// KeyStore.Get just returned alongside value.
 func UnmarshalCredentials(data string, rotatedAt time.Time) (*Credentials, error) {
 	var c Credentials
 	if err := json.Unmarshal([]byte(data), &c); err != nil {

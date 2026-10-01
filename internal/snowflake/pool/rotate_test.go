@@ -204,9 +204,9 @@ func TestTargetSlot(t *testing.T) {
 // --- rotateCredential ----------------------------------------------------------
 
 func TestRotateCredential_WritesSecretOnlyAfterSuccessfulAlterUser(t *testing.T) {
-	backend := secrets.NewFakeBackend()
+	store := secrets.NewFakeKeyStore()
 	path, _ := secrets.NewTenantPath("my_org", "finance", "a")
-	original := seedCredentials(t, backend, path)
+	original := seedCredentials(t, store, path)
 
 	key, err := parsePrivateKey(original.PrivateKey)
 	if err != nil {
@@ -217,7 +217,8 @@ func TestRotateCredential_WritesSecretOnlyAfterSuccessfulAlterUser(t *testing.T)
 	db, _, execCalls := newRotateFakeDB([]descUserRow{{"RSA_PUBLIC_KEY_FP", fp}, {"RSA_PUBLIC_KEY_2_FP", ""}}, nil)
 	defer func() { _ = db.Close() }()
 
-	p := New(backend, testConfig())
+	keyManager := secrets.NewKeyManager(store, time.Hour)
+	p := New(keyManager, testConfig())
 	if err := p.rotateCredential(context.Background(), db, path, original.Username, key); err != nil {
 		t.Fatalf("rotateCredential: %v", err)
 	}
@@ -225,7 +226,7 @@ func TestRotateCredential_WritesSecretOnlyAfterSuccessfulAlterUser(t *testing.T)
 		t.Fatalf("expected exactly one ALTER USER, got %v", *execCalls)
 	}
 
-	raw, rotatedAt, err := backend.Get(context.Background(), path)
+	raw, rotatedAt, err := store.Get(context.Background(), path)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -239,9 +240,9 @@ func TestRotateCredential_WritesSecretOnlyAfterSuccessfulAlterUser(t *testing.T)
 }
 
 func TestRotateCredential_FailedAlterUserLeavesStoreUntouched(t *testing.T) {
-	backend := secrets.NewFakeBackend()
+	store := secrets.NewFakeKeyStore()
 	path, _ := secrets.NewTenantPath("my_org", "finance", "a")
-	original := seedCredentials(t, backend, path)
+	original := seedCredentials(t, store, path)
 
 	key, err := parsePrivateKey(original.PrivateKey)
 	if err != nil {
@@ -252,12 +253,13 @@ func TestRotateCredential_FailedAlterUserLeavesStoreUntouched(t *testing.T) {
 	db, _, _ := newRotateFakeDB([]descUserRow{{"RSA_PUBLIC_KEY_FP", fp}, {"RSA_PUBLIC_KEY_2_FP", ""}}, stderrors.New("boom"))
 	defer func() { _ = db.Close() }()
 
-	p := New(backend, testConfig())
+	keyManager := secrets.NewKeyManager(store, time.Hour)
+	p := New(keyManager, testConfig())
 	if err := p.rotateCredential(context.Background(), db, path, original.Username, key); err == nil {
 		t.Fatal("expected an error from a failing ALTER USER")
 	}
 
-	raw, rotatedAt, err := backend.Get(context.Background(), path)
+	raw, rotatedAt, err := store.Get(context.Background(), path)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -273,13 +275,14 @@ func TestRotateCredential_FailedAlterUserLeavesStoreUntouched(t *testing.T) {
 // --- maybeRotateLocked, exercised through OrgAdmin/TenantAccount ---------------
 
 func TestOrgAdmin_FreshCredential_NeverAttemptsRotation(t *testing.T) {
-	backend := secrets.NewFakeBackend()
+	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
 	path, _ := secrets.NewOrgAdminPath(cfg.Snowflake.Org, cfg.Snowflake.OrgAdminAccount)
-	seedCredentials(t, backend, path)
+	seedCredentials(t, store, path)
 
 	rotDB, queryCalls, execCalls := newRotateFakeDB(nil, nil)
-	p := New(backend, cfg)
+	keyManager := secrets.NewKeyManager(store, time.Hour)
+	p := New(keyManager, cfg)
 	p.dial = func(dialConfig) (*sql.DB, error) { return rotDB, nil }
 
 	if _, err := p.OrgAdmin(context.Background()); err != nil {
@@ -300,14 +303,14 @@ func TestOrgAdmin_FreshCredential_NeverAttemptsRotation(t *testing.T) {
 }
 
 func TestOrgAdmin_StaleCredential_RotatesInline(t *testing.T) {
-	backend := secrets.NewFakeBackend()
+	store := secrets.NewFakeKeyStore()
 	staleAt := time.Now().AddDate(0, -7, 0)
-	backend.Clock = func() time.Time { return staleAt }
+	store.Clock = func() time.Time { return staleAt }
 
 	cfg := testConfig()
 	path, _ := secrets.NewOrgAdminPath(cfg.Snowflake.Org, cfg.Snowflake.OrgAdminAccount)
-	original := seedCredentials(t, backend, path)
-	backend.Clock = time.Now // the rotation write itself gets a fresh timestamp, as it would for real
+	original := seedCredentials(t, store, path)
+	store.Clock = time.Now // the rotation write itself gets a fresh timestamp, as it would for real
 
 	key, err := parsePrivateKey(original.PrivateKey)
 	if err != nil {
@@ -316,7 +319,8 @@ func TestOrgAdmin_StaleCredential_RotatesInline(t *testing.T) {
 	fp := publicKeyFingerprint(key)
 
 	rotDB, _, execCalls := newRotateFakeDB([]descUserRow{{"RSA_PUBLIC_KEY_FP", fp}, {"RSA_PUBLIC_KEY_2_FP", ""}}, nil)
-	p := New(backend, cfg)
+	keyManager := secrets.NewKeyManager(store, time.Hour)
+	p := New(keyManager, cfg)
 	p.dial = func(dialConfig) (*sql.DB, error) { return rotDB, nil }
 
 	db, err := p.OrgAdmin(context.Background())
@@ -330,7 +334,7 @@ func TestOrgAdmin_StaleCredential_RotatesInline(t *testing.T) {
 		t.Fatalf("expected exactly one ALTER USER, got %v", *execCalls)
 	}
 
-	raw, rotatedAt, err := backend.Get(context.Background(), path)
+	raw, rotatedAt, err := store.Get(context.Background(), path)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -347,20 +351,21 @@ func TestOrgAdmin_StaleCredential_RotatesInline(t *testing.T) {
 // current key — a drift scenario) never fails the caller's connection
 // request, and never reaches the store write.
 func TestTenantAccount_RotationFailureDoesNotFailCall(t *testing.T) {
-	backend := secrets.NewFakeBackend()
+	store := secrets.NewFakeKeyStore()
 	staleAt := time.Now().AddDate(0, -7, 0)
-	backend.Clock = func() time.Time { return staleAt }
+	store.Clock = func() time.Time { return staleAt }
 
 	cfg := testConfig()
 	path, _ := secrets.NewTenantPath(cfg.Snowflake.Org, "finance", "a")
-	original := seedCredentials(t, backend, path)
-	backend.Clock = time.Now
+	original := seedCredentials(t, store, path)
+	store.Clock = time.Now
 
 	rotDB, _, execCalls := newRotateFakeDB([]descUserRow{
 		{"RSA_PUBLIC_KEY_FP", "SHA256:does-not-match-anything"},
 		{"RSA_PUBLIC_KEY_2_FP", "SHA256:neither-does-this"},
 	}, nil)
-	p := New(backend, cfg)
+	keyManager := secrets.NewKeyManager(store, time.Hour)
+	p := New(keyManager, cfg)
 	p.dial = func(dialConfig) (*sql.DB, error) { return rotDB, nil }
 
 	db, err := p.TenantAccount(context.Background(), "finance", "a", "xy12345", "aws-eu-central-1")
@@ -374,7 +379,7 @@ func TestTenantAccount_RotationFailureDoesNotFailCall(t *testing.T) {
 		t.Error("a failed slot lookup must never reach ALTER USER")
 	}
 
-	raw, rotatedAt, err := backend.Get(context.Background(), path)
+	raw, rotatedAt, err := store.Get(context.Background(), path)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -391,20 +396,21 @@ func TestTenantAccount_RotationFailureDoesNotFailCall(t *testing.T) {
 // key) must never reach DESC USER or ALTER USER — maybeRotateLocked swallows
 // both the same way it swallows every other rotation failure.
 func TestMaybeRotateLocked_UnmarshalFailure_NeverAttemptsRotation(t *testing.T) {
-	backend := secrets.NewFakeBackend()
+	store := secrets.NewFakeKeyStore()
 	staleAt := time.Now().AddDate(0, -7, 0)
-	backend.Clock = func() time.Time { return staleAt }
+	store.Clock = func() time.Time { return staleAt }
 
 	cfg := testConfig()
 	path, _ := secrets.NewTenantPath(cfg.Snowflake.Org, "finance", "a")
-	if err := backend.Create(context.Background(), path, "not valid json"); err != nil {
+	if err := store.Create(context.Background(), path, "not valid json"); err != nil {
 		t.Fatalf("seeding malformed credentials: %v", err)
 	}
 
 	db, queryCalls, execCalls := newRotateFakeDB(nil, nil)
 	defer func() { _ = db.Close() }()
 
-	p := New(backend, cfg)
+	keyManager := secrets.NewKeyManager(store, time.Hour)
+	p := New(keyManager, cfg)
 	p.maybeRotateLocked(context.Background(), db, path)
 
 	if len(*queryCalls) != 0 || len(*execCalls) != 0 {
@@ -413,21 +419,22 @@ func TestMaybeRotateLocked_UnmarshalFailure_NeverAttemptsRotation(t *testing.T) 
 }
 
 func TestMaybeRotateLocked_ParsePrivateKeyFailure_NeverAttemptsRotation(t *testing.T) {
-	backend := secrets.NewFakeBackend()
+	store := secrets.NewFakeKeyStore()
 	staleAt := time.Now().AddDate(0, -7, 0)
-	backend.Clock = func() time.Time { return staleAt }
+	store.Clock = func() time.Time { return staleAt }
 
 	cfg := testConfig()
 	path, _ := secrets.NewTenantPath(cfg.Snowflake.Org, "finance", "a")
 	raw := `{"username":"platform","public_key":"AAAA","private_key":"not-a-pem"}`
-	if err := backend.Create(context.Background(), path, raw); err != nil {
+	if err := store.Create(context.Background(), path, raw); err != nil {
 		t.Fatalf("seeding credentials with an unparseable key: %v", err)
 	}
 
 	db, queryCalls, execCalls := newRotateFakeDB(nil, nil)
 	defer func() { _ = db.Close() }()
 
-	p := New(backend, cfg)
+	keyManager := secrets.NewKeyManager(store, time.Hour)
+	p := New(keyManager, cfg)
 	p.maybeRotateLocked(context.Background(), db, path)
 
 	if len(*queryCalls) != 0 || len(*execCalls) != 0 {
@@ -439,10 +446,10 @@ func TestMaybeRotateLocked_ParsePrivateKeyFailure_NeverAttemptsRotation(t *testi
 // rotateCredential reports the error, but never retries or undoes the key
 // push, matching the Key Concept's own framing (the slot push, not the
 // store write, is the point of no return for Snowflake's own state).
-func TestRotateCredential_FailedBackendUpdate_ReturnsErrorAfterAlterUserSucceeded(t *testing.T) {
-	backend := secrets.NewFakeBackend()
+func TestRotateCredential_FailedKeyManagerUpdate_ReturnsErrorAfterAlterUserSucceeded(t *testing.T) {
+	store := secrets.NewFakeKeyStore()
 	path, _ := secrets.NewTenantPath("my_org", "finance", "a")
-	original := seedCredentials(t, backend, path)
+	original := seedCredentials(t, store, path)
 
 	key, err := parsePrivateKey(original.PrivateKey)
 	if err != nil {
@@ -453,9 +460,10 @@ func TestRotateCredential_FailedBackendUpdate_ReturnsErrorAfterAlterUserSucceede
 	db, _, execCalls := newRotateFakeDB([]descUserRow{{"RSA_PUBLIC_KEY_FP", fp}, {"RSA_PUBLIC_KEY_2_FP", ""}}, nil)
 	defer func() { _ = db.Close() }()
 
-	backend.OnUpdate = func(secrets.Path) error { return stderrors.New("store unavailable") }
+	store.OnUpdate = func(secrets.Path) error { return stderrors.New("store unavailable") }
 
-	p := New(backend, testConfig())
+	keyManager := secrets.NewKeyManager(store, time.Hour)
+	p := New(keyManager, testConfig())
 	if err := p.rotateCredential(context.Background(), db, path, original.Username, key); err == nil {
 		t.Fatal("expected an error from a failing store write")
 	}

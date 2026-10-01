@@ -150,7 +150,7 @@ func testConfig() *base.Config {
 
 // seedCredentials generates a fresh keypair, stores it at path, and returns
 // the Credentials for assertions.
-func seedCredentials(t *testing.T, backend secrets.Backend, path secrets.Path) *secrets.Credentials {
+func seedCredentials(t *testing.T, ks secrets.KeyStore, path secrets.Path) *secrets.Credentials {
 	t.Helper()
 	creds, err := secrets.NewCredentials("platform")
 	if err != nil {
@@ -160,7 +160,7 @@ func seedCredentials(t *testing.T, backend secrets.Backend, path secrets.Path) *
 	if err != nil {
 		t.Fatalf("MarshalCredentials: %v", err)
 	}
-	if err := backend.Create(context.Background(), path, raw); err != nil {
+	if err := ks.Create(context.Background(), path, raw); err != nil {
 		t.Fatalf("seeding credentials: %v", err)
 	}
 	return creds
@@ -170,11 +170,12 @@ func seedCredentials(t *testing.T, backend secrets.Backend, path secrets.Path) *
 
 func TestNew_NoNetworkCall(t *testing.T) {
 	getCalled := false
-	backend := secrets.NewFakeBackend()
-	backend.OnGet = func(secrets.Path) error { getCalled = true; return nil }
+	store := secrets.NewFakeKeyStore()
+	store.OnGet = func(secrets.Path) error { getCalled = true; return nil }
 	dialer := &fakeDialer{}
 
-	p := New(backend, testConfig())
+	keyManager := secrets.NewKeyManager(store, time.Hour)
+	p := New(keyManager, testConfig())
 	p.dial = dialer.dial
 
 	if p == nil {
@@ -193,16 +194,17 @@ func TestNew_NoNetworkCall(t *testing.T) {
 // SC-002, SC-015: OrgAdmin's first call reads the org-admin credential via
 // NewOrgAdminPath, builds the host, and dials with the right Config fields.
 func TestOrgAdmin_FirstCall(t *testing.T) {
-	backend := secrets.NewFakeBackend()
+	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
 	path, err := secrets.NewOrgAdminPath(cfg.Snowflake.Org, cfg.Snowflake.OrgAdminAccount)
 	if err != nil {
 		t.Fatalf("NewOrgAdminPath: %v", err)
 	}
-	creds := seedCredentials(t, backend, path)
+	creds := seedCredentials(t, store, path)
 
 	dialer := &fakeDialer{}
-	p := New(backend, cfg)
+	keyManager := secrets.NewKeyManager(store, time.Hour)
+	p := New(keyManager, cfg)
 	p.dial = dialer.dial
 
 	db, err := p.OrgAdmin(context.Background())
@@ -240,13 +242,14 @@ func TestOrgAdmin_FirstCall(t *testing.T) {
 
 // SC-003: every later OrgAdmin call returns the identical *sql.DB pointer.
 func TestOrgAdmin_CachesPointer(t *testing.T) {
-	backend := secrets.NewFakeBackend()
+	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
 	path, _ := secrets.NewOrgAdminPath(cfg.Snowflake.Org, cfg.Snowflake.OrgAdminAccount)
-	seedCredentials(t, backend, path)
+	seedCredentials(t, store, path)
 
 	dialer := &fakeDialer{}
-	p := New(backend, cfg)
+	keyManager := secrets.NewKeyManager(store, time.Hour)
+	p := New(keyManager, cfg)
 	p.dial = dialer.dial
 
 	ctx := context.Background()
@@ -269,15 +272,16 @@ func TestOrgAdmin_CachesPointer(t *testing.T) {
 // A malformed org-admin region returns a user error before any credential
 // read or dial is attempted, mirroring TenantAccount's SC-008 behavior.
 func TestOrgAdmin_MalformedRegion_NoConnectionAttempt(t *testing.T) {
-	backend := secrets.NewFakeBackend()
+	store := secrets.NewFakeKeyStore()
 	getCalled := false
-	backend.OnGet = func(secrets.Path) error { getCalled = true; return nil }
+	store.OnGet = func(secrets.Path) error { getCalled = true; return nil }
 
 	cfg := testConfig()
 	cfg.Snowflake.OrgAdminAccountRegion = "eu-central-1" // missing cloud prefix
 
 	dialer := &fakeDialer{}
-	p := New(backend, cfg)
+	keyManager := secrets.NewKeyManager(store, time.Hour)
+	p := New(keyManager, cfg)
 	p.dial = dialer.dial
 
 	_, err := p.OrgAdmin(context.Background())
@@ -295,11 +299,12 @@ func TestOrgAdmin_MalformedRegion_NoConnectionAttempt(t *testing.T) {
 // A malformed Org config value surfaces NewOrgAdminPath's own validation
 // error before any credential read.
 func TestOrgAdmin_InvalidPathSegment(t *testing.T) {
-	backend := secrets.NewFakeBackend()
+	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
 	cfg.Snowflake.Org = "my/org"
 
-	p := New(backend, cfg)
+	keyManager := secrets.NewKeyManager(store, time.Hour)
+	p := New(keyManager, cfg)
 	if _, err := p.OrgAdmin(context.Background()); err == nil || !errors.IsUserError(err) {
 		t.Fatalf("expected a user error, got %v", err)
 	}
@@ -307,13 +312,13 @@ func TestOrgAdmin_InvalidPathSegment(t *testing.T) {
 
 // A credential read failure is not cached; the next call retries in full.
 func TestOrgAdmin_CredentialReadFailureNotCached(t *testing.T) {
-	backend := secrets.NewFakeBackend()
+	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
 	path, _ := secrets.NewOrgAdminPath(cfg.Snowflake.Org, cfg.Snowflake.OrgAdminAccount)
-	seedCredentials(t, backend, path)
+	seedCredentials(t, store, path)
 
 	attempts := 0
-	backend.OnGet = func(secrets.Path) error {
+	store.OnGet = func(secrets.Path) error {
 		attempts++
 		if attempts == 1 {
 			return stderrors.New("boom")
@@ -322,7 +327,8 @@ func TestOrgAdmin_CredentialReadFailureNotCached(t *testing.T) {
 	}
 
 	dialer := &fakeDialer{}
-	p := New(backend, cfg)
+	keyManager := secrets.NewKeyManager(store, time.Hour)
+	p := New(keyManager, cfg)
 	p.dial = dialer.dial
 
 	if _, err := p.OrgAdmin(context.Background()); err == nil {
@@ -339,14 +345,15 @@ func TestOrgAdmin_CredentialReadFailureNotCached(t *testing.T) {
 // A stored credential that fails to unmarshal (not valid JSON) is a system
 // error, not cached.
 func TestOrgAdmin_UnmarshalFailure(t *testing.T) {
-	backend := secrets.NewFakeBackend()
+	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
 	path, _ := secrets.NewOrgAdminPath(cfg.Snowflake.Org, cfg.Snowflake.OrgAdminAccount)
-	if err := backend.Create(context.Background(), path, "not valid json"); err != nil {
+	if err := store.Create(context.Background(), path, "not valid json"); err != nil {
 		t.Fatalf("seeding: %v", err)
 	}
 
-	p := New(backend, cfg)
+	keyManager := secrets.NewKeyManager(store, time.Hour)
+	p := New(keyManager, cfg)
 	if _, err := p.OrgAdmin(context.Background()); err == nil {
 		t.Fatal("expected an error for a credential that does not unmarshal")
 	}
@@ -354,7 +361,7 @@ func TestOrgAdmin_UnmarshalFailure(t *testing.T) {
 
 // A stored credential whose private key does not parse is a system error.
 func TestOrgAdmin_ParsePrivateKeyFailure(t *testing.T) {
-	backend := secrets.NewFakeBackend()
+	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
 	path, _ := secrets.NewOrgAdminPath(cfg.Snowflake.Org, cfg.Snowflake.OrgAdminAccount)
 	creds := &secrets.Credentials{Username: "platform", PublicKey: "irrelevant", PrivateKey: "not a pem key"}
@@ -362,11 +369,12 @@ func TestOrgAdmin_ParsePrivateKeyFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MarshalCredentials: %v", err)
 	}
-	if err := backend.Create(context.Background(), path, raw); err != nil {
+	if err := store.Create(context.Background(), path, raw); err != nil {
 		t.Fatalf("seeding: %v", err)
 	}
 
-	p := New(backend, cfg)
+	keyManager := secrets.NewKeyManager(store, time.Hour)
+	p := New(keyManager, cfg)
 	if _, err := p.OrgAdmin(context.Background()); err == nil {
 		t.Fatal("expected an error for a private key that does not parse")
 	}
@@ -375,10 +383,10 @@ func TestOrgAdmin_ParsePrivateKeyFailure(t *testing.T) {
 // SC-009: a failed dial on OrgAdmin's first call leaves nothing cached; the
 // next call retries the credential read and dial from scratch.
 func TestOrgAdmin_FailedDialNotCached(t *testing.T) {
-	backend := secrets.NewFakeBackend()
+	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
 	path, _ := secrets.NewOrgAdminPath(cfg.Snowflake.Org, cfg.Snowflake.OrgAdminAccount)
-	seedCredentials(t, backend, path)
+	seedCredentials(t, store, path)
 
 	boom := stderrors.New("boom")
 	dialer := &fakeDialer{errFn: func(idx int) error {
@@ -387,7 +395,8 @@ func TestOrgAdmin_FailedDialNotCached(t *testing.T) {
 		}
 		return nil
 	}}
-	p := New(backend, cfg)
+	keyManager := secrets.NewKeyManager(store, time.Hour)
+	p := New(keyManager, cfg)
 	p.dial = dialer.dial
 
 	ctx := context.Background()
@@ -414,16 +423,17 @@ func TestOrgAdmin_FailedDialNotCached(t *testing.T) {
 
 // SC-004: TenantAccount builds its secret path via NewTenantPath.
 func TestTenantAccount_BuildsPath(t *testing.T) {
-	backend := secrets.NewFakeBackend()
+	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
 
 	var gotPath secrets.Path
-	backend.OnGet = func(p secrets.Path) error { gotPath = p; return nil }
+	store.OnGet = func(p secrets.Path) error { gotPath = p; return nil }
 	path, _ := secrets.NewTenantPath(cfg.Snowflake.Org, "finance", "analytics-team-eu")
-	seedCredentials(t, backend, path)
+	seedCredentials(t, store, path)
 
 	dialer := &fakeDialer{}
-	p := New(backend, cfg)
+	keyManager := secrets.NewKeyManager(store, time.Hour)
+	p := New(keyManager, cfg)
 	p.dial = dialer.dial
 
 	if _, err := p.TenantAccount(context.Background(), "finance", "analytics-team-eu", "xy12345", "aws-eu-central-1"); err != nil {
@@ -438,15 +448,16 @@ func TestTenantAccount_BuildsPath(t *testing.T) {
 // namespace or accountName dials a distinct one, with Role=ACCOUNTADMIN and
 // Account/Host built from the caller-supplied locator/region.
 func TestTenantAccount_CachesByFullKey(t *testing.T) {
-	backend := secrets.NewFakeBackend()
+	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
 	for _, name := range []string{"a", "b"} {
 		path, _ := secrets.NewTenantPath(cfg.Snowflake.Org, "finance", name)
-		seedCredentials(t, backend, path)
+		seedCredentials(t, store, path)
 	}
 
 	dialer := &fakeDialer{}
-	p := New(backend, cfg)
+	keyManager := secrets.NewKeyManager(store, time.Hour)
+	p := New(keyManager, cfg)
 	p.dial = dialer.dial
 
 	ctx := context.Background()
@@ -492,12 +503,13 @@ func TestTenantAccount_CachesByFullKey(t *testing.T) {
 // SC-008: a malformed region returns a user error before any credential read
 // or dial.
 func TestTenantAccount_MalformedRegion_NoConnectionAttempt(t *testing.T) {
-	backend := secrets.NewFakeBackend()
+	store := secrets.NewFakeKeyStore()
 	getCalled := false
-	backend.OnGet = func(secrets.Path) error { getCalled = true; return nil }
+	store.OnGet = func(secrets.Path) error { getCalled = true; return nil }
 
 	dialer := &fakeDialer{}
-	p := New(backend, testConfig())
+	keyManager := secrets.NewKeyManager(store, time.Hour)
+	p := New(keyManager, testConfig())
 	p.dial = dialer.dial
 
 	_, err := p.TenantAccount(context.Background(), "finance", "a", "xy12345", "eu-central-1")
@@ -515,8 +527,9 @@ func TestTenantAccount_MalformedRegion_NoConnectionAttempt(t *testing.T) {
 // A malformed namespace/accountName surfaces NewTenantPath's own validation
 // error before any credential read.
 func TestTenantAccount_InvalidPathSegment(t *testing.T) {
-	backend := secrets.NewFakeBackend()
-	p := New(backend, testConfig())
+	store := secrets.NewFakeKeyStore()
+	keyManager := secrets.NewKeyManager(store, time.Hour)
+	p := New(keyManager, testConfig())
 	if _, err := p.TenantAccount(context.Background(), "finance/eu", "a", "xy12345", "aws-eu-central-1"); err == nil || !errors.IsUserError(err) {
 		t.Fatalf("expected a user error, got %v", err)
 	}
@@ -524,13 +537,13 @@ func TestTenantAccount_InvalidPathSegment(t *testing.T) {
 
 // A credential read failure is not cached; the next call retries in full.
 func TestTenantAccount_CredentialReadFailureNotCached(t *testing.T) {
-	backend := secrets.NewFakeBackend()
+	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
 	path, _ := secrets.NewTenantPath(cfg.Snowflake.Org, "finance", "a")
-	seedCredentials(t, backend, path)
+	seedCredentials(t, store, path)
 
 	attempts := 0
-	backend.OnGet = func(secrets.Path) error {
+	store.OnGet = func(secrets.Path) error {
 		attempts++
 		if attempts == 1 {
 			return stderrors.New("boom")
@@ -539,7 +552,8 @@ func TestTenantAccount_CredentialReadFailureNotCached(t *testing.T) {
 	}
 
 	dialer := &fakeDialer{}
-	p := New(backend, cfg)
+	keyManager := secrets.NewKeyManager(store, time.Hour)
+	p := New(keyManager, cfg)
 	p.dial = dialer.dial
 
 	ctx := context.Background()
@@ -557,14 +571,15 @@ func TestTenantAccount_CredentialReadFailureNotCached(t *testing.T) {
 // A stored credential that fails to unmarshal (not valid JSON) is a system
 // error, not cached.
 func TestTenantAccount_UnmarshalFailure(t *testing.T) {
-	backend := secrets.NewFakeBackend()
+	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
 	path, _ := secrets.NewTenantPath(cfg.Snowflake.Org, "finance", "a")
-	if err := backend.Create(context.Background(), path, "not valid json"); err != nil {
+	if err := store.Create(context.Background(), path, "not valid json"); err != nil {
 		t.Fatalf("seeding: %v", err)
 	}
 
-	p := New(backend, cfg)
+	keyManager := secrets.NewKeyManager(store, time.Hour)
+	p := New(keyManager, cfg)
 	if _, err := p.TenantAccount(context.Background(), "finance", "a", "xy12345", "aws-eu-central-1"); err == nil {
 		t.Fatal("expected an error for a credential that does not unmarshal")
 	}
@@ -572,7 +587,7 @@ func TestTenantAccount_UnmarshalFailure(t *testing.T) {
 
 // A stored credential whose private key does not parse is a system error.
 func TestTenantAccount_ParsePrivateKeyFailure(t *testing.T) {
-	backend := secrets.NewFakeBackend()
+	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
 	path, _ := secrets.NewTenantPath(cfg.Snowflake.Org, "finance", "a")
 	creds := &secrets.Credentials{Username: "platform", PublicKey: "irrelevant", PrivateKey: "not a pem key"}
@@ -580,11 +595,12 @@ func TestTenantAccount_ParsePrivateKeyFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MarshalCredentials: %v", err)
 	}
-	if err := backend.Create(context.Background(), path, raw); err != nil {
+	if err := store.Create(context.Background(), path, raw); err != nil {
 		t.Fatalf("seeding: %v", err)
 	}
 
-	p := New(backend, cfg)
+	keyManager := secrets.NewKeyManager(store, time.Hour)
+	p := New(keyManager, cfg)
 	if _, err := p.TenantAccount(context.Background(), "finance", "a", "xy12345", "aws-eu-central-1"); err == nil {
 		t.Fatal("expected an error for a private key that does not parse")
 	}
@@ -593,10 +609,10 @@ func TestTenantAccount_ParsePrivateKeyFailure(t *testing.T) {
 // SC-009: a failed dial on the first call for a key leaves nothing cached;
 // the next call retries the credential read and dial from scratch.
 func TestTenantAccount_FailedDialNotCached(t *testing.T) {
-	backend := secrets.NewFakeBackend()
+	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
 	path, _ := secrets.NewTenantPath(cfg.Snowflake.Org, "finance", "a")
-	seedCredentials(t, backend, path)
+	seedCredentials(t, store, path)
 
 	dialer := &fakeDialer{errFn: func(idx int) error {
 		if idx == 0 {
@@ -604,7 +620,8 @@ func TestTenantAccount_FailedDialNotCached(t *testing.T) {
 		}
 		return nil
 	}}
-	p := New(backend, cfg)
+	keyManager := secrets.NewKeyManager(store, time.Hour)
+	p := New(keyManager, cfg)
 	p.dial = dialer.dial
 
 	ctx := context.Background()
@@ -626,13 +643,14 @@ func TestTenantAccount_FailedDialNotCached(t *testing.T) {
 // SC-010: concurrent callers for the same key on a cold cache result in
 // exactly one dial and one cached *sql.DB, observed by all callers.
 func TestTenantAccount_ConcurrentSameKey_OneDial(t *testing.T) {
-	backend := secrets.NewFakeBackend()
+	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
 	path, _ := secrets.NewTenantPath(cfg.Snowflake.Org, "finance", "a")
-	seedCredentials(t, backend, path)
+	seedCredentials(t, store, path)
 
 	dialer := &fakeDialer{delay: 20 * time.Millisecond}
-	p := New(backend, cfg)
+	keyManager := secrets.NewKeyManager(store, time.Hour)
+	p := New(keyManager, cfg)
 	p.dial = dialer.dial
 
 	const n = 20
@@ -667,16 +685,17 @@ func TestTenantAccount_ConcurrentSameKey_OneDial(t *testing.T) {
 // different key — proven by blocking key A's dial and asserting key B's
 // completes anyway.
 func TestTenantAccount_ConcurrentDifferentKeys_DoNotSerialize(t *testing.T) {
-	backend := secrets.NewFakeBackend()
+	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
 	for _, name := range []string{"a", "b"} {
 		path, _ := secrets.NewTenantPath(cfg.Snowflake.Org, "finance", name)
-		seedCredentials(t, backend, path)
+		seedCredentials(t, store, path)
 	}
 
 	started := make(chan struct{})
 	release := make(chan struct{})
-	p := New(backend, cfg)
+	keyManager := secrets.NewKeyManager(store, time.Hour)
+	p := New(keyManager, cfg)
 	p.dial = func(dc dialConfig) (*sql.DB, error) {
 		if dc.snowflake.Account == "locatorA" {
 			close(started)
@@ -720,13 +739,14 @@ func TestTenantAccount_ConcurrentDifferentKeys_DoNotSerialize(t *testing.T) {
 // SC-011: a call whose locator or region differs from what is cached closes
 // the stale *sql.DB and returns a freshly dialed one.
 func TestTenantAccount_SelfHealsOnLocatorChange(t *testing.T) {
-	backend := secrets.NewFakeBackend()
+	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
 	path, _ := secrets.NewTenantPath(cfg.Snowflake.Org, "finance", "a")
-	seedCredentials(t, backend, path)
+	seedCredentials(t, store, path)
 
 	dialer := &fakeDialer{}
-	p := New(backend, cfg)
+	keyManager := secrets.NewKeyManager(store, time.Hour)
+	p := New(keyManager, cfg)
 	p.dial = dialer.dial
 
 	ctx := context.Background()
@@ -751,13 +771,14 @@ func TestTenantAccount_SelfHealsOnLocatorChange(t *testing.T) {
 }
 
 func TestTenantAccount_SelfHealsOnRegionChange(t *testing.T) {
-	backend := secrets.NewFakeBackend()
+	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
 	path, _ := secrets.NewTenantPath(cfg.Snowflake.Org, "finance", "a")
-	seedCredentials(t, backend, path)
+	seedCredentials(t, store, path)
 
 	dialer := &fakeDialer{}
-	p := New(backend, cfg)
+	keyManager := secrets.NewKeyManager(store, time.Hour)
+	p := New(keyManager, cfg)
 	p.dial = dialer.dial
 
 	ctx := context.Background()
@@ -782,13 +803,14 @@ func TestTenantAccount_SelfHealsOnRegionChange(t *testing.T) {
 // SC-012: EvictTenant closes and removes the cached entry; a following call
 // with the same key dials again.
 func TestEvictTenant_ClosesAndDialsAgain(t *testing.T) {
-	backend := secrets.NewFakeBackend()
+	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
 	path, _ := secrets.NewTenantPath(cfg.Snowflake.Org, "finance", "a")
-	seedCredentials(t, backend, path)
+	seedCredentials(t, store, path)
 
 	dialer := &fakeDialer{}
-	p := New(backend, cfg)
+	keyManager := secrets.NewKeyManager(store, time.Hour)
+	p := New(keyManager, cfg)
 	p.dial = dialer.dial
 
 	ctx := context.Background()
@@ -820,7 +842,7 @@ func TestEvictTenant_ClosesAndDialsAgain(t *testing.T) {
 
 // SC-013: evicting a key that was never dialed is a no-op, not an error.
 func TestEvictTenant_NeverDialed_NoPanic(t *testing.T) {
-	p := New(secrets.NewFakeBackend(), testConfig())
+	p := New(secrets.NewKeyManager(secrets.NewFakeKeyStore(), time.Hour), testConfig())
 	p.EvictTenant("finance", "never-dialed")
 }
 
@@ -829,7 +851,7 @@ func TestEvictTenant_NeverDialed_NoPanic(t *testing.T) {
 // SC-014: Close closes every cached *sql.DB — org-admin and every tenant
 // entry — and joins any individual failure without skipping the rest.
 func TestClose_ClosesEverythingAndJoinsErrors(t *testing.T) {
-	p := New(secrets.NewFakeBackend(), testConfig())
+	p := New(secrets.NewKeyManager(secrets.NewFakeKeyStore(), time.Hour), testConfig())
 
 	orgBoom := stderrors.New("org boom")
 	orgDB, orgClosed := newFakeDB(t, orgBoom)

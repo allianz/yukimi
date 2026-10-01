@@ -173,17 +173,17 @@ func main() {
 	bpConfig, err := backplane.Load(*configDir)
 	kingpin.FatalIfError(err, "failed to load backplane config")
 
-	var backend secrets.Backend
+	var store secrets.KeyStore
 	switch baseConfig.CloudProvider() {
 	case "aws":
-		backend, err = secretsaws.New(baseConfig.AWS.Region, baseConfig.AWS.KmsKeyId, baseConfig.Deletion.GracePeriodDays)
-		kingpin.FatalIfError(err, "failed to construct AWS secrets backend")
+		store, err = secretsaws.New(baseConfig.AWS.Region, baseConfig.AWS.KmsKeyId, baseConfig.Deletion.GracePeriodDays)
+		kingpin.FatalIfError(err, "failed to construct AWS key store")
 	default:
-		kingpin.Fatalf("no secrets backend compiled in for cloud section %q (compiled in: aws)", baseConfig.CloudProvider())
+		kingpin.Fatalf("no key store compiled in for cloud section %q (compiled in: aws)", baseConfig.CloudProvider())
 	}
-	cached := secrets.NewCachedBackend(backend, baseConfig.Secrets.CacheTTL)
+	keyManager := secrets.NewKeyManager(store, baseConfig.Secrets.CacheTTL)
 
-	p := pool.New(cached, baseConfig)
+	p := pool.New(keyManager, baseConfig)
 	defer func() {
 		if err := p.Close(); err != nil {
 			log.Info("error closing Snowflake connection pool", "error", err)
@@ -196,6 +196,6 @@ func main() {
 	kingpin.FatalIfError(err, "failed to establish org-admin Snowflake connection")
 
 	kingpin.FatalIfError(customresourcesgate.Setup(mgr, o), "Cannot setup CRD gate controller")
-	kingpin.FatalIfError(yukimi.SetupGated(mgr, o, baseConfig, p, cached, bpConfig), "Cannot setup Yukimi controllers")
+	kingpin.FatalIfError(yukimi.SetupGated(mgr, o, baseConfig, p, keyManager, bpConfig), "Cannot setup Yukimi controllers")
 	kingpin.FatalIfError(mgr.Start(ctrl.SetupSignalHandler()), "Cannot start controller manager")
 }

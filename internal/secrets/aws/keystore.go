@@ -33,7 +33,7 @@ import (
 )
 
 // client is the subset of *secretsmanager.Client this package calls. It
-// exists so backend_test.go can substitute a fake with no AWS account and no
+// exists so keystore_test.go can substitute a fake with no AWS account and no
 // network; the real *secretsmanager.Client satisfies it unchanged.
 type client interface {
 	GetSecretValue(ctx context.Context, in *secretsmanager.GetSecretValueInput, opts ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error)
@@ -47,19 +47,19 @@ type client interface {
 // ever needs to cap the top end, never fall back to ForceDeleteWithoutRecovery.
 const maxRecoveryWindowDays = 30
 
-// Backend implements secrets.Backend (003) against AWS Secrets Manager.
+// KeyStore implements secrets.KeyStore (003) against AWS Secrets Manager.
 // Each method is exactly one AWS API call; the struct holds only the client,
 // the KMS key id carried through to every Create, and the recovery window
 // (in days) computed once for every Delete.
-type Backend struct {
+type KeyStore struct {
 	client             client
 	kmsKeyId           string
 	recoveryWindowDays int
 }
 
-var _ secrets.Backend = (*Backend)(nil)
+var _ secrets.KeyStore = (*KeyStore)(nil)
 
-// New constructs a Backend for region. It loads credentials from the AWS
+// New constructs a KeyStore for region. It loads credentials from the AWS
 // SDK's default chain only and makes no AWS API call — a bad region or bad
 // credentials surfaces on the first real Get/Create/Update/Delete, not here.
 //
@@ -74,15 +74,15 @@ var _ secrets.Backend = (*Backend)(nil)
 //     uses that one window
 //
 // Returns:
-//   - *Backend: never nil on a nil error.
+//   - *KeyStore: never nil on a nil error.
 //   - User error if region is empty
 //   - System error if the AWS SDK's own local config/credential loading
 //     fails (e.g. a malformed shared config file) — this is not a network
 //     call and not specific to Secrets Manager
-func New(region, kmsKeyId string, gracePeriodDays int) (*Backend, error) {
+func New(region, kmsKeyId string, gracePeriodDays int) (*KeyStore, error) {
 	if region == "" {
 		return nil, errors.NewUserError(
-			"AWS region is required to construct the secrets backend (expected: aws.region in base.yaml)")
+			"AWS region is required to construct the AWS key store (expected: aws.region in base.yaml)")
 	}
 
 	cfg, err := config.LoadDefaultConfig(context.Background(), config.WithRegion(region))
@@ -100,7 +100,7 @@ func New(region, kmsKeyId string, gracePeriodDays int) (*Backend, error) {
 			maxRecoveryWindowDays, gracePeriodDays, maxRecoveryWindowDays+1, gracePeriodDays)
 	}
 
-	return &Backend{
+	return &KeyStore{
 		client:             secretsmanager.NewFromConfig(cfg),
 		kmsKeyId:           kmsKeyId,
 		recoveryWindowDays: recoveryWindowDays,
@@ -112,7 +112,7 @@ func New(region, kmsKeyId string, gracePeriodDays int) (*Backend, error) {
 // Returns:
 //   - System error if the secret does not exist or the call otherwise fails;
 //     the returned time is the zero value on error
-func (b *Backend) Get(ctx context.Context, path secrets.Path) (string, time.Time, error) {
+func (b *KeyStore) Get(ctx context.Context, path secrets.Path) (string, time.Time, error) {
 	out, err := b.client.GetSecretValue(ctx, &secretsmanager.GetSecretValueInput{
 		SecretId: aws.String(path.String()),
 	})
@@ -129,7 +129,7 @@ func (b *Backend) Get(ctx context.Context, path secrets.Path) (string, time.Time
 //   - System error if path is already occupied or the call otherwise fails;
 //     also wraps secrets.ErrPendingDeletion if the occupying secret is
 //     scheduled for deletion rather than live
-func (b *Backend) Create(ctx context.Context, path secrets.Path, value string) error {
+func (b *KeyStore) Create(ctx context.Context, path secrets.Path, value string) error {
 	in := &secretsmanager.CreateSecretInput{
 		Name:         aws.String(path.String()),
 		SecretString: aws.String(value),
@@ -168,7 +168,7 @@ func isPendingDeletion(err error) bool {
 //
 // Returns:
 //   - System error if nothing is stored at path or the call otherwise fails
-func (b *Backend) Update(ctx context.Context, path secrets.Path, value string) error {
+func (b *KeyStore) Update(ctx context.Context, path secrets.Path, value string) error {
 	_, err := b.client.PutSecretValue(ctx, &secretsmanager.PutSecretValueInput{
 		SecretId:     aws.String(path.String()),
 		SecretString: aws.String(value),
@@ -183,13 +183,13 @@ func (b *Backend) Update(ctx context.Context, path secrets.Path, value string) e
 // rather than accepting AWS's own 30-day default, which could outlive a shorter account grace
 // period. It always sets RecoveryWindowInDays and never ForceDeleteWithoutRecovery — 002's grace
 // period floor (7) already matches Secrets Manager's own minimum, so there is no grace period
-// this backend cannot schedule a window for. Never calls RestoreSecret.
+// this key store cannot schedule a window for. Never calls RestoreSecret.
 //
 // Returns:
 //   - System error if the call fails, including on an already-absent path
-//     (AWS's ResourceNotFoundException) — unlike 003's FakeBackend.Delete,
+//     (AWS's ResourceNotFoundException) — unlike 003's FakeKeyStore.Delete,
 //     this is not idempotent (see Edge Cases)
-func (b *Backend) Delete(ctx context.Context, path secrets.Path) error {
+func (b *KeyStore) Delete(ctx context.Context, path secrets.Path) error {
 	if _, err := b.client.DeleteSecret(ctx, &secretsmanager.DeleteSecretInput{
 		SecretId:             aws.String(path.String()),
 		RecoveryWindowInDays: aws.Int64(int64(b.recoveryWindowDays)),

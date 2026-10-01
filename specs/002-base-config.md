@@ -23,7 +23,7 @@ Each of those packages reads its own well-known filename from that directory ind
 type Config struct {
     Snowflake SnowflakeSettings // organization identity plus connection-affecting settings
     AWS       AWSSettings       // consumed by 003.a; checked here for shape only
-    Secrets   SecretsSettings   // consumed by whoever wraps a Backend in secrets.NewCachedBackend (003)
+    Secrets   SecretsSettings   // consumed by whoever wraps a KeyStore in secrets.NewKeyManager (003)
     Deletion  DeletionSettings  // the single deletion window every store derives its own from (003, 012)
 
     cloudProvider string // resolved by Load from the cloud section present; read via CloudProvider()
@@ -62,7 +62,7 @@ type AWSSettings struct {
 }
 
 // SecretsSettings holds settings for the secrets cache decorator (003), consumed by whoever
-// wraps a Backend in secrets.NewCachedBackend — today cmd/provider/main.go.
+// wraps a KeyStore in secrets.NewKeyManager — today cmd/provider/main.go.
 type SecretsSettings struct {
     CacheTTL         time.Duration // TTL for the in-memory secrets cache (003); defaults to 5m when omitted
     RotationInterval time.Duration // age past which OrgAdmin/TenantAccount rotate a stored credential inline (004); defaults to 4320h (~6 months) when omitted
@@ -115,7 +115,7 @@ func Load(configDir string) (*Config, error)
 | `aws` | object | **Yes**, or another cloud section | The cloud section for AWS. Its presence is what makes `CloudProvider()` return `"aws"`. Exactly one of `aws` / `azure` / `gcp` must be present — none or several is a user error. |
 | `aws.region` | string | No | Not required here; if non-empty, matches `^[a-z]{2}(-[a-z]+)+-[0-9]$`. Whether the region exists and whether it is required at all is decided by 003.a's constructor. |
 | `aws.kmsKeyId` | string | No | Optional reference to a customer-managed KMS key used by 003.a in place of the AWS-managed default. If non-empty, must match one of the documented KMS identifier forms: bare key ID, `alias/<name>`, key ARN, or alias ARN. Whether the key exists or is usable is 003.a's concern. |
-| `secrets.cacheTtl` | string (duration) | No | TTL for the in-memory secrets cache (003), applied by whichever code wraps a `Backend` in `secrets.NewCachedBackend`. Positive Go duration string if set. Default: `5m` when omitted. |
+| `secrets.cacheTtl` | string (duration) | No | TTL for the in-memory secrets cache (003), applied by whichever code wraps a `KeyStore` in `secrets.NewKeyManager`. Positive Go duration string if set. Default: `5m` when omitted. |
 | `secrets.rotationInterval` | string (duration) | No | Age past which 004 rotates a stored Snowflake credential inline. Positive Go duration string if set (e.g. `1s` for tests). Default: `4320h` (~6 months) when omitted. |
 | `deletion.gracePeriodDays` | int | No | Days a dropped tenant account and its stored credential stay restorable (003, 012). Must be `7`–`90` inclusive if set — `90` is Snowflake's own documented ceiling for `DROP ACCOUNT`'s `GRACE_PERIOD_IN_DAYS`, and `7` is raised above Snowflake's own floor to match AWS Secrets Manager's minimum representable recovery window (003.a), so a credential is always scheduled for deletion rather than force-deleted. Default: `30` when omitted. Not overridable per request; see 019. |
 | `deletion.protection` | bool | No | Whether 020's `SnowflakeAccount` `Delete` requires an `Active` `SnowflakeDeletionRequest` (019) before destroying an account. When `false`, that gate is skipped platform-wide and deletion proceeds unconditionally. Default: `true` when omitted. |
@@ -186,11 +186,11 @@ This specification defines the `internal/config/base/` package that:
 
 ## Integration Points
 
-- **`cmd/provider/main.go`** - Owns the `--configDir` flag and resolves it to a directory path. Calls `base.Load(configDir)` once at startup, then switches on `Config.CloudProvider()` to construct the matching secrets backend, fatally rejecting an unrecognized value by listing the cloud providers compiled in. Also reads `Config.Secrets.CacheTTL` and passes it to `secrets.NewCachedBackend(backend, cfg.Secrets.CacheTTL)` (003) — `internal/secrets` itself never imports `internal/config/base` - Key functions: `base.Load()`, `Config.CloudProvider()`.
+- **`cmd/provider/main.go`** - Owns the `--configDir` flag and resolves it to a directory path. Calls `base.Load(configDir)` once at startup, then switches on `Config.CloudProvider()` to construct the matching key store, fatally rejecting an unrecognized value by listing the cloud providers compiled in. Also reads `Config.Secrets.CacheTTL` and passes it to `secrets.NewKeyManager(store, cfg.Secrets.CacheTTL)` (003) — `internal/secrets` itself never imports `internal/config/base` - Key functions: `base.Load()`, `Config.CloudProvider()`.
 - **`internal/secrets/aws` (003.a)** - Consumes `Config.AWS.Region` when constructed by `main.go`; rejects an empty region as a user error itself, since 002 does not validate it. Also optionally consumes `Config.AWS.KmsKeyId`, passing it through to `CreateSecret`'s `KmsKeyId` parameter when non-empty, so Secrets Manager encrypts/decrypts with the customer-managed key instead of its AWS-managed default - Notes: credentials come from the AWS SDK's default chain, never from `Config`.
 - **`internal/snowflake/pool` (004)** - Consumes `Config.Snowflake.Org`, `OrgAdminAccount`, `OrgAdminAccountLocator`, `OrgAdminAccountRegion`, `UsePrivateLink`, and `DisableOCSPChecks` for org-admin connection host/config construction (design.md 3.6, 3.11), plus `MaxConnectionPoolSize`, `MaxIdleConnections`, `ConnectionMaxLifetime`, `ConnectionMaxIdleTime`, and `ConnectionProbeTimeout` to tune every pooled `*sql.DB`, and `Config.Secrets.RotationInterval` to decide when a stored credential is rotated inline.
 - **Account Module (012)** - Consumes `Config.Snowflake.AccountCreationGracePeriod`, passed to `accountmodule.New` as a plain `time.Duration` — this module never loads the config file itself. Also consumes `Config.Deletion.GracePeriodDays`, rendered verbatim as `DROP ACCOUNT ... GRACE_PERIOD_IN_DAYS` on teardown.
-- **`internal/secrets` (003) / its backends** - Consume `Config.Deletion.GracePeriodDays` directly; each concrete backend caps its own recovery window at whatever it can represent, once at construction (003.a: capped at 30). `internal/secrets` defines no shared derivation helper for this and never imports `internal/config/base`; `main.go` passes the number in.
+- **`internal/secrets` (003) / its key stores** - Consume `Config.Deletion.GracePeriodDays` directly; each concrete key store caps its own recovery window at whatever it can represent, once at construction (003.a: capped at 30). `internal/secrets` defines no shared derivation helper for this and never imports `internal/config/base`; `main.go` passes the number in.
 - **`internal/config/backplane` (007)** / **guardrails loader (008)** - Read their own sibling files (`backplane.yaml`, a guardrails/exceptions file) from the same `--configDir`, with independently implemented loading and validation logic — no code shared with `internal/config/base`.
 
 ## Success Criteria
@@ -227,7 +227,7 @@ This specification defines the `internal/config/base/` package that:
 
 ## Appendix: Usage Examples
 
-### Example 1: Loading Config and Selecting a Secrets Backend (Primary Use Case)
+### Example 1: Loading Config and Selecting a Key Store (Primary Use Case)
 
 ```go
 // In cmd/provider/main.go
@@ -249,20 +249,20 @@ func main() {
         log.Fatalf("failed to load base config: %v", err)
     }
 
-    var backend secrets.Backend
+    var store secrets.KeyStore
     switch cfg.CloudProvider() {
     case "aws":
-        backend, err = secretsaws.New(cfg.AWS.Region, cfg.AWS.KmsKeyId, cfg.Deletion.GracePeriodDays)
+        store, err = secretsaws.New(cfg.AWS.Region, cfg.AWS.KmsKeyId, cfg.Deletion.GracePeriodDays)
         if err != nil {
-            log.Fatalf("failed to construct AWS secrets backend: %v", err)
+            log.Fatalf("failed to construct AWS key store: %v", err)
         }
     default:
-        log.Fatalf("no secrets backend compiled in for cloud section %q (compiled in: aws)", cfg.CloudProvider())
+        log.Fatalf("no key store compiled in for cloud section %q (compiled in: aws)", cfg.CloudProvider())
     }
 
-    cached := secrets.NewCachedBackend(backend, cfg.Secrets.CacheTTL) // 003
+    keyManager := secrets.NewKeyManager(store, cfg.Secrets.CacheTTL) // 003
 
-    // ... wire cached into the pool (004) and start the controller manager
+    // ... wire keyManager into the pool (004) and start the controller manager
 }
 ```
 
