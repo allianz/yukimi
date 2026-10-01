@@ -40,12 +40,12 @@ import (
 	"github.com/allianz/yukimi/internal/snowflake/statement"
 )
 
-// forceDeleteForTest permanently deletes the secret at path, bypassing AWS
+// forceDeleteForTest permanently deletes the secret at id, bypassing AWS
 // Secrets Manager's default recovery window — mirrors
 // internal/secrets/aws/integration_test.go's own helper of the same name, so
 // this test never leaves a throwaway platform-credential secret behind even
 // when CREATE ACCOUNT itself never runs or fails.
-func forceDeleteForTest(ctx context.Context, t *testing.T, path secrets.Path) {
+func forceDeleteForTest(ctx context.Context, t *testing.T, id secrets.Identifier) {
 	t.Helper()
 
 	cfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(os.Getenv("AWS_REGION")))
@@ -57,11 +57,11 @@ func forceDeleteForTest(ctx context.Context, t *testing.T, path secrets.Path) {
 	client := secretsmanager.NewFromConfig(cfg)
 
 	_, err = client.DeleteSecret(ctx, &secretsmanager.DeleteSecretInput{
-		SecretId:                   aws.String(path.String()),
+		SecretId:                   aws.String(id.String()),
 		ForceDeleteWithoutRecovery: aws.Bool(true),
 	})
 	if err != nil {
-		t.Logf("cleanup: failed to force-delete secret at %s: %v", path, err)
+		t.Logf("cleanup: failed to force-delete secret at %s: %v", id, err)
 	}
 }
 
@@ -150,11 +150,11 @@ func TestIntegration_CreateThenDestroy(t *testing.T) {
 	// create-only, strictly before it opens the org-admin connection, so it
 	// can exist even if CREATE ACCOUNT never runs or fails (as it did the
 	// first time this test hit a live org — see the module's own Edge Cases).
-	secretPath, err := secrets.NewTenantPath(org, namespace, name)
+	secretIdentifier, err := secrets.NewTenantIdentifier(org, namespace, name)
 	if err != nil {
-		t.Fatalf("secrets.NewTenantPath: %v", err)
+		t.Fatalf("secrets.NewTenantIdentifier: %v", err)
 	}
-	t.Cleanup(func() { forceDeleteForTest(ctx, t, secretPath) })
+	t.Cleanup(func() { forceDeleteForTest(ctx, t, secretIdentifier) })
 
 	pl := pipeline.New(m)
 	mc1 := pipeline.NewModuleContext(cr, nil, nil, p)
@@ -196,9 +196,9 @@ func TestIntegration_CreateThenDestroy(t *testing.T) {
 
 	// deleteCredential only schedules removal (a 30-day AWS recovery window
 	// derived from gracePeriodDays=30 via secretsaws.New above) — a
-	// scheduled-for-deletion path is unreadable immediately, which is enough
+	// scheduled-for-deletion identifier is unreadable immediately, which is enough
 	// to prove the delete step ran for real.
-	if _, _, err := awsStore.Get(ctx, secretPath); err == nil {
+	if _, _, err := awsStore.Get(ctx, secretIdentifier); err == nil {
 		t.Error("platform credential still readable after Destroy")
 	}
 
@@ -308,11 +308,11 @@ func TestIntegration_CreateWithFuzzedFields(t *testing.T) {
 	m := New(keyManager, org, 5*time.Minute, 3, bpConfig).(*module)
 	ctx := context.Background()
 
-	secretPath, err := secrets.NewTenantPath(org, namespace, fuzzedName)
+	secretIdentifier, err := secrets.NewTenantIdentifier(org, namespace, fuzzedName)
 	if err != nil {
-		t.Fatalf("secrets.NewTenantPath: %v", err)
+		t.Fatalf("secrets.NewTenantIdentifier: %v", err)
 	}
-	t.Cleanup(func() { forceDeleteForTest(ctx, t, secretPath) })
+	t.Cleanup(func() { forceDeleteForTest(ctx, t, secretIdentifier) })
 
 	pl := pipeline.New(m)
 	mc := pipeline.NewModuleContext(cr, nil, nil, p)

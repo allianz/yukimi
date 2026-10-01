@@ -32,7 +32,7 @@ import (
 )
 
 // full cleanup of the test secret.
-func forceDeleteForTest(ctx context.Context, t *testing.T, path secrets.Path) {
+func forceDeleteForTest(ctx context.Context, t *testing.T, id secrets.Identifier) {
 	t.Helper()
 
 	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(os.Getenv("AWS_REGION")))
@@ -43,11 +43,11 @@ func forceDeleteForTest(ctx context.Context, t *testing.T, path secrets.Path) {
 	client := secretsmanager.NewFromConfig(cfg)
 
 	_, err = client.DeleteSecret(ctx, &secretsmanager.DeleteSecretInput{
-		SecretId:                   aws.String(path.String()),
+		SecretId:                   aws.String(id.String()),
 		ForceDeleteWithoutRecovery: aws.Bool(true),
 	})
 	if err != nil {
-		t.Logf("cleanup: failed to force-delete secret at %s: %v", path, err)
+		t.Logf("cleanup: failed to force-delete secret at %s: %v", id, err)
 	}
 }
 
@@ -72,27 +72,27 @@ func TestIntegration_CreateGetDelete(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	// Uses the org and namespace .env defines, so the path matches the
+	// Uses the org and namespace .env defines, so the identifier matches the
 	// tenant grammar exactly as a real controller would build it. The
 	// account name is stamped with the current time so consecutive runs
-	// never collide with a path still inside AWS's default recovery window
-	// from a previous, possibly-interrupted run.
-	path, err := secrets.NewTenantPath(
+	// never collide with an identifier still inside AWS's default recovery
+	// window from a previous, possibly-interrupted run.
+	id, err := secrets.NewTenantIdentifier(
 		os.Getenv("SNOWFLAKE_ORG"),
 		os.Getenv("SAMPLE_CUSTOMER_NAMESPACE"),
 		fmt.Sprintf("integration-test-%d", time.Now().UnixNano()),
 	)
 	if err != nil {
-		t.Fatalf("NewTenantPath: %v", err)
+		t.Fatalf("NewTenantIdentifier: %v", err)
 	}
 
 	// Cleanup — uses ForceDeleteWithoutRecovery
-	t.Cleanup(func() { forceDeleteForTest(ctx, t, path) })
+	t.Cleanup(func() { forceDeleteForTest(ctx, t, id) })
 
-	if err := backend.Create(ctx, path, "integration-test-value"); err != nil {
+	if err := backend.Create(ctx, id, "integration-test-value"); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	got, gotAt, err := backend.Get(ctx, path)
+	got, gotAt, err := backend.Get(ctx, id)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -103,9 +103,9 @@ func TestIntegration_CreateGetDelete(t *testing.T) {
 		t.Fatal("Get returned a zero CreatedDate")
 	}
 	// AWS schedules the removal rather than performing it. The cleanup above then force-deletes
-	// the path, which is why consecutive runs are not blocked by the reservation this Delete
+	// the id, which is why consecutive runs are not blocked by the reservation this Delete
 	// just took out.
-	if err := backend.Delete(ctx, path); err != nil {
+	if err := backend.Delete(ctx, id); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 }

@@ -22,47 +22,47 @@ import (
 	"time"
 )
 
-// ErrPendingDeletion marks a Create failure caused by a path occupied by a
-// secret scheduled for deletion rather than a live one. It is identity
+// ErrPendingDeletion marks a Create failure caused by an identifier occupied
+// by a secret scheduled for deletion rather than a live one. It is identity
 // only: the failure it wraps is still an ordinary system error by
 // default; a caller with more context may catch it via errors.Is and
 // classify it differently. This is the first entry in a small taxonomy of
 // such errors (see Key Concept: A KeyStore Error Taxonomy, specs/003).
-var ErrPendingDeletion = errors.New("secrets: path pending deletion")
+var ErrPendingDeletion = errors.New("secrets: identifier pending deletion")
 
 // KeyStore is a string-valued keystore. It never parses a credential, never
 // caches, and never logs — every method reports failure as an ordinary error
-// whose message names the path it failed on, and no caller branches on an
-// error's identity. How the value string is persisted is each implementation's
-// own choice.
+// whose message names the identifier it failed on, and no caller branches on
+// an error's identity. How the value string is persisted is each
+// implementation's own choice.
 type KeyStore interface {
-	// Get returns the value stored at path, along with the time the backend
+	// Get returns the value stored at id, along with the time the backend
 	// last wrote that value — creation time if never overwritten,
 	// modification time otherwise. It fails if nothing is stored there, and
 	// it fails if the store cannot be read; the returned time is the zero
 	// value on error.
-	Get(ctx context.Context, path Path) (string, time.Time, error)
+	Get(ctx context.Context, id Identifier) (string, time.Time, error)
 
-	// Create stores value at path. It fails if path is already occupied, and
+	// Create stores value at id. It fails if id is already occupied, and
 	// leaves the occupying value untouched when it does — this is the
 	// atomicity 012 depends on to never silently overwrite a live account's
 	// credential on a retried request. If the occupying secret is scheduled
 	// for deletion rather than live, the returned error also wraps
 	// ErrPendingDeletion.
-	Create(ctx context.Context, path Path, value string) error
+	Create(ctx context.Context, id Identifier, value string) error
 
-	// Update overwrites the value already stored at path. It fails if nothing
+	// Update overwrites the value already stored at id. It fails if nothing
 	// is stored there — Update never creates.
-	Update(ctx context.Context, path Path, value string) error
+	Update(ctx context.Context, id Identifier, value string) error
 
-	// Delete removes path. Nothing in this package reads a deleted path
+	// Delete removes id. Nothing in this package reads a deleted identifier
 	// afterwards.
 	//
 	// An implementation that schedules the removal instead of performing it must
 	// keep that window within whatever account grace period it was constructed
 	// with (002), by whatever means suits its own store — this package
 	// prescribes no shared mechanism for that decision. While the removal is
-	// pending, path stays occupied: Get and Update fail on it and so does
+	// pending, id stays occupied: Get and Update fail on it and so does
 	// Create, since the store has not released the name yet.
-	Delete(ctx context.Context, path Path) error
+	Delete(ctx context.Context, id Identifier) error
 }

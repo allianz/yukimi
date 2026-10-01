@@ -164,12 +164,12 @@ func (m *module) createAccount(ctx context.Context, mc *pipeline.ModuleContext) 
 		return pipeline.Failed(fmt.Errorf("failed to marshal platform credentials: %w", err)).Aborting()
 	}
 
-	path, err := secrets.NewTenantPath(m.org, cr.Namespace, cr.Name)
+	id, err := secrets.NewTenantIdentifier(m.org, cr.Namespace, cr.Name)
 	if err != nil {
 		return pipeline.Failed(err).Aborting()
 	}
 
-	if err := m.keyManager.Create(ctx, path, marshaled); err != nil {
+	if err := m.keyManager.Create(ctx, id, marshaled); err != nil {
 		if errors.Is(err, secrets.ErrPendingDeletion) {
 			return pipeline.Rejected(errors.NewUserError(fmt.Sprintf(
 				"account %q was deleted recently and is still within its deletion recovery "+

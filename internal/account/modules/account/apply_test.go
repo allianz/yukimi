@@ -413,17 +413,17 @@ func TestApply_FreshCreate_LocateAccount_DiscardsNonExactMatch(t *testing.T) {
 }
 
 // SC-007: a fresh create aborts with a system error, generating no keypair
-// and issuing no SQL, when the resolved secret path is already occupied.
-func TestApply_FreshCreate_SecretPathOccupied(t *testing.T) {
+// and issuing no SQL, when the resolved secret id is already occupied.
+func TestApply_FreshCreate_SecretIdentifierOccupied(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
 	store := secrets.NewFakeKeyStore()
 	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
 
-	path, err := secrets.NewTenantPath("myorg", cr.Namespace, cr.Name)
+	id, err := secrets.NewTenantIdentifier("myorg", cr.Namespace, cr.Name)
 	if err != nil {
-		t.Fatalf("secrets.NewTenantPath: %v", err)
+		t.Fatalf("secrets.NewTenantIdentifier: %v", err)
 	}
-	if err := store.Create(context.Background(), path, "existing-secret"); err != nil {
+	if err := store.Create(context.Background(), id, "existing-secret"); err != nil {
 		t.Fatalf("seeding existing secret: %v", err)
 	}
 
@@ -439,22 +439,22 @@ func TestApply_FreshCreate_SecretPathOccupied(t *testing.T) {
 }
 
 // A fresh create aborts with a user error naming the account and its deletion
-// recovery window — never the secret path — when the resolved secret path is
+// recovery window — never the secret id — when the resolved secret id is
 // occupied by a secret scheduled for deletion (secrets.ErrPendingDeletion).
-func TestApply_FreshCreate_SecretPathPendingDeletion_Rejected(t *testing.T) {
+func TestApply_FreshCreate_SecretIdentifierPendingDeletion_Rejected(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
 	store := secrets.NewFakeKeyStore()
 	store.SchedulesDeletion = true
 	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
 
-	path, err := secrets.NewTenantPath("myorg", cr.Namespace, cr.Name)
+	id, err := secrets.NewTenantIdentifier("myorg", cr.Namespace, cr.Name)
 	if err != nil {
-		t.Fatalf("secrets.NewTenantPath: %v", err)
+		t.Fatalf("secrets.NewTenantIdentifier: %v", err)
 	}
-	if err := store.Create(context.Background(), path, "existing-secret"); err != nil {
+	if err := store.Create(context.Background(), id, "existing-secret"); err != nil {
 		t.Fatalf("seeding existing secret: %v", err)
 	}
-	if err := store.Delete(context.Background(), path); err != nil {
+	if err := store.Delete(context.Background(), id); err != nil {
 		t.Fatalf("scheduling deletion: %v", err)
 	}
 
@@ -476,8 +476,8 @@ func TestApply_FreshCreate_SecretPathPendingDeletion_Rejected(t *testing.T) {
 	if outcome.Err == nil || !strings.Contains(outcome.Err.Error(), "recovery window") {
 		t.Errorf("expected the message to mention the deletion recovery window, got: %v", outcome.Err)
 	}
-	if outcome.Err != nil && strings.Contains(outcome.Err.Error(), path.String()) {
-		t.Errorf("expected the message to never name the secret path, got: %v", outcome.Err)
+	if outcome.Err != nil && strings.Contains(outcome.Err.Error(), id.String()) {
+		t.Errorf("expected the message to never name the secret id, got: %v", outcome.Err)
 	}
 }
 

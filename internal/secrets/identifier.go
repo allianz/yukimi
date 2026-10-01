@@ -23,8 +23,8 @@ import (
 	"github.com/allianz/yukimi/internal/errors"
 )
 
-// segmentPattern is the allowed shape for every path segment. It rejects an
-// empty segment (the + quantifier requires at least one character) and any
+// segmentPattern is the allowed shape for every identifier segment. It rejects
+// an empty segment (the + quantifier requires at least one character) and any
 // segment containing '/', '.', or '..' as a side effect of excluding every
 // character outside this class — a dot is never in the allowed set, so '..'
 // needs no separate check.
@@ -36,20 +36,20 @@ var segmentPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 func validateSegment(name, value string) error {
 	if !segmentPattern.MatchString(value) {
 		return errors.NewUserError(fmt.Sprintf(
-			"invalid secrets path segment %q for %s: must be non-empty and contain only letters, digits, '_', or '-'",
+			"invalid secret identifier segment %q for %s: must be non-empty and contain only letters, digits, '_', or '-'",
 			value, name))
 	}
 	return nil
 }
 
-// Path is an opaque, pre-validated secret path. The zero value is not valid;
-// only NewTenantPath and NewOrgAdminPath produce one.
-type Path struct {
+// Identifier is an opaque, pre-validated secret identifier. The zero value is
+// not valid; only NewTenantIdentifier and NewOrgAdminIdentifier produce one.
+type Identifier struct {
 	value string
 }
 
-// NewTenantPath builds the tenant platform-credential path (design.md 3.11.1):
-// snowflake/tenant/<org>/<namespace>/<accountName>/platform-credentials.
+// NewTenantIdentifier builds the tenant platform-credential identifier
+// (design.md 3.11.1): snowflake/tenant/<org>/<namespace>/<accountName>/platform-credentials.
 //
 // Parameters:
 //   - org: Snowflake organization name (Config.Snowflake.Org, 002)
@@ -61,20 +61,20 @@ type Path struct {
 // Returns:
 //   - User error if any segment is empty or contains '/', '.', '..', or a
 //     character outside [A-Za-z0-9_-]
-func NewTenantPath(org, namespace, accountName string) (Path, error) {
+func NewTenantIdentifier(org, namespace, accountName string) (Identifier, error) {
 	for _, seg := range []struct{ name, value string }{
 		{"org", org},
 		{"namespace", namespace},
 		{"accountName", accountName},
 	} {
 		if err := validateSegment(seg.name, seg.value); err != nil {
-			return Path{}, err
+			return Identifier{}, err
 		}
 	}
-	return Path{value: fmt.Sprintf("snowflake/tenant/%s/%s/%s/platform-credentials", org, namespace, accountName)}, nil
+	return Identifier{value: fmt.Sprintf("snowflake/tenant/%s/%s/%s/platform-credentials", org, namespace, accountName)}, nil
 }
 
-// NewOrgAdminPath builds the org-admin credential path:
+// NewOrgAdminIdentifier builds the org-admin credential identifier:
 // snowflake/org/<org>/<orgAdminAccount>/org-admin-credentials.
 //
 // Parameters:
@@ -82,21 +82,21 @@ func NewTenantPath(org, namespace, accountName string) (Path, error) {
 //   - orgAdminAccount: Config.Snowflake.OrgAdminAccount (002)
 //
 // Returns:
-//   - User error under the same validation rule as NewTenantPath
-func NewOrgAdminPath(org, orgAdminAccount string) (Path, error) {
+//   - User error under the same validation rule as NewTenantIdentifier
+func NewOrgAdminIdentifier(org, orgAdminAccount string) (Identifier, error) {
 	for _, seg := range []struct{ name, value string }{
 		{"org", org},
 		{"orgAdminAccount", orgAdminAccount},
 	} {
 		if err := validateSegment(seg.name, seg.value); err != nil {
-			return Path{}, err
+			return Identifier{}, err
 		}
 	}
-	return Path{value: fmt.Sprintf("snowflake/org/%s/%s/org-admin-credentials", org, orgAdminAccount)}, nil
+	return Identifier{value: fmt.Sprintf("snowflake/org/%s/%s/org-admin-credentials", org, orgAdminAccount)}, nil
 }
 
-// String returns the path for logging. It never contains secret material —
-// only the identifiers that make up the path itself.
-func (p Path) String() string {
-	return p.value
+// String returns the identifier for logging. It never contains secret
+// material — only the identifiers that make it up.
+func (i Identifier) String() string {
+	return i.value
 }

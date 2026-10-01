@@ -25,7 +25,7 @@ import (
 
 // fakeEntry holds a stored value and the time it was last recorded. A
 // pendingDeletion entry is one Delete scheduled rather than removed: the value
-// is unreadable but the path is still occupied.
+// is unreadable but the identifier is still occupied.
 type fakeEntry struct {
 	value           string
 	modifiedAt      time.Time
@@ -39,40 +39,41 @@ type fakeEntry struct {
 // (e.g. "OnCreate fails once, then is cleared") in a way a construction-time
 // option cannot.
 type FakeKeyStore struct {
-	OnGet    func(path Path) error
-	OnCreate func(path Path) error
-	OnUpdate func(path Path) error
-	OnDelete func(path Path) error
+	OnGet    func(id Identifier) error
+	OnCreate func(id Identifier) error
+	OnUpdate func(id Identifier) error
+	OnDelete func(id Identifier) error
 
-	// Clock returns the time recorded against a path on Create and Update,
-	// and returned by Get. Defaults to time.Now; tests override it for a
-	// deterministic RotatedAt.
+	// Clock returns the time recorded against an identifier on Create and
+	// Update, and returned by Get. Defaults to time.Now; tests override it
+	// for a deterministic RotatedAt.
 	Clock func() time.Time
 
 	// SchedulesDeletion makes Delete schedule the removal instead of performing
-	// it: the entry becomes unreadable but keeps its path occupied until
+	// it: the entry becomes unreadable but keeps its identifier occupied until
 	// Restore cancels the removal. False — the default — deletes outright, so a
 	// consumer that does not care about the pending state sees the simplest
 	// possible behavior.
 	SchedulesDeletion bool
 
 	mu      sync.Mutex
-	entries map[Path]fakeEntry
+	entries map[Identifier]fakeEntry
 }
 
 var _ KeyStore = (*FakeKeyStore)(nil)
 
 // NewFakeKeyStore returns an empty FakeKeyStore that deletes outright. Delete
-// removes the entry and is idempotent, so a Create on a deleted path succeeds
-// and a Get on one fails exactly as it would on a path nothing was ever stored
-// at. Set SchedulesDeletion to exercise the pending-deletion state instead.
+// removes the entry and is idempotent, so a Create on a deleted identifier
+// succeeds and a Get on one fails exactly as it would on an identifier
+// nothing was ever stored at. Set SchedulesDeletion to exercise the
+// pending-deletion state instead.
 func NewFakeKeyStore() *FakeKeyStore {
-	return &FakeKeyStore{entries: make(map[Path]fakeEntry), Clock: time.Now}
+	return &FakeKeyStore{entries: make(map[Identifier]fakeEntry), Clock: time.Now}
 }
 
-func (f *FakeKeyStore) Get(_ context.Context, path Path) (string, time.Time, error) {
+func (f *FakeKeyStore) Get(_ context.Context, id Identifier) (string, time.Time, error) {
 	if f.OnGet != nil {
-		if err := f.OnGet(path); err != nil {
+		if err := f.OnGet(id); err != nil {
 			return "", time.Time{}, err
 		}
 	}
@@ -80,19 +81,19 @@ func (f *FakeKeyStore) Get(_ context.Context, path Path) (string, time.Time, err
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	entry, ok := f.entries[path]
+	entry, ok := f.entries[id]
 	if !ok {
-		return "", time.Time{}, fmt.Errorf("secrets: no secret stored at %s", path)
+		return "", time.Time{}, fmt.Errorf("secrets: no secret stored at %s", id)
 	}
 	if entry.pendingDeletion {
-		return "", time.Time{}, fmt.Errorf("secrets: the secret at %s is scheduled for deletion", path)
+		return "", time.Time{}, fmt.Errorf("secrets: the secret at %s is scheduled for deletion", id)
 	}
 	return entry.value, entry.modifiedAt, nil
 }
 
-func (f *FakeKeyStore) Create(_ context.Context, path Path, value string) error {
+func (f *FakeKeyStore) Create(_ context.Context, id Identifier, value string) error {
 	if f.OnCreate != nil {
-		if err := f.OnCreate(path); err != nil {
+		if err := f.OnCreate(id); err != nil {
 			return err
 		}
 	}
@@ -100,21 +101,21 @@ func (f *FakeKeyStore) Create(_ context.Context, path Path, value string) error 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	if existing, ok := f.entries[path]; ok {
+	if existing, ok := f.entries[id]; ok {
 		if existing.pendingDeletion {
 			return fmt.Errorf(
-				"secrets: the secret at %s is scheduled for deletion and its path cannot be reused: %w",
-				path, ErrPendingDeletion)
+				"secrets: the secret at %s is scheduled for deletion and its identifier cannot be reused: %w",
+				id, ErrPendingDeletion)
 		}
-		return fmt.Errorf("secrets: a secret already exists at %s", path)
+		return fmt.Errorf("secrets: a secret already exists at %s", id)
 	}
-	f.entries[path] = fakeEntry{value: value, modifiedAt: f.Clock()}
+	f.entries[id] = fakeEntry{value: value, modifiedAt: f.Clock()}
 	return nil
 }
 
-func (f *FakeKeyStore) Update(_ context.Context, path Path, value string) error {
+func (f *FakeKeyStore) Update(_ context.Context, id Identifier, value string) error {
 	if f.OnUpdate != nil {
-		if err := f.OnUpdate(path); err != nil {
+		if err := f.OnUpdate(id); err != nil {
 			return err
 		}
 	}
@@ -122,20 +123,20 @@ func (f *FakeKeyStore) Update(_ context.Context, path Path, value string) error 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	existing, ok := f.entries[path]
+	existing, ok := f.entries[id]
 	if !ok {
-		return fmt.Errorf("secrets: no secret stored at %s", path)
+		return fmt.Errorf("secrets: no secret stored at %s", id)
 	}
 	if existing.pendingDeletion {
-		return fmt.Errorf("secrets: the secret at %s is scheduled for deletion", path)
+		return fmt.Errorf("secrets: the secret at %s is scheduled for deletion", id)
 	}
-	f.entries[path] = fakeEntry{value: value, modifiedAt: f.Clock()}
+	f.entries[id] = fakeEntry{value: value, modifiedAt: f.Clock()}
 	return nil
 }
 
-func (f *FakeKeyStore) Delete(_ context.Context, path Path) error {
+func (f *FakeKeyStore) Delete(_ context.Context, id Identifier) error {
 	if f.OnDelete != nil {
-		if err := f.OnDelete(path); err != nil {
+		if err := f.OnDelete(id); err != nil {
 			return err
 		}
 	}
@@ -144,35 +145,36 @@ func (f *FakeKeyStore) Delete(_ context.Context, path Path) error {
 	defer f.mu.Unlock()
 
 	if !f.SchedulesDeletion {
-		delete(f.entries, path)
+		delete(f.entries, id)
 		return nil
 	}
 
-	entry, ok := f.entries[path]
+	entry, ok := f.entries[id]
 	if !ok {
-		// Nothing to schedule; Delete stays idempotent on an absent path.
+		// Nothing to schedule; Delete stays idempotent on an absent identifier.
 		return nil
 	}
 	entry.pendingDeletion = true
-	f.entries[path] = entry
+	f.entries[id] = entry
 	return nil
 }
 
-// Restore cancels a pending deletion, making the value readable and the path
-// writable again — the store-side half of the manual repair 012 documents.
+// Restore cancels a pending deletion, making the value readable and the
+// identifier writable again — the store-side half of the manual repair 012
+// documents.
 //
 // Returns:
-//   - Error if nothing at path is scheduled for deletion, whether because the
-//     path is empty or because the entry is live
-func (f *FakeKeyStore) Restore(path Path) error {
+//   - Error if nothing at id is scheduled for deletion, whether because the
+//     identifier is empty or because the entry is live
+func (f *FakeKeyStore) Restore(id Identifier) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	entry, ok := f.entries[path]
+	entry, ok := f.entries[id]
 	if !ok || !entry.pendingDeletion {
-		return fmt.Errorf("secrets: no secret scheduled for deletion at %s", path)
+		return fmt.Errorf("secrets: no secret scheduled for deletion at %s", id)
 	}
 	entry.pendingDeletion = false
-	f.entries[path] = entry
+	f.entries[id] = entry
 	return nil
 }

@@ -48,12 +48,12 @@ import (
 	"github.com/allianz/yukimi/internal/snowflake/pool"
 )
 
-// forceDeleteForTest permanently deletes the secret at path, bypassing AWS
+// forceDeleteForTest permanently deletes the secret at id, bypassing AWS
 // Secrets Manager's default recovery window — mirrors
 // internal/account/modules/account/integration_test.go's own helper of the
 // same name, so this test never leaves a throwaway platform-credential
 // secret behind even when CREATE ACCOUNT itself never runs or fails.
-func forceDeleteForTest(ctx context.Context, t *testing.T, path secrets.Path) {
+func forceDeleteForTest(ctx context.Context, t *testing.T, id secrets.Identifier) {
 	t.Helper()
 
 	cfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(os.Getenv("AWS_REGION")))
@@ -63,10 +63,10 @@ func forceDeleteForTest(ctx context.Context, t *testing.T, path secrets.Path) {
 	}
 	c := secretsmanager.NewFromConfig(cfg)
 	if _, err := c.DeleteSecret(ctx, &secretsmanager.DeleteSecretInput{
-		SecretId:                   aws.String(path.String()),
+		SecretId:                   aws.String(id.String()),
 		ForceDeleteWithoutRecovery: aws.Bool(true),
 	}); err != nil {
-		t.Logf("cleanup: failed to force-delete secret at %s: %v", path, err)
+		t.Logf("cleanup: failed to force-delete secret at %s: %v", id, err)
 	}
 }
 
@@ -166,11 +166,11 @@ func TestIntegration_CreateThenDestroy(t *testing.T) {
 	// Registered before apply ever runs: the account module stores this
 	// secret create-only, strictly before it opens the org-admin connection,
 	// so it can exist even if CREATE ACCOUNT never runs or fails.
-	secretPath, err := secrets.NewTenantPath(org, namespace, name)
+	secretIdentifier, err := secrets.NewTenantIdentifier(org, namespace, name)
 	if err != nil {
-		t.Fatalf("secrets.NewTenantPath: %v", err)
+		t.Fatalf("secrets.NewTenantIdentifier: %v", err)
 	}
-	t.Cleanup(func() { forceDeleteForTest(context.Background(), t, secretPath) })
+	t.Cleanup(func() { forceDeleteForTest(context.Background(), t, secretIdentifier) })
 
 	// Real Destroy through the pipeline, not a hand-rolled cleanup —
 	// registered so it still runs even if an assertion below fails early.
@@ -236,9 +236,9 @@ func TestIntegration_CreateThenDestroy(t *testing.T) {
 	}
 
 	// deleteCredential only schedules removal (a 30-day AWS recovery window)
-	// — a scheduled-for-deletion path is unreadable immediately, enough to
+	// — a scheduled-for-deletion identifier is unreadable immediately, enough to
 	// prove the delete step ran for real.
-	if _, _, err := awsStore.Get(context.Background(), secretPath); err == nil {
+	if _, _, err := awsStore.Get(context.Background(), secretIdentifier); err == nil {
 		t.Error("platform credential still readable after Delete")
 	}
 }

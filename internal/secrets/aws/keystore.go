@@ -107,31 +107,31 @@ func New(region, kmsKeyId string, gracePeriodDays int) (*KeyStore, error) {
 	}, nil
 }
 
-// Get reads the value and CreatedDate stored at path via GetSecretValue.
+// Get reads the value and CreatedDate stored at id via GetSecretValue.
 //
 // Returns:
 //   - System error if the secret does not exist or the call otherwise fails;
 //     the returned time is the zero value on error
-func (b *KeyStore) Get(ctx context.Context, path secrets.Path) (string, time.Time, error) {
+func (b *KeyStore) Get(ctx context.Context, id secrets.Identifier) (string, time.Time, error) {
 	out, err := b.client.GetSecretValue(ctx, &secretsmanager.GetSecretValueInput{
-		SecretId: aws.String(path.String()),
+		SecretId: aws.String(id.String()),
 	})
 	if err != nil {
-		return "", time.Time{}, fmt.Errorf("failed to get secret at %s: %w", path, err)
+		return "", time.Time{}, fmt.Errorf("failed to get secret at %s: %w", id, err)
 	}
 	return aws.ToString(out.SecretString), aws.ToTime(out.CreatedDate), nil
 }
 
-// Create stores value at path via CreateSecret, setting KmsKeyId when the
+// Create stores value at id via CreateSecret, setting KmsKeyId when the
 // constructor was given one. Never calls PutSecretValue.
 //
 // Returns:
-//   - System error if path is already occupied or the call otherwise fails;
+//   - System error if id is already occupied or the call otherwise fails;
 //     also wraps secrets.ErrPendingDeletion if the occupying secret is
 //     scheduled for deletion rather than live
-func (b *KeyStore) Create(ctx context.Context, path secrets.Path, value string) error {
+func (b *KeyStore) Create(ctx context.Context, id secrets.Identifier, value string) error {
 	in := &secretsmanager.CreateSecretInput{
-		Name:         aws.String(path.String()),
+		Name:         aws.String(id.String()),
 		SecretString: aws.String(value),
 	}
 	if b.kmsKeyId != "" {
@@ -140,9 +140,9 @@ func (b *KeyStore) Create(ctx context.Context, path secrets.Path, value string) 
 
 	if _, err := b.client.CreateSecret(ctx, in); err != nil {
 		if isPendingDeletion(err) {
-			return fmt.Errorf("failed to create secret at %s: %w: %w", path, secrets.ErrPendingDeletion, err)
+			return fmt.Errorf("failed to create secret at %s: %w: %w", id, secrets.ErrPendingDeletion, err)
 		}
-		return fmt.Errorf("failed to create secret at %s: %w", path, err)
+		return fmt.Errorf("failed to create secret at %s: %w", id, err)
 	}
 	return nil
 }
@@ -163,38 +163,38 @@ func isPendingDeletion(err error) bool {
 	return strings.Contains(strings.ToLower(invalidReq.ErrorMessage()), "scheduled for deletion")
 }
 
-// Update overwrites the value at path via PutSecretValue. Never calls
+// Update overwrites the value at id via PutSecretValue. Never calls
 // CreateSecret.
 //
 // Returns:
-//   - System error if nothing is stored at path or the call otherwise fails
-func (b *KeyStore) Update(ctx context.Context, path secrets.Path, value string) error {
+//   - System error if nothing is stored at id or the call otherwise fails
+func (b *KeyStore) Update(ctx context.Context, id secrets.Identifier, value string) error {
 	_, err := b.client.PutSecretValue(ctx, &secretsmanager.PutSecretValueInput{
-		SecretId:     aws.String(path.String()),
+		SecretId:     aws.String(id.String()),
 		SecretString: aws.String(value),
 	})
 	if err != nil {
-		return fmt.Errorf("failed to update secret at %s: %w", path, err)
+		return fmt.Errorf("failed to update secret at %s: %w", id, err)
 	}
 	return nil
 }
 
-// Delete removes path via DeleteSecret, scheduling it for the window computed at construction
+// Delete removes id via DeleteSecret, scheduling it for the window computed at construction
 // rather than accepting AWS's own 30-day default, which could outlive a shorter account grace
 // period. It always sets RecoveryWindowInDays and never ForceDeleteWithoutRecovery — 002's grace
 // period floor (7) already matches Secrets Manager's own minimum, so there is no grace period
 // this key store cannot schedule a window for. Never calls RestoreSecret.
 //
 // Returns:
-//   - System error if the call fails, including on an already-absent path
+//   - System error if the call fails, including on an already-absent id
 //     (AWS's ResourceNotFoundException) — unlike 003's FakeKeyStore.Delete,
 //     this is not idempotent (see Edge Cases)
-func (b *KeyStore) Delete(ctx context.Context, path secrets.Path) error {
+func (b *KeyStore) Delete(ctx context.Context, id secrets.Identifier) error {
 	if _, err := b.client.DeleteSecret(ctx, &secretsmanager.DeleteSecretInput{
-		SecretId:             aws.String(path.String()),
+		SecretId:             aws.String(id.String()),
 		RecoveryWindowInDays: aws.Int64(int64(b.recoveryWindowDays)),
 	}); err != nil {
-		return fmt.Errorf("failed to delete secret at %s: %w", path, err)
+		return fmt.Errorf("failed to delete secret at %s: %w", id, err)
 	}
 	return nil
 }

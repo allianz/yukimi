@@ -90,7 +90,7 @@ an operator has to restore the credential by hand.
 // Parameters:
 //   - keyManager: the *secrets.KeyManager (003) the platform keypair is stored through, via
 //     KeyManager.Create and, on teardown, KeyManager.Delete — this module never calls Update.
-//   - org: Config.Snowflake.Org (002), used to build the tenant secret path (003) exactly as
+//   - org: Config.Snowflake.Org (002), used to build the tenant secret identifier (003) exactly as
 //     internal/snowflake/pool does.
 //   - gracePeriod: Config.Snowflake.AccountCreationGracePeriod (002) — how long a fresh account is
 //     given to become reachable before the first post-create connection attempt.
@@ -117,7 +117,7 @@ any `ModuleContext` accessor — `internal/account/pipeline` (009) defines none 
 
 `Teardown` runs three steps in a fixed order: `DROP ACCOUNT ... GRACE_PERIOD_IN_DAYS = <configured>` over
 the org-admin connection, then `ModuleContext.EvictTenant()` so no stale pooled connection to a dropped
-account survives, then `KeyManager.Delete` on the tenant secret path. Each step runs only once the one before
+account survives, then `KeyManager.Delete` on the tenant secret identifier. Each step runs only once the one before
 it succeeded, and a step whose object is already absent counts as success, so the whole sequence is safe to
 re-run.
 
@@ -161,7 +161,7 @@ internal/account/modules/account/
 
 **System Errors**:
 - RSA keypair generation fails.
-- The secret store's create-only write fails for any other reason, including the path already being
+- The secret store's create-only write fails for any other reason, including the identifier already being
   occupied by a live secret.
 - The org-admin connection cannot be opened.
 - `CREATE ACCOUNT` fails for any reason other than the name collision above.
@@ -170,7 +170,7 @@ internal/account/modules/account/
 - The platform connection fails when a locator is already known (the account exists but is currently
   unreachable).
 - `DROP ACCOUNT` fails for any reason other than the account already being absent.
-- The credential's deletion fails for any reason other than the secret path already being absent.
+- The credential's deletion fails for any reason other than the secret identifier already being absent.
 - The platform user's `EMAIL` lookup (`SHOW USERS`) or update (`ALTER USER ... SET EMAIL`) fails for any
   reason (Key Concept: Contact Email Kept In Sync).
 
@@ -209,7 +209,7 @@ This specification defines the account module that:
 - **A crash lands between a successful credential store write (or `CREATE ACCOUNT`) and the locator
   being persisted to status — what happens on the next reconcile?** The next reconcile still has no
   locator, so it repeats the fresh-create path — and the credential store's create-only write now fails,
-  because the path is already occupied from the previous attempt. This is accepted as a known, bounded
+  because the identifier is already occupied from the previous attempt. This is accepted as a known, bounded
   operational cost rather than auto-recovered: there is no reliable way to tell "this secret is an orphan
   from a crashed attempt" apart from "this secret is a live account's platform credential", so guessing
   would be unsafe. Recovery is manual: an operator inspects the account directly in Snowflake and either
@@ -254,11 +254,11 @@ This specification defines the account module that:
   credential is deleted. That clears the stray secret a crashed create leaves behind (see above); if an
   account really was created and its locator never persisted, dropping it stays the manual operator job
   that case already describes.
-- **The credential path is scheduled for deletion but not yet gone — what does the next reconcile see?**
-  Neither present nor absent. A path inside its recovery window cannot be read and cannot be re-created
+- **The credential identifier is scheduled for deletion but not yet gone — what does the next reconcile see?**
+  Neither present nor absent. An identifier inside its recovery window cannot be read and cannot be re-created
   (003), so `Observe` cannot treat it as a live credential and `Apply`'s fresh-create path cannot claim it
   either. `Apply` recognizes this case (`secrets.ErrPendingDeletion`) and rejects with a message naming
-  the account and its deletion recovery window — never the secret path. The state is still self-clearing,
+  the account and its deletion recovery window — never the secret identifier. The state is still self-clearing,
   bounded by the account's own grace period; there is nothing more for this module to do than report it
   clearly.
 - **Why render the configured grace period rather than Snowflake's minimum of 3?** Because 3 is the value
@@ -266,10 +266,10 @@ This specification defines the account module that:
   so the credential would be destroyed outright on every deletion and every restore would need the manual
   repair above. The configured default of 30 is instead the largest value the reference store matches
   exactly.
-- **The account, or the secret path, is already gone — does `Teardown` fail?** No. Both count as
+- **The account, or the secret identifier, is already gone — does `Teardown` fail?** No. Both count as
   success, so a destruction retried after a partial failure — or after an operator cleaned up by
   hand — converges instead of stalling. The backends do not agree on this themselves (AWS's `Delete`
-  errors on a path that does not exist, 003.a), so this module swallows the case rather than relying on
+  errors on an identifier that does not exist, 003.a), so this module swallows the case rather than relying on
   the backend to.
 
 ## Dependencies
@@ -287,7 +287,7 @@ This specification defines the account module that:
   not an alpha tester (Key Concept: Region Validation), reusing 007's own unknown-region
   wording so the two cases stay indistinguishable to the tenant.
 - **Secrets Handling (003)** — Used APIs: `GenerateKeyPair()`/`NewCredentials()`, `MarshalCredentials()`,
-  `NewTenantPath()`, `KeyManager.Create()`, `KeyManager.Delete()`, `ErrPendingDeletion` — Contract: `Create` and
+  `NewTenantIdentifier()`, `KeyManager.Create()`, `KeyManager.Delete()`, `ErrPendingDeletion` — Contract: `Create` and
   `Delete` only, never `Update`; the module never reads a credential back. `Delete`'s recovery window is
   the key store's own business — this module passes no window and cannot choose one. Matches `Create`'s
   error against `ErrPendingDeletion` via `errors.Is` and decides its own classification and message for
@@ -342,9 +342,9 @@ This specification defines the account module that:
 - **SC-006**: A fresh create generates a keypair, stores it create-only, then issues `CREATE ACCOUNT` —
   in that order, and only in that order.
 - **SC-007**: A fresh create aborts with a system error, generating no keypair and issuing no SQL, when
-  the resolved secret path is already occupied by a live secret.
+  the resolved secret identifier is already occupied by a live secret.
 - **SC-007a**: A fresh create aborts with a user error naming the account and its deletion recovery
-  window — never the secret path — when the resolved secret path is occupied by a secret scheduled for
+  window — never the secret identifier — when the resolved secret identifier is occupied by a secret scheduled for
   deletion.
 - **SC-008**: `CREATE ACCOUNT`'s `REGION` literal is the CRD's region uppercased with every `-` replaced
   by `_`.
@@ -377,7 +377,7 @@ This specification defines the account module that:
   `GRACE_PERIOD_IN_DAYS` clause carrying the value `New` was given, unchanged and unclamped.
 - **SC-023**: `Teardown` issues no SQL and evicts nothing when `cr.Status.AccountLocator` is empty, and
   still deletes the credential.
-- **SC-024**: `Teardown` returns nil when the account is already absent, and when the secret path is
+- **SC-024**: `Teardown` returns nil when the account is already absent, and when the secret identifier is
   already absent.
 - **SC-025**: `Teardown` drops the account, then evicts the pooled connection, then deletes the
   credential — in that order, and performs no later step once one has failed.
@@ -459,7 +459,7 @@ This specification defines the account module that:
   flow this module's teardown is the last phase of), Appendix B (X1).
 - **Account Pipeline**: `internal/account/pipeline/module.go`, `context.go`, `pipeline.go` — the `Module`
   interface, `Outcome` vocabulary, and shared `ModuleContext` this module implements against.
-- **Secrets Handling**: `internal/secrets/keystore.go`, `manager.go`, `path.go`, `credentials.go`.
+- **Secrets Handling**: `internal/secrets/keystore.go`, `manager.go`, `identifier.go`, `credentials.go`.
 - **Statement Execution**: `internal/snowflake/statement/statement.go`, `render.go`, `errors.go`.
 - **Snowflake `CREATE ACCOUNT` reference**: https://docs.snowflake.com/en/sql-reference/sql/create-account
   — required parameters, and which parameter positions are quoted string literals versus bare tokens.
@@ -476,7 +476,7 @@ This specification defines the account module that:
 - **Base Configuration**: `specs/002-base-config.md` — `deletion.gracePeriodDays`, the single setting both
   windows derive from.
 - **Secrets Handling**: `specs/003-secrets-handling.md` — Key Concept: Deleting a Credential Reserves Its
-  Path. The concrete window computation lives in `specs/003.a-aws-secrets-backend.md`.
+  Identifier. The concrete window computation lives in `specs/003.a-aws-secrets-backend.md`.
 - **Backplane Config**: `specs/007-backplane-config.md` — `Config.Region()`, `Region.Available`, and
   its Error Classification's tenant-facing "not yet available" wording, reused for the availability
   check.
