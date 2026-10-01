@@ -207,6 +207,10 @@ for regenerating auto-generated code (`make generate`) and scaffolding a new man
 ### E2E Tests
 
 
+## Pull Requests
+
+Follow `.github/PULL_REQUEST_TEMPLATE.md` for the PR title and body.
+
 ## Resources & References
 
 ### General Reference Specs
