@@ -90,14 +90,23 @@ it with a `//nolint:thelinter // reason` — `nolintlint` rejects one without a 
 ## Submitting a pull request
 
 1. **Branch off `main`.** Open the pull request against `main`.
-2. **Sign off every commit.** Use `git commit -s`, which appends the `Signed-off-by` line that the
+2. **Write the title as a changelog entry.** The title is used verbatim in the changelog, grouped
+   under the PR type you check in the template. Start with a capitalized verb in the imperative
+   mood ("Add", not "Added" or "Adds"), describe the change rather than the work, and leave off the
+   trailing period. For example:
+   - `Add credit-exhaustion condition to SnowflakeAccount`
+   - `Fix spurious Create after an Observe error`
+   - `Remove Crossplane packaging`
+   - `Update Go to 1.26`
+   - `Document the secrets cache TTL`
+3. **Sign off every commit.** Use `git commit -s`, which appends the `Signed-off-by` line that the
    [Developer Certificate of Origin](DCO) requires. This is how you certify you have the right to
    submit the code; there is no separate CLA to sign. A pull request with unsigned commits will be
    blocked by the DCO check — `git rebase --signoff main` fixes a branch after the fact.
-3. **Run `make reviewable`** and commit any files `make generate` changed.
-4. **Keep the spec and the code consistent.** If you changed designed behaviour in a package that a
+4. **Run `make reviewable`** and commit any files `make generate` changed.
+5. **Keep the spec and the code consistent.** If you changed designed behaviour in a package that a
    spec governs, update `specs/NNN-*.md` in the same pull request.
-5. **Fill in the template**, especially what reviewers should know: trade-offs you weighed, and
+6. **Fill in the template**, especially what reviewers should know: trade-offs you weighed, and
    anything you deliberately left out.
 
 Every pull request needs an approving review from a maintainer other than its author. Maintainers are
