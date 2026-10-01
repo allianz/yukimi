@@ -50,9 +50,9 @@ type tenantEntry struct {
 // on every subsequent call. Every cached *sql.DB stays open until Close or an
 // explicit eviction — never after ordinary use.
 type Pool struct {
-	backend secrets.Backend
-	cfg     *base.Config
-	dial    dialFunc
+	keyManager *secrets.KeyManager
+	cfg        *base.Config
+	dial       dialFunc
 
 	orgAdminMu sync.Mutex
 	orgAdminDB *sql.DB
@@ -68,8 +68,7 @@ type Pool struct {
 // *sql.DB is opened lazily, on its first OrgAdmin or TenantAccount call.
 //
 // Parameters:
-//   - backend: the secrets.Backend (003) credentials are read through; never
-//     a concrete backend package
+//   - keyManager: the *secrets.KeyManager (003) credentials are read through
 //   - cfg: Config (002) — Snowflake.Org, OrgAdminAccount,
 //     OrgAdminAccountLocator, OrgAdminAccountRegion, UsePrivateLink,
 //     DisableOCSPChecks, MaxConnectionPoolSize, MaxIdleConnections,
@@ -78,13 +77,13 @@ type Pool struct {
 //
 // Returns:
 //   - *Pool: never nil
-func New(backend secrets.Backend, cfg *base.Config) *Pool {
+func New(keyManager *secrets.KeyManager, cfg *base.Config) *Pool {
 	return &Pool{
-		backend:  backend,
-		cfg:      cfg,
-		dial:     defaultDial,
-		entries:  make(map[tenantKey]tenantEntry),
-		keyLocks: make(map[tenantKey]*sync.Mutex),
+		keyManager: keyManager,
+		cfg:        cfg,
+		dial:       defaultDial,
+		entries:    make(map[tenantKey]tenantEntry),
+		keyLocks:   make(map[tenantKey]*sync.Mutex),
 	}
 }
 
@@ -135,7 +134,7 @@ func (p *Pool) OrgAdmin(ctx context.Context) (*sql.DB, error) {
 		return nil, err
 	}
 
-	raw, rotatedAt, err := p.backend.Get(ctx, path)
+	raw, rotatedAt, err := p.keyManager.Get(ctx, path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read org-admin credentials: %w", err)
 	}
@@ -210,7 +209,7 @@ func (p *Pool) TenantAccount(ctx context.Context, namespace, accountName, locato
 		return nil, err
 	}
 
-	raw, rotatedAt, err := p.backend.Get(ctx, path)
+	raw, rotatedAt, err := p.keyManager.Get(ctx, path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read tenant credentials for %s/%s: %w", namespace, accountName, err)
 	}

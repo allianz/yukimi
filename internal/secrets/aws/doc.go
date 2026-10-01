@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package secretsaws implements secrets.Backend (003) against AWS Secrets
+// Package secretsaws implements secrets.KeyStore (003) against AWS Secrets
 // Manager: one AWS API call per method; Create additionally recognizes a
 // secret scheduled for deletion to wrap secrets.ErrPendingDeletion. See
 // specs/003.a-aws-secrets-backend.md for the full specification.

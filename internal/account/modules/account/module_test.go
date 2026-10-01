@@ -25,7 +25,7 @@ import (
 )
 
 func TestNew(t *testing.T) {
-	m := New(secrets.NewFakeBackend(), "myorg", 5*time.Minute, 30, &backplane.Config{})
+	m := New(secrets.NewKeyManager(secrets.NewFakeKeyStore(), time.Hour), "myorg", 5*time.Minute, 30, &backplane.Config{})
 	if m == nil {
 		t.Fatal("New() = nil, want non-nil")
 	}

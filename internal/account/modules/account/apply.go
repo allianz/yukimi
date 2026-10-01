@@ -169,7 +169,7 @@ func (m *module) createAccount(ctx context.Context, mc *pipeline.ModuleContext) 
 		return pipeline.Failed(err).Aborting()
 	}
 
-	if err := m.backend.Create(ctx, path, marshaled); err != nil {
+	if err := m.keyManager.Create(ctx, path, marshaled); err != nil {
 		if errors.Is(err, secrets.ErrPendingDeletion) {
 			return pipeline.Rejected(errors.NewUserError(fmt.Sprintf(
 				"account %q was deleted recently and is still within its deletion recovery "+

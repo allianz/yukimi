@@ -91,7 +91,7 @@ var (
 type Config struct {
 	Snowflake SnowflakeSettings // organization identity plus connection-affecting settings
 	AWS       AWSSettings       // consumed by 003.a; checked here for shape only
-	Secrets   SecretsSettings   // consumed by whoever wraps a Backend in secrets.NewCachedBackend (003)
+	Secrets   SecretsSettings   // consumed by whoever wraps a KeyStore in secrets.NewKeyManager (003)
 	Deletion  DeletionSettings  // the single deletion window every store derives its own from (003, 012)
 
 	cloudProvider string // resolved by Load from the cloud section present; read via CloudProvider()
@@ -125,7 +125,7 @@ type SnowflakeSettings struct {
 }
 
 // SecretsSettings holds settings for the secrets cache decorator (003), consumed by whoever
-// wraps a Backend in secrets.NewCachedBackend — today cmd/provider/main.go.
+// wraps a KeyStore in secrets.NewKeyManager — today cmd/provider/main.go.
 type SecretsSettings struct {
 	CacheTTL         time.Duration // TTL for the in-memory secrets cache (003); defaults to 5m when omitted
 	RotationInterval time.Duration // age past which OrgAdmin/TenantAccount rotate a stored credential inline (004); defaults to 4320h (~6 months) when omitted

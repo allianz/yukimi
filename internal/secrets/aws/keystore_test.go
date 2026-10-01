@@ -93,14 +93,14 @@ func (f *fakeClient) DeleteSecret(_ context.Context, in *secretsmanager.DeleteSe
 	return &secretsmanager.DeleteSecretOutput{}, nil
 }
 
-// newTestBackend builds a Backend whose recovery window is computed from gracePeriodDays
+// newTestKeyStore builds a KeyStore whose recovery window is computed from gracePeriodDays
 // exactly as New computes it, without the SDK config load New performs.
-func newTestBackend(fake *fakeClient, gracePeriodDays int) *Backend {
+func newTestKeyStore(fake *fakeClient, gracePeriodDays int) *KeyStore {
 	recoveryWindowDays := gracePeriodDays
 	if recoveryWindowDays > maxRecoveryWindowDays {
 		recoveryWindowDays = maxRecoveryWindowDays
 	}
-	return &Backend{client: fake, recoveryWindowDays: recoveryWindowDays}
+	return &KeyStore{client: fake, recoveryWindowDays: recoveryWindowDays}
 }
 
 func testPath(t *testing.T) secrets.Path {
@@ -114,28 +114,28 @@ func testPath(t *testing.T) secrets.Path {
 
 func TestNew(t *testing.T) {
 	t.Run("empty region is a user error", func(t *testing.T) {
-		backend, err := New("", "", 30)
+		store, err := New("", "", 30)
 		if err == nil {
 			t.Fatal("expected an error for empty region")
 		}
 		if !yukimierrors.IsUserError(err) {
 			t.Fatalf("expected a user error, got %v", err)
 		}
-		if backend != nil {
-			t.Fatalf("expected a nil Backend on error, got %v", backend)
+		if store != nil {
+			t.Fatalf("expected a nil KeyStore on error, got %v", store)
 		}
 	})
 
 	t.Run("non-empty region succeeds and makes no AWS call", func(t *testing.T) {
-		backend, err := New("eu-central-1", "", 30)
+		store, err := New("eu-central-1", "", 30)
 		if err != nil {
 			t.Fatalf("New: %v", err)
 		}
-		if backend == nil {
-			t.Fatal("expected a non-nil Backend")
+		if store == nil {
+			t.Fatal("expected a non-nil KeyStore")
 		}
 		// SC-019: the window is computed once, here, from the account grace period.
-		if got := backend.recoveryWindowDays; got != 30 {
+		if got := store.recoveryWindowDays; got != 30 {
 			t.Fatalf("recoveryWindowDays = %d, want 30", got)
 		}
 	})
@@ -149,15 +149,15 @@ func TestNew(t *testing.T) {
 		t.Setenv("AWS_CONFIG_FILE", configPath)
 		t.Setenv("AWS_PROFILE", "broken")
 
-		backend, err := New("eu-central-1", "", 30)
+		store, err := New("eu-central-1", "", 30)
 		if err == nil {
 			t.Fatal("expected a config-load error")
 		}
 		if yukimierrors.IsUserError(err) {
 			t.Fatalf("expected a system error, got a user error: %v", err)
 		}
-		if backend != nil {
-			t.Fatalf("expected a nil Backend on error, got %v", backend)
+		if store != nil {
+			t.Fatalf("expected a nil KeyStore on error, got %v", store)
 		}
 	})
 }
@@ -167,9 +167,9 @@ func TestGet(t *testing.T) {
 
 	t.Run("success reads SecretString via GetSecretValue only", func(t *testing.T) {
 		fake := &fakeClient{}
-		backend := &Backend{client: fake}
+		store := &KeyStore{client: fake}
 
-		got, gotAt, err := backend.Get(context.Background(), path)
+		got, gotAt, err := store.Get(context.Background(), path)
 		if err != nil {
 			t.Fatalf("Get: %v", err)
 		}
@@ -190,9 +190,9 @@ func TestGet(t *testing.T) {
 	t.Run("failure is wrapped with operation and path", func(t *testing.T) {
 		underlying := errors.New("ResourceNotFoundException: secret not found")
 		fake := &fakeClient{getErr: underlying}
-		backend := &Backend{client: fake}
+		store := &KeyStore{client: fake}
 
-		_, _, err := backend.Get(context.Background(), path)
+		_, _, err := store.Get(context.Background(), path)
 		if err == nil {
 			t.Fatal("expected an error")
 		}
@@ -211,9 +211,9 @@ func TestCreate(t *testing.T) {
 
 	t.Run("success calls CreateSecret with SecretString, never SecretBinary", func(t *testing.T) {
 		fake := &fakeClient{}
-		backend := &Backend{client: fake}
+		store := &KeyStore{client: fake}
 
-		if err := backend.Create(context.Background(), path, "some-opaque-value"); err != nil {
+		if err := store.Create(context.Background(), path, "some-opaque-value"); err != nil {
 			t.Fatalf("Create: %v", err)
 		}
 		if !fake.createCalled {
@@ -235,9 +235,9 @@ func TestCreate(t *testing.T) {
 
 	t.Run("KmsKeyId is set when configured", func(t *testing.T) {
 		fake := &fakeClient{}
-		backend := &Backend{client: fake, kmsKeyId: "alias/yukimi-secrets"}
+		store := &KeyStore{client: fake, kmsKeyId: "alias/yukimi-secrets"}
 
-		if err := backend.Create(context.Background(), path, "value"); err != nil {
+		if err := store.Create(context.Background(), path, "value"); err != nil {
 			t.Fatalf("Create: %v", err)
 		}
 		if got := aws.ToString(fake.createInput.KmsKeyId); got != "alias/yukimi-secrets" {
@@ -247,9 +247,9 @@ func TestCreate(t *testing.T) {
 
 	t.Run("KmsKeyId is left unset when not configured", func(t *testing.T) {
 		fake := &fakeClient{}
-		backend := &Backend{client: fake}
+		store := &KeyStore{client: fake}
 
-		if err := backend.Create(context.Background(), path, "value"); err != nil {
+		if err := store.Create(context.Background(), path, "value"); err != nil {
 			t.Fatalf("Create: %v", err)
 		}
 		if fake.createInput.KmsKeyId != nil {
@@ -260,9 +260,9 @@ func TestCreate(t *testing.T) {
 	t.Run("failure on an occupied name is wrapped, never falls back to PutSecretValue", func(t *testing.T) {
 		underlying := errors.New("ResourceExistsException: a secret with this name already exists")
 		fake := &fakeClient{createErr: underlying}
-		backend := &Backend{client: fake}
+		store := &KeyStore{client: fake}
 
-		err := backend.Create(context.Background(), path, "some-opaque-value")
+		err := store.Create(context.Background(), path, "some-opaque-value")
 		if err == nil {
 			t.Fatal("expected Create to fail on an occupied name")
 		}
@@ -285,9 +285,9 @@ func TestCreate(t *testing.T) {
 		underlying := &smtypes.InvalidRequestException{Message: aws.String(
 			"You can't create this secret because a secret with this name is already scheduled for deletion.")}
 		fake := &fakeClient{createErr: underlying}
-		backend := &Backend{client: fake}
+		store := &KeyStore{client: fake}
 
-		err := backend.Create(context.Background(), path, "some-opaque-value")
+		err := store.Create(context.Background(), path, "some-opaque-value")
 		if err == nil {
 			t.Fatal("expected Create to fail on a path scheduled for deletion")
 		}
@@ -306,9 +306,9 @@ func TestCreate(t *testing.T) {
 		underlying := &smtypes.InvalidRequestException{Message: aws.String(
 			"You must specify a rotation function ARN before enabling rotation.")}
 		fake := &fakeClient{createErr: underlying}
-		backend := &Backend{client: fake}
+		store := &KeyStore{client: fake}
 
-		err := backend.Create(context.Background(), path, "some-opaque-value")
+		err := store.Create(context.Background(), path, "some-opaque-value")
 		if err == nil {
 			t.Fatal("expected Create to fail")
 		}
@@ -326,9 +326,9 @@ func TestUpdate(t *testing.T) {
 
 	t.Run("success calls PutSecretValue, never CreateSecret", func(t *testing.T) {
 		fake := &fakeClient{}
-		backend := &Backend{client: fake}
+		store := &KeyStore{client: fake}
 
-		if err := backend.Update(context.Background(), path, "new-value"); err != nil {
+		if err := store.Update(context.Background(), path, "new-value"); err != nil {
 			t.Fatalf("Update: %v", err)
 		}
 		if !fake.putCalled {
@@ -348,9 +348,9 @@ func TestUpdate(t *testing.T) {
 	t.Run("failure on a missing secret is wrapped, never falls back to CreateSecret", func(t *testing.T) {
 		underlying := errors.New("ResourceNotFoundException: secret not found")
 		fake := &fakeClient{putErr: underlying}
-		backend := &Backend{client: fake}
+		store := &KeyStore{client: fake}
 
-		err := backend.Update(context.Background(), path, "new-value")
+		err := store.Update(context.Background(), path, "new-value")
 		if err == nil {
 			t.Fatal("expected Update to fail on a missing secret")
 		}
@@ -386,9 +386,9 @@ func TestDelete(t *testing.T) {
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				fake := &fakeClient{}
-				backend := newTestBackend(fake, tc.gracePeriodDays)
+				store := newTestKeyStore(fake, tc.gracePeriodDays)
 
-				if err := backend.Delete(context.Background(), path); err != nil {
+				if err := store.Delete(context.Background(), path); err != nil {
 					t.Fatalf("Delete: %v", err)
 				}
 				if !fake.deleteCalled {
@@ -411,9 +411,9 @@ func TestDelete(t *testing.T) {
 	t.Run("failure on an already-absent path is wrapped, not swallowed", func(t *testing.T) {
 		underlying := errors.New("ResourceNotFoundException: secret not found")
 		fake := &fakeClient{deleteErr: underlying}
-		backend := newTestBackend(fake, 30)
+		store := newTestKeyStore(fake, 30)
 
-		err := backend.Delete(context.Background(), path)
+		err := store.Delete(context.Background(), path)
 		if err == nil {
 			t.Fatal("expected Delete on an already-absent path to fail (not idempotent)")
 		}

@@ -1,6 +1,6 @@
 # Specification: SnowflakeAccount Controller (020)
 
-This specification also finishes `cmd/provider/main.go`'s bootstrap wiring (config, secrets backend,
+This specification also finishes `cmd/provider/main.go`'s bootstrap wiring (config, key store,
 connection pool) and updates `internal/controller/yukimi.go`'s registration list — neither file is owned
 by a numbered spec of its own (design.md §1.2), and this is the first controller that needs any of it.
 
@@ -96,7 +96,7 @@ package snowflakeaccount // internal/controller/snowflakeaccount
 // Concept: A Deliberately Partial Pipeline):
 //
 //	pipeline.New(accountmodule.New(
-//	    secretsBackend,
+//	    keyManager,
 //	    cfg.Snowflake.Org,
 //	    cfg.Snowflake.AccountCreationGracePeriod,
 //	    cfg.Deletion.GracePeriodDays,
@@ -112,7 +112,7 @@ package snowflakeaccount // internal/controller/snowflakeaccount
 //   - p: the pooled Snowflake connections (004), satisfying
 //     pipeline.DBPool; shared with every other controller that ever needs
 //     one.
-//   - secretsBackend: the cached secrets backend (003), passed straight
+//   - keyManager: the *secrets.KeyManager (003), passed straight
 //     into the account module's own constructor (012) — this controller
 //     never calls it directly.
 //   - bpConfig: the loaded Backplane Config (007), passed straight into
@@ -123,7 +123,7 @@ package snowflakeaccount // internal/controller/snowflakeaccount
 //   - error if registration with the manager fails; never an error from
 //     anything Snowflake- or secrets-related, since SetupGated performs
 //     no I/O of its own.
-func SetupGated(mgr ctrl.Manager, o controller.Options, cfg *base.Config, p *pool.Pool, secretsBackend secrets.Backend, bpConfig *backplane.Config) error
+func SetupGated(mgr ctrl.Manager, o controller.Options, cfg *base.Config, p *pool.Pool, keyManager *secrets.KeyManager, bpConfig *backplane.Config) error
 ```
 
 ## Project Structure
@@ -144,11 +144,11 @@ Modified, pre-existing files (owned by no numbered spec — design.md §1.2):
 
 ```text
 cmd/provider/main.go            # --configDir flag; base.Load (002); backplane.Load (007); a
-                                 # cloud-provider switch constructing the AWS secrets backend (003.a);
-                                 # secrets.NewCachedBackend (003); pool.New (004); pool.Close() on
-                                 # shutdown; forwards Config, the pool, the cached backend, and the
+                                 # cloud-provider switch constructing the AWS key store (003.a);
+                                 # secrets.NewKeyManager (003); pool.New (004); pool.Close() on
+                                 # shutdown; forwards Config, the pool, the key manager, and the
                                  # loaded *backplane.Config into internal/controller/yukimi.SetupGated
-internal/controller/yukimi.go   # SetupGated gains cfg/pool/secretsBackend/bpConfig parameters and
+internal/controller/yukimi.go   # SetupGated gains cfg/pool/keyManager/bpConfig parameters and
                                  # forwards them into snowflakeaccount.SetupGated, alongside the
                                  # unchanged call to snowflakedeletionrequest.SetupGated
 ```
@@ -208,9 +208,9 @@ This specification defines the `internal/controller/snowflakeaccount` package th
   `Warning: DeletionBlocked` when none is found, and marks the request `Consumed` once `Pipeline.Destroy`
   succeeds.
 - Finishes `cmd/provider/main.go`'s startup wiring: a `--configDir` flag, `base.Load` (002),
-  `backplane.Load` (007), a cloud-provider switch constructing the AWS secrets backend (003.a),
-  `secrets.NewCachedBackend` (003), and `pool.New` (004) — then forwards `Config`, the pool, the
-  cached backend, and the loaded `*backplane.Config` into this package's own `SetupGated`, which
+  `backplane.Load` (007), a cloud-provider switch constructing the AWS key store (003.a),
+  `secrets.NewKeyManager` (003), and `pool.New` (004) — then forwards `Config`, the pool, the
+  key manager, and the loaded `*backplane.Config` into this package's own `SetupGated`, which
   forwards the latter unchanged into the account module's own constructor (012); this package's own
   controller logic never calls `Region()`/`Connection()` itself. Immediately after constructing the
   pool, `main.go` also calls `Pool.OrgAdmin` once, bounded by a short timeout, and exits fatally if it
@@ -294,9 +294,9 @@ This specification defines the `internal/controller/snowflakeaccount` package th
   once in `cmd/provider/main.go` at startup; this package treats the result as immutable for the process's
   life. `Delete` reads `Config.Deletion.Protection` directly to decide whether the deletion gate runs at
   all.
-- **`internal/secrets` (003) / `internal/secrets/aws` (003.a)** — Used APIs: `secrets.Backend`,
-  `secrets.NewCachedBackend()`, `secretsaws.New()` — Contract: `main.go` constructs and wraps exactly one
-  backend and passes it, already cached, into both `pool.New` and `SetupGated`.
+- **`internal/secrets` (003) / `internal/secrets/aws` (003.a)** — Used APIs: `secrets.KeyStore`,
+  `secrets.NewKeyManager()`, `secretsaws.New()` — Contract: `main.go` constructs exactly one key store and
+  wraps it in a `*secrets.KeyManager`, passing that into both `pool.New` and `SetupGated`.
 - **`internal/snowflake/pool` (004)** — Used APIs: `pool.New()`, `Pool.Close()`, and, indirectly through
   `pipeline.ModuleContext`, `OrgAdmin()`/`TenantAccount()`/`EvictTenant()` — Contract: one `*pool.Pool`
   constructed in `main.go`, shared by every controller that needs one; closed exactly once, on shutdown.
@@ -330,11 +330,11 @@ of `internal/account/modules/{guardrailcheck,quotacheck,parameter,network,auth,i
 ## Integration Points
 
 - **`cmd/provider/main.go`** — Owns the new `--configDir` flag (default `/etc/yukimi/config`), calls
-  `base.Load` and `backplane.Load`, switches on `Config.CloudProvider()` to construct the AWS secrets
-  backend (fatally rejecting any other value by listing the cloud providers actually compiled in), wraps
-  it in `secrets.NewCachedBackend`, constructs the `*pool.Pool`, and forwards `Config`, the pool, the
-  cached backend, and the loaded `*backplane.Config` into `internal/controller/yukimi.SetupGated` — Key
-  functions: `base.Load()`, `backplane.Load()`, `secretsaws.New()`, `secrets.NewCachedBackend()`,
+  `base.Load` and `backplane.Load`, switches on `Config.CloudProvider()` to construct the AWS key store
+  (fatally rejecting any other value by listing the cloud providers actually compiled in), wraps
+  it in `secrets.NewKeyManager`, constructs the `*pool.Pool`, and forwards `Config`, the pool, the
+  key manager, and the loaded `*backplane.Config` into `internal/controller/yukimi.SetupGated` — Key
+  functions: `base.Load()`, `backplane.Load()`, `secretsaws.New()`, `secrets.NewKeyManager()`,
   `pool.New()`, `Pool.Close()`.
 - **`internal/controller/yukimi.go`** — `SetupGated`'s signature gains the same four parameters and
   forwards them into `snowflakeaccount.SetupGated`, while `snowflakedeletionrequest.SetupGated` keeps its
@@ -346,12 +346,12 @@ of `internal/account/modules/{guardrailcheck,quotacheck,parameter,network,auth,i
 
 ## Success Criteria
 
-- **SC-001**: `internal/controller/yukimi.go`'s `SetupGated` forwards `cfg`, `p`, `secretsBackend`, and
+- **SC-001**: `internal/controller/yukimi.go`'s `SetupGated` forwards `cfg`, `p`, `keyManager`, and
   `bpConfig` into `snowflakeaccount.SetupGated`, while `snowflakedeletionrequest.SetupGated`'s call
   keeps its existing two-parameter signature.
 - **SC-002**: `cmd/provider/main.go` gains a `--configDir` flag defaulting to `/etc/yukimi/config`, calls
   `base.Load`, and exits fatally — listing the cloud providers actually compiled in — when
-  `Config.CloudProvider()` names one with no backend compiled in.
+  `Config.CloudProvider()` names one with no key store compiled in.
 - **SC-003**: `cmd/provider/main.go` calls `backplane.Load` exactly once, alongside `base.Load`, and
   forwards the result unchanged into `SetupGated` — never calling `Region()`/`Connection()` itself.
 - **SC-004**: the pipeline `SetupGated` builds contains exactly one module, identified by
@@ -634,21 +634,21 @@ kingpin.FatalIfError(err, "failed to load base config")
 bpConfig, err := backplane.Load(*configDir)
 kingpin.FatalIfError(err, "failed to load backplane config")
 
-var backend secrets.Backend
+var store secrets.KeyStore
 switch cfg.CloudProvider() {
 case "aws":
-    backend, err = secretsaws.New(cfg.AWS.Region, cfg.AWS.KmsKeyId, cfg.Deletion.GracePeriodDays)
-    kingpin.FatalIfError(err, "failed to construct AWS secrets backend")
+    store, err = secretsaws.New(cfg.AWS.Region, cfg.AWS.KmsKeyId, cfg.Deletion.GracePeriodDays)
+    kingpin.FatalIfError(err, "failed to construct AWS key store")
 default:
-    kingpin.Fatalf("no secrets backend compiled in for cloud section %q (compiled in: aws)", cfg.CloudProvider())
+    kingpin.Fatalf("no key store compiled in for cloud section %q (compiled in: aws)", cfg.CloudProvider())
 }
-cached := secrets.NewCachedBackend(backend, cfg.Secrets.CacheTTL)
+keyManager := secrets.NewKeyManager(store, cfg.Secrets.CacheTTL)
 
-p := pool.New(cached, cfg)
+p := pool.New(keyManager, cfg)
 defer p.Close()
 
 // o := controller.Options{...} unchanged from today's construction.
 kingpin.FatalIfError(customresourcesgate.Setup(mgr, o), "Cannot setup CRD gate controller")
-kingpin.FatalIfError(yukimi.SetupGated(mgr, o, cfg, p, cached, bpConfig), "Cannot setup Yukimi controllers")
+kingpin.FatalIfError(yukimi.SetupGated(mgr, o, cfg, p, keyManager, bpConfig), "Cannot setup Yukimi controllers")
 kingpin.FatalIfError(mgr.Start(ctrl.SetupSignalHandler()), "Cannot start controller manager")
 ```

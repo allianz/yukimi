@@ -72,10 +72,10 @@ func (m *module) dropAccount(ctx context.Context, mc *pipeline.ModuleContext) er
 	return nil
 }
 
-// deleteCredential removes the platform credential. secrets.Backend's
+// deleteCredential removes the platform credential. secrets.KeyStore's
 // contract is that no caller branches on an error's identity, and the
-// reference AWS backend is not itself idempotent on an already-absent path
-// (internal/secrets/aws/backend.go) — so instead of inspecting Delete's
+// reference AWS key store is not itself idempotent on an already-absent path
+// (internal/secrets/aws/keystore.go) — so instead of inspecting Delete's
 // error, this checks presence with Get first: an unreadable path is either
 // genuinely absent or already scheduled for deletion by an earlier Teardown
 // attempt, and either way there is nothing left to delete.
@@ -87,12 +87,12 @@ func (m *module) deleteCredential(ctx context.Context, mc *pipeline.ModuleContex
 		return err
 	}
 
-	if _, _, err := m.backend.Get(ctx, path); err != nil {
+	if _, _, err := m.keyManager.Get(ctx, path); err != nil {
 		//nolint:nilerr // Intentional: an unreadable path is nothing left to delete. See the doc comment above.
 		return nil
 	}
 
-	if err := m.backend.Delete(ctx, path); err != nil {
+	if err := m.keyManager.Delete(ctx, path); err != nil {
 		return fmt.Errorf("failed to delete platform credential: %w", err)
 	}
 	return nil

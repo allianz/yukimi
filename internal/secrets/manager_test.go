@@ -24,16 +24,16 @@ import (
 )
 
 // SC-012: Get serves a cached value within ttl without invoking the
-// underlying Backend.
-func TestCachedBackend_Get_ServesWithinTTL(t *testing.T) {
+// underlying KeyStore.
+func TestKeyManager_Get_ServesWithinTTL(t *testing.T) {
 	ctx := t.Context()
-	fake := NewFakeBackend()
+	fake := NewFakeKeyStore()
 	path := testPath(t)
 	if err := fake.Create(ctx, path, "value"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	c := NewCachedBackend(fake, time.Hour)
+	c := NewKeyManager(fake, time.Hour)
 	if _, _, err := c.Get(ctx, path); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -41,7 +41,7 @@ func TestCachedBackend_Get_ServesWithinTTL(t *testing.T) {
 	fake.OnGet = func(Path) error { return errStoreFault }
 	got, _, err := c.Get(ctx, path)
 	if err != nil {
-		t.Fatalf("expected cached Get to succeed without touching the backend, got %v", err)
+		t.Fatalf("expected cached Get to succeed without touching the store, got %v", err)
 	}
 	if got != "value" {
 		t.Errorf("got %q, want %q", got, "value")
@@ -49,10 +49,10 @@ func TestCachedBackend_Get_ServesWithinTTL(t *testing.T) {
 }
 
 // SC-012: a cache hit replays the exact (value, modifiedAt) pair first
-// fetched from the backend; a miss re-fetches a fresh pair.
-func TestCachedBackend_Get_ReplaysModifiedAtOnHit(t *testing.T) {
+// fetched from the store; a miss re-fetches a fresh pair.
+func TestKeyManager_Get_ReplaysModifiedAtOnHit(t *testing.T) {
 	ctx := t.Context()
-	fake := NewFakeBackend()
+	fake := NewFakeKeyStore()
 	path := testPath(t)
 	fixed := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	fake.Clock = func() time.Time { return fixed }
@@ -60,7 +60,7 @@ func TestCachedBackend_Get_ReplaysModifiedAtOnHit(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	c := NewCachedBackend(fake, time.Hour)
+	c := NewKeyManager(fake, time.Hour)
 	_, modifiedAt, err := c.Get(ctx, path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -79,17 +79,17 @@ func TestCachedBackend_Get_ReplaysModifiedAtOnHit(t *testing.T) {
 	}
 }
 
-// SC-013: CachedBackend never caches a failed Get — two consecutive Gets on a
-// path nothing is stored at both reach the underlying Backend.
-func TestCachedBackend_Get_NeverCachesAFailedGet(t *testing.T) {
+// SC-013: KeyManager never caches a failed Get — two consecutive Gets on a
+// path nothing is stored at both reach the underlying KeyStore.
+func TestKeyManager_Get_NeverCachesAFailedGet(t *testing.T) {
 	ctx := t.Context()
-	fake := NewFakeBackend()
+	fake := NewFakeKeyStore()
 	path := testPath(t)
 
 	calls := 0
 	fake.OnGet = func(Path) error { calls++; return nil }
 
-	c := NewCachedBackend(fake, time.Hour)
+	c := NewKeyManager(fake, time.Hour)
 	if _, _, err := c.Get(ctx, path); err == nil {
 		t.Fatal("expected the first Get to fail on a path nothing is stored at")
 	}
@@ -97,18 +97,18 @@ func TestCachedBackend_Get_NeverCachesAFailedGet(t *testing.T) {
 		t.Fatal("expected the second Get to fail on a path nothing is stored at")
 	}
 	if calls != 2 {
-		t.Errorf("expected 2 backend calls, got %d", calls)
+		t.Errorf("expected 2 store calls, got %d", calls)
 	}
 }
 
 // SC-014: Create/Update/Delete invalidate a path's cache entry on success, so
 // the next Get re-fetches rather than serving a stale value.
-func TestCachedBackend_InvalidatesOnWrite(t *testing.T) {
-	newCache := func(t *testing.T) (*CachedBackend, *FakeBackend, Path) {
+func TestKeyManager_InvalidatesOnWrite(t *testing.T) {
+	newCache := func(t *testing.T) (*KeyManager, *FakeKeyStore, Path) {
 		t.Helper()
-		fake := NewFakeBackend()
+		fake := NewFakeKeyStore()
 		path := testPath(t)
-		return NewCachedBackend(fake, time.Hour), fake, path
+		return NewKeyManager(fake, time.Hour), fake, path
 	}
 
 	t.Run("Create", func(t *testing.T) {
@@ -169,16 +169,16 @@ func TestCachedBackend_InvalidatesOnWrite(t *testing.T) {
 }
 
 // SC-014: Invalidate clears a path's cache entry directly, without touching
-// the underlying Backend itself — only the next Get does.
+// the underlying KeyStore itself — only the next Get does.
 func TestInvalidate_ClearsEntryDirectly(t *testing.T) {
 	ctx := t.Context()
-	fake := NewFakeBackend()
+	fake := NewFakeKeyStore()
 	path := testPath(t)
 	if err := fake.Create(ctx, path, "original"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	c := NewCachedBackend(fake, time.Hour)
+	c := NewKeyManager(fake, time.Hour)
 	if _, _, err := c.Get(ctx, path); err != nil { // warm the cache
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -187,7 +187,7 @@ func TestInvalidate_ClearsEntryDirectly(t *testing.T) {
 	fake.OnGet = func(Path) error { getCallsDuringInvalidate++; return nil }
 	c.Invalidate(path)
 	if getCallsDuringInvalidate != 0 {
-		t.Errorf("Invalidate itself must not touch the backend, got %d Get calls", getCallsDuringInvalidate)
+		t.Errorf("Invalidate itself must not touch the store, got %d Get calls", getCallsDuringInvalidate)
 	}
 
 	if err := fake.Update(ctx, path, "updated"); err != nil {
@@ -204,9 +204,9 @@ func TestInvalidate_ClearsEntryDirectly(t *testing.T) {
 
 // Edge case: an expired cache entry is a plain miss on the next Get — lazy
 // eviction, no background goroutine.
-func TestCachedBackend_Get_ExpiredEntryRefetches(t *testing.T) {
+func TestKeyManager_Get_ExpiredEntryRefetches(t *testing.T) {
 	ctx := t.Context()
-	fake := NewFakeBackend()
+	fake := NewFakeKeyStore()
 	path := testPath(t)
 	if err := fake.Create(ctx, path, "value"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -215,7 +215,7 @@ func TestCachedBackend_Get_ExpiredEntryRefetches(t *testing.T) {
 	calls := 0
 	fake.OnGet = func(Path) error { calls++; return nil }
 
-	c := NewCachedBackend(fake, 5*time.Millisecond)
+	c := NewKeyManager(fake, 5*time.Millisecond)
 	if _, _, err := c.Get(ctx, path); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -224,22 +224,22 @@ func TestCachedBackend_Get_ExpiredEntryRefetches(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if calls != 2 {
-		t.Errorf("expected 2 backend calls after expiry, got %d", calls)
+		t.Errorf("expected 2 store calls after expiry, got %d", calls)
 	}
 }
 
 // Edge case: while the underlying store is unavailable but a cached entry is
 // still within its TTL, Get serves the cached value without calling the
-// underlying Backend — an accepted trade-off, not a defect.
-func TestCachedBackend_Get_ServesStaleDuringOutage(t *testing.T) {
+// underlying KeyStore — an accepted trade-off, not a defect.
+func TestKeyManager_Get_ServesStaleDuringOutage(t *testing.T) {
 	ctx := t.Context()
-	fake := NewFakeBackend()
+	fake := NewFakeKeyStore()
 	path := testPath(t)
 	if err := fake.Create(ctx, path, "value"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	c := NewCachedBackend(fake, time.Hour)
+	c := NewKeyManager(fake, time.Hour)
 	if _, _, err := c.Get(ctx, path); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -254,13 +254,13 @@ func TestCachedBackend_Get_ServesStaleDuringOutage(t *testing.T) {
 	}
 }
 
-// CachedBackend.Create/Update/Delete propagate the underlying Backend's error
+// KeyManager.Create/Update/Delete propagate the underlying KeyStore's error
 // without invalidating anything.
-func TestCachedBackend_WriteMethods_PropagateBackendError(t *testing.T) {
+func TestKeyManager_WriteMethods_PropagateKeyStoreError(t *testing.T) {
 	ctx := t.Context()
-	fake := NewFakeBackend()
+	fake := NewFakeKeyStore()
 	path := testPath(t)
-	c := NewCachedBackend(fake, time.Hour)
+	c := NewKeyManager(fake, time.Hour)
 
 	fake.OnCreate = func(Path) error { return errStoreFault }
 	if err := c.Create(ctx, path, "v"); !stderrors.Is(err, errStoreFault) {
@@ -282,10 +282,10 @@ func TestCachedBackend_WriteMethods_PropagateBackendError(t *testing.T) {
 
 // Concurrency smoke test: Get/Create/Invalidate from multiple goroutines on a
 // handful of paths must not race. Run with -race to be meaningful.
-func TestCachedBackend_ConcurrentAccess_NoRace(t *testing.T) {
+func TestKeyManager_ConcurrentAccess_NoRace(t *testing.T) {
 	ctx := t.Context()
-	fake := NewFakeBackend()
-	c := NewCachedBackend(fake, 10*time.Millisecond)
+	fake := NewFakeKeyStore()
+	c := NewKeyManager(fake, 10*time.Millisecond)
 
 	paths := make([]Path, 4)
 	for i := range paths {

@@ -111,11 +111,11 @@ func TestIntegration_CreateThenDestroy(t *testing.T) {
 		t.Fatalf("client.New: %v", err)
 	}
 
-	awsBackend, err := secretsaws.New(os.Getenv("AWS_REGION"), "", 30)
+	awsStore, err := secretsaws.New(os.Getenv("AWS_REGION"), "", 30)
 	if err != nil {
 		t.Fatalf("secretsaws.New: %v", err)
 	}
-	backend := secrets.NewCachedBackend(awsBackend, 5*time.Minute)
+	keyManager := secrets.NewKeyManager(awsStore, 5*time.Minute)
 
 	org := os.Getenv("SNOWFLAKE_ORG")
 	cfg := &base.Config{
@@ -134,7 +134,7 @@ func TestIntegration_CreateThenDestroy(t *testing.T) {
 		Secrets:  base.SecretsSettings{RotationInterval: 24 * time.Hour},
 		Deletion: base.DeletionSettings{GracePeriodDays: 30},
 	}
-	p := pool.New(backend, cfg)
+	p := pool.New(keyManager, cfg)
 	t.Cleanup(func() { _ = p.Close() })
 
 	namespace := os.Getenv("SAMPLE_CUSTOMER_NAMESPACE")
@@ -153,7 +153,7 @@ func TestIntegration_CreateThenDestroy(t *testing.T) {
 	}
 
 	bpConfig := &backplane.Config{Regions: map[string]backplane.Region{region: {}}}
-	pl := pipeline.New(accountmodule.New(backend, org, cfg.Snowflake.AccountCreationGracePeriod, cfg.Deletion.GracePeriodDays, bpConfig))
+	pl := pipeline.New(accountmodule.New(keyManager, org, cfg.Snowflake.AccountCreationGracePeriod, cfg.Deletion.GracePeriodDays, bpConfig))
 	e := &external{
 		kube:     kube,
 		pool:     p,
@@ -238,7 +238,7 @@ func TestIntegration_CreateThenDestroy(t *testing.T) {
 	// deleteCredential only schedules removal (a 30-day AWS recovery window)
 	// — a scheduled-for-deletion path is unreadable immediately, enough to
 	// prove the delete step ran for real.
-	if _, _, err := awsBackend.Get(context.Background(), secretPath); err == nil {
+	if _, _, err := awsStore.Get(context.Background(), secretPath); err == nil {
 		t.Error("platform credential still readable after Delete")
 	}
 }

@@ -33,7 +33,7 @@ import (
 // ever opens an org-admin-scoped connection — on the fresh-create path in
 // Apply and the drop path in Teardown.
 type module struct {
-	backend                 secrets.Backend
+	keyManager              *secrets.KeyManager
 	org                     string
 	gracePeriod             time.Duration
 	deletionGracePeriodDays int
@@ -43,9 +43,9 @@ type module struct {
 // New constructs the account module.
 //
 // Parameters:
-//   - backend: the secrets.Backend (003) the platform keypair is stored
-//     through, via Backend.Create and, on teardown, Backend.Delete — this
-//     module never calls Update.
+//   - keyManager: the *secrets.KeyManager (003) the platform keypair is stored
+//     through, via KeyManager.Create and, on teardown, KeyManager.Delete —
+//     this module never calls Update.
 //   - org: Config.Snowflake.Org (002), used to build the tenant secret
 //     path (003) exactly as internal/snowflake/pool does.
 //   - gracePeriod: Config.Snowflake.AccountCreationGracePeriod (002); how
@@ -65,8 +65,8 @@ type module struct {
 //
 // Returns:
 //   - pipeline.Module: never nil.
-func New(backend secrets.Backend, org string, gracePeriod time.Duration, deletionGracePeriodDays int, bpConfig *backplane.Config) pipeline.Module {
-	return &module{backend: backend, org: org, gracePeriod: gracePeriod, deletionGracePeriodDays: deletionGracePeriodDays, backplane: bpConfig}
+func New(keyManager *secrets.KeyManager, org string, gracePeriod time.Duration, deletionGracePeriodDays int, bpConfig *backplane.Config) pipeline.Module {
+	return &module{keyManager: keyManager, org: org, gracePeriod: gracePeriod, deletionGracePeriodDays: deletionGracePeriodDays, backplane: bpConfig}
 }
 
 func (m *module) Name() string { return pipeline.AccountModuleName }

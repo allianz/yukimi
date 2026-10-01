@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"regexp"
 	"testing"
+	"time"
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 
@@ -34,16 +35,16 @@ import (
 func TestTeardown_NoLocator_SkipsAccountSteps_DeletesCredential(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
 	fake := &fakeDBPool{t: t, forbidCalls: true}
-	backend := secrets.NewFakeBackend()
+	store := secrets.NewFakeKeyStore()
 	path, err := secrets.NewTenantPath("myorg", cr.Namespace, cr.Name)
 	if err != nil {
 		t.Fatalf("secrets.NewTenantPath: %v", err)
 	}
-	if err := backend.Create(context.Background(), path, "creds"); err != nil {
-		t.Fatalf("backend.Create: %v", err)
+	if err := store.Create(context.Background(), path, "creds"); err != nil {
+		t.Fatalf("store.Create: %v", err)
 	}
 
-	m := &module{backend: backend, org: "myorg"}
+	m := &module{keyManager: secrets.NewKeyManager(store, time.Hour), org: "myorg"}
 	mc := pipeline.NewModuleContext(cr, nil, nil, fake)
 
 	if err := m.Teardown(context.Background(), mc); err != nil {
@@ -52,7 +53,7 @@ func TestTeardown_NoLocator_SkipsAccountSteps_DeletesCredential(t *testing.T) {
 	if fake.evictCalls != 0 {
 		t.Errorf("EvictTenant called %d times, want 0", fake.evictCalls)
 	}
-	if _, _, err := backend.Get(context.Background(), path); err == nil {
+	if _, _, err := store.Get(context.Background(), path); err == nil {
 		t.Error("credential still present after Teardown")
 	}
 }
@@ -66,21 +67,21 @@ func TestTeardown_KnownLocator_DropsEvictsDeletes_InOrder(t *testing.T) {
 			cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345", "a@b.com", "")
 			orgAdminDB, mock := newOrgAdminMock(t)
 			fake := &fakeDBPool{orgAdminDB: orgAdminDB}
-			backend := secrets.NewFakeBackend()
+			store := secrets.NewFakeKeyStore()
 			mc := pipeline.NewModuleContext(cr, nil, nil, fake)
 
 			path, err := secrets.NewTenantPath("myorg", cr.Namespace, cr.Name)
 			if err != nil {
 				t.Fatalf("secrets.NewTenantPath: %v", err)
 			}
-			if err := backend.Create(context.Background(), path, "creds"); err != nil {
-				t.Fatalf("backend.Create: %v", err)
+			if err := store.Create(context.Background(), path, "creds"); err != nil {
+				t.Fatalf("store.Create: %v", err)
 			}
 
 			wantSQL := fmt.Sprintf("DROP ACCOUNT IF EXISTS %s GRACE_PERIOD_IN_DAYS = %d", mc.ResolvedAccountName(), days)
 			mock.ExpectExec(regexp.QuoteMeta(wantSQL)).WillReturnResult(sqlmock.NewResult(0, 0))
 
-			m := &module{backend: backend, org: "myorg", deletionGracePeriodDays: days}
+			m := &module{keyManager: secrets.NewKeyManager(store, time.Hour), org: "myorg", deletionGracePeriodDays: days}
 			if err := m.Teardown(context.Background(), mc); err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -94,7 +95,7 @@ func TestTeardown_KnownLocator_DropsEvictsDeletes_InOrder(t *testing.T) {
 			if fake.evictNamespace != "ns" || fake.evictAccountName != cr.Name {
 				t.Errorf("EvictTenant(%q, %q), want (%q, %q)", fake.evictNamespace, fake.evictAccountName, "ns", cr.Name)
 			}
-			if _, _, err := backend.Get(context.Background(), path); err == nil {
+			if _, _, err := store.Get(context.Background(), path); err == nil {
 				t.Error("credential still present after Teardown")
 			}
 			if cr.Status.AccountLocator != "" {
@@ -110,20 +111,20 @@ func TestTeardown_DropAccountFails_StopsBeforeEvictOrDelete(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345", "a@b.com", "")
 	orgAdminDB, mock := newOrgAdminMock(t)
 	fake := &fakeDBPool{orgAdminDB: orgAdminDB}
-	backend := secrets.NewFakeBackend()
+	store := secrets.NewFakeKeyStore()
 	mc := pipeline.NewModuleContext(cr, nil, nil, fake)
 
 	path, err := secrets.NewTenantPath("myorg", cr.Namespace, cr.Name)
 	if err != nil {
 		t.Fatalf("secrets.NewTenantPath: %v", err)
 	}
-	if err := backend.Create(context.Background(), path, "creds"); err != nil {
-		t.Fatalf("backend.Create: %v", err)
+	if err := store.Create(context.Background(), path, "creds"); err != nil {
+		t.Fatalf("store.Create: %v", err)
 	}
 
 	mock.ExpectExec("DROP ACCOUNT").WillReturnError(errors.New("connection reset"))
 
-	m := &module{backend: backend, org: "myorg", deletionGracePeriodDays: 30}
+	m := &module{keyManager: secrets.NewKeyManager(store, time.Hour), org: "myorg", deletionGracePeriodDays: 30}
 	if err := m.Teardown(context.Background(), mc); err == nil {
 		t.Fatal("expected an error, got nil")
 	}
@@ -131,7 +132,7 @@ func TestTeardown_DropAccountFails_StopsBeforeEvictOrDelete(t *testing.T) {
 	if fake.evictCalls != 0 {
 		t.Errorf("EvictTenant called %d times, want 0", fake.evictCalls)
 	}
-	if _, _, err := backend.Get(context.Background(), path); err != nil {
+	if _, _, err := store.Get(context.Background(), path); err != nil {
 		t.Error("credential deleted despite the account drop failing")
 	}
 }
@@ -142,18 +143,18 @@ func TestTeardown_OrgAdminConnectionFails_ReturnsError(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345", "a@b.com", "")
 	wantErr := errors.New("dial failed")
 	fake := &fakeDBPool{orgAdminErr: wantErr}
-	backend := secrets.NewFakeBackend()
+	store := secrets.NewFakeKeyStore()
 	mc := pipeline.NewModuleContext(cr, nil, nil, fake)
 
 	path, err := secrets.NewTenantPath("myorg", cr.Namespace, cr.Name)
 	if err != nil {
 		t.Fatalf("secrets.NewTenantPath: %v", err)
 	}
-	if err := backend.Create(context.Background(), path, "creds"); err != nil {
-		t.Fatalf("backend.Create: %v", err)
+	if err := store.Create(context.Background(), path, "creds"); err != nil {
+		t.Fatalf("store.Create: %v", err)
 	}
 
-	m := &module{backend: backend, org: "myorg", deletionGracePeriodDays: 30}
+	m := &module{keyManager: secrets.NewKeyManager(store, time.Hour), org: "myorg", deletionGracePeriodDays: 30}
 	if err := m.Teardown(context.Background(), mc); !errors.Is(err, wantErr) {
 		t.Errorf("err = %v, want %v", err, wantErr)
 	}
@@ -161,7 +162,7 @@ func TestTeardown_OrgAdminConnectionFails_ReturnsError(t *testing.T) {
 	if fake.evictCalls != 0 {
 		t.Errorf("EvictTenant called %d times, want 0", fake.evictCalls)
 	}
-	if _, _, err := backend.Get(context.Background(), path); err != nil {
+	if _, _, err := store.Get(context.Background(), path); err != nil {
 		t.Error("credential deleted despite the org-admin connection failing")
 	}
 }
@@ -171,9 +172,9 @@ func TestTeardown_OrgAdminConnectionFails_ReturnsError(t *testing.T) {
 func TestTeardown_CredentialPathBuildFails_ReturnsError(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
 	fake := &fakeDBPool{t: t, forbidCalls: true}
-	backend := secrets.NewFakeBackend()
+	store := secrets.NewFakeKeyStore()
 
-	m := &module{backend: backend, org: ""}
+	m := &module{keyManager: secrets.NewKeyManager(store, time.Hour), org: ""}
 	mc := pipeline.NewModuleContext(cr, nil, nil, fake)
 
 	if err := m.Teardown(context.Background(), mc); err == nil {
@@ -186,21 +187,21 @@ func TestTeardown_CredentialPathBuildFails_ReturnsError(t *testing.T) {
 func TestTeardown_CredentialAlreadyAbsent_DeleteNeverCalled(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
 	fake := &fakeDBPool{t: t, forbidCalls: true}
-	backend := secrets.NewFakeBackend()
+	store := secrets.NewFakeKeyStore()
 	deleteCalls := 0
-	backend.OnDelete = func(secrets.Path) error {
+	store.OnDelete = func(secrets.Path) error {
 		deleteCalls++
 		return nil
 	}
 
-	m := &module{backend: backend, org: "myorg"}
+	m := &module{keyManager: secrets.NewKeyManager(store, time.Hour), org: "myorg"}
 	mc := pipeline.NewModuleContext(cr, nil, nil, fake)
 
 	if err := m.Teardown(context.Background(), mc); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if deleteCalls != 0 {
-		t.Errorf("Backend.Delete called %d times, want 0", deleteCalls)
+		t.Errorf("KeyManager.Delete called %d times, want 0", deleteCalls)
 	}
 }
 
@@ -209,17 +210,17 @@ func TestTeardown_CredentialAlreadyAbsent_DeleteNeverCalled(t *testing.T) {
 func TestTeardown_CredentialGetSucceeds_DeleteFails_ReturnsError(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
 	fake := &fakeDBPool{t: t, forbidCalls: true}
-	backend := secrets.NewFakeBackend()
+	store := secrets.NewFakeKeyStore()
 	path, err := secrets.NewTenantPath("myorg", cr.Namespace, cr.Name)
 	if err != nil {
 		t.Fatalf("secrets.NewTenantPath: %v", err)
 	}
-	if err := backend.Create(context.Background(), path, "creds"); err != nil {
-		t.Fatalf("backend.Create: %v", err)
+	if err := store.Create(context.Background(), path, "creds"); err != nil {
+		t.Fatalf("store.Create: %v", err)
 	}
-	backend.OnDelete = func(secrets.Path) error { return errors.New("store unreachable") }
+	store.OnDelete = func(secrets.Path) error { return errors.New("store unreachable") }
 
-	m := &module{backend: backend, org: "myorg"}
+	m := &module{keyManager: secrets.NewKeyManager(store, time.Hour), org: "myorg"}
 	mc := pipeline.NewModuleContext(cr, nil, nil, fake)
 
 	if err := m.Teardown(context.Background(), mc); err == nil {

@@ -60,7 +60,7 @@ spec-writing time:
 - Add a small lister interface to `ModuleContext` alongside `DBPool`, mirroring how `DBPool` is defined
   narrowly in `pipeline` rather than imported wholesale from `internal/snowflake/pool`.
 - Give this module's own constructor a k8s client directly, the way the account module's constructor
-  takes `secrets.Backend` and `Config.Snowflake.Org` (012) — keeping the pipeline package itself free of
+  takes `*secrets.KeyManager` and `Config.Snowflake.Org` (012) — keeping the pipeline package itself free of
   any k8s-client-listing concern.
 
 ## Decisions from design conversation

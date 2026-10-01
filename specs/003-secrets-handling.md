@@ -4,11 +4,11 @@
 
 `internal/secrets/` stores and retrieves the credentials the platform uses to log in to Snowflake: the org-admin credential that creates accounts, and one per-tenant credential for each account the platform manages afterwards. All of them are RSA keypairs belonging to service users, held in a cloud secret manager.
 
-This package is the only place in the codebase that reaches that secret manager. It generates the keypairs, decides the path each one is stored at, and caches values briefly so the same credential is not re-fetched on every reconcile. Those paths are what isolates one tenant from another (design.md 3.11.1), so this package constructs and validates them itself instead of trusting callers. The secret manager itself is pluggable: this spec defines only the `Backend` interface and the behavior every implementation owes its callers, with AWS Secrets Manager as the first implementation (003.a).
+This package is the only place in the codebase that reaches that secret manager. It generates the keypairs, decides the path each one is stored at, and caches values briefly so the same credential is not re-fetched on every reconcile. Those paths are what isolates one tenant from another (design.md 3.11.1), so this package constructs and validates them itself instead of trusting callers. The secret manager itself is pluggable: this spec defines only the `KeyStore` interface and the behavior every implementation owes its callers, with AWS Secrets Manager as the first implementation (003.a).
 
-## Key Concept: The `Backend` Interface and the Path Grammar
+## Key Concept: The `KeyStore` Interface and the Path Grammar
 
-A `Backend` sees paths and opaque value strings, nothing else. It never parses a credential, never caches, and never logs — it returns a plainly worded error naming the path it failed on. Its four methods are the narrow set any keystore can implement: `Get`, `Create` (fails if occupied), `Update` (fails if absent), `Delete`. `Create` and `Update` are separate rather than one upsert because create-if-absent must be **atomic in the store**: a retried request must never overwrite the key a live account authenticates with. `Get` additionally returns the time the store last wrote that value, as a second return value rather than a field inside the value — the backend still never looks inside.
+A `KeyStore` sees paths and opaque value strings, nothing else. It never parses a credential, never caches, and never logs — it returns a plainly worded error naming the path it failed on. Its four methods are the narrow set any keystore can implement: `Get`, `Create` (fails if occupied), `Update` (fails if absent), `Delete`. `Create` and `Update` are separate rather than one upsert because create-if-absent must be **atomic in the store**: a retried request must never overwrite the key a live account authenticates with. `Get` additionally returns the time the store last wrote that value, as a second return value rather than a field inside the value — the store still never looks inside.
 
 Paths are an opaque `Path` type, constructible only through the two constructors below, so an unvalidated path can never reach a store:
 
@@ -29,17 +29,17 @@ The encodings are chosen so no consumer transforms them: `PublicKey` is PKIX, si
 
 Secret stores rarely delete on the spot. They hold the path for a recovery window and refuse to store anything there meanwhile. Because the tenant path is derived from the tenant's own name (design.md 3.11.1), that reservation lands on the next tenant of the same name in the same namespace.
 
-Snowflake reserves a dropped account name the same way, for its grace period. Keeping the credential's window inside that grace period leaves the account as the only thing that ever delays re-provisioning: a recovery window of a credential is as long as the secret store can make it, never longer than the grace period of the Snowflake account. Each backend decides for itself how to keep that promise, with whatever means its own store offers — this package prescribes no shared type or derivation helper for the decision. With one implementation in the tree today (003.a), that decision stays a one-line cap; a second backend with a stricter floor than the grace period's own minimum would face the tradeoff this package used to resolve centrally, and would resolve it itself instead.
+Snowflake reserves a dropped account name the same way, for its grace period. Keeping the credential's window inside that grace period leaves the account as the only thing that ever delays re-provisioning: a recovery window of a credential is as long as the secret store can make it, never longer than the grace period of the Snowflake account. Each store decides for itself how to keep that promise, with whatever means its own store offers — this package prescribes no shared type or derivation helper for the decision. With one implementation in the tree today (003.a), that decision stays a one-line cap; a second store with a stricter floor than the grace period's own minimum would face the tradeoff this package used to resolve centrally, and would resolve it itself instead.
 
-## Key Concept: A Backend Error Taxonomy
+## Key Concept: A KeyStore Error Taxonomy
 
 A small taxonomy of defined errors covers the causes a caller does need to recognize: the failure wraps one, and `errors.Is` reaches it. `ErrPendingDeletion` belongs to that taxonomy — a secret path is already occupied by a secret scheduled for deletion.
 
-## Key Concept: The Cache Is a `Backend`, Not a Manager
+## Key Concept: `KeyManager` Wraps a `KeyStore`, It Does Not Replace One
 
-`NewCachedBackend(b Backend, ttl)` decorates any `Backend` and implements `Backend` itself — no manager type, no package-level state. Whatever `main.go` constructs is wrapped exactly once, so every backend inherits identical freshness semantics with no cache logic of its own.
+`NewKeyManager(store KeyStore, ttl)` decorates any `KeyStore` and implements `KeyStore` itself — no package-level state, no singleton, no branching logic of its own beyond the cache. Whatever `main.go` constructs is wrapped exactly once, so every store inherits identical freshness semantics. This is also the structural boundary the package enforces: everything outside `internal/secrets` depends on `*KeyManager`, never on the `KeyStore` interface directly — the interface exists so a new store implementation (a future `003.b`) has something to implement and so `main.go` has something concrete to construct before wrapping it, not as a type consumers are meant to hold onto.
 
-`Get` serves a cached value and its timestamp within `ttl` without touching the backend; a miss — including an expired entry, evicted lazily with no background goroutine — fetches and populates. Two rules keep the cache racing toward "cold," never "stale": a failed `Get` is never cached, so a `Create` landing after a failed lookup is not masked by a negative result; and `Create`/`Update`/`Delete` write through and then *invalidate* the entry rather than pre-populating it. `Invalidate(path)` is also exposed directly.
+`Get` serves a cached value and its timestamp within `ttl` without touching the store; a miss — including an expired entry, evicted lazily with no background goroutine — fetches and populates. Two rules keep the cache racing toward "cold," never "stale": a failed `Get` is never cached, so a `Create` landing after a failed lookup is not masked by a negative result; and `Create`/`Update`/`Delete` write through and then *invalidate* the entry rather than pre-populating it. `Invalidate(path)` is also exposed directly.
 
 ## Public API
 
@@ -61,12 +61,12 @@ import (
 // classify it differently.
 var ErrPendingDeletion = errors.New("secrets: path pending deletion")
 
-// Backend is a string-valued keystore. It never parses a credential, never
+// KeyStore is a string-valued keystore. It never parses a credential, never
 // caches, and never logs — every method reports failure as an ordinary error
 // whose message names the path it failed on, and no caller branches on an
 // error's identity. How the value string is persisted is each implementation's
 // own choice.
-type Backend interface {
+type KeyStore interface {
     // Get returns the value stored at path, along with the time the backend
     // last wrote that value — creation time if never overwritten,
     // modification time otherwise. It fails if nothing is stored there, and
@@ -157,35 +157,35 @@ func GenerateKeyPair() (publicKeyB64, privateKeyPEM string, err error)
 func NewCredentials(username string) (*Credentials, error)
 
 // MarshalCredentials and UnmarshalCredentials convert between Credentials and
-// the JSON string a Backend stores. MarshalCredentials never serializes
+// the JSON string a KeyStore stores. MarshalCredentials never serializes
 // RotatedAt. UnmarshalCredentials rejects a value with any of the three JSON
 // fields empty; it does not otherwise validate PublicKey or PrivateKey
 // contents. It sets the returned Credentials' RotatedAt to rotatedAt —
-// ordinarily whatever Backend.Get just returned alongside value.
+// ordinarily whatever KeyStore.Get just returned alongside value.
 func MarshalCredentials(c *Credentials) (string, error)
 func UnmarshalCredentials(data string, rotatedAt time.Time) (*Credentials, error)
 
-// CachedBackend wraps a Backend with an in-memory, TTL-based, lazily-evicted
-// cache. It implements Backend itself, so callers depend on the interface,
+// KeyManager wraps a KeyStore with an in-memory, TTL-based, lazily-evicted
+// cache. It implements KeyStore itself, so callers depend on the interface,
 // never on this concrete type.
-type CachedBackend struct { /* unexported */ }
+type KeyManager struct { /* unexported */ }
 
-// NewCachedBackend wraps b. Every concrete Backend should be wrapped exactly
+// NewKeyManager wraps store. Every concrete KeyStore should be wrapped exactly
 // once, at construction time in cmd/provider/main.go.
-func NewCachedBackend(b Backend, ttl time.Duration) *CachedBackend
+func NewKeyManager(store KeyStore, ttl time.Duration) *KeyManager
 
 // Invalidate clears path's cache entry without touching the underlying
-// Backend. Exposed for a caller that needs a path forced cold without going
+// KeyStore. Exposed for a caller that needs a path forced cold without going
 // through Create/Update/Delete.
-func (c *CachedBackend) Invalidate(path Path)
+func (c *KeyManager) Invalidate(path Path)
 
-// FakeBackend is an in-memory Backend for tests, exported (not a _test.go
+// FakeKeyStore is an in-memory KeyStore for tests, exported (not a _test.go
 // file) so 004, 012, and every other consumer can depend on it without a real
 // store. Each hook, if set and returning a non-nil error, short-circuits the
 // call before any state mutation — this lets a test flip behavior mid-run
 // (e.g. "OnCreate fails once, then is cleared") in a way a construction-time
 // option cannot.
-type FakeBackend struct {
+type FakeKeyStore struct {
     OnGet    func(path Path) error
     OnCreate func(path Path) error
     OnUpdate func(path Path) error
@@ -210,31 +210,31 @@ type FakeBackend struct {
 // Returns:
 //   - Error if nothing at path is scheduled for deletion, whether because the
 //     path is empty or because the entry is live
-func (f *FakeBackend) Restore(path Path) error
+func (f *FakeKeyStore) Restore(path Path) error
 
-// NewFakeBackend returns an empty FakeBackend that deletes outright. Delete
+// NewFakeKeyStore returns an empty FakeKeyStore that deletes outright. Delete
 // removes the entry and is idempotent, so a Create on a deleted path succeeds
 // and a Get on one fails exactly as it would on a path nothing was ever stored
 // at. Set SchedulesDeletion to exercise the pending-deletion state instead.
-func NewFakeBackend() *FakeBackend
+func NewFakeKeyStore() *FakeKeyStore
 ```
 
 ## Project Structure
 
 ```text
 internal/secrets/
-├── backend.go            # Backend interface
+├── keystore.go           # KeyStore interface
 ├── path.go               # Path type, NewTenantPath, NewOrgAdminPath, validation
 ├── path_test.go
 ├── credentials.go        # Credentials, GenerateKeyPair, NewCredentials, Marshal/UnmarshalCredentials
 ├── credentials_test.go
-├── cache.go              # CachedBackend, NewCachedBackend, Invalidate
-├── cache_test.go
-├── fake.go               # FakeBackend — exported, not a _test.go file (004/012 import it directly)
+├── manager.go             # KeyManager, NewKeyManager, Invalidate
+├── manager_test.go
+├── fake.go               # FakeKeyStore — exported, not a _test.go file (004/012 import it directly)
 └── doc.go
 ```
 
-`internal/secrets` must never import `internal/secrets/aws` (003.a) or any other concrete backend package — the parent defining an interface never depends on a child implementing it. The only import outside the standard library is `internal/errors` (001).
+`internal/secrets` must never import `internal/secrets/aws` (003.a) or any other concrete store package — the parent defining an interface never depends on a child implementing it. The only import outside the standard library is `internal/errors` (001).
 
 ## Error Classification
 
@@ -243,7 +243,7 @@ internal/secrets/
 
 **System Errors** (use `fmt.Errorf("context: %w", err)`):
 - Nothing stored at the path a `Get` or `Update` names: `secrets: no secret stored at snowflake/tenant/my_org/finance/analytics-team-eu/platform-credentials`
-- A `Create` onto an occupied path: `secrets: a secret already exists at snowflake/tenant/my_org/finance/analytics-team-eu/platform-credentials`. Also wraps `ErrPendingDeletion` when the occupying secret is scheduled for deletion rather than live (Key Concept: Defined Backend Errors).
+- A `Create` onto an occupied path: `secrets: a secret already exists at snowflake/tenant/my_org/finance/analytics-team-eu/platform-credentials`. Also wraps `ErrPendingDeletion` when the occupying secret is scheduled for deletion rather than live (Key Concept: A KeyStore Error Taxonomy).
 - Any other store fault — access denied, throttling, a request timeout, a connection failure, or a vendor condition this package has no opinion about: `failed to read secret at <path>: %w`
 - Key generation failure: `failed to generate RSA key pair: %w`
 - Malformed stored JSON: `failed to unmarshal credentials: %w`
@@ -257,20 +257,20 @@ internal/secrets/
 ## Scope
 
 This specification defines the `internal/secrets/` package that:
-- Defines the `Backend` interface — a string-valued keystore — and the per-method success and failure conditions every implementation owes its callers.
+- Defines the `KeyStore` interface — a string-valued keystore — and the per-method success and failure conditions every implementation owes its callers.
 - Constructs and validates the two secret paths design.md 3.11.1 requires: the tenant `platform` credential path and the org-admin credential path.
 - Generates RSA keypairs and defines the JSON shape credentials are stored in.
-- Wraps any `Backend` in an in-memory, TTL-based, lazily-evicted cache.
-- Derives, once and for every backend, the recovery window a deleted credential may sit in — never longer than the account grace period it belongs to (002).
-- Exports an in-memory fake `Backend`, with injectable per-method failures, for every other package to test against.
+- Wraps any `KeyStore` in an in-memory, TTL-based, lazily-evicted cache (`KeyManager`), the type every consumer outside this package holds.
+- Derives, once and for every store, the recovery window a deleted credential may sit in — never longer than the account grace period it belongs to (002).
+- Exports an in-memory fake `KeyStore`, with injectable per-method failures, for every other package to test against.
 - Classifies every failure this package can produce into a user or system error per 001's model.
 
 **Out of Scope**:
 - Any concrete store or vendor SDK. `go.mod` gains no AWS dependency from this spec — that is `003.a-aws-secrets-backend.md`.
-- Constructing or selecting a `Backend`. That is `cmd/provider/main.go`'s job, switching on `Config.CloudProvider()` (002).
-- A singleton or `Initialize`/`GetInstance` access pattern. Every function takes a `Backend` explicitly; `main.go` owns the only instance.
+- Constructing or selecting a `KeyStore`. That is `cmd/provider/main.go`'s job, switching on `Config.CloudProvider()` (002).
+- A singleton or `Initialize`/`GetInstance` access pattern. Every function takes a `KeyStore` or `*KeyManager` explicitly; `main.go` owns the only `KeyStore` instance.
 - Reconciling an occupied path against the world outside the store — a credential whose Snowflake account was never created, or one inherited from a deleted account whose name a new one reuses. `Create` reports the collision and stops; this package cannot see the account behind a path.
-- Credential rotation, including pushing a rotated public key into Snowflake (`ALTER USER ... SET RSA_PUBLIC_KEY`). That is the connection pool's job (004), calling this package's key generation and `Backend.Update` directly rather than a rotation primitive here.
+- Credential rotation, including pushing a rotated public key into Snowflake (`ALTER USER ... SET RSA_PUBLIC_KEY`). That is the connection pool's job (004), calling this package's key generation and `KeyManager.Update` directly rather than a rotation primitive here.
 - A `HealthCheck` method.
 - Validating `PrivateKey`/`PublicKey` contents beyond non-emptiness — whether a key actually parses is the first consumer's (004's) problem.
 
@@ -279,15 +279,15 @@ This specification defines the `internal/secrets/` package that:
 - **What happens if `Create` finds a credential already stored at the path?** - It fails, and the stored value is left exactly as it was. This package never reuses, overwrites, or discards what it finds there: it cannot see whether the stored credential belongs to a live Snowflake account, and either guess is destructive — overwriting locks the platform out of an account it still manages, reusing hands a new account its predecessor's key. Clearing a path that is genuinely stale is an operator action.
 - **What happens if two controller replicas race to `Create` the same path?** - One wins outright. The other's `Create` fails on the now-occupied path, which surfaces as a system error with an incident ID (001) rather than being reconciled away, because from inside this package that loss is indistinguishable from any other occupied path.
 - **Why is a missing credential a system error rather than a user error, when path validation failures are user errors?** - A malformed path segment is fixed by editing the CRD or config value that produced it; a well-formed path with nothing stored at it is not. No tenant field makes a credential appear, and the org-admin path has no owning CRD at all. Whether the cause is a controller sequencing bug, an unexpected deletion, or an org-admin credential ops never provisioned, all three need an incident ID rather than a Debug-level message.
-- **What happens to a tenant secret after `DROP ACCOUNT` (012)?** - `Backend.Delete` is called on the tenant path, which either schedules the removal or performs it outright. Which of the two happens is the concrete backend's business, bounded by the recovery-window rule above, and `Delete` reports neither — it returns only an error. Nothing in this package reads a deleted path afterwards.
-- **What if the store's shortest representable window is longer than the account grace period?** - The backend destroys the value irreversibly rather than reserving a window that would outlive the account. That is the correct outcome rather than a degradation to report: a credential blocking a path whose account is already reusable has no recovery value at all, while a destroyed one only makes a restore need manual repair. How a backend recognizes and reports this case is its own concern (003.a); this package prescribes no shared mechanism for it.
+- **What happens to a tenant secret after `DROP ACCOUNT` (012)?** - `KeyManager.Delete` is called on the tenant path, which either schedules the removal or performs it outright. Which of the two happens is the concrete store's business, bounded by the recovery-window rule above, and `Delete` reports neither — it returns only an error. Nothing in this package reads a deleted path afterwards.
+- **What if the store's shortest representable window is longer than the account grace period?** - The store destroys the value irreversibly rather than reserving a window that would outlive the account. That is the correct outcome rather than a degradation to report: a credential blocking a path whose account is already reusable has no recovery value at all, while a destroyed one only makes a restore need manual repair. How a store recognizes and reports this case is its own concern (003.a); this package prescribes no shared mechanism for it.
 - **What happens on a `Delete` of a path whose removal is already pending?** - It succeeds and changes nothing: the store scheduled the removal once and does not restart its clock, so a retried teardown neither fails nor silently extends the blockade. (AWS Secrets Manager is the exception among the operations here in not being idempotent on an *absent* path — see 003.a.)
-- **What can be done with a path whose removal is pending?** - Only waiting it out or, where the store offers it, restoring. `Get` and `Update` fail because the value is not readable, and `Create` fails because the name has not been released — this is the blockade the invariant above exists to bound. `FakeBackend.Restore` models the restore for tests. `Create`'s failure also wraps `ErrPendingDeletion`, so a caller with more context can catch it and classify it itself.
+- **What can be done with a path whose removal is pending?** - Only waiting it out or, where the store offers it, restoring. `Get` and `Update` fail because the value is not readable, and `Create` fails because the name has not been released — this is the blockade the invariant above exists to bound. `FakeKeyStore.Restore` models the restore for tests. `Create`'s failure also wraps `ErrPendingDeletion`, so a caller with more context can catch it and classify it itself.
 - **What if `UnmarshalCredentials` receives well-formed JSON but a truncated or otherwise invalid PEM private key?** - Out of scope for this package's validation. `UnmarshalCredentials` checks only that the three fields are non-empty strings; whether `PrivateKey` parses as an actual RSA key is the first consumer's (the connection pool, 004) problem to detect when it tries to use it.
-- **What happens if a cache entry expires while a request is in flight?** - Lazy eviction: the next `Get` after expiry is a plain cache miss. It fetches from the underlying `Backend` and repopulates the entry with a fresh TTL — there is no special-cased mid-flight behavior.
-- **What if the underlying store is unavailable while a cached entry is still within its TTL?** - `CachedBackend.Get` returns the cached value without calling the underlying `Backend` at all. Serving a value that could be up to `ttl` stale in exchange for availability during an outage is an accepted trade-off, not a defect.
+- **What happens if a cache entry expires while a request is in flight?** - Lazy eviction: the next `Get` after expiry is a plain cache miss. It fetches from the underlying `KeyStore` and repopulates the entry with a fresh TTL — there is no special-cased mid-flight behavior.
+- **What if the underlying store is unavailable while a cached entry is still within its TTL?** - `KeyManager.Get` returns the cached value without calling the underlying `KeyStore` at all. Serving a value that could be up to `ttl` stale in exchange for availability during an outage is an accepted trade-off, not a defect.
 - **What does a failed `Get` return as a timestamp?** - The zero `time.Time`, alongside the error. No caller reads it, since the error already signals that the value (and its timestamp) were not obtained.
-- **Where does `FakeBackend` get a timestamp from, since it has no real store to ask?** - Its own `Clock` field, defaulting to `time.Now`: `Create` and `Update` record `Clock()` against the path, and `Get` returns whatever was last recorded. Tests that need a fixed `RotatedAt` set `Clock` to a function returning a constant time.
+- **Where does `FakeKeyStore` get a timestamp from, since it has no real store to ask?** - Its own `Clock` field, defaulting to `time.Now`: `Create` and `Update` record `Clock()` against the path, and `Get` returns whatever was last recorded. Tests that need a fixed `RotatedAt` set `Clock` to a function returning a constant time.
 
 ## Dependencies
 
@@ -295,15 +295,15 @@ This specification defines the `internal/secrets/` package that:
 
 ## Integration Points
 
-- **`internal/secrets/aws` (003.a)** - Implements `Backend` against AWS Secrets Manager, carrying the value string as a `SecretString` and reporting AWS API failures as plainly worded errors satisfying this interface's per-method contracts - Key functions: implements `secrets.Backend` - Notes: the only place an AWS SDK enters `go.mod`; never imported by anything above 003.
-- **`cmd/provider/main.go`** - Constructs the concrete `Backend` selected by `Config.CloudProvider()` (002), passing it `Config.Deletion.GracePeriodDays` so it can compute its own recovery window, wraps it exactly once in `NewCachedBackend(backend, cfg.Secrets.CacheTTL)` — the TTL comes from `Config.Secrets.CacheTTL` (002), not a literal — and passes the wrapped result to every consumer below. Any operator-facing gap between that window and the grace period is the concrete backend's own concern to log (003.a); `main.go` neither computes nor logs it - Key functions: `secrets.NewCachedBackend()`.
-- **`internal/snowflake/pool` (004)** - Reads org-admin and per-tenant credentials through the `Backend` interface, keyed by the same `(org, namespace, account)` tuple as the tenant path - Key functions: `Backend.Get()`, `UnmarshalCredentials()`, `NewOrgAdminPath()`, `NewTenantPath()` - Notes: unit tests run against `FakeBackend`, never a real store.
-- **`internal/account/modules/account` (012)** - Generates a keypair and stores it with `Backend.Create` — never `Update` — before running `CREATE ACCOUNT`, using the generated public key in the SQL statement and never persisting the private key anywhere but the store; on teardown, calls `Backend.Delete` on the same tenant path once `DROP ACCOUNT` has succeeded. Matches `Backend.Create`'s error against `ErrPendingDeletion` via `errors.Is` and decides its own classification and message for that case - Key functions: `NewCredentials()`, `MarshalCredentials()`, `Backend.Create()`, `Backend.Delete()`, `NewTenantPath()`, `ErrPendingDeletion`.
+- **`internal/secrets/aws` (003.a)** - Implements `KeyStore` against AWS Secrets Manager, carrying the value string as a `SecretString` and reporting AWS API failures as plainly worded errors satisfying this interface's per-method contracts - Key functions: implements `secrets.KeyStore` - Notes: the only place an AWS SDK enters `go.mod`; never imported by anything above 003.
+- **`cmd/provider/main.go`** - Constructs the concrete `KeyStore` selected by `Config.CloudProvider()` (002), passing it `Config.Deletion.GracePeriodDays` so it can compute its own recovery window, wraps it exactly once in `NewKeyManager(store, cfg.Secrets.CacheTTL)` — the TTL comes from `Config.Secrets.CacheTTL` (002), not a literal — and passes the wrapped result to every consumer below. Any operator-facing gap between that window and the grace period is the concrete store's own concern to log (003.a); `main.go` neither computes nor logs it - Key functions: `secrets.NewKeyManager()`.
+- **`internal/snowflake/pool` (004)** - Reads org-admin and per-tenant credentials through the `*KeyManager` handed to `pool.New`, keyed by the same `(org, namespace, account)` tuple as the tenant path - Key functions: `KeyManager.Get()`, `UnmarshalCredentials()`, `NewOrgAdminPath()`, `NewTenantPath()` - Notes: unit tests run against a `FakeKeyStore` wrapped in a `KeyManager`, never a real store.
+- **`internal/account/modules/account` (012)** - Generates a keypair and stores it with `KeyManager.Create` — never `Update` — before running `CREATE ACCOUNT`, using the generated public key in the SQL statement and never persisting the private key anywhere but the store; on teardown, calls `KeyManager.Delete` on the same tenant path once `DROP ACCOUNT` has succeeded. Matches `KeyManager.Create`'s error against `ErrPendingDeletion` via `errors.Is` and decides its own classification and message for that case - Key functions: `NewCredentials()`, `MarshalCredentials()`, `KeyManager.Create()`, `KeyManager.Delete()`, `NewTenantPath()`, `ErrPendingDeletion`.
 
 ## Success Criteria
 
-- **SC-001**: `Backend` has exactly four methods — `Get`, `Create`, `Update`, `Delete` — each taking a `Path`.
-- **SC-002**: Every `Backend` method carries its value as a `string` — `Get` returns one (alongside a `time.Time`), `Create` and `Update` accept one; no method exposes `[]byte`.
+- **SC-001**: `KeyStore` has exactly four methods — `Get`, `Create`, `Update`, `Delete` — each taking a `Path`.
+- **SC-002**: Every `KeyStore` method carries its value as a `string` — `Get` returns one (alongside a `time.Time`), `Create` and `Update` accept one; no method exposes `[]byte`.
 - **SC-003**: `NewTenantPath` constructs `snowflake/tenant/<org>/<namespace>/<accountName>/platform-credentials` from exactly those four inputs.
 - **SC-004**: `NewOrgAdminPath` constructs `snowflake/org/<org>/<orgAdminAccount>/org-admin-credentials`.
 - **SC-005**: Both path constructors return a user error for any empty segment, or one containing `/`, `.`, `..`, or a character outside `[A-Za-z0-9_-]`.
@@ -312,26 +312,26 @@ This specification defines the `internal/secrets/` package that:
 - **SC-008**: `GenerateKeyPair` produces a minimum 2048-bit RSA key: PKCS#8-encoded, PEM-wrapped private key; PKIX-encoded, single-line base64 public key with no PEM delimiters.
 - **SC-009**: `UnmarshalCredentials` returns an error when any of the three JSON fields is empty; on success it sets the returned `Credentials.RotatedAt` to its `rotatedAt` parameter, and `MarshalCredentials` never serializes `RotatedAt`.
 - **SC-010**: `Create` on an occupied path returns an error and leaves the stored value byte-for-byte unchanged.
-- **SC-012**: `CachedBackend.Get` returns a cached value and its timestamp within `ttl` without invoking the underlying `Backend`.
-- **SC-013**: `CachedBackend` never caches a failed `Get` — two consecutive `Get`s on a path nothing is stored at both reach the underlying `Backend`.
-- **SC-014**: `CachedBackend` invalidates a path's cache entry on every successful `Create`/`Update`/`Delete` through it, and via an explicit `Invalidate` call.
-- **SC-015**: `FakeBackend`'s per-method hooks, when set and returning a non-nil error, short-circuit before any state mutation.
-- **SC-016**: With `SchedulesDeletion` unset, `FakeBackend.Delete` removes the entry outright and is idempotent: a following `Create` on that path succeeds, a following `Get` fails as it would on a path nothing was ever stored at, and a `Delete` of an absent path is not an error.
-- **SC-016a**: `FakeBackend.Get` returns the timestamp its `Create` or `Update` most recently recorded for that path, taken from `Clock` (default `time.Now`).
+- **SC-012**: `KeyManager.Get` returns a cached value and its timestamp within `ttl` without invoking the underlying `KeyStore`.
+- **SC-013**: `KeyManager` never caches a failed `Get` — two consecutive `Get`s on a path nothing is stored at both reach the underlying `KeyStore`.
+- **SC-014**: `KeyManager` invalidates a path's cache entry on every successful `Create`/`Update`/`Delete` through it, and via an explicit `Invalidate` call.
+- **SC-015**: `FakeKeyStore`'s per-method hooks, when set and returning a non-nil error, short-circuit before any state mutation.
+- **SC-016**: With `SchedulesDeletion` unset, `FakeKeyStore.Delete` removes the entry outright and is idempotent: a following `Create` on that path succeeds, a following `Get` fails as it would on a path nothing was ever stored at, and a `Delete` of an absent path is not an error.
+- **SC-016a**: `FakeKeyStore.Get` returns the timestamp its `Create` or `Update` most recently recorded for that path, taken from `Clock` (default `time.Now`).
 - **SC-017**: `internal/secrets` exposes no `Initialize`/`GetInstance`-style singleton and holds no package-level mutable state.
 - **SC-018**: `internal/secrets` imports `internal/errors` and no other package internal to this repository.
 - **SC-019**: `internal/secrets` exposes no `HealthCheck` method.
-- **SC-020**: Unit test coverage exceeds 95%, exercised entirely against `FakeBackend` — no network calls in this package's own test suite.
-- **SC-021**: With `SchedulesDeletion` set, `FakeBackend.Delete` leaves the path occupied but unusable: `Get` and `Update` fail naming it as scheduled for deletion, and `Create` fails naming the path as unreusable. A second `Delete` on a pending path succeeds and changes nothing — the path stays blockaded and `Restore` still works — and a `Delete` of an absent path still schedules nothing.
-- **SC-022**: `FakeBackend.Restore` cancels a pending deletion, restoring the stored value for `Get` and `Update`, and returns an error when nothing at the path is scheduled — whether the path is empty or holds a live value.
-- **SC-023**: `FakeBackend.Create` wraps `ErrPendingDeletion` when the existing entry is pending deletion; the returned error is not itself a user error.
+- **SC-020**: Unit test coverage exceeds 95%, exercised entirely against `FakeKeyStore` — no network calls in this package's own test suite.
+- **SC-021**: With `SchedulesDeletion` set, `FakeKeyStore.Delete` leaves the path occupied but unusable: `Get` and `Update` fail naming it as scheduled for deletion, and `Create` fails naming the path as unreusable. A second `Delete` on a pending path succeeds and changes nothing — the path stays blockaded and `Restore` still works — and a `Delete` of an absent path still schedules nothing.
+- **SC-022**: `FakeKeyStore.Restore` cancels a pending deletion, restoring the stored value for `Get` and `Update`, and returns an error when nothing at the path is scheduled — whether the path is empty or holds a live value.
+- **SC-023**: `FakeKeyStore.Create` wraps `ErrPendingDeletion` when the existing entry is pending deletion; the returned error is not itself a user error.
 
 ## Security Considerations
 
 - **Namespace as sole trust anchor** (design.md 3.11.1): `NewTenantPath` takes `namespace` as a plain parameter and performs no Kubernetes lookup of its own — the guarantee depends entirely on every caller passing `metadata.namespace` from the runtime object, never a value read from `spec`. This package can enforce path *shape*; it cannot enforce which namespace a caller passes.
 - **Non-resolved account name in the path** (design.md 3.11.1, 3.12): `accountName` in `NewTenantPath` must be the CRD's `metadata.name`, not the resolved, hash-suffixed Snowflake account name — using the resolved name would still be internally consistent but would depend on a value not derivable purely from Kubernetes identifiers, weakening the trust-anchor argument design.md makes.
-- **`Create` is the only guard against overwriting a live credential**: because this package never reconciles an occupied path, a store whose `Create` is not atomic — one that silently upserts instead of failing — would let a retried request replace the key a live account authenticates with, and nothing above it would notice. Atomic create-if-absent is a hard requirement on every backend, not a nicety.
-- **Plaintext in the cache is an accepted trade-off**: `CachedBackend` holds decrypted credential strings in process memory for up to `ttl`. This is acceptable under the platform's pod-isolation model (design.md 3.11) and is what makes the cache useful at all; it is not a reason to shorten `ttl` reflexively, since a shorter `ttl` only trades store round-trips for the same in-memory exposure.
+- **`Create` is the only guard against overwriting a live credential**: because this package never reconciles an occupied path, a store whose `Create` is not atomic — one that silently upserts instead of failing — would let a retried request replace the key a live account authenticates with, and nothing above it would notice. Atomic create-if-absent is a hard requirement on every `KeyStore`, not a nicety.
+- **Plaintext in the cache is an accepted trade-off**: `KeyManager` holds decrypted credential strings in process memory for up to `ttl`. This is acceptable under the platform's pod-isolation model (design.md 3.11) and is what makes the cache useful at all; it is not a reason to shorten `ttl` reflexively, since a shorter `ttl` only trades store round-trips for the same in-memory exposure.
 - **Known accepted gap** (design.md Appendix B X1): once a tenant holds `ACCOUNTADMIN` on their account, they can re-key or drop the `platform` service user this package's credential authenticates as, locking the platform out of an account it remains responsible for. This spec does not attempt to prevent that — it is recorded here as a gap pending Snowflake Organization Policies, not something `internal/secrets` can close from the credential-storage side.
 - **No credential value ever appears in a path or a log line**: `Path.String()` returns only the identifiers that make up the path (org, namespace, account, or org-admin-account) — never a `PublicKey` or `PrivateKey`. Every error message this package's own error classification defines is built from paths and fixed descriptive text, never from credential contents.
 
@@ -339,7 +339,7 @@ This specification defines the `internal/secrets/` package that:
 
 - **Product design**: `specs/design.md`, §3.6 (the `platform` user and `ADMIN_RSA_PUBLIC_KEY`), §3.11 (org-admin vs. per-account access), §3.11.1 (tenant secret path, namespace as trust anchor), §3.12 (resolved vs. CRD account name), Appendix B X1 (the `platform` user re-key/drop gap).
 - **Error Handling (001)**: `internal/errors/errors.go` - `NewUserError()`, used to classify path-validation and not-found failures.
-- **Base Config (002)**: `internal/config/base/base.go` - `SnowflakeSettings.Org`, `SnowflakeSettings.OrgAdminAccount`, `DeletionSettings.GracePeriodDays`, `CloudProvider()`; its own Example 1 already anticipates `secrets.Backend` and the `secretsaws.New` constructor this spec's sibling (003.a) provides.
+- **Base Config (002)**: `internal/config/base/base.go` - `SnowflakeSettings.Org`, `SnowflakeSettings.OrgAdminAccount`, `DeletionSettings.GracePeriodDays`, `CloudProvider()`; its own Example 1 already anticipates `secrets.KeyStore` and the `secretsaws.New` constructor this spec's sibling (003.a) provides.
 
 <br/><br/><br/><br/><br/>
 
@@ -357,7 +357,7 @@ import (
     "github.com/allianz/yukimi/internal/secrets"
 )
 
-func (m *Module) provisionCredentials(ctx context.Context, backend secrets.Backend, org, namespace, accountName string) (*secrets.Credentials, error) {
+func (m *Module) provisionCredentials(ctx context.Context, keyManager *secrets.KeyManager, org, namespace, accountName string) (*secrets.Credentials, error) {
     path, err := secrets.NewTenantPath(org, namespace, accountName)
     if err != nil {
         return nil, err // user error: caller passed a malformed identifier
@@ -377,7 +377,7 @@ func (m *Module) provisionCredentials(ctx context.Context, backend secrets.Backe
     // so instead of overwriting a key a live account may still authenticate
     // with. That failure is a system error here — this module does not reuse
     // or replace what it finds.
-    if err := backend.Create(ctx, path, value); err != nil {
+    if err := keyManager.Create(ctx, path, value); err != nil {
         return nil, err
     }
 
@@ -396,13 +396,13 @@ import (
     "github.com/allianz/yukimi/internal/secrets"
 )
 
-func (p *Pool) orgAdminCredentials(ctx context.Context, cached secrets.Backend, org, orgAdminAccount string) (*secrets.Credentials, error) {
+func (p *Pool) orgAdminCredentials(ctx context.Context, keyManager *secrets.KeyManager, org, orgAdminAccount string) (*secrets.Credentials, error) {
     path, err := secrets.NewOrgAdminPath(org, orgAdminAccount)
     if err != nil {
         return nil, err
     }
 
-    value, rotatedAt, err := cached.Get(ctx, path) // cache hit avoids a store round-trip on every reconcile
+    value, rotatedAt, err := keyManager.Get(ctx, path) // cache hit avoids a store round-trip on every reconcile
     if err != nil {
         return nil, err // nothing stored here means ops has not provisioned this credential yet
     }
@@ -411,15 +411,15 @@ func (p *Pool) orgAdminCredentials(ctx context.Context, cached secrets.Backend, 
 }
 
 // Wired once at startup:
-// backend := secretsaws.New(cfg.AWS.Region, cfg.AWS.KmsKeyId, cfg.Deletion.GracePeriodDays) // 003.a
-// cached := secrets.NewCachedBackend(backend, cfg.Secrets.CacheTTL) // TTL from Config (002)
-// pool := pool.New(cached, ...)                                  // 004 depends only on secrets.Backend
+// store := secretsaws.New(cfg.AWS.Region, cfg.AWS.KmsKeyId, cfg.Deletion.GracePeriodDays) // 003.a
+// keyManager := secrets.NewKeyManager(store, cfg.Secrets.CacheTTL) // TTL from Config (002)
+// pool := pool.New(keyManager, ...)                              // 004 depends only on *secrets.KeyManager
 ```
 
-### Example 3: Testing Against `FakeBackend`
+### Example 3: Testing Against `FakeKeyStore`
 
 ```go
-// In a caller's own _test.go file — 003 ships FakeBackend so no test anywhere
+// In a caller's own _test.go file — 003 ships FakeKeyStore so no test anywhere
 // outside internal/secrets needs a real store or the AWS SDK.
 import (
     "context"
@@ -431,23 +431,23 @@ import (
 
 func TestCreate_RejectsAnOccupiedPath(t *testing.T) {
     ctx := context.Background()
-    backend := secrets.NewFakeBackend()
+    store := secrets.NewFakeKeyStore()
 
     path, _ := secrets.NewTenantPath("my_org", "finance", "analytics-team-eu")
     first, _ := secrets.NewCredentials("platform")
     value, _ := secrets.MarshalCredentials(first)
 
-    if err := backend.Create(ctx, path, value); err != nil {
+    if err := store.Create(ctx, path, value); err != nil {
         t.Fatalf("first create: %v", err)
     }
 
     second, _ := secrets.NewCredentials("platform")
     other, _ := secrets.MarshalCredentials(second)
-    if err := backend.Create(ctx, path, other); err == nil {
+    if err := store.Create(ctx, path, other); err == nil {
         t.Fatal("expected the second create to fail on an occupied path")
     }
 
-    stored, _, err := backend.Get(ctx, path)
+    stored, _, err := store.Get(ctx, path)
     if err != nil {
         t.Fatalf("get: %v", err)
     }
@@ -457,17 +457,17 @@ func TestCreate_RejectsAnOccupiedPath(t *testing.T) {
 }
 
 // errStoreUnavailable is the caller's own error value, declared in its test
-// file. FakeBackend propagates a hook's error unchanged, so a test asserts on a
+// file. FakeKeyStore propagates a hook's error unchanged, so a test asserts on a
 // value it owns rather than on anything secrets exports.
 var errStoreUnavailable = errors.New("store unavailable")
 
 func TestGet_PropagatesInjectedFailure(t *testing.T) {
     ctx := context.Background()
-    backend := secrets.NewFakeBackend()
-    backend.OnGet = func(path secrets.Path) error { return errStoreUnavailable }
+    store := secrets.NewFakeKeyStore()
+    store.OnGet = func(path secrets.Path) error { return errStoreUnavailable }
 
     path, _ := secrets.NewOrgAdminPath("my_org", "my_org_admin_account")
-    if _, _, err := backend.Get(ctx, path); !errors.Is(err, errStoreUnavailable) {
+    if _, _, err := store.Get(ctx, path); !errors.Is(err, errStoreUnavailable) {
         t.Fatalf("got %v, want errStoreUnavailable", err)
     }
 }
