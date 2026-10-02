@@ -84,6 +84,41 @@ func (c *KeyManager) Update(ctx context.Context, id Identifier, value string) er
 	return nil
 }
 
+// CreateCredentials generates a fresh keypair for username, stores it at id,
+// and returns the generated credentials.
+func (c *KeyManager) CreateCredentials(ctx context.Context, id Identifier, username string) (*Credentials, error) {
+	creds, err := NewCredentials(username)
+	if err != nil {
+		return nil, err
+	}
+	value, err := marshalCredentials(creds)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.Create(ctx, id, value); err != nil {
+		return nil, err
+	}
+	return creds, nil
+}
+
+// UpdateCredentials marshals creds and stores it at id.
+func (c *KeyManager) UpdateCredentials(ctx context.Context, id Identifier, creds *Credentials) error {
+	value, err := marshalCredentials(creds)
+	if err != nil {
+		return err
+	}
+	return c.Update(ctx, id, value)
+}
+
+// GetCredentials reads the credential at id and unmarshals it.
+func (c *KeyManager) GetCredentials(ctx context.Context, id Identifier) (*Credentials, error) {
+	value, rotatedAt, err := c.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return unmarshalCredentials(value, rotatedAt)
+}
+
 func (c *KeyManager) Delete(ctx context.Context, id Identifier) error {
 	if err := c.store.Delete(ctx, id); err != nil {
 		return err

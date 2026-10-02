@@ -280,6 +280,115 @@ func TestKeyManager_WriteMethods_PropagateKeyStoreError(t *testing.T) {
 	}
 }
 
+// CreateCredentials generates a fresh keypair, stores it, and returns it; a
+// subsequent GetCredentials reads back the same values.
+func TestKeyManager_CreateCredentials_StoresAndReturnsGeneratedCredentials(t *testing.T) {
+	ctx := t.Context()
+	c := NewKeyManager(NewFakeKeyStore(), time.Hour)
+	id := testIdentifier(t)
+
+	created, err := c.CreateCredentials(ctx, id, "platform")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if created.Username != "platform" {
+		t.Errorf("created.Username = %q, want %q", created.Username, "platform")
+	}
+	if created.PublicKey == "" || created.PrivateKey == "" {
+		t.Error("expected a generated public and private key")
+	}
+
+	got, err := c.GetCredentials(ctx, id)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Username != created.Username || got.PublicKey != created.PublicKey || got.PrivateKey != created.PrivateKey {
+		t.Errorf("GetCredentials after CreateCredentials = %+v, want %+v", got, created)
+	}
+}
+
+// CreateCredentials propagates ErrPendingDeletion from the underlying Create
+// call, so a caller can still match it via errors.Is.
+func TestKeyManager_CreateCredentials_PropagatesErrPendingDeletion(t *testing.T) {
+	ctx := t.Context()
+	fake := NewFakeKeyStore()
+	fake.SchedulesDeletion = true
+	id := testIdentifier(t)
+	if err := fake.Create(ctx, id, "value"); err != nil {
+		t.Fatalf("seeding: %v", err)
+	}
+	if err := fake.Delete(ctx, id); err != nil {
+		t.Fatalf("scheduling deletion: %v", err)
+	}
+
+	c := NewKeyManager(fake, time.Hour)
+	if _, err := c.CreateCredentials(ctx, id, "platform"); !stderrors.Is(err, ErrPendingDeletion) {
+		t.Errorf("got %v, want ErrPendingDeletion", err)
+	}
+}
+
+// UpdateCredentials marshals and stores creds, invalidating the cache so a
+// following GetCredentials observes the new value rather than a stale one.
+func TestKeyManager_UpdateCredentials_StoresAndInvalidatesCache(t *testing.T) {
+	ctx := t.Context()
+	c := NewKeyManager(NewFakeKeyStore(), time.Hour)
+	id := testIdentifier(t)
+
+	original, err := c.CreateCredentials(ctx, id, "platform")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := c.GetCredentials(ctx, id); err != nil { // warm the cache
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	fresh, err := NewCredentials("platform")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if fresh.PrivateKey == original.PrivateKey {
+		t.Fatal("expected a freshly generated keypair distinct from the original")
+	}
+	if err := c.UpdateCredentials(ctx, id, fresh); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, err := c.GetCredentials(ctx, id)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.PrivateKey != fresh.PrivateKey {
+		t.Errorf("GetCredentials after UpdateCredentials returned the stale value, not the updated one")
+	}
+}
+
+// GetCredentials propagates the underlying Get's error rather than hiding it
+// behind an unmarshal failure.
+func TestKeyManager_GetCredentials_PropagatesGetError(t *testing.T) {
+	ctx := t.Context()
+	c := NewKeyManager(NewFakeKeyStore(), time.Hour)
+	id := testIdentifier(t)
+
+	if _, err := c.GetCredentials(ctx, id); err == nil {
+		t.Fatal("expected an error for an identifier nothing is stored at")
+	}
+}
+
+// GetCredentials propagates a malformed stored value's unmarshal failure.
+func TestKeyManager_GetCredentials_PropagatesUnmarshalError(t *testing.T) {
+	ctx := t.Context()
+	fake := NewFakeKeyStore()
+	id := testIdentifier(t)
+	if err := fake.Create(ctx, id, "not valid json"); err != nil {
+		t.Fatalf("seeding: %v", err)
+	}
+
+	c := NewKeyManager(fake, time.Hour)
+	if _, err := c.GetCredentials(ctx, id); err == nil {
+		t.Fatal("expected an error for a credential that does not unmarshal")
+	}
+}
+
 // Concurrency smoke test: Get/Create/Invalidate from multiple goroutines on a
 // handful of identifiers must not race. Run with -race to be meaningful.
 func TestKeyManager_ConcurrentAccess_NoRace(t *testing.T) {

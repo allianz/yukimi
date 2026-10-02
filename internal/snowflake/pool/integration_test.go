@@ -138,13 +138,9 @@ func TestIntegration_TenantAccount_RotatesStaleCredential(t *testing.T) {
 
 	ctx := context.Background()
 
-	beforeRaw, beforeRotatedAt, err := awsStore.Get(ctx, id)
+	before, err := keyManager.GetCredentials(ctx, id)
 	if err != nil {
 		t.Fatalf("reading the credential before rotation: %v", err)
-	}
-	before, err := secrets.UnmarshalCredentials(beforeRaw, beforeRotatedAt)
-	if err != nil {
-		t.Fatalf("UnmarshalCredentials (before): %v", err)
 	}
 
 	db, err := p.TenantAccount(ctx, namespace, accountName, locator, region)
@@ -159,19 +155,15 @@ func TestIntegration_TenantAccount_RotatesStaleCredential(t *testing.T) {
 		t.Fatalf("CURRENT_ROLE() = %q, want ACCOUNTADMIN", role)
 	}
 
-	afterRaw, afterRotatedAt, err := awsStore.Get(ctx, id)
+	after, err := keyManager.GetCredentials(ctx, id)
 	if err != nil {
 		t.Fatalf("reading the credential after rotation: %v", err)
-	}
-	after, err := secrets.UnmarshalCredentials(afterRaw, afterRotatedAt)
-	if err != nil {
-		t.Fatalf("UnmarshalCredentials (after): %v", err)
 	}
 	if after.PrivateKey == before.PrivateKey {
 		t.Fatal("expected rotation to have replaced the stored private key, but it is unchanged")
 	}
-	if !afterRotatedAt.After(beforeRotatedAt) {
-		t.Fatalf("afterRotatedAt = %v, want it after beforeRotatedAt = %v", afterRotatedAt, beforeRotatedAt)
+	if !after.RotatedAt.After(before.RotatedAt) {
+		t.Fatalf("after.RotatedAt = %v, want it after before.RotatedAt = %v", after.RotatedAt, before.RotatedAt)
 	}
 
 	// The real test of rotation: evict the cached connection (dialed with

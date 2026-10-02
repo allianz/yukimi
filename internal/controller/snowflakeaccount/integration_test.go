@@ -131,8 +131,13 @@ func TestIntegration_CreateThenDestroy(t *testing.T) {
 			// AccountLocator is already set, on a later reconcile.
 			AccountCreationGracePeriod: 5 * time.Second,
 		},
-		Secrets:  base.SecretsSettings{RotationInterval: 24 * time.Hour},
-		Deletion: base.DeletionSettings{GracePeriodDays: 30},
+		Secrets: base.SecretsSettings{RotationInterval: 24 * time.Hour},
+		// Protection must be set explicitly: this struct is built directly
+		// rather than through base.Load(), so Go's own zero value (false)
+		// applies here, not the loader's "defaults to true when omitted" —
+		// and this test's whole deletion half (SC-020) depends on the
+		// Active-SnowflakeDeletionRequest gate actually being enforced.
+		Deletion: base.DeletionSettings{GracePeriodDays: 30, Protection: true},
 	}
 	p := pool.New(keyManager, cfg)
 	t.Cleanup(func() { _ = p.Close() })
@@ -152,7 +157,7 @@ func TestIntegration_CreateThenDestroy(t *testing.T) {
 		},
 	}
 
-	bpConfig := &backplane.Config{Regions: map[string]backplane.Region{region: {}}}
+	bpConfig := &backplane.Config{Regions: map[string]backplane.Region{region: {Available: true}}}
 	pl := pipeline.New(accountmodule.New(keyManager, org, cfg.Snowflake.AccountCreationGracePeriod, cfg.Deletion.GracePeriodDays, bpConfig))
 	e := &external{
 		kube:     kube,

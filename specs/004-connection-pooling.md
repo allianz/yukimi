@@ -240,7 +240,7 @@ This specification defines the `internal/snowflake/pool/` and `internal/snowflak
 
 - **`internal/errors` (001)** - Used APIs: `errors.NewUserError()` - Contract: used by both packages; in `host` for the one region-format validation above, in `pool` nowhere else.
 - **`internal/config/base` (002)** - Read by `pool` only; `host` never imports it - Used APIs: `base.Config`, `Snowflake.Org`, `Snowflake.OrgAdminAccount`, `Snowflake.OrgAdminAccountLocator`, `Snowflake.OrgAdminAccountRegion`, `Snowflake.UsePrivateLink`, `Snowflake.DisableOCSPChecks`, `Snowflake.MaxConnectionPoolSize`, `Snowflake.MaxIdleConnections`, `Snowflake.ConnectionMaxLifetime`, `Snowflake.ConnectionMaxIdleTime`, `Snowflake.ConnectionProbeTimeout` - Contract: `Pool` reads these once at construction and treats them as fixed for the process's life, matching `Config`'s own immutability.
-- **`internal/secrets` (003)** - Used APIs: `secrets.KeyManager`, `NewOrgAdminIdentifier()`, `NewTenantIdentifier()`, `UnmarshalCredentials()`, `GenerateKeyPair()` - Contract: takes a `*secrets.KeyManager` as a constructor parameter, constructed and wrapped by `cmd/provider/main.go` via `secrets.NewKeyManager`; never imports a concrete key store itself.
+- **`internal/secrets` (003)** - Used APIs: `secrets.KeyManager`, `NewOrgAdminIdentifier()`, `NewTenantIdentifier()`, `KeyManager.GetCredentials()`, `NewCredentials()`, `KeyManager.UpdateCredentials()` - Contract: takes a `*secrets.KeyManager` as a constructor parameter, constructed and wrapped by `cmd/provider/main.go` via `secrets.NewKeyManager`; never imports a concrete key store itself.
 - **`github.com/snowflakedb/gosnowflake` v1.18.1** - the only Snowflake driver dependency in the tree; this is the spec that adds it to `go.mod` (see Project Structure).
 
 ## Integration Points
@@ -254,7 +254,7 @@ This specification defines the `internal/snowflake/pool/` and `internal/snowflak
 ## Success Criteria
 
 - **SC-001**: `New` returns a non-nil `*Pool` and makes no network call.
-- **SC-002**: `OrgAdmin`'s first call reads the org-admin credential via `KeyManager.Get`/`NewOrgAdminIdentifier`, builds the host from `OrgAdminAccountLocator`/`OrgAdminAccountRegion`/`UsePrivateLink`, and returns a `*sql.DB`.
+- **SC-002**: `OrgAdmin`'s first call reads the org-admin credential via `KeyManager.GetCredentials`/`NewOrgAdminIdentifier`, builds the host from `OrgAdminAccountLocator`/`OrgAdminAccountRegion`/`UsePrivateLink`, and returns a `*sql.DB`.
 - **SC-003**: Every later `OrgAdmin` call returns the identical `*sql.DB` pointer from the first call, without re-reading the credential or dialing again.
 - **SC-004**: `TenantAccount` builds its secret identifier via `NewTenantIdentifier(org, namespace, accountName)`, using `Config.Snowflake.Org` and the caller-supplied `namespace`/`accountName`.
 - **SC-005**: Two `TenantAccount` calls with identical `namespace`/`accountName`/`locator`/`region` return the identical `*sql.DB` pointer; a call with a different `namespace` or `accountName` returns a distinct one.
@@ -280,7 +280,7 @@ This specification defines the `internal/snowflake/pool/` and `internal/snowflak
 - **SC-021**: Every `*sql.DB` this package dials has `SetMaxOpenConns`, `SetMaxIdleConns`, `SetConnMaxLifetime`, and `SetConnMaxIdleTime` applied from `cfg.Snowflake.MaxConnectionPoolSize`/`MaxIdleConnections`/`ConnectionMaxLifetime`/`ConnectionMaxIdleTime`, and the health probe's context deadline is `cfg.Snowflake.ConnectionProbeTimeout`.
 - **SC-022**: The `gosnowflake.Config` built for both `OrgAdmin` and `TenantAccount` sets `DisableOCSPChecks` from `cfg.Snowflake.DisableOCSPChecks`.
 - **SC-023**: A stored credential more than six calendar months old triggers a rotation attempt on the next `OrgAdmin`/`TenantAccount` call; a younger one never does.
-- **SC-024**: A rotation failure never fails that call, and `KeyManager.Update` is only called once the `ALTER USER` pushing the new key has succeeded.
+- **SC-024**: A rotation failure never fails that call, and `KeyManager.UpdateCredentials` is only called once the `ALTER USER` pushing the new key has succeeded.
 
 ## Security Considerations
 
@@ -303,7 +303,7 @@ This specification defines the `internal/snowflake/pool/` and `internal/snowflak
 
 - **Product design**: `specs/design.md`, §3.6 (`CREATE ACCOUNT`, the locator, PrivateLink), §3.11 (organization vs. account-level privilege step-down), §3.11.1 (the tenant secret identifier this package's cache key mirrors), §3.12 (CRD name vs. resolved Snowflake name), §6.3 (`DROP ACCOUNT`), §7.2 (`status.accountUrl`, the form `host.URL` produces), Appendix B X1 (the `platform` service user).
 - **SnowflakeAccount CRD (006, not yet written)**: `specs/scope-006-snowflake-account-crd.md` - `internal/account/tenant`, the second consumer of `internal/snowflake/host`, which builds `status.accountUrl` from `host.URL`.
-- **Secrets Handling (003)**: `specs/003-secrets-handling.md` - `KeyStore`, `KeyManager`, `Identifier`, `NewOrgAdminIdentifier()`, `NewTenantIdentifier()`, `Credentials`, `UnmarshalCredentials()`.
+- **Secrets Handling (003)**: `specs/003-secrets-handling.md` - `KeyStore`, `KeyManager`, `Identifier`, `NewOrgAdminIdentifier()`, `NewTenantIdentifier()`, `Credentials`, `KeyManager.GetCredentials()`.
 - **Base Config (002)**: `specs/002-base-config.md` - `SnowflakeSettings`, in particular `OrgAdminAccountLocator`, `OrgAdminAccountRegion`, `UsePrivateLink`.
 - **Driver documentation**: `github.com/snowflakedb/gosnowflake` (`godoc`) - `Config`, `NewConnector`, `DSN`, `AuthTypeJwt`; consult the pinned version's source before implementation, per this repo's own convention of verifying vendor behavior rather than assuming it.
 

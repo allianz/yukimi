@@ -226,13 +226,9 @@ func TestRotateCredential_WritesSecretOnlyAfterSuccessfulAlterUser(t *testing.T)
 		t.Fatalf("expected exactly one ALTER USER, got %v", *execCalls)
 	}
 
-	raw, rotatedAt, err := store.Get(context.Background(), id)
+	rotated, err := keyManager.GetCredentials(context.Background(), id)
 	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	rotated, err := secrets.UnmarshalCredentials(raw, rotatedAt)
-	if err != nil {
-		t.Fatalf("UnmarshalCredentials: %v", err)
+		t.Fatalf("GetCredentials: %v", err)
 	}
 	if rotated.PrivateKey == original.PrivateKey {
 		t.Error("expected the store to hold a freshly rotated key")
@@ -259,13 +255,9 @@ func TestRotateCredential_FailedAlterUserLeavesStoreUntouched(t *testing.T) {
 		t.Fatal("expected an error from a failing ALTER USER")
 	}
 
-	raw, rotatedAt, err := store.Get(context.Background(), id)
+	stored, err := keyManager.GetCredentials(context.Background(), id)
 	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	stored, err := secrets.UnmarshalCredentials(raw, rotatedAt)
-	if err != nil {
-		t.Fatalf("UnmarshalCredentials: %v", err)
+		t.Fatalf("GetCredentials: %v", err)
 	}
 	if stored.PrivateKey != original.PrivateKey {
 		t.Error("a failed ALTER USER must leave the stored credential untouched")
@@ -334,13 +326,9 @@ func TestOrgAdmin_StaleCredential_RotatesInline(t *testing.T) {
 		t.Fatalf("expected exactly one ALTER USER, got %v", *execCalls)
 	}
 
-	raw, rotatedAt, err := store.Get(context.Background(), id)
+	rotated, err := keyManager.GetCredentials(context.Background(), id)
 	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	rotated, err := secrets.UnmarshalCredentials(raw, rotatedAt)
-	if err != nil {
-		t.Fatalf("UnmarshalCredentials: %v", err)
+		t.Fatalf("GetCredentials: %v", err)
 	}
 	if rotated.PrivateKey == original.PrivateKey {
 		t.Error("expected the org-admin credential to have been rotated")
@@ -379,13 +367,9 @@ func TestTenantAccount_RotationFailureDoesNotFailCall(t *testing.T) {
 		t.Error("a failed slot lookup must never reach ALTER USER")
 	}
 
-	raw, rotatedAt, err := store.Get(context.Background(), id)
+	stored, err := keyManager.GetCredentials(context.Background(), id)
 	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	stored, err := secrets.UnmarshalCredentials(raw, rotatedAt)
-	if err != nil {
-		t.Fatalf("UnmarshalCredentials: %v", err)
+		t.Fatalf("GetCredentials: %v", err)
 	}
 	if stored.PrivateKey != original.PrivateKey {
 		t.Error("a failed rotation must leave the stored credential untouched")
