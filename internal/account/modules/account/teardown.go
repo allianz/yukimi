@@ -76,9 +76,10 @@ func (m *module) dropAccount(ctx context.Context, mc *pipeline.ModuleContext) er
 // contract is that no caller branches on an error's identity, and the
 // reference AWS key store is not itself idempotent on an already-absent
 // identifier (internal/secrets/aws/keystore.go) — so instead of inspecting
-// Delete's error, this checks presence with Get first: an unreadable
-// identifier is either genuinely absent or already scheduled for deletion by
-// an earlier Teardown attempt, and either way there is nothing left to
+// Delete's error, this checks presence with GetCredentials first: an
+// unreadable identifier is either genuinely absent, already scheduled for
+// deletion by an earlier Teardown attempt, or stored but no longer a valid
+// credential, and in every one of those cases there is nothing left to
 // delete.
 func (m *module) deleteCredential(ctx context.Context, mc *pipeline.ModuleContext) error {
 	cr := mc.CR()
@@ -88,12 +89,12 @@ func (m *module) deleteCredential(ctx context.Context, mc *pipeline.ModuleContex
 		return err
 	}
 
-	if _, _, err := m.keyManager.Get(ctx, id); err != nil {
+	if _, err := m.keyManager.GetCredentials(ctx, id); err != nil {
 		//nolint:nilerr // Intentional: an unreadable identifier is nothing left to delete. See the doc comment above.
 		return nil
 	}
 
-	if err := m.keyManager.Delete(ctx, id); err != nil {
+	if err := m.keyManager.DeleteCredentials(ctx, id); err != nil {
 		return fmt.Errorf("failed to delete platform credential: %w", err)
 	}
 	return nil

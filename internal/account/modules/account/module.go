@@ -44,8 +44,8 @@ type module struct {
 //
 // Parameters:
 //   - keyManager: the *secrets.KeyManager (003) the platform keypair is stored
-//     through, via KeyManager.Create and, on teardown, KeyManager.Delete —
-//     this module never calls Update.
+//     through, via KeyManager.CreateCredentials and, on teardown,
+//     KeyManager.DeleteCredentials — this module never calls Update.
 //   - org: Config.Snowflake.Org (002), used to build the tenant secret
 //     identifier (003) exactly as internal/snowflake/pool does.
 //   - gracePeriod: Config.Snowflake.AccountCreationGracePeriod (002); how

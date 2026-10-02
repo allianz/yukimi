@@ -34,12 +34,12 @@ func TestKeyManager_Get_ServesWithinTTL(t *testing.T) {
 	}
 
 	c := NewKeyManager(fake, time.Hour)
-	if _, _, err := c.Get(ctx, id); err != nil {
+	if _, _, err := c.get(ctx, id); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	fake.OnGet = func(Identifier) error { return errStoreFault }
-	got, _, err := c.Get(ctx, id)
+	got, _, err := c.get(ctx, id)
 	if err != nil {
 		t.Fatalf("expected cached Get to succeed without touching the store, got %v", err)
 	}
@@ -61,7 +61,7 @@ func TestKeyManager_Get_ReplaysModifiedAtOnHit(t *testing.T) {
 	}
 
 	c := NewKeyManager(fake, time.Hour)
-	_, modifiedAt, err := c.Get(ctx, id)
+	_, modifiedAt, err := c.get(ctx, id)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestKeyManager_Get_ReplaysModifiedAtOnHit(t *testing.T) {
 	}
 
 	fake.Clock = func() time.Time { return fixed.Add(time.Hour) } // must not affect a cache hit
-	_, cachedModifiedAt, err := c.Get(ctx, id)
+	_, cachedModifiedAt, err := c.get(ctx, id)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -90,10 +90,10 @@ func TestKeyManager_Get_NeverCachesAFailedGet(t *testing.T) {
 	fake.OnGet = func(Identifier) error { calls++; return nil }
 
 	c := NewKeyManager(fake, time.Hour)
-	if _, _, err := c.Get(ctx, id); err == nil {
+	if _, _, err := c.get(ctx, id); err == nil {
 		t.Fatal("expected the first Get to fail on an identifier nothing is stored at")
 	}
-	if _, _, err := c.Get(ctx, id); err == nil {
+	if _, _, err := c.get(ctx, id); err == nil {
 		t.Fatal("expected the second Get to fail on an identifier nothing is stored at")
 	}
 	if calls != 2 {
@@ -101,7 +101,7 @@ func TestKeyManager_Get_NeverCachesAFailedGet(t *testing.T) {
 	}
 }
 
-// SC-014: Create/Update/Delete invalidate an identifier's cache entry on
+// SC-014: create/update/Delete invalidate an identifier's cache entry on
 // success, so the next Get re-fetches rather than serving a stale value.
 func TestKeyManager_InvalidatesOnWrite(t *testing.T) {
 	newCache := func(t *testing.T) (*KeyManager, *FakeKeyStore, Identifier) {
@@ -114,13 +114,13 @@ func TestKeyManager_InvalidatesOnWrite(t *testing.T) {
 	t.Run("Create", func(t *testing.T) {
 		ctx := t.Context()
 		c, _, id := newCache(t)
-		if _, _, err := c.Get(ctx, id); err == nil {
+		if _, _, err := c.get(ctx, id); err == nil {
 			t.Fatal("expected a Get on an identifier nothing is stored at to fail")
 		}
-		if err := c.Create(ctx, id, "value"); err != nil {
+		if err := c.create(ctx, id, "value"); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		got, _, err := c.Get(ctx, id)
+		got, _, err := c.get(ctx, id)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -132,16 +132,16 @@ func TestKeyManager_InvalidatesOnWrite(t *testing.T) {
 	t.Run("Update", func(t *testing.T) {
 		ctx := t.Context()
 		c, _, id := newCache(t)
-		if err := c.Create(ctx, id, "original"); err != nil {
+		if err := c.create(ctx, id, "original"); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if _, _, err := c.Get(ctx, id); err != nil { // warm the cache
+		if _, _, err := c.get(ctx, id); err != nil { // warm the cache
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if err := c.Update(ctx, id, "updated"); err != nil {
+		if err := c.update(ctx, id, "updated"); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		got, _, err := c.Get(ctx, id)
+		got, _, err := c.get(ctx, id)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -153,16 +153,16 @@ func TestKeyManager_InvalidatesOnWrite(t *testing.T) {
 	t.Run("Delete", func(t *testing.T) {
 		ctx := t.Context()
 		c, _, id := newCache(t)
-		if err := c.Create(ctx, id, "value"); err != nil {
+		if err := c.create(ctx, id, "value"); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if _, _, err := c.Get(ctx, id); err != nil { // warm the cache
+		if _, _, err := c.get(ctx, id); err != nil { // warm the cache
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if err := c.Delete(ctx, id); err != nil {
+		if err := c.DeleteCredentials(ctx, id); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if _, _, err := c.Get(ctx, id); err == nil {
+		if _, _, err := c.get(ctx, id); err == nil {
 			t.Error("expected a Get after Delete to fail (stale cached value must not have been served)")
 		}
 	})
@@ -179,7 +179,7 @@ func TestInvalidate_ClearsEntryDirectly(t *testing.T) {
 	}
 
 	c := NewKeyManager(fake, time.Hour)
-	if _, _, err := c.Get(ctx, id); err != nil { // warm the cache
+	if _, _, err := c.get(ctx, id); err != nil { // warm the cache
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -193,7 +193,7 @@ func TestInvalidate_ClearsEntryDirectly(t *testing.T) {
 	if err := fake.Update(ctx, id, "updated"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	got, _, err := c.Get(ctx, id)
+	got, _, err := c.get(ctx, id)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -216,11 +216,11 @@ func TestKeyManager_Get_ExpiredEntryRefetches(t *testing.T) {
 	fake.OnGet = func(Identifier) error { calls++; return nil }
 
 	c := NewKeyManager(fake, 5*time.Millisecond)
-	if _, _, err := c.Get(ctx, id); err != nil {
+	if _, _, err := c.get(ctx, id); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	time.Sleep(30 * time.Millisecond)
-	if _, _, err := c.Get(ctx, id); err != nil {
+	if _, _, err := c.get(ctx, id); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if calls != 2 {
@@ -240,12 +240,12 @@ func TestKeyManager_Get_ServesStaleDuringOutage(t *testing.T) {
 	}
 
 	c := NewKeyManager(fake, time.Hour)
-	if _, _, err := c.Get(ctx, id); err != nil {
+	if _, _, err := c.get(ctx, id); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	fake.OnGet = func(Identifier) error { return errStoreFault }
-	got, _, err := c.Get(ctx, id)
+	got, _, err := c.get(ctx, id)
 	if err != nil {
 		t.Fatalf("expected cached value to be served during outage, got %v", err)
 	}
@@ -254,7 +254,7 @@ func TestKeyManager_Get_ServesStaleDuringOutage(t *testing.T) {
 	}
 }
 
-// KeyManager.Create/Update/Delete propagate the underlying KeyStore's error
+// KeyManager's create/update/Delete propagate the underlying KeyStore's error
 // without invalidating anything.
 func TestKeyManager_WriteMethods_PropagateKeyStoreError(t *testing.T) {
 	ctx := t.Context()
@@ -263,19 +263,19 @@ func TestKeyManager_WriteMethods_PropagateKeyStoreError(t *testing.T) {
 	c := NewKeyManager(fake, time.Hour)
 
 	fake.OnCreate = func(Identifier) error { return errStoreFault }
-	if err := c.Create(ctx, id, "v"); !stderrors.Is(err, errStoreFault) {
+	if err := c.create(ctx, id, "v"); !stderrors.Is(err, errStoreFault) {
 		t.Errorf("Create: got %v, want errStoreFault", err)
 	}
 	fake.OnCreate = nil
 
 	fake.OnUpdate = func(Identifier) error { return errStoreFault }
-	if err := c.Update(ctx, id, "v"); !stderrors.Is(err, errStoreFault) {
+	if err := c.update(ctx, id, "v"); !stderrors.Is(err, errStoreFault) {
 		t.Errorf("Update: got %v, want errStoreFault", err)
 	}
 	fake.OnUpdate = nil
 
 	fake.OnDelete = func(Identifier) error { return errStoreFault }
-	if err := c.Delete(ctx, id); !stderrors.Is(err, errStoreFault) {
+	if err := c.DeleteCredentials(ctx, id); !stderrors.Is(err, errStoreFault) {
 		t.Errorf("Delete: got %v, want errStoreFault", err)
 	}
 }
@@ -411,10 +411,10 @@ func TestKeyManager_ConcurrentAccess_NoRace(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			id := ids[i%len(ids)]
-			_ = c.Create(ctx, id, "value")
-			_, _, _ = c.Get(ctx, id)
+			_ = c.create(ctx, id, "value")
+			_, _, _ = c.get(ctx, id)
 			c.Invalidate(id)
-			_, _, _ = c.Get(ctx, id)
+			_, _, _ = c.get(ctx, id)
 		}(i)
 	}
 	wg.Wait()

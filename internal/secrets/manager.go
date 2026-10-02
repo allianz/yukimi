@@ -31,8 +31,8 @@ type cacheEntry struct {
 }
 
 // KeyManager wraps a KeyStore with an in-memory, TTL-based, lazily-evicted
-// cache. It implements KeyStore itself, so callers depend on the interface,
-// never on this concrete type.
+// cache. Every consumer outside this package holds a *KeyManager, never a
+// concrete KeyStore.
 type KeyManager struct {
 	store KeyStore
 	ttl   time.Duration
@@ -41,15 +41,16 @@ type KeyManager struct {
 	entries map[Identifier]cacheEntry
 }
 
-var _ KeyStore = (*KeyManager)(nil)
-
 // NewKeyManager wraps store. Every concrete KeyStore should be wrapped exactly
 // once, at construction time in cmd/provider/main.go.
 func NewKeyManager(store KeyStore, ttl time.Duration) *KeyManager {
 	return &KeyManager{store: store, ttl: ttl, entries: make(map[Identifier]cacheEntry)}
 }
 
-func (c *KeyManager) Get(ctx context.Context, id Identifier) (string, time.Time, error) {
+// get returns the raw value stored at id, along with the time the backend
+// last wrote it. Only GetCredentials calls this — a caller never reads a raw
+// value directly.
+func (c *KeyManager) get(ctx context.Context, id Identifier) (string, time.Time, error) {
 	c.mu.Lock()
 	entry, ok := c.entries[id]
 	c.mu.Unlock()
@@ -68,7 +69,10 @@ func (c *KeyManager) Get(ctx context.Context, id Identifier) (string, time.Time,
 	return value, modifiedAt, nil
 }
 
-func (c *KeyManager) Create(ctx context.Context, id Identifier, value string) error {
+// create stores value at id create-only (fails if id is already occupied).
+// Only CreateCredentials calls this — a caller never stores a raw value
+// directly.
+func (c *KeyManager) create(ctx context.Context, id Identifier, value string) error {
 	if err := c.store.Create(ctx, id, value); err != nil {
 		return err
 	}
@@ -76,7 +80,9 @@ func (c *KeyManager) Create(ctx context.Context, id Identifier, value string) er
 	return nil
 }
 
-func (c *KeyManager) Update(ctx context.Context, id Identifier, value string) error {
+// update stores value at id update-only (fails if id is absent). Only
+// UpdateCredentials calls this — a caller never stores a raw value directly.
+func (c *KeyManager) update(ctx context.Context, id Identifier, value string) error {
 	if err := c.store.Update(ctx, id, value); err != nil {
 		return err
 	}
@@ -95,7 +101,7 @@ func (c *KeyManager) CreateCredentials(ctx context.Context, id Identifier, usern
 	if err != nil {
 		return nil, err
 	}
-	if err := c.Create(ctx, id, value); err != nil {
+	if err := c.create(ctx, id, value); err != nil {
 		return nil, err
 	}
 	return creds, nil
@@ -107,19 +113,21 @@ func (c *KeyManager) UpdateCredentials(ctx context.Context, id Identifier, creds
 	if err != nil {
 		return err
 	}
-	return c.Update(ctx, id, value)
+	return c.update(ctx, id, value)
 }
 
 // GetCredentials reads the credential at id and unmarshals it.
 func (c *KeyManager) GetCredentials(ctx context.Context, id Identifier) (*Credentials, error) {
-	value, rotatedAt, err := c.Get(ctx, id)
+	value, rotatedAt, err := c.get(ctx, id)
 	if err != nil {
 		return nil, err
 	}
 	return unmarshalCredentials(value, rotatedAt)
 }
 
-func (c *KeyManager) Delete(ctx context.Context, id Identifier) error {
+// DeleteCredentials removes (or, store-dependent, schedules the removal of)
+// the credential at id.
+func (c *KeyManager) DeleteCredentials(ctx context.Context, id Identifier) error {
 	if err := c.store.Delete(ctx, id); err != nil {
 		return err
 	}
@@ -129,7 +137,7 @@ func (c *KeyManager) Delete(ctx context.Context, id Identifier) error {
 
 // Invalidate clears id's cache entry without touching the underlying
 // KeyStore. Exposed for a caller that needs an identifier forced cold without
-// going through Create/Update/Delete.
+// going through CreateCredentials/UpdateCredentials/DeleteCredentials.
 func (c *KeyManager) Invalidate(id Identifier) {
 	c.mu.Lock()
 	delete(c.entries, id)
