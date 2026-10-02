@@ -33,8 +33,11 @@ The API rejects invalid input before an account is created:
 - `region` must have a cloud-region shape naming one of `aws`/`azure`/`gcp`, such as
   `aws-eu-central-1`. Guardrails and Backplane Config (007/008) later decide whether that
   specific region is supported.
-- `metadata.name` must be 249 characters or fewer, start with a lowercase letter, and contain
-  only lowercase letters, digits, and `-`. This keeps the derived Snowflake account name valid.
+- `metadata.name` must be 55 characters or fewer, start with a lowercase letter, and contain
+  only lowercase letters, digits, and `-`. 55 is the absolute ceiling that holds for any
+  organization name, however short; the account module (012) separately checks the resolved
+  name together with the real organization name against Snowflake's 63-character DNS label
+  limit, since that combined bound depends on a value this CRD never sees.
 - `description` must be 1024 characters or fewer and cannot be changed after creation. Snowflake
   does not support changing an account's description later.
 - `contact` must be a valid email address. It is the Snowflake account's contact address.
@@ -219,7 +222,7 @@ type SnowflakeAccountStatus struct {
 // Snowflake account they want (design.md 3.1). Both rules below are
 // root-level, not on Spec, because metadata.name isn't a field Spec defines
 // (Key Concept: Structural Admission Checks).
-// +kubebuilder:validation:XValidation:rule="size(self.metadata.name) <= 249",message="metadata.name must be 249 characters or fewer, so the resolved Snowflake account name (design.md 3.12) stays within Snowflake's 255-character identifier limit"
+// +kubebuilder:validation:XValidation:rule="size(self.metadata.name) <= 55",message="metadata.name must be 55 characters or fewer, so the resolved Snowflake account name combined with the organization name (design.md 3.12) stays within Snowflake's 63-character DNS label limit even for a single-character organization name; the account module (012) checks the exact combined length against the real organization name"
 // +kubebuilder:validation:XValidation:rule="self.metadata.name.matches('^[a-z][a-z0-9-]*$')",message="metadata.name must start with a lowercase letter and contain only lowercase letters, digits, and '-', so the resolved Snowflake account name (design.md 3.12) is always a valid Snowflake identifier"
 type SnowflakeAccount struct {
 	metav1.TypeMeta   `json:",inline"`
@@ -311,7 +314,7 @@ func AccountURL(locator, region string, usePrivateLink bool) (string, error)
 
 | Field Path | Type | Required | Mutability | Validation/Constraints |
 |---|---|---|---|---|
-| `name` | string | Yes | Immutable (Kubernetes-enforced, no CEL needed) | Two root-level `XValidation` rules: `size(self.metadata.name) <= 249` (255, Snowflake's identifier limit, minus the 6 characters `ResolveName` (§3.12) always appends), and `self.metadata.name.matches('^[a-z][a-z0-9-]*$')` (starts with a lowercase letter, only lowercase letters/digits/`-` after — the shape `ResolveName` needs to always produce a valid Snowflake identifier) |
+| `name` | string | Yes | Immutable (Kubernetes-enforced, no CEL needed) | Two root-level `XValidation` rules: `size(self.metadata.name) <= 55` (63, Snowflake's DNS label limit on `<org>-<resolvedName>`, minus the 6 characters `ResolveName` (§3.12) always appends, minus 1 for the joining `-`, minus 1 for the shortest possible organization name — the exact bound for the real organization name is checked by the account module, 012), and `self.metadata.name.matches('^[a-z][a-z0-9-]*$')` (starts with a lowercase letter, only lowercase letters/digits/`-` after — the shape `ResolveName` needs to always produce a valid Snowflake identifier) |
 
 ### Fields (spec)
 
@@ -466,15 +469,19 @@ caller (020) already has the namespace object from its own reconcile and passes 
   to change an object's `name`; there's nothing left for this CRD's schema to enforce there. The
   length rule is a separate, unrelated concern (Key Concept: Structural Admission Checks) — it
   fires on create too, not just update.
-- **A `metadata.name` at or over the 249-character ceiling — rejected the same way as the length
+- **A `metadata.name` at or over the 55-character ceiling — rejected the same way as the length
   problem found in testing?** No, and that's the point: the root-level `XValidation` rejects it at
   admission, before the object is ever persisted, so the controller never observes it and never
   attempts to write platform credentials or call `CREATE ACCOUNT` for it. Before this rule existed,
-  an over-long name reached a real `CREATE ACCOUNT` call, which Snowflake itself rejected for
-  exceeding its 255-character identifier limit — but only *after* the account module had already
-  written credentials to the secret store, permanently wedging the resource on retry. This rule
-  closes off that path entirely; the secret-write/retry behavior itself is a separate, known gap
-  this spec does not fix.
+  an over-long name reached a real `CREATE ACCOUNT` call, which Snowflake itself rejected — not for
+  exceeding a flat 255-character bare-identifier limit, but for exceeding the 63-character DNS
+  label limit on `<org>-<resolvedName>`, the combined form Snowflake actually validates — but only
+  *after* the account module had already written credentials to the secret store, permanently
+  wedging the resource on retry. 55 is the largest `metadata.name` that stays within that
+  63-character limit for any organization name, however short; the account module (012) still
+  re-checks the exact combined length against the real organization name, since this CRD has no
+  visibility into it. The secret-write/retry behavior itself is a separate, known gap this spec
+  does not fix.
 - **A `metadata.name` with a leading digit (e.g. `9-team`) or a dot (e.g. `my.team`) — does
   Kubernetes already reject these?** No — both are legal under Kubernetes' own DNS-1123-subdomain
   name validation, and `ResolveName` never translates either away (only `-` becomes `_`). Before
@@ -527,7 +534,7 @@ caller (020) already has the namespace object from its own reconcile and passes 
   `base.orgAdminRegionPattern`, that rejects a value with no valid cloud-region shape (e.g. `aaa`)
   or an unrecognized cloud (e.g. `oracle-eu-1`) on both create and update.
 - **SC-003b**: a root-level `XValidation` rule on `SnowflakeAccount` rejects a `metadata.name`
-  longer than 249 characters on both create and update; a name of exactly 249 characters is
+  longer than 55 characters on both create and update; a name of exactly 55 characters is
   accepted.
 - **SC-003d**: a second root-level `XValidation` rule rejects a `metadata.name` that starts with a
   digit (e.g. `9-team`) or contains a dot (e.g. `my.team`) on both create and update;

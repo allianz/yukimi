@@ -510,6 +510,39 @@ func TestApply_FreshCreate_UnknownRegion_Rejected(t *testing.T) {
 	}
 }
 
+// SC-034: a fresh create aborts with a user error, issuing no SQL, when
+// cr.Name combined with the configured organization name would exceed
+// Snowflake's 63-character DNS label limit once resolved (Key Concept:
+// Account Name Length Limit). The message names only the max length — never
+// the organization name — since the tenant can't act on either.
+func TestApply_FreshCreate_AccountNameTooLong_Rejected(t *testing.T) {
+	longName := strings.Repeat("a", 55) // the CRD's own 55-character ceiling (006)
+	cr := newTestCR(longName, "ns", "aws-eu-central-1", "", "a@b.com", "")
+	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
+
+	// org is 7 characters, so maxNameLen = 63 - 1 - 6 - 7 = 49, below the
+	// 55-character name above.
+	m := &module{keyManager: secrets.NewKeyManager(secrets.NewFakeKeyStore(), time.Hour), org: "orgname", gracePeriod: 5 * time.Minute, backplane: testBackplaneConfig("aws-eu-central-1")}
+	outcome := m.Apply(context.Background(), mc)
+
+	if outcome.State != pipeline.StateRejected {
+		t.Errorf("outcome.State = %v, want StateRejected", outcome.State)
+	}
+	if !outcome.Abort {
+		t.Error("outcome.Abort = false, want true")
+	}
+	if !internalerrors.IsUserError(outcome.Err) {
+		t.Errorf("expected a user error, got: %v", outcome.Err)
+	}
+	wantMsg := "account name must be 49 characters or fewer"
+	if outcome.Err == nil || outcome.Err.Error() != wantMsg {
+		t.Errorf("outcome.Err = %v, want %q", outcome.Err, wantMsg)
+	}
+	if cr.Status.AccountLocator != "" {
+		t.Errorf("cr.Status.AccountLocator = %q, want empty", cr.Status.AccountLocator)
+	}
+}
+
 // A fresh create aborts with a user error, and no side effects, when the
 // resolved region exists but is not available and the tenant's namespace is
 // not labeled as an alpha tester (Key Concept: Alpha-Tester Region Bypass).

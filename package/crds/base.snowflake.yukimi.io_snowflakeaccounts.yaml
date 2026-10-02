@@ -305,10 +305,12 @@ spec:
         - spec
         type: object
         x-kubernetes-validations:
-        - message: metadata.name must be 249 characters or fewer, so the resolved
-            Snowflake account name (design.md 3.12) stays within Snowflake's 255-character
-            identifier limit
-          rule: size(self.metadata.name) <= 249
+        - message: metadata.name must be 55 characters or fewer, so the resolved Snowflake
+            account name combined with the organization name (design.md 3.12) stays
+            within Snowflake's 63-character DNS label limit even for a single-character
+            organization name; the account module (012) checks the exact combined
+            length against the real organization name
+          rule: size(self.metadata.name) <= 55
         - message: metadata.name must start with a lowercase letter and contain only
             lowercase letters, digits, and '-', so the resolved Snowflake account
             name (design.md 3.12) is always a valid Snowflake identifier
