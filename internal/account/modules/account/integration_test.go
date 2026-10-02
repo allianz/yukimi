@@ -216,13 +216,15 @@ func TestIntegration_CreateThenDestroy(t *testing.T) {
 // through (apply.go) both see letters, digits and separators mixed rather
 // than the short, tidy name every other test in this file uses.
 //
-// Deliberately not sized anywhere near the CRD's own 249-character ceiling —
-// a first attempt at that size discovered a real, tighter Snowflake limit
-// this codebase's specs don't mention anywhere: CREATE ACCOUNT rejects the
+// Deliberately not sized anywhere near the CRD's own 55-character ceiling —
+// a first attempt at a longer name discovered the real, tighter Snowflake
+// limit the CRD's own ceiling and this module's own length check (apply.go,
+// maxAccountLabelLen) now both account for: CREATE ACCOUNT rejects the
 // combined "<org>-<resolved-account-name>" once it exceeds 63 characters
 // ("...exceeds the maximum DNS label length of 63 characters"), well below
-// what the resolved name's own 255-character SQL-identifier ceiling
-// (snowflakeaccount_types.go's own comment) would suggest is safe. Kept
+// the resolved name's own 255-character SQL-identifier ceiling. See
+// specs/006-snowflake-account-crd.md's Edge Cases and
+// specs/012-account-module.md's Key Concept: Account Name Length Limit. Kept
 // short enough here to stay well clear of that limit for any real org name,
 // since demonstrating it is not this test's job — reproduce it by making
 // this string as long as the CRD alone allows.

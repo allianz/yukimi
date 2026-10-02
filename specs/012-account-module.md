@@ -55,6 +55,23 @@ tenants early access to a staged region with the `alpha-tester: "true"` namespac
 This check happens only when the account is created. The region cannot be changed afterward, so an
 existing account never needs to be checked against a different region.
 
+## Key Concept: Account Name Length Limit
+
+The CRD's own `metadata.name` ceiling (006) is a worst-case bound that holds for any
+organization name, however short. The real limit discovered against live Snowflake is tighter
+and depends on the organization name actually configured for this deployment: `CREATE ACCOUNT`
+rejects the combined `<org>-<resolvedName>` once it exceeds 63 characters, the maximum length
+of a DNS label. Only this module has both the real organization name (`org`, from 002) and the
+resolved account name together, so it re-derives the exact max name length for this
+organization and rejects — before generating a keypair, storing a secret, or opening the
+org-admin connection — whenever `cr.Name` exceeds it, closing the same credential-wedging risk
+the CRD-level check cannot close on its own for an organization name longer than one character.
+
+The rejection message deliberately reports only that single number — "account name must be N
+characters or fewer" — never the organization name or anything about DNS labels. A tenant
+neither knows nor can change the organization name, so naming it in the error would only add
+confusion, not actionability.
+
 ## Key Concept: The Only Module With Organization-Wide Privileges
 
 Creating a Snowflake account needs privileges that span the whole Snowflake organization, not just one
@@ -153,6 +170,10 @@ internal/account/modules/account/
   tenant.
 - The namespace's `alpha-tester` label is present but not a valid boolean — surfaces as
   `tenant.AlphaTester`'s own user error, passed through unchanged.
+- `cr.Name` combined with the real organization name would exceed Snowflake's 63-character DNS
+  label limit once resolved (Key Concept: Account Name Length Limit) — the message names only
+  the max length, never the organization name or "DNS label", since the tenant can't act on
+  either.
 - `CREATE ACCOUNT` fails because the resolved account name is already taken by another account org-wide.
 - The resolved account name does not start with a letter (backstop; Guardrails (008) is expected to
   already block this at admission).
@@ -238,6 +259,15 @@ This specification defines the account module that:
   Concept: Region Validation). The region literal `CREATE ACCOUNT` renders still comes
   entirely from the CRD plus a fixed transform; the Backplane Config only gates whether that literal
   is attempted at all.
+- **Why does this module re-check an account-name length the CRD (006) already bounds?** The
+  CRD's ceiling assumes the shortest possible organization name, because `metadata.name` is
+  validated with no knowledge of this deployment's actual `org` value. A real organization name
+  is almost always longer than one character, so a name the CRD accepts can still make
+  `<org>-<resolvedName>` exceed Snowflake's 63-character DNS label limit. This module is the
+  first point in the pipeline that holds both values together, so it is where the exact bound
+  can finally be checked — and, like the region check above, before any side effect. The
+  rejection message collapses the check back into a single max-length number rather than
+  exposing `org` or the DNS-label arithmetic, since neither is something the tenant can act on.
 - **Why look the email up before writing it, when this module doesn't bother for anything else it
   owns?** Unlike the RSA key or the account's own existence, `EMAIL` is compared on every single `Apply`
   call for an existing account — not just when `spec.contact` itself changed, since the pipeline calls
@@ -404,6 +434,10 @@ This specification defines the account module that:
   email differs from `spec.contact` or no row names the `platform` user at all.
 - **SC-033**: A `SHOW USERS` or `ALTER USER` failure during the email sync is classified as a system
   error and aborts `Apply` (`Failed(...).Aborting()`).
+- **SC-034**: A fresh create aborts with a user error, generating no keypair and issuing no SQL,
+  when `cr.Name` is longer than `63 - 1 - 6 - len(org)` characters; it proceeds normally at
+  exactly that length. The error message states only the numeric max length — never `org` or
+  "DNS label".
 
 ## Security Considerations
 

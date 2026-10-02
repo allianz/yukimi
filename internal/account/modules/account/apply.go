@@ -39,6 +39,16 @@ import (
 // mistake) apart from every other CREATE ACCOUNT failure (a system error).
 const duplicateAccountSQLState = "42710"
 
+// maxAccountLabelLen is Snowflake's DNS label limit on "<org>-<resolvedName>",
+// (specs/012-account-module.md, Key Concept: Account Name Length Limit).
+const maxAccountLabelLen = 63
+
+// resolvedNameSuffixLen is the length of the "_" plus 5-character hash
+// tenant.ResolveName always appends, so len(cr.Name) == len(resolvedName) -
+// resolvedNameSuffixLen (ResolveName only ever substitutes "-" for "_"
+// otherwise).
+const resolvedNameSuffixLen = 6
+
 // withinGracePeriod reports whether cr's account was created recently enough
 // that a connection attempt should be skipped rather than tried and left to
 // fail — Snowflake accounts take minutes to become reachable after CREATE
@@ -153,6 +163,15 @@ func (m *module) createAccount(ctx context.Context, mc *pipeline.ModuleContext) 
 	}
 
 	resolvedName := mc.ResolvedAccountName()
+
+	// Snowflake caps "<org>-<resolvedName>" at maxAccountLabelLen, not
+	// cr.Name alone, so maxNameLen converts that into a plain length the
+	// tenant can act on (specs/012-account-module.md, Key Concept: Account
+	// Name Length Limit).
+	if maxNameLen := maxAccountLabelLen - 1 - resolvedNameSuffixLen - len(m.org); len(cr.Name) > maxNameLen {
+		return pipeline.Rejected(errors.NewUserError(fmt.Sprintf(
+			"account name must be %d characters or fewer", maxNameLen))).Aborting()
+	}
 
 	id, err := secrets.NewTenantIdentifier(m.org, cr.Namespace, cr.Name)
 	if err != nil {
