@@ -134,11 +134,7 @@ func (p *Pool) OrgAdmin(ctx context.Context) (*sql.DB, error) {
 		return nil, err
 	}
 
-	raw, rotatedAt, err := p.keyManager.Get(ctx, id)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read org-admin credentials: %w", err)
-	}
-	creds, err := secrets.UnmarshalCredentials(raw, rotatedAt)
+	creds, err := p.keyManager.GetCredentials(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read org-admin credentials: %w", err)
 	}
@@ -209,11 +205,7 @@ func (p *Pool) TenantAccount(ctx context.Context, namespace, accountName, locato
 		return nil, err
 	}
 
-	raw, rotatedAt, err := p.keyManager.Get(ctx, id)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read tenant credentials for %s/%s: %w", namespace, accountName, err)
-	}
-	creds, err := secrets.UnmarshalCredentials(raw, rotatedAt)
+	creds, err := p.keyManager.GetCredentials(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read tenant credentials for %s/%s: %w", namespace, accountName, err)
 	}

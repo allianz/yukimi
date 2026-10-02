@@ -89,7 +89,7 @@ an operator has to restore the credential by hand.
 //
 // Parameters:
 //   - keyManager: the *secrets.KeyManager (003) the platform keypair is stored through, via
-//     KeyManager.Create and, on teardown, KeyManager.Delete — this module never calls Update.
+//     KeyManager.CreateCredentials and, on teardown, KeyManager.DeleteCredentials — this module never calls Update.
 //   - org: Config.Snowflake.Org (002), used to build the tenant secret identifier (003) exactly as
 //     internal/snowflake/pool does.
 //   - gracePeriod: Config.Snowflake.AccountCreationGracePeriod (002) — how long a fresh account is
@@ -117,7 +117,7 @@ any `ModuleContext` accessor — `internal/account/pipeline` (009) defines none 
 
 `Teardown` runs three steps in a fixed order: `DROP ACCOUNT ... GRACE_PERIOD_IN_DAYS = <configured>` over
 the org-admin connection, then `ModuleContext.EvictTenant()` so no stale pooled connection to a dropped
-account survives, then `KeyManager.Delete` on the tenant secret identifier. Each step runs only once the one before
+account survives, then `KeyManager.DeleteCredentials` on the tenant secret identifier. Each step runs only once the one before
 it succeeded, and a step whose object is already absent counts as success, so the whole sequence is safe to
 re-run.
 
@@ -286,11 +286,11 @@ This specification defines the account module that:
   `tenant.AlphaTester`, authors its own user error when the region is unavailable and the tenant is
   not an alpha tester (Key Concept: Region Validation), reusing 007's own unknown-region
   wording so the two cases stay indistinguishable to the tenant.
-- **Secrets Handling (003)** — Used APIs: `GenerateKeyPair()`/`NewCredentials()`, `MarshalCredentials()`,
-  `NewTenantIdentifier()`, `KeyManager.Create()`, `KeyManager.Delete()`, `ErrPendingDeletion` — Contract: `Create` and
-  `Delete` only, never `Update`; the module never reads a credential back. `Delete`'s recovery window is
-  the key store's own business — this module passes no window and cannot choose one. Matches `Create`'s
-  error against `ErrPendingDeletion` via `errors.Is` and decides its own classification and message for
+- **Secrets Handling (003)** — Used APIs: `NewTenantIdentifier()`, `KeyManager.CreateCredentials()`,
+  `KeyManager.DeleteCredentials()`, `ErrPendingDeletion` — Contract: `CreateCredentials` and
+  `DeleteCredentials` only, never `Update`; the module never reads a credential back. `DeleteCredentials`'s recovery window is
+  the key store's own business — this module passes no window and cannot choose one. Matches
+  `CreateCredentials`'s error against `ErrPendingDeletion` via `errors.Is` and decides its own classification and message for
   that case.
 - **Connection Pooling (004)** — Used APIs: `ModuleContext.OrgAdminDB()`, `ModuleContext.TenantDB()`,
   `ModuleContext.EvictTenant()` — Contract: reached only through `ModuleContext`; this module never

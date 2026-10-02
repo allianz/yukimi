@@ -40,7 +40,7 @@ func TestTeardown_NoLocator_SkipsAccountSteps_DeletesCredential(t *testing.T) {
 	if err != nil {
 		t.Fatalf("secrets.NewTenantIdentifier: %v", err)
 	}
-	if err := store.Create(context.Background(), id, "creds"); err != nil {
+	if err := store.Create(context.Background(), id, `{"username":"platform","public_key":"pub","private_key":"priv"}`); err != nil {
 		t.Fatalf("store.Create: %v", err)
 	}
 
@@ -74,7 +74,7 @@ func TestTeardown_KnownLocator_DropsEvictsDeletes_InOrder(t *testing.T) {
 			if err != nil {
 				t.Fatalf("secrets.NewTenantIdentifier: %v", err)
 			}
-			if err := store.Create(context.Background(), id, "creds"); err != nil {
+			if err := store.Create(context.Background(), id, `{"username":"platform","public_key":"pub","private_key":"priv"}`); err != nil {
 				t.Fatalf("store.Create: %v", err)
 			}
 
@@ -118,7 +118,7 @@ func TestTeardown_DropAccountFails_StopsBeforeEvictOrDelete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("secrets.NewTenantIdentifier: %v", err)
 	}
-	if err := store.Create(context.Background(), id, "creds"); err != nil {
+	if err := store.Create(context.Background(), id, `{"username":"platform","public_key":"pub","private_key":"priv"}`); err != nil {
 		t.Fatalf("store.Create: %v", err)
 	}
 
@@ -150,7 +150,7 @@ func TestTeardown_OrgAdminConnectionFails_ReturnsError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("secrets.NewTenantIdentifier: %v", err)
 	}
-	if err := store.Create(context.Background(), id, "creds"); err != nil {
+	if err := store.Create(context.Background(), id, `{"username":"platform","public_key":"pub","private_key":"priv"}`); err != nil {
 		t.Fatalf("store.Create: %v", err)
 	}
 
@@ -201,12 +201,12 @@ func TestTeardown_CredentialAlreadyAbsent_DeleteNeverCalled(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if deleteCalls != 0 {
-		t.Errorf("KeyManager.Delete called %d times, want 0", deleteCalls)
+		t.Errorf("KeyManager.DeleteCredentials called %d times, want 0", deleteCalls)
 	}
 }
 
-// A credential present at Get time but failing on Delete is a real system
-// error.
+// A credential present at GetCredentials time but failing on DeleteCredentials
+// is a real system error.
 func TestTeardown_CredentialGetSucceeds_DeleteFails_ReturnsError(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
 	fake := &fakeDBPool{t: t, forbidCalls: true}
@@ -215,7 +215,7 @@ func TestTeardown_CredentialGetSucceeds_DeleteFails_ReturnsError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("secrets.NewTenantIdentifier: %v", err)
 	}
-	if err := store.Create(context.Background(), id, "creds"); err != nil {
+	if err := store.Create(context.Background(), id, `{"username":"platform","public_key":"pub","private_key":"priv"}`); err != nil {
 		t.Fatalf("store.Create: %v", err)
 	}
 	store.OnDelete = func(secrets.Identifier) error { return errors.New("store unreachable") }

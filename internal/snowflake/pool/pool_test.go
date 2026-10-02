@@ -149,18 +149,13 @@ func testConfig() *base.Config {
 }
 
 // seedCredentials generates a fresh keypair, stores it at id, and returns
-// the Credentials for assertions.
+// the Credentials for assertions. It wraps ks in its own throwaway
+// *secrets.KeyManager purely to reach KeyManager.CreateCredentials — callers'
+// own KeyManager, wrapping the same store, observes the write on its next Get.
 func seedCredentials(t *testing.T, ks secrets.KeyStore, id secrets.Identifier) *secrets.Credentials {
 	t.Helper()
-	creds, err := secrets.NewCredentials("platform")
+	creds, err := secrets.NewKeyManager(ks, time.Hour).CreateCredentials(context.Background(), id, "platform")
 	if err != nil {
-		t.Fatalf("NewCredentials: %v", err)
-	}
-	raw, err := secrets.MarshalCredentials(creds)
-	if err != nil {
-		t.Fatalf("MarshalCredentials: %v", err)
-	}
-	if err := ks.Create(context.Background(), id, raw); err != nil {
 		t.Fatalf("seeding credentials: %v", err)
 	}
 	return creds
@@ -364,11 +359,7 @@ func TestOrgAdmin_ParsePrivateKeyFailure(t *testing.T) {
 	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
 	id, _ := secrets.NewOrgAdminIdentifier(cfg.Snowflake.Org, cfg.Snowflake.OrgAdminAccount)
-	creds := &secrets.Credentials{Username: "platform", PublicKey: "irrelevant", PrivateKey: "not a pem key"}
-	raw, err := secrets.MarshalCredentials(creds)
-	if err != nil {
-		t.Fatalf("MarshalCredentials: %v", err)
-	}
+	raw := `{"username":"platform","public_key":"irrelevant","private_key":"not a pem key"}`
 	if err := store.Create(context.Background(), id, raw); err != nil {
 		t.Fatalf("seeding: %v", err)
 	}
@@ -590,11 +581,7 @@ func TestTenantAccount_ParsePrivateKeyFailure(t *testing.T) {
 	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
 	id, _ := secrets.NewTenantIdentifier(cfg.Snowflake.Org, "finance", "a")
-	creds := &secrets.Credentials{Username: "platform", PublicKey: "irrelevant", PrivateKey: "not a pem key"}
-	raw, err := secrets.MarshalCredentials(creds)
-	if err != nil {
-		t.Fatalf("MarshalCredentials: %v", err)
-	}
+	raw := `{"username":"platform","public_key":"irrelevant","private_key":"not a pem key"}`
 	if err := store.Create(context.Background(), id, raw); err != nil {
 		t.Fatalf("seeding: %v", err)
 	}

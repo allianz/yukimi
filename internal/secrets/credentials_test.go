@@ -58,7 +58,7 @@ func withoutEntropy(t *testing.T) {
 // SC-007: Credentials marshals to JSON with exactly username/public_key/private_key.
 func TestMarshalCredentials_FieldNames(t *testing.T) {
 	c := &Credentials{Username: "platform", PublicKey: "pub", PrivateKey: "priv"}
-	data, err := MarshalCredentials(c)
+	data, err := marshalCredentials(c)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -181,7 +181,7 @@ func TestUnmarshalCredentials_RejectsEmptyField(t *testing.T) {
 		{"empty private_key", `{"username":"platform","public_key":"pub","private_key":""}`},
 	}
 	for _, tt := range tests {
-		if _, err := UnmarshalCredentials(tt.json, time.Time{}); err == nil {
+		if _, err := unmarshalCredentials(tt.json, time.Time{}); err == nil {
 			t.Errorf("%s: expected error, got nil", tt.name)
 		}
 	}
@@ -189,7 +189,7 @@ func TestUnmarshalCredentials_RejectsEmptyField(t *testing.T) {
 
 // SC-009: UnmarshalCredentials rejects malformed JSON as a system error.
 func TestUnmarshalCredentials_RejectsMalformedJSON(t *testing.T) {
-	if _, err := UnmarshalCredentials("not json", time.Time{}); err == nil {
+	if _, err := unmarshalCredentials("not json", time.Time{}); err == nil {
 		t.Error("expected error for malformed JSON")
 	}
 }
@@ -200,11 +200,11 @@ func TestUnmarshalCredentials_RejectsMalformedJSON(t *testing.T) {
 func TestUnmarshalCredentials_WellFormedRoundTrip(t *testing.T) {
 	rotatedAt := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	c := &Credentials{Username: "platform", PublicKey: "pub", PrivateKey: "priv", RotatedAt: rotatedAt}
-	data, err := MarshalCredentials(c)
+	data, err := marshalCredentials(c)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	got, err := UnmarshalCredentials(data, rotatedAt)
+	got, err := unmarshalCredentials(data, rotatedAt)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -217,7 +217,7 @@ func TestUnmarshalCredentials_WellFormedRoundTrip(t *testing.T) {
 // payload — RotatedAt is tagged json:"-" and never round-trips through Marshal.
 func TestUnmarshalCredentials_RotatedAtNeverPersisted(t *testing.T) {
 	c := &Credentials{Username: "platform", PublicKey: "pub", PrivateKey: "priv", RotatedAt: time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)}
-	data, err := MarshalCredentials(c)
+	data, err := marshalCredentials(c)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -226,7 +226,7 @@ func TestUnmarshalCredentials_RotatedAtNeverPersisted(t *testing.T) {
 	}
 
 	rotatedAt := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
-	got, err := UnmarshalCredentials(data, rotatedAt)
+	got, err := unmarshalCredentials(data, rotatedAt)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

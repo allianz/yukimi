@@ -154,28 +154,19 @@ func (m *module) createAccount(ctx context.Context, mc *pipeline.ModuleContext) 
 
 	resolvedName := mc.ResolvedAccountName()
 
-	creds, err := secrets.NewCredentials("platform")
-	if err != nil {
-		return pipeline.Failed(fmt.Errorf("failed to generate platform keypair: %w", err)).Aborting()
-	}
-
-	marshaled, err := secrets.MarshalCredentials(creds)
-	if err != nil {
-		return pipeline.Failed(fmt.Errorf("failed to marshal platform credentials: %w", err)).Aborting()
-	}
-
 	id, err := secrets.NewTenantIdentifier(m.org, cr.Namespace, cr.Name)
 	if err != nil {
 		return pipeline.Failed(err).Aborting()
 	}
 
-	if err := m.keyManager.Create(ctx, id, marshaled); err != nil {
+	creds, err := m.keyManager.CreateCredentials(ctx, id, "platform")
+	if err != nil {
 		if errors.Is(err, secrets.ErrPendingDeletion) {
 			return pipeline.Rejected(errors.NewUserError(fmt.Sprintf(
 				"account %q was deleted recently and is still within its deletion recovery "+
 					"window; wait for the recovery window to elapse, then try again", cr.Name))).Aborting()
 		}
-		return pipeline.Failed(fmt.Errorf("failed to store platform credentials: %w", err)).Aborting()
+		return pipeline.Failed(fmt.Errorf("failed to create platform credentials: %w", err)).Aborting()
 	}
 
 	orgAdminDB, err := mc.OrgAdminDB(ctx)
