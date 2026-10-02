@@ -58,12 +58,13 @@ func TestResolveName_DifferentNamespacesNoCollision(t *testing.T) {
 }
 
 // validCRDName mirrors the SnowflakeAccount CRD's own XValidation pattern on
-// metadata.name (snowflakeaccount_types.go): "^[a-z][a-z0-9-]*$". ResolveName
-// itself never validates name — the CRD's admission control is its only
-// guard — so a fuzz target has no way to know which arbitrary inputs are
-// "supposed" to be reachable; it can only assert real invariants on inputs
-// the CRD would actually admit, and treat everything else as out of scope.
-var validCRDName = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
+// metadata.name (snowflakeaccount_types.go): "^[a-z][a-z0-9]*(-[a-z0-9]+)*$".
+// ResolveName itself never validates name — the CRD's admission control is
+// its only guard — so a fuzz target has no way to know which arbitrary
+// inputs are "supposed" to be reachable; it can only assert real invariants
+// on inputs the CRD would actually admit, and treat everything else as out
+// of scope.
+var validCRDName = regexp.MustCompile(`^[a-z][a-z0-9]*(-[a-z0-9]+)*$`)
 
 // bareIdentifierCharset mirrors statement.BareIdentifier's own pattern
 // (render.go): "^[A-Za-z][A-Za-z0-9_]*$". apply.go's createAccount feeds

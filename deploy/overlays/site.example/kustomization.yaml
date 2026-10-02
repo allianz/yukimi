@@ -40,13 +40,13 @@ patches:
   #    The role's trust policy must name this exact ServiceAccount:
   #      "sub": "system:serviceaccount:yukimi-system:yukimi-controller"
   #    and it needs secretsmanager Get/Create/Put/Delete on
-  #    snowflake/org/<org>/* and snowflake/tenant/<org>/* -- those four calls are
+  #    yk-orgadmin--<org>--* and yk-<org>--* -- those four calls are
   #    all internal/secrets/aws makes -- plus kms Encrypt/Decrypt/GenerateDataKey
   #    if base.yaml sets aws.kmsKeyId.
   #
   #    If this is wrong the pod crash-loops at startup with an
-  #    AccessDeniedException naming the secret path, which is at least a good
-  #    error message.
+  #    AccessDeniedException naming the secret identifier, which is at least a
+  #    good error message.
   # -------------------------------------------------------------------------
   - target:
       kind: ServiceAccount

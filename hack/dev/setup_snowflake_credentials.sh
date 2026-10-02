@@ -21,8 +21,12 @@
 # - Private key: PKCS#8 format with PEM delimiters (required by Snowflake driver)
 # - Public key: Single line without PEM delimiters (required by ALTER USER command)
 #
-# Keys are stored in AWS Secrets Manager at paths defined in specs/design.md
-# section 3.11.1 (Tenant Isolation via Secret Paths)
+# Keys are stored in AWS Secrets Manager under identifiers defined in
+# specs/design.md section 3.11.1 (Tenant Isolation via Secret Paths) and built
+# the same way as internal/secrets/identifier.go: "yk-<org>--<namespace>--
+# <account>" for a tenant credential, "yk-orgadmin--<org>--<orgAdminAccount>"
+# for the org-admin credential, with every '_' mapped to '-' (Azure Key
+# Vault's secret-name charset excludes '_').
 #
 
 set -euo pipefail
@@ -114,10 +118,10 @@ Environment Variables (from .env or environment):
 
 Generated Secrets:
   Always:
-    - snowflake/org/<org>/<org-admin-account>/org-admin-credentials
+    - yk-orgadmin--<org>--<org-admin-account>
 
   With --generate-test-keys:
-    - snowflake/tenant/<org>/<namespace>/<account>/platform-credentials
+    - yk-<org>--<namespace>--<account>
 
 EOF
             exit 0
@@ -193,14 +197,16 @@ echo "  Dry run:             ${DRY_RUN}"
 echo "  Overwrite existing:  ${OVERWRITE}"
 echo ""
 
-# Define secrets to create (parallel arrays for bash 3.2 compatibility)
-ORG_ADMIN_SECRET_PATH="snowflake/org/${SNOWFLAKE_ORG}/${SNOWFLAKE_ORG_ADMIN_ACCOUNT}/org-admin-credentials"
+# Define secrets to create (parallel arrays for bash 3.2 compatibility).
+# '_' is mapped to '-' to match internal/secrets/identifier.go's
+# toSecretSafe -- Azure Key Vault's secret-name charset excludes '_'.
+ORG_ADMIN_SECRET_PATH="yk-orgadmin--${SNOWFLAKE_ORG//_/-}--${SNOWFLAKE_ORG_ADMIN_ACCOUNT//_/-}"
 
 echo "Secrets to create:"
 echo "  - ${ORG_ADMIN_SECRET_PATH} (username: ${USERNAME})"
 
 if [[ "${GENERATE_TEST_KEYS}" == "true" ]]; then
-    TENANT_SECRET_PATH="snowflake/tenant/${SNOWFLAKE_ORG}/${SAMPLE_CUSTOMER_NAMESPACE}/${SAMPLE_CUSTOMER_ACCOUNT}/platform-credentials"
+    TENANT_SECRET_PATH="yk-${SNOWFLAKE_ORG//_/-}--${SAMPLE_CUSTOMER_NAMESPACE//_/-}--${SAMPLE_CUSTOMER_ACCOUNT//_/-}"
     echo "  - ${TENANT_SECRET_PATH} (username: ${USERNAME})"
 fi
 echo ""
