@@ -38,17 +38,17 @@ func credentialDue(rotatedAt time.Time, interval time.Duration) bool {
 	return rotatedAt.Before(time.Now().Add(-interval))
 }
 
-// maybeRotateLocked checks the stored credential's age at path and, if it is
+// maybeRotateLocked checks the stored credential's age at id and, if it is
 // due, rotates it over db. The caller must already hold the lock guarding
-// path's target (keyLock for a tenant, orgAdminMu for org-admin).
+// id's target (keyLock for a tenant, orgAdminMu for org-admin).
 //
 // Any failure — reading the credential, parsing it, finding a rotation
 // slot, pushing the new key into Snowflake, or writing the new credential
 // back to the store — is swallowed: db is already a working connection the
 // caller is about to return regardless of whether rotation succeeds, and
 // the same check simply runs again on the next call.
-func (p *Pool) maybeRotateLocked(ctx context.Context, db *sql.DB, path secrets.Path) {
-	raw, rotatedAt, err := p.keyManager.Get(ctx, path)
+func (p *Pool) maybeRotateLocked(ctx context.Context, db *sql.DB, id secrets.Identifier) {
+	raw, rotatedAt, err := p.keyManager.Get(ctx, id)
 	if err != nil || !credentialDue(rotatedAt, p.cfg.Secrets.RotationInterval) {
 		return
 	}
@@ -60,16 +60,16 @@ func (p *Pool) maybeRotateLocked(ctx context.Context, db *sql.DB, path secrets.P
 	if err != nil {
 		return
 	}
-	_ = p.rotateCredential(ctx, db, path, creds.Username, key)
+	_ = p.rotateCredential(ctx, db, id, creds.Username, key)
 }
 
 // rotateCredential generates a fresh keypair, pushes its public half into
 // whichever of Snowflake's two key slots does not match currentKey's
 // fingerprint, over db, and only once that succeeds writes the new keypair
-// to the secret store at path. The slot currently in use is never touched
+// to the secret store at id. The slot currently in use is never touched
 // until that write succeeds, so a failure at any step leaves the
 // credential db is already authenticated with exactly as valid as before.
-func (p *Pool) rotateCredential(ctx context.Context, db *sql.DB, path secrets.Path, username string, currentKey *rsa.PrivateKey) error {
+func (p *Pool) rotateCredential(ctx context.Context, db *sql.DB, id secrets.Identifier, username string, currentKey *rsa.PrivateKey) error {
 	slot, err := targetSlot(ctx, db, username, publicKeyFingerprint(currentKey))
 	if err != nil {
 		return fmt.Errorf("failed to determine rotation slot for %s: %w", username, err)
@@ -89,7 +89,7 @@ func (p *Pool) rotateCredential(ctx context.Context, db *sql.DB, path secrets.Pa
 	if err != nil {
 		return fmt.Errorf("failed to marshal rotated credentials for %s: %w", username, err)
 	}
-	if err := p.keyManager.Update(ctx, path, value); err != nil {
+	if err := p.keyManager.Update(ctx, id, value); err != nil {
 		return fmt.Errorf("failed to store rotated credentials for %s: %w", username, err)
 	}
 	return nil

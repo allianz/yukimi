@@ -38,7 +38,7 @@ type KeyManager struct {
 	ttl   time.Duration
 
 	mu      sync.Mutex
-	entries map[Path]cacheEntry
+	entries map[Identifier]cacheEntry
 }
 
 var _ KeyStore = (*KeyManager)(nil)
@@ -46,57 +46,57 @@ var _ KeyStore = (*KeyManager)(nil)
 // NewKeyManager wraps store. Every concrete KeyStore should be wrapped exactly
 // once, at construction time in cmd/provider/main.go.
 func NewKeyManager(store KeyStore, ttl time.Duration) *KeyManager {
-	return &KeyManager{store: store, ttl: ttl, entries: make(map[Path]cacheEntry)}
+	return &KeyManager{store: store, ttl: ttl, entries: make(map[Identifier]cacheEntry)}
 }
 
-func (c *KeyManager) Get(ctx context.Context, path Path) (string, time.Time, error) {
+func (c *KeyManager) Get(ctx context.Context, id Identifier) (string, time.Time, error) {
 	c.mu.Lock()
-	entry, ok := c.entries[path]
+	entry, ok := c.entries[id]
 	c.mu.Unlock()
 	if ok && time.Now().Before(entry.expires) {
 		return entry.value, entry.modifiedAt, nil
 	}
 
-	value, modifiedAt, err := c.store.Get(ctx, path)
+	value, modifiedAt, err := c.store.Get(ctx, id)
 	if err != nil {
-		return "", time.Time{}, err // never cache a failure, not even a missing path
+		return "", time.Time{}, err // never cache a failure, not even a missing identifier
 	}
 
 	c.mu.Lock()
-	c.entries[path] = cacheEntry{value: value, modifiedAt: modifiedAt, expires: time.Now().Add(c.ttl)}
+	c.entries[id] = cacheEntry{value: value, modifiedAt: modifiedAt, expires: time.Now().Add(c.ttl)}
 	c.mu.Unlock()
 	return value, modifiedAt, nil
 }
 
-func (c *KeyManager) Create(ctx context.Context, path Path, value string) error {
-	if err := c.store.Create(ctx, path, value); err != nil {
+func (c *KeyManager) Create(ctx context.Context, id Identifier, value string) error {
+	if err := c.store.Create(ctx, id, value); err != nil {
 		return err
 	}
-	c.Invalidate(path)
+	c.Invalidate(id)
 	return nil
 }
 
-func (c *KeyManager) Update(ctx context.Context, path Path, value string) error {
-	if err := c.store.Update(ctx, path, value); err != nil {
+func (c *KeyManager) Update(ctx context.Context, id Identifier, value string) error {
+	if err := c.store.Update(ctx, id, value); err != nil {
 		return err
 	}
-	c.Invalidate(path)
+	c.Invalidate(id)
 	return nil
 }
 
-func (c *KeyManager) Delete(ctx context.Context, path Path) error {
-	if err := c.store.Delete(ctx, path); err != nil {
+func (c *KeyManager) Delete(ctx context.Context, id Identifier) error {
+	if err := c.store.Delete(ctx, id); err != nil {
 		return err
 	}
-	c.Invalidate(path)
+	c.Invalidate(id)
 	return nil
 }
 
-// Invalidate clears path's cache entry without touching the underlying
-// KeyStore. Exposed for a caller that needs a path forced cold without going
-// through Create/Update/Delete.
-func (c *KeyManager) Invalidate(path Path) {
+// Invalidate clears id's cache entry without touching the underlying
+// KeyStore. Exposed for a caller that needs an identifier forced cold without
+// going through Create/Update/Delete.
+func (c *KeyManager) Invalidate(id Identifier) {
 	c.mu.Lock()
-	delete(c.entries, path)
+	delete(c.entries, id)
 	c.mu.Unlock()
 }

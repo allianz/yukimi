@@ -205,8 +205,8 @@ func TestTargetSlot(t *testing.T) {
 
 func TestRotateCredential_WritesSecretOnlyAfterSuccessfulAlterUser(t *testing.T) {
 	store := secrets.NewFakeKeyStore()
-	path, _ := secrets.NewTenantPath("my_org", "finance", "a")
-	original := seedCredentials(t, store, path)
+	id, _ := secrets.NewTenantIdentifier("my_org", "finance", "a")
+	original := seedCredentials(t, store, id)
 
 	key, err := parsePrivateKey(original.PrivateKey)
 	if err != nil {
@@ -219,14 +219,14 @@ func TestRotateCredential_WritesSecretOnlyAfterSuccessfulAlterUser(t *testing.T)
 
 	keyManager := secrets.NewKeyManager(store, time.Hour)
 	p := New(keyManager, testConfig())
-	if err := p.rotateCredential(context.Background(), db, path, original.Username, key); err != nil {
+	if err := p.rotateCredential(context.Background(), db, id, original.Username, key); err != nil {
 		t.Fatalf("rotateCredential: %v", err)
 	}
 	if len(*execCalls) != 1 {
 		t.Fatalf("expected exactly one ALTER USER, got %v", *execCalls)
 	}
 
-	raw, rotatedAt, err := store.Get(context.Background(), path)
+	raw, rotatedAt, err := store.Get(context.Background(), id)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -241,8 +241,8 @@ func TestRotateCredential_WritesSecretOnlyAfterSuccessfulAlterUser(t *testing.T)
 
 func TestRotateCredential_FailedAlterUserLeavesStoreUntouched(t *testing.T) {
 	store := secrets.NewFakeKeyStore()
-	path, _ := secrets.NewTenantPath("my_org", "finance", "a")
-	original := seedCredentials(t, store, path)
+	id, _ := secrets.NewTenantIdentifier("my_org", "finance", "a")
+	original := seedCredentials(t, store, id)
 
 	key, err := parsePrivateKey(original.PrivateKey)
 	if err != nil {
@@ -255,11 +255,11 @@ func TestRotateCredential_FailedAlterUserLeavesStoreUntouched(t *testing.T) {
 
 	keyManager := secrets.NewKeyManager(store, time.Hour)
 	p := New(keyManager, testConfig())
-	if err := p.rotateCredential(context.Background(), db, path, original.Username, key); err == nil {
+	if err := p.rotateCredential(context.Background(), db, id, original.Username, key); err == nil {
 		t.Fatal("expected an error from a failing ALTER USER")
 	}
 
-	raw, rotatedAt, err := store.Get(context.Background(), path)
+	raw, rotatedAt, err := store.Get(context.Background(), id)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -277,8 +277,8 @@ func TestRotateCredential_FailedAlterUserLeavesStoreUntouched(t *testing.T) {
 func TestOrgAdmin_FreshCredential_NeverAttemptsRotation(t *testing.T) {
 	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
-	path, _ := secrets.NewOrgAdminPath(cfg.Snowflake.Org, cfg.Snowflake.OrgAdminAccount)
-	seedCredentials(t, store, path)
+	id, _ := secrets.NewOrgAdminIdentifier(cfg.Snowflake.Org, cfg.Snowflake.OrgAdminAccount)
+	seedCredentials(t, store, id)
 
 	rotDB, queryCalls, execCalls := newRotateFakeDB(nil, nil)
 	keyManager := secrets.NewKeyManager(store, time.Hour)
@@ -308,8 +308,8 @@ func TestOrgAdmin_StaleCredential_RotatesInline(t *testing.T) {
 	store.Clock = func() time.Time { return staleAt }
 
 	cfg := testConfig()
-	path, _ := secrets.NewOrgAdminPath(cfg.Snowflake.Org, cfg.Snowflake.OrgAdminAccount)
-	original := seedCredentials(t, store, path)
+	id, _ := secrets.NewOrgAdminIdentifier(cfg.Snowflake.Org, cfg.Snowflake.OrgAdminAccount)
+	original := seedCredentials(t, store, id)
 	store.Clock = time.Now // the rotation write itself gets a fresh timestamp, as it would for real
 
 	key, err := parsePrivateKey(original.PrivateKey)
@@ -334,7 +334,7 @@ func TestOrgAdmin_StaleCredential_RotatesInline(t *testing.T) {
 		t.Fatalf("expected exactly one ALTER USER, got %v", *execCalls)
 	}
 
-	raw, rotatedAt, err := store.Get(context.Background(), path)
+	raw, rotatedAt, err := store.Get(context.Background(), id)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -356,8 +356,8 @@ func TestTenantAccount_RotationFailureDoesNotFailCall(t *testing.T) {
 	store.Clock = func() time.Time { return staleAt }
 
 	cfg := testConfig()
-	path, _ := secrets.NewTenantPath(cfg.Snowflake.Org, "finance", "a")
-	original := seedCredentials(t, store, path)
+	id, _ := secrets.NewTenantIdentifier(cfg.Snowflake.Org, "finance", "a")
+	original := seedCredentials(t, store, id)
 	store.Clock = time.Now
 
 	rotDB, _, execCalls := newRotateFakeDB([]descUserRow{
@@ -379,7 +379,7 @@ func TestTenantAccount_RotationFailureDoesNotFailCall(t *testing.T) {
 		t.Error("a failed slot lookup must never reach ALTER USER")
 	}
 
-	raw, rotatedAt, err := store.Get(context.Background(), path)
+	raw, rotatedAt, err := store.Get(context.Background(), id)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -401,8 +401,8 @@ func TestMaybeRotateLocked_UnmarshalFailure_NeverAttemptsRotation(t *testing.T) 
 	store.Clock = func() time.Time { return staleAt }
 
 	cfg := testConfig()
-	path, _ := secrets.NewTenantPath(cfg.Snowflake.Org, "finance", "a")
-	if err := store.Create(context.Background(), path, "not valid json"); err != nil {
+	id, _ := secrets.NewTenantIdentifier(cfg.Snowflake.Org, "finance", "a")
+	if err := store.Create(context.Background(), id, "not valid json"); err != nil {
 		t.Fatalf("seeding malformed credentials: %v", err)
 	}
 
@@ -411,7 +411,7 @@ func TestMaybeRotateLocked_UnmarshalFailure_NeverAttemptsRotation(t *testing.T) 
 
 	keyManager := secrets.NewKeyManager(store, time.Hour)
 	p := New(keyManager, cfg)
-	p.maybeRotateLocked(context.Background(), db, path)
+	p.maybeRotateLocked(context.Background(), db, id)
 
 	if len(*queryCalls) != 0 || len(*execCalls) != 0 {
 		t.Errorf("a credential that fails to unmarshal must never reach DESC USER or ALTER USER, got queries=%v execs=%v", *queryCalls, *execCalls)
@@ -424,9 +424,9 @@ func TestMaybeRotateLocked_ParsePrivateKeyFailure_NeverAttemptsRotation(t *testi
 	store.Clock = func() time.Time { return staleAt }
 
 	cfg := testConfig()
-	path, _ := secrets.NewTenantPath(cfg.Snowflake.Org, "finance", "a")
+	id, _ := secrets.NewTenantIdentifier(cfg.Snowflake.Org, "finance", "a")
 	raw := `{"username":"platform","public_key":"AAAA","private_key":"not-a-pem"}`
-	if err := store.Create(context.Background(), path, raw); err != nil {
+	if err := store.Create(context.Background(), id, raw); err != nil {
 		t.Fatalf("seeding credentials with an unparseable key: %v", err)
 	}
 
@@ -435,7 +435,7 @@ func TestMaybeRotateLocked_ParsePrivateKeyFailure_NeverAttemptsRotation(t *testi
 
 	keyManager := secrets.NewKeyManager(store, time.Hour)
 	p := New(keyManager, cfg)
-	p.maybeRotateLocked(context.Background(), db, path)
+	p.maybeRotateLocked(context.Background(), db, id)
 
 	if len(*queryCalls) != 0 || len(*execCalls) != 0 {
 		t.Errorf("a credential whose private key fails to parse must never reach DESC USER or ALTER USER, got queries=%v execs=%v", *queryCalls, *execCalls)
@@ -448,8 +448,8 @@ func TestMaybeRotateLocked_ParsePrivateKeyFailure_NeverAttemptsRotation(t *testi
 // store write, is the point of no return for Snowflake's own state).
 func TestRotateCredential_FailedKeyManagerUpdate_ReturnsErrorAfterAlterUserSucceeded(t *testing.T) {
 	store := secrets.NewFakeKeyStore()
-	path, _ := secrets.NewTenantPath("my_org", "finance", "a")
-	original := seedCredentials(t, store, path)
+	id, _ := secrets.NewTenantIdentifier("my_org", "finance", "a")
+	original := seedCredentials(t, store, id)
 
 	key, err := parsePrivateKey(original.PrivateKey)
 	if err != nil {
@@ -460,11 +460,11 @@ func TestRotateCredential_FailedKeyManagerUpdate_ReturnsErrorAfterAlterUserSucce
 	db, _, execCalls := newRotateFakeDB([]descUserRow{{"RSA_PUBLIC_KEY_FP", fp}, {"RSA_PUBLIC_KEY_2_FP", ""}}, nil)
 	defer func() { _ = db.Close() }()
 
-	store.OnUpdate = func(secrets.Path) error { return stderrors.New("store unavailable") }
+	store.OnUpdate = func(secrets.Identifier) error { return stderrors.New("store unavailable") }
 
 	keyManager := secrets.NewKeyManager(store, time.Hour)
 	p := New(keyManager, testConfig())
-	if err := p.rotateCredential(context.Background(), db, path, original.Username, key); err == nil {
+	if err := p.rotateCredential(context.Background(), db, id, original.Username, key); err == nil {
 		t.Fatal("expected an error from a failing store write")
 	}
 	if len(*execCalls) != 1 {

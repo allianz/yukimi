@@ -8,7 +8,7 @@ This specification covers two packages: `internal/snowflake/pool` (pooled Snowfl
 
 ## Key Concept: Two Connection Scopes and the Privilege Step-Down
 
-A `Pool` never exposes more than two kinds of connection, matching design.md 3.11's own split. The **org-admin scope** is a single connection, authenticated as the organization-level credential at the org-admin secret path (003), used only for `CREATE ACCOUNT` and `DROP ACCOUNT` (design.md 3.6, 6.3). The **tenant scope** is one connection per Snowflake account, authenticated as that account's `platform` service user (design.md 3.6, Appendix B X1) at the tenant secret path — the same `(org, namespace, accountName)` tuple 003 already uses to build that path. Every other operation this platform performs — parameters, network rules, identity import, quotas — goes through a tenant connection, never the org-admin one.
+A `Pool` never exposes more than two kinds of connection, matching design.md 3.11's own split. The **org-admin scope** is a single connection, authenticated as the organization-level credential at the org-admin secret identifier (003), used only for `CREATE ACCOUNT` and `DROP ACCOUNT` (design.md 3.6, 6.3). The **tenant scope** is one connection per Snowflake account, authenticated as that account's `platform` service user (design.md 3.6, Appendix B X1) at the tenant secret identifier — the same `(org, namespace, accountName)` tuple 003 already uses to build that identifier. Every other operation this platform performs — parameters, network rules, identity import, quotas — goes through a tenant connection, never the org-admin one.
 
 **Important**: nothing in this package's public surface lets a caller reach the org-admin connection from a tenant-scoped call, or vice versa. The two scopes are two different methods with two different signatures, not a shared method with a scope flag a caller could get wrong. This is what makes design.md 3.11's step-down a property of the code's shape rather than of callers remembering to ask for the narrow connection.
 
@@ -18,7 +18,7 @@ A `*sql.DB` is already a connection pool — the standard library multiplexes ph
 
 ## Key Concept: Self-Healing on a Locator Change
 
-A Snowflake account name is unique only while it exists — design.md 6.3's `DROP ACCOUNT` followed by a later resource under the same `metadata.name` and namespace resolves to the same tenant secret path (003) and the same cache key here, but Snowflake assigns the new account a **different locator** on `CREATE ACCOUNT` (design.md 3.6). A cache keyed only on `(namespace, accountName)` would keep serving a connection to an account that no longer exists. To avoid depending on every future caller remembering to evict before reconnecting, the tenant scope's cache entry carries the locator and region it was built with alongside the `*sql.DB`; a call whose locator or region does not match what is cached closes the stale connection and dials again before returning, exactly as if it had been evicted first. This is a correctness property of `TenantAccount` itself, not a workaround callers must apply.
+A Snowflake account name is unique only while it exists — design.md 6.3's `DROP ACCOUNT` followed by a later resource under the same `metadata.name` and namespace resolves to the same tenant secret identifier (003) and the same cache key here, but Snowflake assigns the new account a **different locator** on `CREATE ACCOUNT` (design.md 3.6). A cache keyed only on `(namespace, accountName)` would keep serving a connection to an account that no longer exists. To avoid depending on every future caller remembering to evict before reconnecting, the tenant scope's cache entry carries the locator and region it was built with alongside the `*sql.DB`; a call whose locator or region does not match what is cached closes the stale connection and dials again before returning, exactly as if it had been evicted first. This is a correctness property of `TenantAccount` itself, not a workaround callers must apply.
 
 ## Key Concept: Inline Rotation Using Snowflake's Two Key Slots
 
@@ -106,7 +106,7 @@ func New(keyManager *secrets.KeyManager, cfg *base.Config) *Pool
 
 // OrgAdmin returns the single org-admin *sql.DB, used only for CREATE ACCOUNT
 // and DROP ACCOUNT (design.md 3.6, 6.3, 3.11 intro). The credential is read
-// from the org-admin secret path (003) and the connection is authenticated
+// from the org-admin secret identifier (003) and the connection is authenticated
 // with the GLOBALORGADMIN role. Opened on first call; every later call returns the
 // same *sql.DB. Also rotates the credential inline once it is more than six
 // months old (see Key Concept: Inline Rotation); a rotation failure never
@@ -120,7 +120,7 @@ func (p *Pool) OrgAdmin(ctx context.Context) (*sql.DB, error)
 // TenantAccount returns the per-tenant *sql.DB, authenticated as that
 // account's platform service user with the ACCOUNTADMIN role (design.md
 // 3.6, 3.11, Appendix B X1). Keyed by (org, namespace, accountName) — the
-// same tuple as the tenant secret path (003) — plus the account's current
+// same tuple as the tenant secret identifier (003) — plus the account's current
 // locator and region: a mismatch against a cached entry's locator or region
 // closes it and dials again (see Key Concept: Self-Healing). Also rotates
 // the credential inline once it is more than six months old (see Key
@@ -130,7 +130,7 @@ func (p *Pool) OrgAdmin(ctx context.Context) (*sql.DB, error)
 //   - namespace: metadata.namespace at the call site, never a spec field
 //     (design.md 3.11.1)
 //   - accountName: the CRD's metadata.name, never the resolved, hash-suffixed
-//     Snowflake account name (design.md 3.12) — matches the tenant secret path
+//     Snowflake account name (design.md 3.12) — matches the tenant secret identifier
 //   - locator: the Snowflake account locator captured from CREATE ACCOUNT
 //     (design.md 3.6); this package never runs CREATE ACCOUNT itself, so the
 //     caller supplies it
@@ -189,7 +189,7 @@ internal/snowflake/pool/
 
 `host.Hostname` and `host.URL` raise this, and `Pool.TenantAccount` surfaces it unchanged from its own call to `host.Hostname`. Validating in `host` means every consumer — this package and 006 — rejects the same regions with the same message, rather than each deciding for itself.
 
-`host` validates the region shape independently of whatever validation the caller (a guardrail, 008, or 002's own shape check on `OrgAdminAccountRegion`) already performed — the same reasoning 003 gives for re-validating every secret path segment independently of the caller.
+`host` validates the region shape independently of whatever validation the caller (a guardrail, 008, or 002's own shape check on `OrgAdminAccountRegion`) already performed — the same reasoning 003 gives for re-validating every secret identifier segment independently of the caller.
 
 **System Errors** (use `fmt.Errorf("context: %w", err)`):
 - Credential read failure: `failed to read org-admin credentials: %w` / `failed to read tenant credentials for finance/analytics-team-eu: %w`
@@ -207,7 +207,7 @@ internal/snowflake/pool/
 This specification defines the `internal/snowflake/pool/` and `internal/snowflake/host/` packages that:
 - Maintains pooled `*sql.DB` connections to Snowflake, authenticated with JWT keypair credentials read through the `*secrets.KeyManager` (003) — never through a concrete key store package.
 - Checks a stored credential's age on every `OrgAdmin`/`TenantAccount` call and, once it exceeds a fixed threshold, rotates it inline via Snowflake's unused key slot over the connection already in hand, rather than in a background process that could race an active session.
-- Offers two connection scopes reflecting the privilege step-down of design.md 3.11: a single organization-admin connection used only for `CREATE ACCOUNT`/`DROP ACCOUNT`, and a per-tenant-account connection, keyed the same way as a tenant's secret path, used for everything else.
+- Offers two connection scopes reflecting the privilege step-down of design.md 3.11: a single organization-admin connection used only for `CREATE ACCOUNT`/`DROP ACCOUNT`, and a per-tenant-account connection, keyed the same way as a tenant's secret identifier, used for everything else.
 - Builds the Snowflake connection host and account URL from a locator and a cloud-region string in `internal/snowflake/host`, serving `gosnowflake.Config.Host` here and `status.accountUrl` in 006, with the PrivateLink decision passed in by the caller.
 - Opens each connection lazily on first use, keeps it open for later reuse rather than closing it after each call, and only ever closes it on explicit eviction or process shutdown.
 - Runs a lightweight health probe using the raw driver when a connection is first established, so a bad credential or host fails immediately rather than on some later caller's first real query.
@@ -240,7 +240,7 @@ This specification defines the `internal/snowflake/pool/` and `internal/snowflak
 
 - **`internal/errors` (001)** - Used APIs: `errors.NewUserError()` - Contract: used by both packages; in `host` for the one region-format validation above, in `pool` nowhere else.
 - **`internal/config/base` (002)** - Read by `pool` only; `host` never imports it - Used APIs: `base.Config`, `Snowflake.Org`, `Snowflake.OrgAdminAccount`, `Snowflake.OrgAdminAccountLocator`, `Snowflake.OrgAdminAccountRegion`, `Snowflake.UsePrivateLink`, `Snowflake.DisableOCSPChecks`, `Snowflake.MaxConnectionPoolSize`, `Snowflake.MaxIdleConnections`, `Snowflake.ConnectionMaxLifetime`, `Snowflake.ConnectionMaxIdleTime`, `Snowflake.ConnectionProbeTimeout` - Contract: `Pool` reads these once at construction and treats them as fixed for the process's life, matching `Config`'s own immutability.
-- **`internal/secrets` (003)** - Used APIs: `secrets.KeyManager`, `NewOrgAdminPath()`, `NewTenantPath()`, `UnmarshalCredentials()`, `GenerateKeyPair()` - Contract: takes a `*secrets.KeyManager` as a constructor parameter, constructed and wrapped by `cmd/provider/main.go` via `secrets.NewKeyManager`; never imports a concrete key store itself.
+- **`internal/secrets` (003)** - Used APIs: `secrets.KeyManager`, `NewOrgAdminIdentifier()`, `NewTenantIdentifier()`, `UnmarshalCredentials()`, `GenerateKeyPair()` - Contract: takes a `*secrets.KeyManager` as a constructor parameter, constructed and wrapped by `cmd/provider/main.go` via `secrets.NewKeyManager`; never imports a concrete key store itself.
 - **`github.com/snowflakedb/gosnowflake` v1.18.1** - the only Snowflake driver dependency in the tree; this is the spec that adds it to `go.mod` (see Project Structure).
 
 ## Integration Points
@@ -254,9 +254,9 @@ This specification defines the `internal/snowflake/pool/` and `internal/snowflak
 ## Success Criteria
 
 - **SC-001**: `New` returns a non-nil `*Pool` and makes no network call.
-- **SC-002**: `OrgAdmin`'s first call reads the org-admin credential via `KeyManager.Get`/`NewOrgAdminPath`, builds the host from `OrgAdminAccountLocator`/`OrgAdminAccountRegion`/`UsePrivateLink`, and returns a `*sql.DB`.
+- **SC-002**: `OrgAdmin`'s first call reads the org-admin credential via `KeyManager.Get`/`NewOrgAdminIdentifier`, builds the host from `OrgAdminAccountLocator`/`OrgAdminAccountRegion`/`UsePrivateLink`, and returns a `*sql.DB`.
 - **SC-003**: Every later `OrgAdmin` call returns the identical `*sql.DB` pointer from the first call, without re-reading the credential or dialing again.
-- **SC-004**: `TenantAccount` builds its secret path via `NewTenantPath(org, namespace, accountName)`, using `Config.Snowflake.Org` and the caller-supplied `namespace`/`accountName`.
+- **SC-004**: `TenantAccount` builds its secret identifier via `NewTenantIdentifier(org, namespace, accountName)`, using `Config.Snowflake.Org` and the caller-supplied `namespace`/`accountName`.
 - **SC-005**: Two `TenantAccount` calls with identical `namespace`/`accountName`/`locator`/`region` return the identical `*sql.DB` pointer; a call with a different `namespace` or `accountName` returns a distinct one.
 - **SC-006**: `host.regionSegment("aws-eu-central-1")` returns `"eu-central-1"`; `host.regionSegment("aws-eu-west-3")` returns `"eu-west-3.aws"`.
 - **SC-007**: `host.Hostname` appends `.privatelink.snowflakecomputing.com` when `usePrivateLink` is true and `.snowflakecomputing.com` when false, and the locator forms the leading label in both.
@@ -287,7 +287,7 @@ This specification defines the `internal/snowflake/pool/` and `internal/snowflak
 - **Privilege step-down is structural, not conventional** (design.md 3.11): `OrgAdmin` and `TenantAccount` are two different methods with two different signatures; there is no shared method with a scope parameter a caller could pass incorrectly, and no code path anywhere in this package derives one scope's connection from the other's credential or cache entry.
 - **Credentials never touch a concrete key store from this package's own code**: this package depends only on `*secrets.KeyManager` (003), constructed and wrapped elsewhere; it cannot be the place a future key-store-specific bug leaks a credential, because it never imports one.
 - **Role is set explicitly, not inherited**: both scopes set `Role` on every connection they dial (`ORGADMIN`, `ACCOUNTADMIN`) rather than relying on whatever a user's default role happens to be — matching design.md 3.11's framing of the platform "impersonating the accountadmin role exclusively for that specific tenant" as a deliberate choice, not an accident of account defaults.
-- **No credential material in an error message**: every error this package produces is built from a path's identifiers (namespace, account name, org-admin account), a host, and the underlying error — never a private key or any other credential content, matching 003's own rule for the paths it hands this package.
+- **No credential material in an error message**: every error this package produces is built from an identifier's own constituent segments (namespace, account name, org-admin account), a host, and the underlying error — never a private key or any other credential content, matching 003's own rule for the identifiers it hands this package.
 - **OCSP checking defaults to on**: `Snowflake.DisableOCSPChecks` (002) defaults to `false`; disabling it is a deliberate, narrow escape hatch for local/integration testing and emergencies where the OCSP responder's network path is broken — never a routine production setting.
 - **The host a tenant is told to visit is the host the platform dials**: `host` handles no credentials and opens no connection, and both the `gosnowflake.Config.Host` here and `status.accountUrl` in 006 come out of the same function. A tenant's published URL therefore cannot name a host the platform does not itself connect to — a divergence that would otherwise send users to an endpoint outside the region's PrivateLink path while reconciliation reported success.
 - **Health-probe failures surface immediately, not on a tenant's first real query**: probing a newly dialed connection turns a bad credential or an unreachable host into a system error at the moment this package first tries it, rather than letting it surface later inside whichever module (012–015, 017) happens to run the first real statement.
@@ -301,9 +301,9 @@ This specification defines the `internal/snowflake/pool/` and `internal/snowflak
 
 ## References
 
-- **Product design**: `specs/design.md`, §3.6 (`CREATE ACCOUNT`, the locator, PrivateLink), §3.11 (organization vs. account-level privilege step-down), §3.11.1 (the tenant secret path this package's cache key mirrors), §3.12 (CRD name vs. resolved Snowflake name), §6.3 (`DROP ACCOUNT`), §7.2 (`status.accountUrl`, the form `host.URL` produces), Appendix B X1 (the `platform` service user).
+- **Product design**: `specs/design.md`, §3.6 (`CREATE ACCOUNT`, the locator, PrivateLink), §3.11 (organization vs. account-level privilege step-down), §3.11.1 (the tenant secret identifier this package's cache key mirrors), §3.12 (CRD name vs. resolved Snowflake name), §6.3 (`DROP ACCOUNT`), §7.2 (`status.accountUrl`, the form `host.URL` produces), Appendix B X1 (the `platform` service user).
 - **SnowflakeAccount CRD (006, not yet written)**: `specs/scope-006-snowflake-account-crd.md` - `internal/account/tenant`, the second consumer of `internal/snowflake/host`, which builds `status.accountUrl` from `host.URL`.
-- **Secrets Handling (003)**: `specs/003-secrets-handling.md` - `KeyStore`, `KeyManager`, `Path`, `NewOrgAdminPath()`, `NewTenantPath()`, `Credentials`, `UnmarshalCredentials()`.
+- **Secrets Handling (003)**: `specs/003-secrets-handling.md` - `KeyStore`, `KeyManager`, `Identifier`, `NewOrgAdminIdentifier()`, `NewTenantIdentifier()`, `Credentials`, `UnmarshalCredentials()`.
 - **Base Config (002)**: `specs/002-base-config.md` - `SnowflakeSettings`, in particular `OrgAdminAccountLocator`, `OrgAdminAccountRegion`, `UsePrivateLink`.
 - **Driver documentation**: `github.com/snowflakedb/gosnowflake` (`godoc`) - `Config`, `NewConnector`, `DSN`, `AuthTypeJwt`; consult the pinned version's source before implementation, per this repo's own convention of verifying vendor behavior rather than assuming it.
 

@@ -31,7 +31,7 @@ import (
 const minRSABits = 2048
 
 // Credentials is the JSON shape a credential is stored in: exactly three
-// fields, deliberately no account field (the path already identifies it).
+// fields, deliberately no account field (the identifier already identifies it).
 type Credentials struct {
 	Username   string    `json:"username"`
 	PublicKey  string    `json:"public_key"`  // PKIX, single-line base64, no PEM delimiters

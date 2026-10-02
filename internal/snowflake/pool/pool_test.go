@@ -148,9 +148,9 @@ func testConfig() *base.Config {
 	}
 }
 
-// seedCredentials generates a fresh keypair, stores it at path, and returns
+// seedCredentials generates a fresh keypair, stores it at id, and returns
 // the Credentials for assertions.
-func seedCredentials(t *testing.T, ks secrets.KeyStore, path secrets.Path) *secrets.Credentials {
+func seedCredentials(t *testing.T, ks secrets.KeyStore, id secrets.Identifier) *secrets.Credentials {
 	t.Helper()
 	creds, err := secrets.NewCredentials("platform")
 	if err != nil {
@@ -160,7 +160,7 @@ func seedCredentials(t *testing.T, ks secrets.KeyStore, path secrets.Path) *secr
 	if err != nil {
 		t.Fatalf("MarshalCredentials: %v", err)
 	}
-	if err := ks.Create(context.Background(), path, raw); err != nil {
+	if err := ks.Create(context.Background(), id, raw); err != nil {
 		t.Fatalf("seeding credentials: %v", err)
 	}
 	return creds
@@ -171,7 +171,7 @@ func seedCredentials(t *testing.T, ks secrets.KeyStore, path secrets.Path) *secr
 func TestNew_NoNetworkCall(t *testing.T) {
 	getCalled := false
 	store := secrets.NewFakeKeyStore()
-	store.OnGet = func(secrets.Path) error { getCalled = true; return nil }
+	store.OnGet = func(secrets.Identifier) error { getCalled = true; return nil }
 	dialer := &fakeDialer{}
 
 	keyManager := secrets.NewKeyManager(store, time.Hour)
@@ -192,15 +192,15 @@ func TestNew_NoNetworkCall(t *testing.T) {
 // --- OrgAdmin ----------------------------------------------------------------
 
 // SC-002, SC-015: OrgAdmin's first call reads the org-admin credential via
-// NewOrgAdminPath, builds the host, and dials with the right Config fields.
+// NewOrgAdminIdentifier, builds the host, and dials with the right Config fields.
 func TestOrgAdmin_FirstCall(t *testing.T) {
 	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
-	path, err := secrets.NewOrgAdminPath(cfg.Snowflake.Org, cfg.Snowflake.OrgAdminAccount)
+	id, err := secrets.NewOrgAdminIdentifier(cfg.Snowflake.Org, cfg.Snowflake.OrgAdminAccount)
 	if err != nil {
-		t.Fatalf("NewOrgAdminPath: %v", err)
+		t.Fatalf("NewOrgAdminIdentifier: %v", err)
 	}
-	creds := seedCredentials(t, store, path)
+	creds := seedCredentials(t, store, id)
 
 	dialer := &fakeDialer{}
 	keyManager := secrets.NewKeyManager(store, time.Hour)
@@ -244,8 +244,8 @@ func TestOrgAdmin_FirstCall(t *testing.T) {
 func TestOrgAdmin_CachesPointer(t *testing.T) {
 	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
-	path, _ := secrets.NewOrgAdminPath(cfg.Snowflake.Org, cfg.Snowflake.OrgAdminAccount)
-	seedCredentials(t, store, path)
+	id, _ := secrets.NewOrgAdminIdentifier(cfg.Snowflake.Org, cfg.Snowflake.OrgAdminAccount)
+	seedCredentials(t, store, id)
 
 	dialer := &fakeDialer{}
 	keyManager := secrets.NewKeyManager(store, time.Hour)
@@ -274,7 +274,7 @@ func TestOrgAdmin_CachesPointer(t *testing.T) {
 func TestOrgAdmin_MalformedRegion_NoConnectionAttempt(t *testing.T) {
 	store := secrets.NewFakeKeyStore()
 	getCalled := false
-	store.OnGet = func(secrets.Path) error { getCalled = true; return nil }
+	store.OnGet = func(secrets.Identifier) error { getCalled = true; return nil }
 
 	cfg := testConfig()
 	cfg.Snowflake.OrgAdminAccountRegion = "eu-central-1" // missing cloud prefix
@@ -296,9 +296,9 @@ func TestOrgAdmin_MalformedRegion_NoConnectionAttempt(t *testing.T) {
 	}
 }
 
-// A malformed Org config value surfaces NewOrgAdminPath's own validation
+// A malformed Org config value surfaces NewOrgAdminIdentifier's own validation
 // error before any credential read.
-func TestOrgAdmin_InvalidPathSegment(t *testing.T) {
+func TestOrgAdmin_InvalidIdentifierSegment(t *testing.T) {
 	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
 	cfg.Snowflake.Org = "my/org"
@@ -314,11 +314,11 @@ func TestOrgAdmin_InvalidPathSegment(t *testing.T) {
 func TestOrgAdmin_CredentialReadFailureNotCached(t *testing.T) {
 	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
-	path, _ := secrets.NewOrgAdminPath(cfg.Snowflake.Org, cfg.Snowflake.OrgAdminAccount)
-	seedCredentials(t, store, path)
+	id, _ := secrets.NewOrgAdminIdentifier(cfg.Snowflake.Org, cfg.Snowflake.OrgAdminAccount)
+	seedCredentials(t, store, id)
 
 	attempts := 0
-	store.OnGet = func(secrets.Path) error {
+	store.OnGet = func(secrets.Identifier) error {
 		attempts++
 		if attempts == 1 {
 			return stderrors.New("boom")
@@ -347,8 +347,8 @@ func TestOrgAdmin_CredentialReadFailureNotCached(t *testing.T) {
 func TestOrgAdmin_UnmarshalFailure(t *testing.T) {
 	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
-	path, _ := secrets.NewOrgAdminPath(cfg.Snowflake.Org, cfg.Snowflake.OrgAdminAccount)
-	if err := store.Create(context.Background(), path, "not valid json"); err != nil {
+	id, _ := secrets.NewOrgAdminIdentifier(cfg.Snowflake.Org, cfg.Snowflake.OrgAdminAccount)
+	if err := store.Create(context.Background(), id, "not valid json"); err != nil {
 		t.Fatalf("seeding: %v", err)
 	}
 
@@ -363,13 +363,13 @@ func TestOrgAdmin_UnmarshalFailure(t *testing.T) {
 func TestOrgAdmin_ParsePrivateKeyFailure(t *testing.T) {
 	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
-	path, _ := secrets.NewOrgAdminPath(cfg.Snowflake.Org, cfg.Snowflake.OrgAdminAccount)
+	id, _ := secrets.NewOrgAdminIdentifier(cfg.Snowflake.Org, cfg.Snowflake.OrgAdminAccount)
 	creds := &secrets.Credentials{Username: "platform", PublicKey: "irrelevant", PrivateKey: "not a pem key"}
 	raw, err := secrets.MarshalCredentials(creds)
 	if err != nil {
 		t.Fatalf("MarshalCredentials: %v", err)
 	}
-	if err := store.Create(context.Background(), path, raw); err != nil {
+	if err := store.Create(context.Background(), id, raw); err != nil {
 		t.Fatalf("seeding: %v", err)
 	}
 
@@ -385,8 +385,8 @@ func TestOrgAdmin_ParsePrivateKeyFailure(t *testing.T) {
 func TestOrgAdmin_FailedDialNotCached(t *testing.T) {
 	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
-	path, _ := secrets.NewOrgAdminPath(cfg.Snowflake.Org, cfg.Snowflake.OrgAdminAccount)
-	seedCredentials(t, store, path)
+	id, _ := secrets.NewOrgAdminIdentifier(cfg.Snowflake.Org, cfg.Snowflake.OrgAdminAccount)
+	seedCredentials(t, store, id)
 
 	boom := stderrors.New("boom")
 	dialer := &fakeDialer{errFn: func(idx int) error {
@@ -421,15 +421,15 @@ func TestOrgAdmin_FailedDialNotCached(t *testing.T) {
 
 // --- TenantAccount -----------------------------------------------------------
 
-// SC-004: TenantAccount builds its secret path via NewTenantPath.
-func TestTenantAccount_BuildsPath(t *testing.T) {
+// SC-004: TenantAccount builds its secret identifier via NewTenantIdentifier.
+func TestTenantAccount_BuildsIdentifier(t *testing.T) {
 	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
 
-	var gotPath secrets.Path
-	store.OnGet = func(p secrets.Path) error { gotPath = p; return nil }
-	path, _ := secrets.NewTenantPath(cfg.Snowflake.Org, "finance", "analytics-team-eu")
-	seedCredentials(t, store, path)
+	var gotId secrets.Identifier
+	store.OnGet = func(p secrets.Identifier) error { gotId = p; return nil }
+	id, _ := secrets.NewTenantIdentifier(cfg.Snowflake.Org, "finance", "analytics-team-eu")
+	seedCredentials(t, store, id)
 
 	dialer := &fakeDialer{}
 	keyManager := secrets.NewKeyManager(store, time.Hour)
@@ -439,8 +439,8 @@ func TestTenantAccount_BuildsPath(t *testing.T) {
 	if _, err := p.TenantAccount(context.Background(), "finance", "analytics-team-eu", "xy12345", "aws-eu-central-1"); err != nil {
 		t.Fatalf("TenantAccount: %v", err)
 	}
-	if gotPath != path {
-		t.Errorf("Get called with path %q, want %q", gotPath, path)
+	if gotId != id {
+		t.Errorf("Get called with id %q, want %q", gotId, id)
 	}
 }
 
@@ -451,8 +451,8 @@ func TestTenantAccount_CachesByFullKey(t *testing.T) {
 	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
 	for _, name := range []string{"a", "b"} {
-		path, _ := secrets.NewTenantPath(cfg.Snowflake.Org, "finance", name)
-		seedCredentials(t, store, path)
+		id, _ := secrets.NewTenantIdentifier(cfg.Snowflake.Org, "finance", name)
+		seedCredentials(t, store, id)
 	}
 
 	dialer := &fakeDialer{}
@@ -505,7 +505,7 @@ func TestTenantAccount_CachesByFullKey(t *testing.T) {
 func TestTenantAccount_MalformedRegion_NoConnectionAttempt(t *testing.T) {
 	store := secrets.NewFakeKeyStore()
 	getCalled := false
-	store.OnGet = func(secrets.Path) error { getCalled = true; return nil }
+	store.OnGet = func(secrets.Identifier) error { getCalled = true; return nil }
 
 	dialer := &fakeDialer{}
 	keyManager := secrets.NewKeyManager(store, time.Hour)
@@ -524,9 +524,9 @@ func TestTenantAccount_MalformedRegion_NoConnectionAttempt(t *testing.T) {
 	}
 }
 
-// A malformed namespace/accountName surfaces NewTenantPath's own validation
+// A malformed namespace/accountName surfaces NewTenantIdentifier's own validation
 // error before any credential read.
-func TestTenantAccount_InvalidPathSegment(t *testing.T) {
+func TestTenantAccount_InvalidIdentifierSegment(t *testing.T) {
 	store := secrets.NewFakeKeyStore()
 	keyManager := secrets.NewKeyManager(store, time.Hour)
 	p := New(keyManager, testConfig())
@@ -539,11 +539,11 @@ func TestTenantAccount_InvalidPathSegment(t *testing.T) {
 func TestTenantAccount_CredentialReadFailureNotCached(t *testing.T) {
 	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
-	path, _ := secrets.NewTenantPath(cfg.Snowflake.Org, "finance", "a")
-	seedCredentials(t, store, path)
+	id, _ := secrets.NewTenantIdentifier(cfg.Snowflake.Org, "finance", "a")
+	seedCredentials(t, store, id)
 
 	attempts := 0
-	store.OnGet = func(secrets.Path) error {
+	store.OnGet = func(secrets.Identifier) error {
 		attempts++
 		if attempts == 1 {
 			return stderrors.New("boom")
@@ -573,8 +573,8 @@ func TestTenantAccount_CredentialReadFailureNotCached(t *testing.T) {
 func TestTenantAccount_UnmarshalFailure(t *testing.T) {
 	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
-	path, _ := secrets.NewTenantPath(cfg.Snowflake.Org, "finance", "a")
-	if err := store.Create(context.Background(), path, "not valid json"); err != nil {
+	id, _ := secrets.NewTenantIdentifier(cfg.Snowflake.Org, "finance", "a")
+	if err := store.Create(context.Background(), id, "not valid json"); err != nil {
 		t.Fatalf("seeding: %v", err)
 	}
 
@@ -589,13 +589,13 @@ func TestTenantAccount_UnmarshalFailure(t *testing.T) {
 func TestTenantAccount_ParsePrivateKeyFailure(t *testing.T) {
 	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
-	path, _ := secrets.NewTenantPath(cfg.Snowflake.Org, "finance", "a")
+	id, _ := secrets.NewTenantIdentifier(cfg.Snowflake.Org, "finance", "a")
 	creds := &secrets.Credentials{Username: "platform", PublicKey: "irrelevant", PrivateKey: "not a pem key"}
 	raw, err := secrets.MarshalCredentials(creds)
 	if err != nil {
 		t.Fatalf("MarshalCredentials: %v", err)
 	}
-	if err := store.Create(context.Background(), path, raw); err != nil {
+	if err := store.Create(context.Background(), id, raw); err != nil {
 		t.Fatalf("seeding: %v", err)
 	}
 
@@ -611,8 +611,8 @@ func TestTenantAccount_ParsePrivateKeyFailure(t *testing.T) {
 func TestTenantAccount_FailedDialNotCached(t *testing.T) {
 	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
-	path, _ := secrets.NewTenantPath(cfg.Snowflake.Org, "finance", "a")
-	seedCredentials(t, store, path)
+	id, _ := secrets.NewTenantIdentifier(cfg.Snowflake.Org, "finance", "a")
+	seedCredentials(t, store, id)
 
 	dialer := &fakeDialer{errFn: func(idx int) error {
 		if idx == 0 {
@@ -645,8 +645,8 @@ func TestTenantAccount_FailedDialNotCached(t *testing.T) {
 func TestTenantAccount_ConcurrentSameKey_OneDial(t *testing.T) {
 	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
-	path, _ := secrets.NewTenantPath(cfg.Snowflake.Org, "finance", "a")
-	seedCredentials(t, store, path)
+	id, _ := secrets.NewTenantIdentifier(cfg.Snowflake.Org, "finance", "a")
+	seedCredentials(t, store, id)
 
 	dialer := &fakeDialer{delay: 20 * time.Millisecond}
 	keyManager := secrets.NewKeyManager(store, time.Hour)
@@ -688,8 +688,8 @@ func TestTenantAccount_ConcurrentDifferentKeys_DoNotSerialize(t *testing.T) {
 	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
 	for _, name := range []string{"a", "b"} {
-		path, _ := secrets.NewTenantPath(cfg.Snowflake.Org, "finance", name)
-		seedCredentials(t, store, path)
+		id, _ := secrets.NewTenantIdentifier(cfg.Snowflake.Org, "finance", name)
+		seedCredentials(t, store, id)
 	}
 
 	started := make(chan struct{})
@@ -741,8 +741,8 @@ func TestTenantAccount_ConcurrentDifferentKeys_DoNotSerialize(t *testing.T) {
 func TestTenantAccount_SelfHealsOnLocatorChange(t *testing.T) {
 	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
-	path, _ := secrets.NewTenantPath(cfg.Snowflake.Org, "finance", "a")
-	seedCredentials(t, store, path)
+	id, _ := secrets.NewTenantIdentifier(cfg.Snowflake.Org, "finance", "a")
+	seedCredentials(t, store, id)
 
 	dialer := &fakeDialer{}
 	keyManager := secrets.NewKeyManager(store, time.Hour)
@@ -773,8 +773,8 @@ func TestTenantAccount_SelfHealsOnLocatorChange(t *testing.T) {
 func TestTenantAccount_SelfHealsOnRegionChange(t *testing.T) {
 	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
-	path, _ := secrets.NewTenantPath(cfg.Snowflake.Org, "finance", "a")
-	seedCredentials(t, store, path)
+	id, _ := secrets.NewTenantIdentifier(cfg.Snowflake.Org, "finance", "a")
+	seedCredentials(t, store, id)
 
 	dialer := &fakeDialer{}
 	keyManager := secrets.NewKeyManager(store, time.Hour)
@@ -805,8 +805,8 @@ func TestTenantAccount_SelfHealsOnRegionChange(t *testing.T) {
 func TestEvictTenant_ClosesAndDialsAgain(t *testing.T) {
 	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
-	path, _ := secrets.NewTenantPath(cfg.Snowflake.Org, "finance", "a")
-	seedCredentials(t, store, path)
+	id, _ := secrets.NewTenantIdentifier(cfg.Snowflake.Org, "finance", "a")
+	seedCredentials(t, store, id)
 
 	dialer := &fakeDialer{}
 	keyManager := secrets.NewKeyManager(store, time.Hour)

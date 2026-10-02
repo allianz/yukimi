@@ -29,7 +29,7 @@ import (
 // connection to it, and deletes the platform credential — in that fixed
 // order, stopping at the first real failure. Every step is safe to re-run:
 // DROP ACCOUNT IF EXISTS makes a missing account a no-op, EvictTenant is a
-// no-op on a key never dialed, and an already-absent credential path is
+// no-op on a key never dialed, and an already-absent credential identifier is
 // detected by this module itself (see deleteCredential) rather than trusted
 // to the backend (Key Concept: Two Restore Windows, specs/012-account-module.md).
 func (m *module) Teardown(ctx context.Context, mc *pipeline.ModuleContext) error {
@@ -74,25 +74,26 @@ func (m *module) dropAccount(ctx context.Context, mc *pipeline.ModuleContext) er
 
 // deleteCredential removes the platform credential. secrets.KeyStore's
 // contract is that no caller branches on an error's identity, and the
-// reference AWS key store is not itself idempotent on an already-absent path
-// (internal/secrets/aws/keystore.go) — so instead of inspecting Delete's
-// error, this checks presence with Get first: an unreadable path is either
-// genuinely absent or already scheduled for deletion by an earlier Teardown
-// attempt, and either way there is nothing left to delete.
+// reference AWS key store is not itself idempotent on an already-absent
+// identifier (internal/secrets/aws/keystore.go) — so instead of inspecting
+// Delete's error, this checks presence with Get first: an unreadable
+// identifier is either genuinely absent or already scheduled for deletion by
+// an earlier Teardown attempt, and either way there is nothing left to
+// delete.
 func (m *module) deleteCredential(ctx context.Context, mc *pipeline.ModuleContext) error {
 	cr := mc.CR()
 
-	path, err := secrets.NewTenantPath(m.org, cr.Namespace, cr.Name)
+	id, err := secrets.NewTenantIdentifier(m.org, cr.Namespace, cr.Name)
 	if err != nil {
 		return err
 	}
 
-	if _, _, err := m.keyManager.Get(ctx, path); err != nil {
-		//nolint:nilerr // Intentional: an unreadable path is nothing left to delete. See the doc comment above.
+	if _, _, err := m.keyManager.Get(ctx, id); err != nil {
+		//nolint:nilerr // Intentional: an unreadable identifier is nothing left to delete. See the doc comment above.
 		return nil
 	}
 
-	if err := m.keyManager.Delete(ctx, path); err != nil {
+	if err := m.keyManager.Delete(ctx, id); err != nil {
 		return fmt.Errorf("failed to delete platform credential: %w", err)
 	}
 	return nil

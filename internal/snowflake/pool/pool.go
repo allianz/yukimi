@@ -29,7 +29,7 @@ import (
 )
 
 // tenantKey identifies a tenant connection target — the same (namespace,
-// accountName) tuple the tenant secret path (003) is built from.
+// accountName) tuple the tenant secret identifier (003) is built from.
 type tenantKey struct {
 	namespace   string
 	accountName string
@@ -104,7 +104,7 @@ func (p *Pool) keyLock(key tenantKey) *sync.Mutex {
 
 // OrgAdmin returns the single org-admin *sql.DB, used only for CREATE ACCOUNT
 // and DROP ACCOUNT (design.md 3.6, 6.3, 3.11 intro). The credential is read
-// from the org-admin secret path (003) and the connection is authenticated
+// from the org-admin secret identifier (003) and the connection is authenticated
 // with the GLOBALORGADMIN role. Opened on first call; every later call returns the
 // same *sql.DB. Also rotates the credential inline once it is older than
 // cfg.Secrets.RotationInterval (see specs/004-connection-pooling.md,
@@ -119,13 +119,13 @@ func (p *Pool) OrgAdmin(ctx context.Context) (*sql.DB, error) {
 
 	sf := &p.cfg.Snowflake
 
-	path, err := secrets.NewOrgAdminPath(sf.Org, sf.OrgAdminAccount)
+	id, err := secrets.NewOrgAdminIdentifier(sf.Org, sf.OrgAdminAccount)
 	if err != nil {
 		return nil, err
 	}
 
 	if p.orgAdminDB != nil {
-		p.maybeRotateLocked(ctx, p.orgAdminDB, path)
+		p.maybeRotateLocked(ctx, p.orgAdminDB, id)
 		return p.orgAdminDB, nil
 	}
 
@@ -134,7 +134,7 @@ func (p *Pool) OrgAdmin(ctx context.Context) (*sql.DB, error) {
 		return nil, err
 	}
 
-	raw, rotatedAt, err := p.keyManager.Get(ctx, path)
+	raw, rotatedAt, err := p.keyManager.Get(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read org-admin credentials: %w", err)
 	}
@@ -156,14 +156,14 @@ func (p *Pool) OrgAdmin(ctx context.Context) (*sql.DB, error) {
 	applyPoolSettings(db, p.cfg)
 
 	p.orgAdminDB = db
-	p.maybeRotateLocked(ctx, db, path)
+	p.maybeRotateLocked(ctx, db, id)
 	return db, nil
 }
 
 // TenantAccount returns the per-tenant *sql.DB, authenticated as that
 // account's platform service user with the ACCOUNTADMIN role (design.md
 // 3.6, 3.11, Appendix B X1). Keyed by (org, namespace, accountName) — the
-// same tuple as the tenant secret path (003) — plus the account's current
+// same tuple as the tenant secret identifier (003) — plus the account's current
 // locator and region: a mismatch against a cached entry's locator or region
 // closes it and dials again (see Key Concept: Self-Healing). Also rotates
 // the credential inline once it is older than cfg.Secrets.RotationInterval
@@ -174,7 +174,7 @@ func (p *Pool) OrgAdmin(ctx context.Context) (*sql.DB, error) {
 //   - namespace: metadata.namespace at the call site, never a spec field
 //     (design.md 3.11.1)
 //   - accountName: the CRD's metadata.name, never the resolved, hash-suffixed
-//     Snowflake account name (design.md 3.12) — matches the tenant secret path
+//     Snowflake account name (design.md 3.12) — matches the tenant secret identifier
 //   - locator: the Snowflake account locator captured from CREATE ACCOUNT
 //     (design.md 3.6); this package never runs CREATE ACCOUNT itself, so the
 //     caller supplies it
@@ -190,7 +190,7 @@ func (p *Pool) TenantAccount(ctx context.Context, namespace, accountName, locato
 	key := tenantKey{namespace: namespace, accountName: accountName}
 	sf := &p.cfg.Snowflake
 
-	path, err := secrets.NewTenantPath(sf.Org, namespace, accountName)
+	id, err := secrets.NewTenantIdentifier(sf.Org, namespace, accountName)
 	if err != nil {
 		return nil, err
 	}
@@ -200,7 +200,7 @@ func (p *Pool) TenantAccount(ctx context.Context, namespace, accountName, locato
 	defer lock.Unlock()
 
 	if db, ok := p.cachedTenant(key, locator, region); ok {
-		p.maybeRotateLocked(ctx, db, path)
+		p.maybeRotateLocked(ctx, db, id)
 		return db, nil
 	}
 
@@ -209,7 +209,7 @@ func (p *Pool) TenantAccount(ctx context.Context, namespace, accountName, locato
 		return nil, err
 	}
 
-	raw, rotatedAt, err := p.keyManager.Get(ctx, path)
+	raw, rotatedAt, err := p.keyManager.Get(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read tenant credentials for %s/%s: %w", namespace, accountName, err)
 	}
@@ -239,7 +239,7 @@ func (p *Pool) TenantAccount(ctx context.Context, namespace, accountName, locato
 		_ = stale.db.Close()
 	}
 
-	p.maybeRotateLocked(ctx, db, path)
+	p.maybeRotateLocked(ctx, db, id)
 	return db, nil
 }
 

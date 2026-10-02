@@ -103,13 +103,13 @@ func newTestKeyStore(fake *fakeClient, gracePeriodDays int) *KeyStore {
 	return &KeyStore{client: fake, recoveryWindowDays: recoveryWindowDays}
 }
 
-func testPath(t *testing.T) secrets.Path {
+func testIdentifier(t *testing.T) secrets.Identifier {
 	t.Helper()
-	path, err := secrets.NewTenantPath("my_org", "finance", "analytics-team-eu")
+	id, err := secrets.NewTenantIdentifier("my_org", "finance", "analytics-team-eu")
 	if err != nil {
-		t.Fatalf("NewTenantPath: %v", err)
+		t.Fatalf("NewTenantIdentifier: %v", err)
 	}
-	return path
+	return id
 }
 
 func TestNew(t *testing.T) {
@@ -163,13 +163,13 @@ func TestNew(t *testing.T) {
 }
 
 func TestGet(t *testing.T) {
-	path := testPath(t)
+	id := testIdentifier(t)
 
 	t.Run("success reads SecretString via GetSecretValue only", func(t *testing.T) {
 		fake := &fakeClient{}
 		store := &KeyStore{client: fake}
 
-		got, gotAt, err := store.Get(context.Background(), path)
+		got, gotAt, err := store.Get(context.Background(), id)
 		if err != nil {
 			t.Fatalf("Get: %v", err)
 		}
@@ -182,21 +182,21 @@ func TestGet(t *testing.T) {
 		if !fake.getCalled {
 			t.Fatal("expected GetSecretValue to be called")
 		}
-		if aws.ToString(fake.getInput.SecretId) != path.String() {
-			t.Fatalf("SecretId = %q, want %q", aws.ToString(fake.getInput.SecretId), path.String())
+		if aws.ToString(fake.getInput.SecretId) != id.String() {
+			t.Fatalf("SecretId = %q, want %q", aws.ToString(fake.getInput.SecretId), id.String())
 		}
 	})
 
-	t.Run("failure is wrapped with operation and path", func(t *testing.T) {
+	t.Run("failure is wrapped with operation and id", func(t *testing.T) {
 		underlying := errors.New("ResourceNotFoundException: secret not found")
 		fake := &fakeClient{getErr: underlying}
 		store := &KeyStore{client: fake}
 
-		_, _, err := store.Get(context.Background(), path)
+		_, _, err := store.Get(context.Background(), id)
 		if err == nil {
 			t.Fatal("expected an error")
 		}
-		wantPrefix := "failed to get secret at " + path.String() + ": "
+		wantPrefix := "failed to get secret at " + id.String() + ": "
 		if !strings.HasPrefix(err.Error(), wantPrefix) {
 			t.Fatalf("error = %q, want prefix %q", err.Error(), wantPrefix)
 		}
@@ -207,13 +207,13 @@ func TestGet(t *testing.T) {
 }
 
 func TestCreate(t *testing.T) {
-	path := testPath(t)
+	id := testIdentifier(t)
 
 	t.Run("success calls CreateSecret with SecretString, never SecretBinary", func(t *testing.T) {
 		fake := &fakeClient{}
 		store := &KeyStore{client: fake}
 
-		if err := store.Create(context.Background(), path, "some-opaque-value"); err != nil {
+		if err := store.Create(context.Background(), id, "some-opaque-value"); err != nil {
 			t.Fatalf("Create: %v", err)
 		}
 		if !fake.createCalled {
@@ -222,8 +222,8 @@ func TestCreate(t *testing.T) {
 		if fake.putCalled {
 			t.Fatal("Create must never call PutSecretValue")
 		}
-		if aws.ToString(fake.createInput.Name) != path.String() {
-			t.Fatalf("Name = %q, want %q", aws.ToString(fake.createInput.Name), path.String())
+		if aws.ToString(fake.createInput.Name) != id.String() {
+			t.Fatalf("Name = %q, want %q", aws.ToString(fake.createInput.Name), id.String())
 		}
 		if aws.ToString(fake.createInput.SecretString) != "some-opaque-value" {
 			t.Fatalf("SecretString = %q, want %q", aws.ToString(fake.createInput.SecretString), "some-opaque-value")
@@ -237,7 +237,7 @@ func TestCreate(t *testing.T) {
 		fake := &fakeClient{}
 		store := &KeyStore{client: fake, kmsKeyId: "alias/yukimi-secrets"}
 
-		if err := store.Create(context.Background(), path, "value"); err != nil {
+		if err := store.Create(context.Background(), id, "value"); err != nil {
 			t.Fatalf("Create: %v", err)
 		}
 		if got := aws.ToString(fake.createInput.KmsKeyId); got != "alias/yukimi-secrets" {
@@ -249,7 +249,7 @@ func TestCreate(t *testing.T) {
 		fake := &fakeClient{}
 		store := &KeyStore{client: fake}
 
-		if err := store.Create(context.Background(), path, "value"); err != nil {
+		if err := store.Create(context.Background(), id, "value"); err != nil {
 			t.Fatalf("Create: %v", err)
 		}
 		if fake.createInput.KmsKeyId != nil {
@@ -262,14 +262,14 @@ func TestCreate(t *testing.T) {
 		fake := &fakeClient{createErr: underlying}
 		store := &KeyStore{client: fake}
 
-		err := store.Create(context.Background(), path, "some-opaque-value")
+		err := store.Create(context.Background(), id, "some-opaque-value")
 		if err == nil {
 			t.Fatal("expected Create to fail on an occupied name")
 		}
 		if fake.putCalled {
 			t.Fatal("Create must never call PutSecretValue")
 		}
-		wantPrefix := "failed to create secret at " + path.String() + ": "
+		wantPrefix := "failed to create secret at " + id.String() + ": "
 		if !strings.HasPrefix(err.Error(), wantPrefix) {
 			t.Fatalf("error = %q, want prefix %q", err.Error(), wantPrefix)
 		}
@@ -281,15 +281,15 @@ func TestCreate(t *testing.T) {
 		}
 	})
 
-	t.Run("failure on a path scheduled for deletion wraps ErrPendingDeletion", func(t *testing.T) {
+	t.Run("failure on an identifier scheduled for deletion wraps ErrPendingDeletion", func(t *testing.T) {
 		underlying := &smtypes.InvalidRequestException{Message: aws.String(
 			"You can't create this secret because a secret with this name is already scheduled for deletion.")}
 		fake := &fakeClient{createErr: underlying}
 		store := &KeyStore{client: fake}
 
-		err := store.Create(context.Background(), path, "some-opaque-value")
+		err := store.Create(context.Background(), id, "some-opaque-value")
 		if err == nil {
-			t.Fatal("expected Create to fail on a path scheduled for deletion")
+			t.Fatal("expected Create to fail on an identifier scheduled for deletion")
 		}
 		if fake.putCalled {
 			t.Fatal("Create must never call PutSecretValue")
@@ -308,7 +308,7 @@ func TestCreate(t *testing.T) {
 		fake := &fakeClient{createErr: underlying}
 		store := &KeyStore{client: fake}
 
-		err := store.Create(context.Background(), path, "some-opaque-value")
+		err := store.Create(context.Background(), id, "some-opaque-value")
 		if err == nil {
 			t.Fatal("expected Create to fail")
 		}
@@ -322,13 +322,13 @@ func TestCreate(t *testing.T) {
 }
 
 func TestUpdate(t *testing.T) {
-	path := testPath(t)
+	id := testIdentifier(t)
 
 	t.Run("success calls PutSecretValue, never CreateSecret", func(t *testing.T) {
 		fake := &fakeClient{}
 		store := &KeyStore{client: fake}
 
-		if err := store.Update(context.Background(), path, "new-value"); err != nil {
+		if err := store.Update(context.Background(), id, "new-value"); err != nil {
 			t.Fatalf("Update: %v", err)
 		}
 		if !fake.putCalled {
@@ -337,8 +337,8 @@ func TestUpdate(t *testing.T) {
 		if fake.createCalled {
 			t.Fatal("Update must never call CreateSecret")
 		}
-		if aws.ToString(fake.putInput.SecretId) != path.String() {
-			t.Fatalf("SecretId = %q, want %q", aws.ToString(fake.putInput.SecretId), path.String())
+		if aws.ToString(fake.putInput.SecretId) != id.String() {
+			t.Fatalf("SecretId = %q, want %q", aws.ToString(fake.putInput.SecretId), id.String())
 		}
 		if aws.ToString(fake.putInput.SecretString) != "new-value" {
 			t.Fatalf("SecretString = %q, want %q", aws.ToString(fake.putInput.SecretString), "new-value")
@@ -350,14 +350,14 @@ func TestUpdate(t *testing.T) {
 		fake := &fakeClient{putErr: underlying}
 		store := &KeyStore{client: fake}
 
-		err := store.Update(context.Background(), path, "new-value")
+		err := store.Update(context.Background(), id, "new-value")
 		if err == nil {
 			t.Fatal("expected Update to fail on a missing secret")
 		}
 		if fake.createCalled {
 			t.Fatal("Update must never call CreateSecret")
 		}
-		wantPrefix := "failed to update secret at " + path.String() + ": "
+		wantPrefix := "failed to update secret at " + id.String() + ": "
 		if !strings.HasPrefix(err.Error(), wantPrefix) {
 			t.Fatalf("error = %q, want prefix %q", err.Error(), wantPrefix)
 		}
@@ -368,7 +368,7 @@ func TestUpdate(t *testing.T) {
 }
 
 func TestDelete(t *testing.T) {
-	path := testPath(t)
+	id := testIdentifier(t)
 
 	// SC-020, SC-021: the computed window is what Delete sends, never AWS's own 30-day default,
 	// and never ForceDeleteWithoutRecovery — 002's grace period floor (7) already matches
@@ -388,14 +388,14 @@ func TestDelete(t *testing.T) {
 				fake := &fakeClient{}
 				store := newTestKeyStore(fake, tc.gracePeriodDays)
 
-				if err := store.Delete(context.Background(), path); err != nil {
+				if err := store.Delete(context.Background(), id); err != nil {
 					t.Fatalf("Delete: %v", err)
 				}
 				if !fake.deleteCalled {
 					t.Fatal("expected DeleteSecret to be called")
 				}
-				if aws.ToString(fake.deleteInput.SecretId) != path.String() {
-					t.Fatalf("SecretId = %q, want %q", aws.ToString(fake.deleteInput.SecretId), path.String())
+				if aws.ToString(fake.deleteInput.SecretId) != id.String() {
+					t.Fatalf("SecretId = %q, want %q", aws.ToString(fake.deleteInput.SecretId), id.String())
 				}
 
 				if got := aws.ToInt64(fake.deleteInput.RecoveryWindowInDays); got != tc.wantWindowDays {
@@ -408,16 +408,16 @@ func TestDelete(t *testing.T) {
 		}
 	})
 
-	t.Run("failure on an already-absent path is wrapped, not swallowed", func(t *testing.T) {
+	t.Run("failure on an already-absent id is wrapped, not swallowed", func(t *testing.T) {
 		underlying := errors.New("ResourceNotFoundException: secret not found")
 		fake := &fakeClient{deleteErr: underlying}
 		store := newTestKeyStore(fake, 30)
 
-		err := store.Delete(context.Background(), path)
+		err := store.Delete(context.Background(), id)
 		if err == nil {
-			t.Fatal("expected Delete on an already-absent path to fail (not idempotent)")
+			t.Fatal("expected Delete on an already-absent id to fail (not idempotent)")
 		}
-		wantPrefix := "failed to delete secret at " + path.String() + ": "
+		wantPrefix := "failed to delete secret at " + id.String() + ": "
 		if !strings.HasPrefix(err.Error(), wantPrefix) {
 			t.Fatalf("error = %q, want prefix %q", err.Error(), wantPrefix)
 		}

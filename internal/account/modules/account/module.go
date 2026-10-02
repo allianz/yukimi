@@ -47,7 +47,7 @@ type module struct {
 //     through, via KeyManager.Create and, on teardown, KeyManager.Delete —
 //     this module never calls Update.
 //   - org: Config.Snowflake.Org (002), used to build the tenant secret
-//     path (003) exactly as internal/snowflake/pool does.
+//     identifier (003) exactly as internal/snowflake/pool does.
 //   - gracePeriod: Config.Snowflake.AccountCreationGracePeriod (002); how
 //     long a fresh account is given to become reachable before the first
 //     post-create connection attempt.

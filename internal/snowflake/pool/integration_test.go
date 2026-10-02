@@ -131,14 +131,14 @@ func TestIntegration_TenantAccount_RotatesStaleCredential(t *testing.T) {
 	locator := os.Getenv("SAMPLE_CUSTOMER_ACCOUNT_LOCATOR")
 	region := os.Getenv("SAMPLE_CUSTOMER_ACCOUNT_REGION")
 
-	path, err := secrets.NewTenantPath(cfg.Snowflake.Org, namespace, accountName)
+	id, err := secrets.NewTenantIdentifier(cfg.Snowflake.Org, namespace, accountName)
 	if err != nil {
-		t.Fatalf("NewTenantPath: %v", err)
+		t.Fatalf("NewTenantIdentifier: %v", err)
 	}
 
 	ctx := context.Background()
 
-	beforeRaw, beforeRotatedAt, err := awsStore.Get(ctx, path)
+	beforeRaw, beforeRotatedAt, err := awsStore.Get(ctx, id)
 	if err != nil {
 		t.Fatalf("reading the credential before rotation: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestIntegration_TenantAccount_RotatesStaleCredential(t *testing.T) {
 		t.Fatalf("CURRENT_ROLE() = %q, want ACCOUNTADMIN", role)
 	}
 
-	afterRaw, afterRotatedAt, err := awsStore.Get(ctx, path)
+	afterRaw, afterRotatedAt, err := awsStore.Get(ctx, id)
 	if err != nil {
 		t.Fatalf("reading the credential after rotation: %v", err)
 	}
