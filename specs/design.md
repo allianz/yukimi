@@ -541,7 +541,7 @@ AWS Secrets Manager is the reference implementation, not a requirement: the cont
 * **The Trust Anchor:** The Kubernetes Namespace (`metadata.namespace`) is the sole source of truth for tenancy. It is derived directly from the runtime environment (not user input) and is used to cryptographically bind the account to the team's sandbox.
 * **Identifier Construction:** The controller must construct the ASM Secret ID using the following strict pattern:
     `yk-<snowflake-org-name>--<kubernetes-ns>--<snowflake-account-name>`
-    The charset (letters, digits, `-`) and length ceiling are set by the tightest of the supported secret stores, Azure Key Vault; `--` separates the three variable segments rather than `-` alone so that two different tenants can never be joined onto the same identifier (`internal/secrets`, 003, has the full grammar and the collision argument).
+    The format is chosen to work in all common secret stores, e.g. AWS Secrets Manager, Azure Key Vault and GCP Secret Manager.
 * **The Constraint:** When the controller attempts to access an existing account, it must derive the lookup identifier using the CRD's namespace. This ensures that any attempt to manage an account outside the team's namespace will fail at the AWS IAM level due to an incorrect secret identifier, thereby preventing cross-tenant access.
 * **Which name:** `<snowflake-account-name>` in the identifier above is the CRD's `metadata.name`, not the resolved Snowflake name (3.12). The identifier is deliberately built only from Kubernetes identifiers, keeping the trust anchor above intact — every segment is derived from the runtime environment rather than from a namespace label that is written by hand.
 
