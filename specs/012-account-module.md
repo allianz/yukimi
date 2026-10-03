@@ -29,6 +29,38 @@ reachability check to a later reconcile. Both `Observe` and `Apply`'s reconnect 
 connection entirely while the account is within its post-create grace period, rather than trying and
 leaving a failure in the log — see Key Concept: Post-Create Grace Period.
 
+## Key Concept: Resuming a Crashed Create
+
+The secret identifier a fresh create reserves (design.md 3.11.1) is unique to this one resource — org,
+namespace, and `metadata.name` all join into it (003's collision-free join), so nothing else in the system
+ever writes to it. That makes a `CreateCredentials` failure on an already-occupied identifier
+disambiguable instead of a permanent dead end: a secret found there, written at or after this resource's
+own `metadata.creationTimestamp`, can only be this resource's own earlier attempt — one that generated and
+stored a keypair, then crashed before `CREATE ACCOUNT` ran or before its locator was persisted to status.
+Nothing in Snowflake has used that keypair yet, so it is safe to reuse it verbatim, without generating a
+new one and without ever calling `KeyManager.Update`.
+
+A small clock-skew buffer (5 minutes, a fixed value — the comparison only needs ordering, not precision,
+since the account's own deletion-recovery window this protects against is measured in days) absorbs drift
+between the kube-apiserver's clock, which stamps `creationTimestamp`, and the secrets backend's clock,
+which stamps the credential's `RotatedAt`. A secret written earlier than `creationTimestamp` minus that
+buffer predates this resource and cannot be its own doing — it is refused exactly as an unreadable or
+unparseable occupant is, rather than guessed at.
+
+Resuming also has to cover the case where the crash landed *after* `CREATE ACCOUNT` itself already
+succeeded, not just before it ran: blindly reissuing `CREATE ACCOUNT` with the recovered key would then
+collide with the account this resource already created, surfacing as the org-wide name-collision path —
+which is a tenant-facing "rename your resource" message that would be actively wrong here, since the
+collision is with the tenant's own prior attempt. So the resume path checks for the account's existence by
+name first; only when it is not found does it proceed to `CREATE ACCOUNT`, exactly as a fresh create would.
+A genuinely fresh create (the identifier was not previously occupied) skips this check entirely — it costs
+an extra round-trip only on the resume path, never on the common case, and the fresh path's generate-then-store-then-create
+ordering (Public API) is unchanged.
+
+This resume decision can, in principle, read a `RotatedAt` served from `KeyManager`'s TTL cache rather than
+a live store read, up to `ttl` stale (003's own already-accepted staleness trade-off) — not a new risk this
+module introduces, just that trade-off surfacing here too.
+
 ## Key Concept: Post-Create Grace Period
 
 A brand-new account is not reachable right away. So for a configured period (002) after creation, the
@@ -106,7 +138,10 @@ an operator has to restore the credential by hand.
 //
 // Parameters:
 //   - keyManager: the *secrets.KeyManager (003) the platform keypair is stored through, via
-//     KeyManager.CreateCredentials and, on teardown, KeyManager.DeleteCredentials — this module never calls Update.
+//     KeyManager.CreateCredentials and, on teardown, KeyManager.DeleteCredentials — this module never calls
+//     Update. On the fresh-create path, if CreateCredentials fails because the identifier is already
+//     occupied by a live secret, KeyManager.GetCredentials is called once, read-only, to decide whether
+//     that secret is this resource's own crashed attempt (Key Concept: Resuming a Crashed Create).
 //   - org: Config.Snowflake.Org (002), used to build the tenant secret identifier (003) exactly as
 //     internal/snowflake/pool does.
 //   - gracePeriod: Config.Snowflake.AccountCreationGracePeriod (002) — how long a fresh account is
@@ -182,8 +217,12 @@ internal/account/modules/account/
 
 **System Errors**:
 - RSA keypair generation fails.
-- The secret store's create-only write fails for any other reason, including the identifier already being
-  occupied by a live secret.
+- The secret store's create-only write fails for any reason other than `ErrPendingDeletion`, and the
+  occupying secret cannot be resumed as this resource's own crashed attempt (Key Concept: Resuming a
+  Crashed Create) — either because it cannot be read or parsed as valid credentials, or because it was
+  written before `cr.CreationTimestamp` minus the clock-skew buffer.
+- The resume path's pre-check for an already-existing account (`SHOW ACCOUNTS LIKE`) fails for any reason
+  other than finding no match.
 - The org-admin connection cannot be opened.
 - `CREATE ACCOUNT` fails for any reason other than the name collision above.
 - The post-create locator lookup finds no matching account despite `CREATE ACCOUNT` having just
@@ -229,13 +268,20 @@ This specification defines the account module that:
 
 - **A crash lands between a successful credential store write (or `CREATE ACCOUNT`) and the locator
   being persisted to status — what happens on the next reconcile?** The next reconcile still has no
-  locator, so it repeats the fresh-create path — and the credential store's create-only write now fails,
-  because the identifier is already occupied from the previous attempt. This is accepted as a known, bounded
-  operational cost rather than auto-recovered: there is no reliable way to tell "this secret is an orphan
-  from a crashed attempt" apart from "this secret is a live account's platform credential", so guessing
-  would be unsafe. Recovery is manual: an operator inspects the account directly in Snowflake and either
-  patches the resource's status to point at the live account's locator, or deletes both the stray secret
-  and any orphaned account so the resource can create cleanly on its next reconcile.
+  locator, so it repeats the fresh-create path, and the credential store's create-only write fails because
+  the identifier is already occupied from the previous attempt — but this is no longer where the trail ends
+  (Key Concept: Resuming a Crashed Create). The module reads the occupying secret's write time and compares
+  it against this resource's own `creationTimestamp`: at or after it (minus a clock-skew buffer), the
+  occupant can only be this resource's own earlier attempt, and the module resumes automatically — reusing
+  the recovered credential verbatim, checking whether `CREATE ACCOUNT` already succeeded before
+  (re-)issuing it, and proceeding exactly as a fresh create would from there. Manual recovery is now
+  reserved for the two cases that genuinely cannot be resolved automatically: the occupying secret cannot
+  be read or parsed as valid credentials at all, or it was written before this resource's own
+  `creationTimestamp` — a leftover from something else (e.g. a previous same-named resource whose teardown
+  did not fully clean up), which this module still cannot safely guess at. In either of those, an operator
+  inspects the account directly in Snowflake and either patches the resource's status to point at the live
+  account's locator, or deletes both the stray secret and any orphaned account so the resource can create
+  cleanly on its next reconcile.
 - **Why does `Apply` reconnect instead of failing outright whenever a locator is already known?** A
   locator being known does not by itself mean anything is wrong — it is also true of a perfectly healthy
   account whose `Apply` is running only because some other module further down the pipeline has drifted.
@@ -317,8 +363,12 @@ This specification defines the account module that:
   not an alpha tester (Key Concept: Region Validation), reusing 007's own unknown-region
   wording so the two cases stay indistinguishable to the tenant.
 - **Secrets Handling (003)** — Used APIs: `NewTenantIdentifier()`, `KeyManager.CreateCredentials()`,
-  `KeyManager.DeleteCredentials()`, `ErrPendingDeletion` — Contract: `CreateCredentials` and
-  `DeleteCredentials` only, never `Update`; the module never reads a credential back. `DeleteCredentials`'s recovery window is
+  `KeyManager.GetCredentials()`, `KeyManager.DeleteCredentials()`, `ErrPendingDeletion` — Contract:
+  `CreateCredentials` and `DeleteCredentials` for normal operation, never `Update`. On the fresh-create
+  path, if `CreateCredentials` fails for a reason other than `ErrPendingDeletion`, the module calls
+  `GetCredentials` once to read the occupying secret's `RotatedAt` and decide whether to resume (Key
+  Concept: Resuming a Crashed Create) — the only case this module ever reads a stored credential back, and
+  it still never writes to what it finds there. `DeleteCredentials`'s recovery window is
   the key store's own business — this module passes no window and cannot choose one. Matches
   `CreateCredentials`'s error against `ErrPendingDeletion` via `errors.Is` and decides its own classification and message for
   that case.
@@ -369,13 +419,24 @@ This specification defines the account module that:
   succeeds.
 - **SC-005**: `Apply` aborts with a system error, and issues no SQL, when a locator is already known, the
   grace period (if any) has elapsed, but the platform connection fails.
-- **SC-006**: A fresh create generates a keypair, stores it create-only, then issues `CREATE ACCOUNT` —
-  in that order, and only in that order.
-- **SC-007**: A fresh create aborts with a system error, generating no keypair and issuing no SQL, when
-  the resolved secret identifier is already occupied by a live secret.
+- **SC-006**: When the resolved secret identifier was not previously occupied, a fresh create generates a
+  keypair, stores it create-only, then issues `CREATE ACCOUNT` — in that order, and only in that order,
+  with no existence pre-check in between.
+- **SC-007**: A fresh create aborts with a system error, issuing no SQL, when the resolved secret
+  identifier is occupied by a secret that is not this resource's own crashed attempt — because it cannot
+  be read or parsed as valid credentials, or because it was written before `cr.CreationTimestamp` minus the
+  clock-skew buffer (Key Concept: Resuming a Crashed Create; see SC-035-SC-037 for the resumable case).
 - **SC-007a**: A fresh create aborts with a user error naming the account and its deletion recovery
   window — never the secret identifier — when the resolved secret identifier is occupied by a secret scheduled for
   deletion.
+- **SC-035**: When the resolved secret identifier is occupied by a secret written at or after
+  `cr.CreationTimestamp` (minus the clock-skew buffer), and no account yet exists under the resolved name,
+  a fresh create resumes: it reuses the occupying credential's public key verbatim (no new keypair is
+  generated) and issues `CREATE ACCOUNT` with it.
+- **SC-036**: Under the same resumable condition as SC-035, when an account already exists under the
+  resolved name, a fresh create skips `CREATE ACCOUNT` entirely and persists the found locator directly.
+- **SC-037**: The resume path's existence pre-check (SHOW ACCOUNTS LIKE) failing for any reason other than
+  finding no match aborts with a system error, and `CREATE ACCOUNT` is never issued.
 - **SC-008**: `CREATE ACCOUNT`'s `REGION` literal is the CRD's region uppercased with every `-` replaced
   by `_`.
 - **SC-009**: `CREATE ACCOUNT`'s `COMMENT` clause is omitted entirely when `spec.description` is empty.
@@ -447,8 +508,12 @@ This specification defines the account module that:
   The deletion request's two-key gate (019) is what stands between a tenant's `kubectl delete` and that
   call.
 - The secret store's create-only write is the sole safeguard against overwriting a live account's
-  credential on a retried request; this module never reads a stored credential back to decide whether to
-  reuse it.
+  credential on a retried request. The module does read a stored credential back exactly once — only after
+  that create-only write has already failed, and only to compare `RotatedAt` against this resource's own
+  `creationTimestamp` to decide whether the occupant is this resource's own crashed attempt (Key Concept:
+  Resuming a Crashed Create). What the create-only write still guarantees is that a found credential is
+  only ever reused verbatim, never regenerated or overwritten — this module calls `KeyManager.Update`
+  nowhere, resume included.
 - The post-create locator lookup's pattern matching is a coarse pre-filter only; the exact,
   case-insensitive re-check is load-bearing, not defensive style, given how often the resolved account
   name's own underscores would otherwise produce a false match.

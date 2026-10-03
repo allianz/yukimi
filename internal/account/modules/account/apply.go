@@ -43,6 +43,14 @@ const duplicateAccountSQLState = "42710"
 // (specs/012-account-module.md, Key Concept: Account Name Length Limit).
 const maxAccountLabelLen = 63
 
+// resumeClockSkewBuffer absorbs drift between the kube-apiserver's clock
+// (cr.CreationTimestamp) and the secrets backend's clock (a credential's
+// RotatedAt) when deciding whether an occupied identifier is this resource's
+// own crashed attempt or an unrelated orphan — precision doesn't matter
+// here, only ordering (specs/012-account-module.md, Key Concept: Resuming a
+// Crashed Create).
+const resumeClockSkewBuffer = 5 * time.Minute
+
 // resolvedNameSuffixLen is the length of the "_" plus 5-character hash
 // tenant.ResolveName always appends, so len(cr.Name) == len(resolvedName) -
 // resolvedNameSuffixLen (ResolveName only ever substitutes "-" for "_"
@@ -206,13 +214,20 @@ func (m *module) createAccount(ctx context.Context, mc *pipeline.ModuleContext) 
 	}
 
 	creds, err := m.keyManager.CreateCredentials(ctx, id, "platform")
+	resumed := false
 	if err != nil {
 		if errors.Is(err, secrets.ErrPendingDeletion) {
 			return pipeline.Rejected(errors.NewUserError(fmt.Sprintf(
 				"account %q was deleted recently and is still within its deletion recovery "+
 					"window; wait for the recovery window to elapse, then try again", cr.Name))).Aborting()
 		}
-		return pipeline.Failed(fmt.Errorf("failed to create platform credentials: %w", err)).Aborting()
+
+		resumedCreds, resumeErr := m.resumeCrashedCreate(ctx, id, cr.CreationTimestamp.Time, err)
+		if resumeErr != nil {
+			return pipeline.Failed(resumeErr).Aborting()
+		}
+		creds = resumedCreds
+		resumed = true
 	}
 
 	orgAdminDB, err := mc.OrgAdminDB(ctx)
@@ -221,11 +236,57 @@ func (m *module) createAccount(ctx context.Context, mc *pipeline.ModuleContext) 
 	}
 	runner := statement.New(orgAdminDB)
 
+	if resumed {
+		locator, found, err := findAccountLocator(ctx, runner, "check for existing account before resuming create", resolvedName)
+		if err != nil {
+			return pipeline.Failed(err).Aborting()
+		}
+		if found {
+			return finishCreate(cr, locator)
+		}
+	}
+
 	locator, outcome := runCreateAccount(ctx, runner, resolvedName, cr.Spec.Region, cr.Spec.Contact, cr.Spec.Description, creds.PublicKey)
 	if outcome.State != pipeline.StateDone {
 		return outcome
 	}
+	return finishCreate(cr, locator)
+}
 
+// resumeCrashedCreate is called once CreateCredentials has failed to create a
+// fresh credential at id for any reason other than ErrPendingDeletion. id is
+// unique to this resource (003's collision-free join), so nothing but this
+// module's own CreateCredentials calls for this exact resource ever write to
+// it: a secret found there, written at or after createdAt (minus a
+// clock-skew buffer), can only be an earlier attempt by this same resource
+// that crashed before CREATE ACCOUNT ran or before its locator was
+// persisted — safe to reuse outright, since nothing in Snowflake has used it
+// yet. A secret written earlier than that predates this resource and is
+// refused rather than guessed at. If the occupying secret cannot even be
+// read, resume is not attempted and createErr is what gets reported (specs/012-account-module.md,
+// Key Concept: Resuming a Crashed Create).
+func (m *module) resumeCrashedCreate(ctx context.Context, id secrets.Identifier, createdAt time.Time, createErr error) (*secrets.Credentials, error) {
+	creds, err := m.keyManager.GetCredentials(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"failed to create platform credentials: %w (and the occupying secret could not be read to check whether this is a resumable crashed attempt: %w)",
+			createErr, err)
+	}
+	if creds.RotatedAt.Before(createdAt.Add(-resumeClockSkewBuffer)) {
+		return nil, fmt.Errorf(
+			"failed to create platform credentials: identifier is occupied by a secret written at %s, before this resource's own creation at %s (minus a %s clock-skew buffer) — this cannot be this resource's own crashed attempt and requires manual investigation: %w",
+			creds.RotatedAt, createdAt, resumeClockSkewBuffer, createErr)
+	}
+	return creds, nil
+}
+
+// finishCreate records locator and the current time directly on cr's
+// status — the only two status fields this module ever sets — and returns
+// the Pending(...).Aborting() outcome every successful create path shares,
+// whether the account was just created by this call or found already
+// existing by the resume pre-check (specs/012-account-module.md, Key
+// Concept: Resuming a Crashed Create).
+func finishCreate(cr *v1alpha1.SnowflakeAccount, locator string) pipeline.Outcome {
 	cr.Status.AccountLocator = locator
 	cr.Status.AccountCreatedAt = &metav1.Time{Time: time.Now()}
 	return pipeline.Pending("account created; waiting for it to become reachable before continuing").Aborting()
@@ -273,26 +334,43 @@ func runCreateAccount(ctx context.Context, runner *statement.Runner, resolvedNam
 	return locator, pipeline.Done()
 }
 
-// locateCreatedAccount runs SHOW ACCOUNTS LIKE against the just-created
-// account's resolved name and returns its locator. The LIKE pattern is a
-// coarse pre-filter only — every underscore in resolvedName is a wildcard to
-// LIKE, so it discards any row that is not an exact, case-insensitive match
-// on the account name before trusting its locator (specs/012-account-module.md,
-// Edge Cases).
-func locateCreatedAccount(ctx context.Context, runner *statement.Runner, resolvedName string) (string, error) {
-	result, err := runner.Query(ctx, "locate created account", "SHOW ACCOUNTS LIKE "+statement.QuoteLiteral(resolvedName))
+// findAccountLocator runs SHOW ACCOUNTS LIKE against resolvedName and
+// returns the exact, case-insensitive matching row's locator, if any — the
+// row-matching logic shared by locateCreatedAccount (post-create, where "not
+// found" is an error) and the resume pre-check in createAccount (pre-create,
+// where "not found" is the normal, expected signal to proceed to CREATE
+// ACCOUNT). The LIKE pattern is a coarse pre-filter only — every underscore
+// in resolvedName is a wildcard to LIKE, so a row LIKE matched but is not an
+// exact match is discarded before trusting its locator
+// (specs/012-account-module.md, Edge Cases).
+func findAccountLocator(ctx context.Context, runner *statement.Runner, label, resolvedName string) (locator string, found bool, err error) {
+	result, err := runner.Query(ctx, label, "SHOW ACCOUNTS LIKE "+statement.QuoteLiteral(resolvedName))
 	if err != nil {
-		return "", fmt.Errorf("failed to locate created account %q: %w", resolvedName, err)
+		return "", false, fmt.Errorf("failed to look up account %q: %w", resolvedName, err)
 	}
 
 	for _, row := range result.Rows {
-		name, locator, ok := accountNameAndLocator(row)
+		name, loc, ok := accountNameAndLocator(row)
 		if ok && strings.EqualFold(name, resolvedName) {
-			return locator, nil
+			return loc, true, nil
 		}
 	}
 
-	return "", fmt.Errorf("CREATE ACCOUNT succeeded but no account named %q was found by SHOW ACCOUNTS", resolvedName)
+	return "", false, nil
+}
+
+// locateCreatedAccount is findAccountLocator with "not found" treated as an
+// error — the post-create expectation that CREATE ACCOUNT having just
+// succeeded means SHOW ACCOUNTS must now find it.
+func locateCreatedAccount(ctx context.Context, runner *statement.Runner, resolvedName string) (string, error) {
+	locator, found, err := findAccountLocator(ctx, runner, "locate created account", resolvedName)
+	if err != nil {
+		return "", err
+	}
+	if !found {
+		return "", fmt.Errorf("CREATE ACCOUNT succeeded but no account named %q was found by SHOW ACCOUNTS", resolvedName)
+	}
+	return locator, nil
 }
 
 // accountNameAndLocator extracts the account_name/account_locator values from
