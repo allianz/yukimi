@@ -2,46 +2,27 @@
 
 ## Overview
 
-`internal/secrets/` stores and retrieves the credentials the platform uses to log in to Snowflake: the org-admin credential that creates accounts, and one per-tenant credential for each account the platform manages afterwards. All of them are RSA keypairs belonging to service users, held in a cloud secret manager.
+The platform uses an organization-admin credential to create Snowflake accounts, then a separate credential to manage each account. Operations within an account use its own credential without requiring highly privileged organization-wide access. The platform stores these RSA credentials in a secret manager and retrieves them when it connects to Snowflake. A common storage contract supports different backends, starting with AWS Secrets Manager.
 
-This package is the only place in the codebase that reaches that secret manager. It generates the keypairs, decides the identifier each one is stored at, and caches values briefly so the same credential is not re-fetched on every reconcile. Those identifiers are what isolates one tenant from another (design.md 3.11.1), so this package constructs and validates them itself instead of trusting callers. The secret manager itself is pluggable: this spec defines only the `KeyStore` interface and the behavior every implementation owes its callers, with AWS Secrets Manager as the first implementation (003.a).
+## Key Concept: Credentials Are Keypairs
 
-## Key Concept: The `KeyStore` Interface and the Identifier Grammar
+Each credential contains a service username and an RSA public and private key. Snowflake receives the public key, while the platform keeps the private key in the secret manager for authentication. 
 
-A `KeyStore` sees identifiers and opaque value strings, nothing else. It never parses a credential, never caches, and never logs — it returns a plainly worded error naming the identifier it failed on. Its four methods are the narrow set any keystore can implement: `Get`, `Create` (fails if occupied), `Update` (fails if absent), `Delete`. `Create` and `Update` are separate rather than one upsert because create-if-absent must be **atomic in the store**: a retried request must never overwrite the key a live account authenticates with. `Get` additionally returns the time the store last wrote that value, as a second return value rather than a field inside the value — the store still never looks inside.
+## Key Concept: A Common Contract for Secret Backends
 
-Identifiers are an opaque `Identifier` type, constructible only through the two constructors below, so an unvalidated identifier can never reach a store:
+The platform defines a common contract that every secret-storage backend must fulfill. Each backend stores and retrieves credentials under the same rules, so the rest of the platform does not depend on a particular store. AWS Secrets Manager is the first implementation; Azure, GCP, and Kubernetes backends are also planned.
 
-- **Tenant identifier** (design.md 3.11.1): `yk-<org>--<namespace>--<accountName>`. `<namespace>` comes from the runtime `metadata.namespace`, never a spec field; `<accountName>` is the CRD's `metadata.name`, **never** the resolved hash-suffixed account name (design.md 3.12). Every segment is a Kubernetes identifier — that is what makes the namespace the trust anchor design.md 3.11.1 requires.
-- **Org-admin identifier**: `yk-orgadmin--<org>--<orgAdminAccount>`, from `Config.Snowflake` (002) resolved at the call site. This package takes plain strings and does not import `internal/config/base`.
+## Key Concept: Tenant Isolation Through Secret Identifiers
 
-The identifier charset (letters, digits, `-`) and the 127-character ceiling are both set by the tightest of the supported secrets-manager backends, Azure Key Vault — a secret name there must match `^[0-9a-zA-Z-]+$` and be no longer than that. `_` is mapped to `-` for exactly this reason: it is the only character upstream validation (002, the CRD) otherwise permits that Azure's charset does not.
+Each tenant has its own Kubernetes namespace, which anchors access to its Snowflake account credentials. The platform stores each credential under `yk-<org>--<namespace>--<accountName>`, taking the namespace from the account resource's actual location rather than a tenant-supplied setting. A tenant cannot reach a secret under another tenant's namespace, so it cannot use the platform to access that tenant's Snowflake account, even if both accounts have the same name.
 
-**Important**: both constructors re-validate every segment regardless of upstream validation — reject an empty segment, one starting with `-`/`_`, one containing `/`, `.`, `..`, a repeated `-`/`_` (`--`, `__`, `-_`, `_-`), or a character outside `[A-Za-z0-9_-]` — so the isolation guarantee holds even on a flat key-value store with no hierarchical authorization of its own. The repeated-separator rule exists because the identifier is built by joining segments with `--`: `/` was banned inside a segment under the old `/`-delimited scheme, which made segment boundaries unambiguous by construction, but `-` is not banned (namespace and account names routinely contain it) — without this rule, two different tenants could join onto the identical identifier (e.g. `namespace="foo",accountName="bar-baz"` and `namespace="foo-bar",accountName="baz"`). Combined with no segment ever starting with `-`/`_`, the first `--` run encountered scanning left to right is always a true segment boundary, never segment-internal content, which is what makes the join collision-free again. The final length check against the 127-character ceiling exists because, while `internal/account/modules/account` (012) and Kubernetes already bound `org`+`accountName` and `namespace` tightly enough that the tenant identifier can't currently exceed it (worst case leaves 1 character of headroom), that bound is enforced elsewhere and this package does not trust it silently — and no equivalent bound exists at all for `orgAdminAccount`, which `002` validates for Snowflake-identifier shape but not for length. Because every length this package can see is otherwise already accounted for, a failure here is a system error, not a user error: it means some upstream bound drifted out of sync with this one rather than that the caller passed an ordinary fixable mistake.
+## Key Concept: Recover Accounts and Credentials Together
 
-## Key Concept: Credential Shape and Key Generation
+Snowflake keeps a deleted account recoverable for a grace period, and its credential should remain recoverable with it. The secret's recovery window follows the account's grace period without outlasting it, so a restored account can use its credential while both remain recoverable. Snowflake reserves the account name throughout its grace period, preventing a new account with the same name; the secret identifier also stays reserved while its credential is recoverable.
 
-A stored credential is a `Credentials` value with exactly three JSON fields: `username`, `public_key`, `private_key`. There is deliberately no `account` field — the identifier already names the account, and a duplicate would only drift.
+## Key Concept: Short-Lived Credential Cache
 
-The encodings are chosen so no consumer transforms them: `PublicKey` is PKIX, single-line base64 with no PEM delimiters, dropping straight into `ADMIN_RSA_PUBLIC_KEY = '<...>'` and `ALTER USER ... SET RSA_PUBLIC_KEY = '<...>'` (design.md 3.6, 3.9); `PrivateKey` is PKCS#8, PEM-wrapped, for the Snowflake driver's JWT signing. Generation uses `crypto/rand`, minimum 2048-bit RSA. `Username` is caller-supplied — design.md 3.6's `platform` is the account module's (012) domain knowledge, not a literal here.
-
-`RotatedAt` is in-memory only, never persisted: `KeyManager.GetCredentials` sets it from whatever the underlying store returned alongside the value — so the store never holds a second copy of the same fact.
-
-## Key Concept: Deleting a Credential Reserves Its Identifier
-
-Secret stores rarely delete on the spot. They hold the identifier for a recovery window and refuse to store anything there meanwhile. Because the tenant identifier is derived from the tenant's own name (design.md 3.11.1), that reservation lands on the next tenant of the same name in the same namespace.
-
-Snowflake reserves a dropped account name the same way, for its grace period. Keeping the credential's window inside that grace period leaves the account as the only thing that ever delays re-provisioning: a recovery window of a credential is as long as the secret store can make it, never longer than the grace period of the Snowflake account. Each store decides for itself how to keep that promise, with whatever means its own store offers — this package prescribes no shared type or derivation helper for the decision. With one implementation in the tree today (003.a), that decision stays a one-line cap; a second store with a stricter floor than the grace period's own minimum would face the tradeoff this package used to resolve centrally, and would resolve it itself instead.
-
-## Key Concept: A KeyStore Error Taxonomy
-
-A small taxonomy of defined errors covers the causes a caller does need to recognize: the failure wraps one, and `errors.Is` reaches it. `ErrPendingDeletion` belongs to that taxonomy — a secret identifier is already occupied by a secret scheduled for deletion.
-
-## Key Concept: `KeyManager` Wraps a `KeyStore`, It Does Not Replace One
-
-`NewKeyManager(store KeyStore, ttl)` decorates any `KeyStore` — no package-level state, no singleton, no branching logic of its own beyond the cache. Whatever `main.go` constructs is wrapped exactly once, so every store inherits identical freshness semantics. This is also the structural boundary the package enforces: everything outside `internal/secrets` depends on `*KeyManager`, never on the `KeyStore` interface directly — the interface exists so a new store implementation (a future `003.b`) has something to implement and so `main.go` has something concrete to construct before wrapping it, not as a type consumers are meant to hold onto. `KeyManager` does not implement `KeyStore` itself: `Get`/`Create`/`Update` are replaced by the credential-shaped `GetCredentials`/`CreateCredentials`/`UpdateCredentials` below, so a caller outside this package can never read or write a raw string a `KeyStore` would accept; `Delete` is simply renamed to `DeleteCredentials` for the same naming consistency, even though it has no value to be shaped around.
-
-`Get` serves a cached value and its timestamp within `ttl` without touching the store; a miss — including an expired entry, evicted lazily with no background goroutine — fetches and populates. Two rules keep the cache racing toward "cold," never "stale": a failed `Get` is never cached, so a `Create` landing after a failed lookup is not masked by a negative result; and `Create`/`Update`/`Delete` write through and then *invalidate* the entry rather than pre-populating it. `Invalidate(id)` is also exposed directly.
+The platform caches credentials briefly to avoid fetching them from the secret manager on every read. A failed read is never cached, and creating, changing, or deleting a credential clears its cached copy. After the cache expires, the next read fetches the credential from the secret manager again.
 
 ## Public API
 
@@ -56,47 +37,29 @@ import (
     yukimierrors "github.com/allianz/yukimi/internal/errors"
 )
 
-// ErrPendingDeletion marks a Create failure caused by an identifier occupied
-// by a secret scheduled for deletion rather than a live one. It is identity
-// only: the failure it wraps is still an ordinary system error by
-// default; a caller with more context may catch it via errors.Is and
-// classify it differently.
+// ErrPendingDeletion marks a Create failure on an identifier occupied by a
+// secret scheduled for deletion. The failure is still a system error; a
+// caller with more context may detect it via errors.Is.
 var ErrPendingDeletion = errors.New("secrets: identifier pending deletion")
 
-// KeyStore is a string-valued keystore. It never parses a credential, never
-// caches, and never logs — every method reports failure as an ordinary error
-// whose message names the identifier it failed on, and no caller branches on
-// an error's identity. How the value string is persisted is each
-// implementation's own choice.
+// KeyStore is a string-valued keystore. It never parses, caches, or logs;
+// every error names the identifier it failed on.
 type KeyStore interface {
-    // Get returns the value stored at id, along with the time the backend
-    // last wrote that value — creation time if never overwritten,
-    // modification time otherwise. It fails if nothing is stored there, and
-    // it fails if the store cannot be read; the returned time is the zero
-    // value on error.
+    // Get returns the value at id and the time the backend last wrote it.
+    // It fails if nothing is stored there or the store cannot be read.
     Get(ctx context.Context, id Identifier) (string, time.Time, error)
 
-    // Create stores value at id. It fails if id is already occupied, and
-    // leaves the occupying value untouched when it does — this is the
-    // atomicity 012 depends on to never silently overwrite a live account's
-    // credential on a retried request. If the occupying secret is scheduled
-    // for deletion rather than live, the returned error also wraps
-    // ErrPendingDeletion.
+    // Create stores value at id. If id is already occupied it fails and
+    // leaves the existing value untouched; if the occupant is scheduled for
+    // deletion, the error also wraps ErrPendingDeletion.
     Create(ctx context.Context, id Identifier, value string) error
 
-    // Update overwrites the value already stored at id. It fails if nothing
-    // is stored there — Update never creates.
+    // Update overwrites the value at id. It fails if nothing is stored there.
     Update(ctx context.Context, id Identifier, value string) error
 
-    // Delete removes id. Nothing in this package reads a deleted identifier
-    // afterwards.
-    //
-    // An implementation that schedules the removal instead of performing it must
-    // keep that window within whatever account grace period it was constructed
-    // with (002), by whatever means suits its own store — this package
-    // prescribes no shared mechanism for that decision. While the removal is
-    // pending, id stays occupied: Get and Update fail on it and so does
-    // Create, since the store has not released the name yet.
+    // Delete removes id. An implementation may schedule the removal instead,
+    // within the account grace period it was constructed with (002); while
+    // pending, id stays occupied and Get, Create, and Update all fail on it.
     Delete(ctx context.Context, id Identifier) error
 }
 
@@ -104,45 +67,27 @@ type KeyStore interface {
 // not valid; only NewTenantIdentifier and NewOrgAdminIdentifier produce one.
 type Identifier struct{ /* unexported */ }
 
-// NewTenantIdentifier builds the tenant platform-credential identifier
-// (design.md 3.11.1): yk-<org>--<namespace>--<accountName>.
+// NewTenantIdentifier builds yk-<org>--<namespace>--<accountName>
+// (design.md 3.11.1). namespace MUST come from metadata.namespace, never a
+// spec field; accountName is the CRD's metadata.name, NOT the hash-suffixed
+// Snowflake account name (design.md 3.12).
 //
-// Parameters:
-//   - org: Snowflake organization name (Config.Snowflake.Org, 002)
-//   - namespace: Kubernetes namespace — MUST come from metadata.namespace at
-//     the call site, never a spec field (design.md 3.11.1)
-//   - accountName: the CRD's metadata.name — MUST NOT be the resolved,
-//     hash-suffixed Snowflake account name from design.md 3.12
-//
-// Returns:
-//   - User error if any segment is empty, starts with '-'/'_', contains '/',
-//     '.', '..', a repeated '-'/'_', or a character outside [A-Za-z0-9_-]
-//   - System error if the resulting identifier exceeds the 127-character
-//     ceiling every supported secrets-manager backend shares — every length
-//     this package can see is already bounded tightly enough elsewhere
-//     (006, 012) that this should never actually trigger; firing it means an
-//     invariant drifted out of sync upstream, not that the caller passed a
-//     fixable bad input
+// Returns a user error if any segment is empty, starts with '-'/'_', or
+// contains '/', '.', a repeated '-'/'_', or a character outside
+// [A-Za-z0-9_-]; a system error if the result exceeds 127 characters (an
+// upstream invariant drift, see Error Classification).
 func NewTenantIdentifier(org, namespace, accountName string) (Identifier, error)
 
-// NewOrgAdminIdentifier builds the org-admin credential identifier:
-// yk-orgadmin--<org>--<orgAdminAccount>.
-//
-// Parameters:
-//   - org: Config.Snowflake.Org (002)
-//   - orgAdminAccount: Config.Snowflake.OrgAdminAccount (002)
-//
-// Returns:
-//   - User error under the same validation rule as NewTenantIdentifier
+// NewOrgAdminIdentifier builds yk-orgadmin--<org>--<orgAdminAccount> from
+// Config.Snowflake (002). Errors as for NewTenantIdentifier.
 func NewOrgAdminIdentifier(org, orgAdminAccount string) (Identifier, error)
 
-// String returns the identifier for logging. It never contains secret
-// material — only the identifiers that make it up.
+// String returns the identifier. It contains no secret material and is safe
+// to log.
 func (i Identifier) String() string
 
-// Credentials is the JSON shape a credential is stored in: exactly three
-// fields, deliberately no account field (the identifier already identifies
-// it).
+// Credentials is the stored JSON shape. It has no account field; the
+// identifier already names the account.
 type Credentials struct {
     Username   string    `json:"username"`
     PublicKey  string    `json:"public_key"`  // PKIX, single-line base64, no PEM delimiters
@@ -150,104 +95,68 @@ type Credentials struct {
     RotatedAt  time.Time `json:"-"`           // when this value was last written to the store; never persisted
 }
 
-// GenerateKeyPair generates a fresh RSA keypair: crypto/rand, minimum 2048-bit,
-// PKCS#8-encoded private key wrapped in PEM, PKIX-encoded public key as
-// single-line base64 with no PEM delimiters. One function, not two, so a
-// caller can never end up with two independently generated, mismatched halves.
-//
-// Returns:
-//   - System error if key generation fails (a cryptographic/OS-level fault)
+// GenerateKeyPair generates a 2048-bit RSA keypair with the encodings shown
+// on Credentials. Both halves come from one call so they cannot mismatch.
+// Any error is a system error.
 func GenerateKeyPair() (publicKeyB64, privateKeyPEM string, err error)
 
-// NewCredentials generates a fresh keypair via GenerateKeyPair and returns it
-// as a Credentials value for username, with RotatedAt set to time.Now().
-// username is caller-supplied domain knowledge (e.g. design.md 3.6's
-// "platform") — this package owns no literal.
+// NewCredentials returns Credentials for username (e.g. design.md 3.6's
+// "platform") with a fresh keypair and RotatedAt set to now.
 func NewCredentials(username string) (*Credentials, error)
 
-// marshaling and unmarshaling between Credentials and the JSON string a
-// KeyStore stores is this package's own internal detail — a caller only ever
-// reaches it through KeyManager.CreateCredentials/UpdateCredentials/
-// GetCredentials below, never directly.
-
-// KeyManager wraps a KeyStore with an in-memory, TTL-based, lazily-evicted
-// cache. Every consumer outside this package holds a *KeyManager, never a
-// concrete KeyStore. Unlike KeyStore, it exposes no raw-value Get/Create/
-// Update — only the credential-shaped methods below — so a caller outside
-// this package can never read or write a value except as a Credentials this
-// package itself generated and marshaled.
+// KeyManager wraps a KeyStore with an in-memory TTL cache. Consumers outside
+// this package hold a *KeyManager, never a KeyStore, and can only read or
+// write values as Credentials — (un)marshaling stays internal.
 type KeyManager struct { /* unexported */ }
 
-// NewKeyManager wraps store. Every concrete KeyStore should be wrapped exactly
-// once, at construction time in cmd/provider/main.go.
+// NewKeyManager wraps store; do so once, in cmd/provider/main.go.
 func NewKeyManager(store KeyStore, ttl time.Duration) *KeyManager
 
-// CreateCredentials generates a fresh keypair for username via NewCredentials,
-// stores it at id create-only, and returns the generated Credentials — the
-// one place a caller still needs the plaintext public key after storing it
-// (e.g. to pass into CREATE ACCOUNT).
+// CreateCredentials generates a keypair for username, stores it at id
+// create-only, and returns it so the caller can use the public key (e.g. in
+// CREATE ACCOUNT).
 func (c *KeyManager) CreateCredentials(ctx context.Context, id Identifier, username string) (*Credentials, error)
 
-// UpdateCredentials marshals creds and stores it at id update-only. The
-// caller is responsible for generating creds itself (via NewCredentials) —
-// this exists for 004's rotation flow, which must push the new public key
-// into Snowflake between generating it and persisting it.
+// UpdateCredentials stores caller-generated creds at id update-only — for
+// 004's rotation, which pushes the new public key to Snowflake before
+// persisting it.
 func (c *KeyManager) UpdateCredentials(ctx context.Context, id Identifier, creds *Credentials) error
 
-// GetCredentials reads the raw value stored at id and unmarshals it,
-// rejecting a value with any of the three JSON fields empty — it does not
-// otherwise validate PublicKey or PrivateKey contents. The returned
-// Credentials' RotatedAt is the time the backend last wrote the value.
+// GetCredentials reads the credential at id, rejecting one with any field
+// empty; key contents are not otherwise validated. RotatedAt is the time the
+// backend last wrote the value.
 func (c *KeyManager) GetCredentials(ctx context.Context, id Identifier) (*Credentials, error)
 
-// DeleteCredentials removes (or, store-dependent, schedules the removal of)
-// the credential at id.
+// DeleteCredentials removes, or schedules the removal of, the credential at id.
 func (c *KeyManager) DeleteCredentials(ctx context.Context, id Identifier) error
 
-// Invalidate clears id's cache entry without touching the underlying
-// KeyStore. Exposed for a caller that needs an identifier forced cold without
-// going through CreateCredentials/UpdateCredentials/Delete.
+// Invalidate drops id's cache entry without touching the KeyStore.
 func (c *KeyManager) Invalidate(id Identifier)
 
-// FakeKeyStore is an in-memory KeyStore for tests, exported (not a _test.go
-// file) so 004, 012, and every other consumer can depend on it without a real
-// store. Each hook, if set and returning a non-nil error, short-circuits the
-// call before any state mutation — this lets a test flip behavior mid-run
-// (e.g. "OnCreate fails once, then is cleared") in a way a construction-time
-// option cannot.
+// FakeKeyStore is an in-memory KeyStore for tests in any package. A hook
+// returning a non-nil error fails the call before any state change; hooks
+// can be set or cleared mid-test.
 type FakeKeyStore struct {
     OnGet    func(id Identifier) error
     OnCreate func(id Identifier) error
     OnUpdate func(id Identifier) error
     OnDelete func(id Identifier) error
 
-    // Clock returns the time recorded against an identifier on Create and
-    // Update, and returned by Get. Defaults to time.Now; tests override it
-    // for a deterministic RotatedAt.
+    // Clock stamps Create and Update; Get returns the stamp. Defaults to
+    // time.Now.
     Clock func() time.Time
 
-    // SchedulesDeletion makes Delete schedule the removal instead of performing
-    // it: the entry becomes unreadable but keeps its identifier occupied until
-    // Restore cancels the removal. False — the default — deletes outright, so a
-    // consumer that does not care about the pending state sees the simplest
-    // possible behavior.
+    // SchedulesDeletion makes Delete leave the identifier occupied but
+    // unreadable until Restore. By default Delete removes outright.
     SchedulesDeletion bool
 }
 
-// Restore cancels a pending deletion, making the value readable and the
-// identifier writable again — the store-side half of the manual repair 012
-// documents.
-//
-// Returns:
-//   - Error if nothing at id is scheduled for deletion, whether because the
-//     identifier is empty or because the entry is live
+// Restore cancels a pending deletion at id (the store side of 012's manual
+// repair). It fails if nothing at id is pending deletion.
 func (f *FakeKeyStore) Restore(id Identifier) error
 
-// NewFakeKeyStore returns an empty FakeKeyStore that deletes outright. Delete
-// removes the entry and is idempotent, so a Create on a deleted identifier
-// succeeds and a Get on one fails exactly as it would on an identifier
-// nothing was ever stored at. Set SchedulesDeletion to exercise the
-// pending-deletion state instead.
+// NewFakeKeyStore returns an empty FakeKeyStore whose Delete is outright and
+// idempotent.
 func NewFakeKeyStore() *FakeKeyStore
 ```
 
