@@ -1,0 +1,77 @@
+name: Label PR
+
+# push to main (not pull_request_target): PRs from forks get a read-only
+# GITHUB_TOKEN on pull_request events no matter what permissions: says, and
+# pull_request_target avoids that but runs with base-repo privileges while a
+# fork-controlled PR is still open. Triggering on push to main instead means
+# this only ever runs after someone with write access has already merged,
+# so there's no elevated-trust-on-an-open-fork-PR question to begin with.
+#
+# Tradeoff: the label lands right after merge, not while the PR is open.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const typeLabels = {
+              'Feature': 'enhancement',
+              'Bugfix': 'bug',
+              'Maintenance': 'maintenance',
+              'Documentation': 'documentation',
+            };
+
+            const commits = context.payload.commits || [];
+            const prNumbers = new Set();
+
+            for (const commit of commits) {
+              const { data: prs } =
+                await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  commit_sha: commit.id,
+                });
+              for (const pr of prs) {
+                if (pr.state === 'closed') prNumbers.add(pr.number);
+              }
+            }
+
+            for (const number of prNumbers) {
+              const { data: pr } = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: number,
+              });
+              const body = pr.body || '';
+              const current = new Set(pr.labels.map((l) => l.name));
+
+              for (const [checkbox, label] of Object.entries(typeLabels)) {
+                const checked = new RegExp(
+                  `-\\s*\\[\\s*[xX]\\s*\\]\\s*${checkbox}`
+                ).test(body);
+
+                if (checked && !current.has(label)) {
+                  await github.rest.issues.addLabels({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: number,
+                    labels: [label],
+                  });
+                } else if (!checked && current.has(label)) {
+                  await github.rest.issues.removeLabel({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: number,
+                    name: label,
+                  });
+                }
+              }
+            }
