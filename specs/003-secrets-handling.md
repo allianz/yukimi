@@ -4,21 +4,58 @@
 
 The platform uses an organization-admin credential to create Snowflake accounts, then a separate credential to manage each account. Operations within an account use its own credential without requiring highly privileged organization-wide access. The platform stores these RSA credentials in a secret manager and retrieves them when it connects to Snowflake. A common storage contract supports different backends, starting with AWS Secrets Manager.
 
+OIDC can later let the platform reach an account without a stored secret (design.md 3.11.2), but Snowflake needs a keypair to create an account, so every account starts with one and relies on it until OIDC takes over.
+
 ## Key Concept: Credentials Are Keypairs
 
 Each credential contains a service username and an RSA public and private key. Snowflake receives the public key, while the platform keeps the private key in the secret manager for authentication. 
+
+```json
+{
+  "username": "platform",
+  "public_key": "MIIBIjANBgkq…",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIB…\n-----END PRIVATE KEY-----\n"
+}
+```
 
 ## Key Concept: A Common Contract for Secret Backends
 
 The platform defines a common contract that every secret-storage backend must fulfill. Each backend stores and retrieves credentials under the same rules, so the rest of the platform does not depend on a particular store. AWS Secrets Manager is the first implementation; Azure, GCP, and Kubernetes backends are also planned.
 
+```mermaid
+flowchart LR
+    C[Consumers] --> KM[KeyManager]
+    KM --> AWS[AWS KeyStore]
+    KM -.-> AZ[Azure KeyStore]
+    KM -.-> GCP[GCP KeyStore]
+    KM -.-> K8S[Kubernetes KeyStore]
+```
+
 ## Key Concept: Tenant Isolation Through Secret Identifiers
 
 Each tenant has its own Kubernetes namespace, which anchors access to its Snowflake account credentials. The platform stores each credential under `yk-<org>--<namespace>--<accountName>`, taking the namespace from the account resource's actual location rather than a tenant-supplied setting. A tenant cannot reach a secret under another tenant's namespace, so it cannot use the platform to access that tenant's Snowflake account, even if both accounts have the same name.
 
+| Namespace (set by Kubernetes) | Account name (chosen by tenant) | Secret identifier |
+|---|---|---|
+| `team-a` | `analytics` | `yk-my-org--team-a--analytics` |
+| `team-b` | `analytics` | `yk-my-org--team-b--analytics` |
+
 ## Key Concept: Recover Accounts and Credentials Together
 
 Snowflake keeps a deleted account recoverable for a grace period, and its credential should remain recoverable with it. The secret's recovery window follows the account's grace period without outlasting it, so a restored account can use its credential while both remain recoverable. Snowflake reserves the account name throughout its grace period, preventing a new account with the same name; the secret identifier also stays reserved while its credential is recoverable.
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> Free
+    Free --> Stored: credential created
+    Stored --> Stored: credential rotated
+    Stored --> Recoverable: deleted
+    Recoverable --> Stored: restored 
+    Recoverable --> Free: recovery window ends
+```
+
+A stored credential can be read and rotated but not created again. A recoverable one can be neither read nor created again until it is restored or its window ends.
 
 ## Key Concept: Short-Lived Credential Cache
 
