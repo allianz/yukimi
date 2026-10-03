@@ -125,8 +125,7 @@ func (c *KeyManager) GetCredentials(ctx context.Context, id Identifier) (*Creden
 	return unmarshalCredentials(value, rotatedAt)
 }
 
-// DeleteCredentials removes (or, store-dependent, schedules the removal of)
-// the credential at id.
+// DeleteCredentials schedules the removal of the credential at id.
 func (c *KeyManager) DeleteCredentials(ctx context.Context, id Identifier) error {
 	if err := c.store.Delete(ctx, id); err != nil {
 		return err
