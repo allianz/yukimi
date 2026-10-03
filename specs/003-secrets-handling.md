@@ -117,7 +117,9 @@ type Identifier struct{ /* unexported */ }
 // Returns a user error if any segment is empty, starts with '-'/'_', or
 // contains '/', '.', any of "--", "__", "-_", "_-", or a character outside
 // [A-Za-z0-9_-]; a system error if the result exceeds 127 characters (an
-// upstream invariant drift, see Error Classification).
+// upstream invariant drift, see Error Classification). "__", "-_" and "_-"
+// are rejected because '_' becomes '-'. Segments are re-validated even if
+// the caller already did, so isolation never depends on upstream checks.
 func NewTenantIdentifier(org, namespace, accountName string) (Identifier, error)
 
 // NewOrgAdminIdentifier builds yk-orgadmin--<org>--<orgAdminAccount> from
@@ -132,9 +134,9 @@ func (i Identifier) String() string
 // identifier already names the account.
 type Credentials struct {
     Username   string    `json:"username"`
-    PublicKey  string    `json:"public_key"`  // PKIX, single-line base64, no PEM delimiters
-    PrivateKey string    `json:"private_key"` // PKCS#8, PEM-wrapped
-    RotatedAt  time.Time `json:"-"`           // when this value was last written to the store; never persisted
+    PublicKey  string    `json:"public_key"`  // PKIX, single-line base64, no PEM delimiters: used as-is in ADMIN_RSA_PUBLIC_KEY / RSA_PUBLIC_KEY
+    PrivateKey string    `json:"private_key"` // PKCS#8, PEM-wrapped: what the Snowflake driver signs JWTs with
+    RotatedAt  time.Time `json:"-"`           // the store's last-written time; never persisted, so there is no second copy to drift
 }
 
 // GenerateKeyPair generates a 2048-bit RSA keypair with the encodings shown
@@ -150,6 +152,10 @@ func NewCredentials(username string) (*Credentials, error)
 // KeyManager wraps a KeyStore with an in-memory TTL cache. Consumers outside
 // this package hold a *KeyManager, never a KeyStore, and can only read or
 // write values as Credentials — (un)marshaling stays internal.
+//
+// A failed read is never cached, so a credential created right after is not
+// hidden. Writes clear the entry instead of refilling it, so racing writes
+// cannot leave a stale value cached.
 type KeyManager struct { /* unexported */ }
 
 // NewKeyManager wraps store; do so once, in cmd/provider/main.go.
@@ -179,6 +185,9 @@ func (c *KeyManager) Invalidate(id Identifier)
 // FakeKeyStore is an in-memory KeyStore for tests in any package. A hook
 // returning a non-nil error fails the call before any state change; hooks
 // can be set or cleared mid-test.
+//
+// Unlike a real store, it deletes immediately by default as a test
+// convenience; set SchedulesDeletion to match the KeyStore contract.
 type FakeKeyStore struct {
     OnGet    func(id Identifier) error
     OnCreate func(id Identifier) error
