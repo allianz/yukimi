@@ -40,6 +40,10 @@ Each tenant has its own Kubernetes namespace, which anchors access to its Snowfl
 | `team-a` | `analytics` | `yk-my-org--team-a--analytics` |
 | `team-b` | `analytics` | `yk-my-org--team-b--analytics` |
 
+## Key Concept: One Identifier Shape for Every Store
+
+The identifier is used as the key name in every secret store. Azure Key Vault is the most restrictive: at most 127 characters, and `-` is the only special character allowed. Parts are separated by `--` to avoid collisions, so a part itself must never contain `--`; this is validated.
+
 ## Key Concept: Recover Accounts and Credentials Together
 
 Snowflake keeps a deleted account recoverable for a grace period, and its credential should remain recoverable with it. The secret's recovery window follows the account's grace period without outlasting it, so a restored account can use its credential while both remain recoverable. Snowflake reserves the account name throughout its grace period, preventing a new account with the same name; the secret identifier also stays reserved while its credential is recoverable.
@@ -59,7 +63,7 @@ A stored credential can be read and rotated but not created again. A recoverable
 
 ## Key Concept: Short-Lived Credential Cache
 
-The platform caches credentials briefly to avoid fetching them from the secret manager on every read. A failed read is never cached, and creating, changing, or deleting a credential clears its cached copy. After the cache expires, the next read fetches the credential from the secret manager again.
+The platform caches credentials briefly to avoid fetching them from the secret manager on every read. A failed read is never cached, and creating, changing, or deleting a credential clears its cached copy. Only reads fill the cache. After the cache expires, the next read fetches the credential from the secret manager again; there is no background cleanup.
 
 ## Public API
 
@@ -94,9 +98,10 @@ type KeyStore interface {
     // Update overwrites the value at id. It fails if nothing is stored there.
     Update(ctx context.Context, id Identifier, value string) error
 
-    // Delete removes id. An implementation may schedule the removal instead,
-    // within the account grace period it was constructed with (002); while
-    // pending, id stays occupied and Get, Create, and Update all fail on it.
+    // Delete schedules the removal of id, never deleting it immediately, with
+    // a recovery window within the account grace period it was constructed
+    // with (002). While pending, id stays occupied and Get, Create, and Update
+    // all fail on it.
     Delete(ctx context.Context, id Identifier) error
 }
 
@@ -110,7 +115,7 @@ type Identifier struct{ /* unexported */ }
 // Snowflake account name (design.md 3.12).
 //
 // Returns a user error if any segment is empty, starts with '-'/'_', or
-// contains '/', '.', a repeated '-'/'_', or a character outside
+// contains '/', '.', any of "--", "__", "-_", "_-", or a character outside
 // [A-Za-z0-9_-]; a system error if the result exceeds 127 characters (an
 // upstream invariant drift, see Error Classification).
 func NewTenantIdentifier(org, namespace, accountName string) (Identifier, error)
@@ -137,8 +142,9 @@ type Credentials struct {
 // Any error is a system error.
 func GenerateKeyPair() (publicKeyB64, privateKeyPEM string, err error)
 
-// NewCredentials returns Credentials for username (e.g. design.md 3.6's
-// "platform") with a fresh keypair and RotatedAt set to now.
+// NewCredentials returns Credentials for username with a fresh keypair and
+// RotatedAt set to now. The caller supplies username (e.g. design.md 3.6's
+// "platform"); this package hard-codes none.
 func NewCredentials(username string) (*Credentials, error)
 
 // KeyManager wraps a KeyStore with an in-memory TTL cache. Consumers outside
@@ -164,7 +170,7 @@ func (c *KeyManager) UpdateCredentials(ctx context.Context, id Identifier, creds
 // backend last wrote the value.
 func (c *KeyManager) GetCredentials(ctx context.Context, id Identifier) (*Credentials, error)
 
-// DeleteCredentials removes, or schedules the removal of, the credential at id.
+// DeleteCredentials schedules the removal of the credential at id.
 func (c *KeyManager) DeleteCredentials(ctx context.Context, id Identifier) error
 
 // Invalidate drops id's cache entry without touching the KeyStore.
@@ -222,7 +228,7 @@ internal/secrets/
 **System Errors** (use `fmt.Errorf("context: %w", err)`):
 - Identifier exceeding the shared backend length limit: `secret identifier "yk-..." is 140 characters, which exceeds the 127-character limit shared by supported secrets-manager backends`. Every length this package can see is already bounded tightly enough elsewhere (006, 012) that this should never actually trigger — if it does, an invariant drifted out of sync upstream, which is an operator's problem to reconcile, not a caller's fixable input mistake.
 - Nothing stored at the identifier a `Get` or `Update` names: `secrets: no secret stored at yk-my-org--finance--analytics-team-eu`
-- A `Create` onto an occupied identifier: `secrets: a secret already exists at yk-my-org--finance--analytics-team-eu`. Also wraps `ErrPendingDeletion` when the occupying secret is scheduled for deletion rather than live (Key Concept: A KeyStore Error Taxonomy).
+- A `Create` onto an occupied identifier: `secrets: a secret already exists at yk-my-org--finance--analytics-team-eu`. Also wraps `ErrPendingDeletion` when the occupying secret is scheduled for deletion rather than live (see `ErrPendingDeletion`).
 - Any other store fault — access denied, throttling, a request timeout, a connection failure, or a vendor condition this package has no opinion about: `failed to read secret at <identifier>: %w`
 - Key generation failure: `failed to generate RSA key pair: %w`
 - Malformed stored JSON: `failed to unmarshal credentials: %w`
@@ -240,7 +246,7 @@ This specification defines the `internal/secrets/` package that:
 - Constructs and validates the two secret identifiers design.md 3.11.1 requires: the tenant `platform` credential identifier and the org-admin credential identifier.
 - Generates RSA keypairs and defines the JSON shape credentials are stored in.
 - Wraps any `KeyStore` in an in-memory, TTL-based, lazily-evicted cache (`KeyManager`), the type every consumer outside this package holds.
-- Derives, once and for every store, the recovery window a deleted credential may sit in — never longer than the account grace period it belongs to (002).
+- Requires every store to keep a deleted credential recoverable as long as it can, never longer than the account grace period (002); each store decides how (003.a).
 - Exports an in-memory fake `KeyStore`, with injectable per-method failures, for every other package to test against.
 - Classifies every failure this package can produce into a user or system error per 001's model.
 
@@ -258,8 +264,8 @@ This specification defines the `internal/secrets/` package that:
 - **What happens if `Create` finds a credential already stored at the identifier?** - It fails, and the stored value is left exactly as it was. This package never reuses, overwrites, or discards what it finds there: it cannot see whether the stored credential belongs to a live Snowflake account, and either guess is destructive — overwriting locks the platform out of an account it still manages, reusing hands a new account its predecessor's key. Clearing an identifier that is genuinely stale is an operator action.
 - **What happens if two controller replicas race to `Create` the same identifier?** - One wins outright. The other's `Create` fails on the now-occupied identifier, which surfaces as a system error with an incident ID (001) rather than being reconciled away, because from inside this package that loss is indistinguishable from any other occupied identifier.
 - **Why is a missing credential a system error rather than a user error, when identifier validation failures are user errors?** - A malformed identifier segment is fixed by editing the CRD or config value that produced it; a well-formed identifier with nothing stored at it is not. No tenant field makes a credential appear, and the org-admin identifier has no owning CRD at all. Whether the cause is a controller sequencing bug, an unexpected deletion, or an org-admin credential ops never provisioned, all three need an incident ID rather than a Debug-level message.
-- **What happens to a tenant secret after `DROP ACCOUNT` (012)?** - `KeyManager.DeleteCredentials` is called on the tenant identifier, which either schedules the removal or performs it outright. Which of the two happens is the concrete store's business, bounded by the recovery-window rule above, and `DeleteCredentials` reports neither — it returns only an error. Nothing in this package reads a deleted identifier afterwards.
-- **What if the store's shortest representable window is longer than the account grace period?** - The store destroys the value irreversibly rather than reserving a window that would outlive the account. That is the correct outcome rather than a degradation to report: a credential blocking an identifier whose account is already reusable has no recovery value at all, while a destroyed one only makes a restore need manual repair. How a store recognizes and reports this case is its own concern (003.a); this package prescribes no shared mechanism for it.
+- **What happens to a tenant secret after `DROP ACCOUNT` (012)?** - `KeyManager.DeleteCredentials` is called on the tenant identifier, which schedules its removal. The credential stays recoverable for the store's recovery window, never longer than the account grace period. Nothing in this package reads a deleted identifier afterwards.
+- **What if a store's shortest recovery window is longer than the account grace period?** - That store cannot implement `KeyStore`: every store must be able to schedule a window within the grace period, and none deletes immediately. AWS Secrets Manager's 7-day minimum matches 002's grace-period floor (003.a).
 - **What happens on a `Delete` of an identifier whose removal is already pending?** - It succeeds and changes nothing: the store scheduled the removal once and does not restart its clock, so a retried teardown neither fails nor silently extends the blockade. (AWS Secrets Manager is the exception among the operations here in not being idempotent on an *absent* identifier — see 003.a.)
 - **What can be done with an identifier whose removal is pending?** - Only waiting it out or, where the store offers it, restoring. `Get` and `Update` fail because the value is not readable, and `Create` fails because the name has not been released — this is the blockade the invariant above exists to bound. `FakeKeyStore.Restore` models the restore for tests. `Create`'s failure also wraps `ErrPendingDeletion`, so a caller with more context can catch it and classify it itself.
 - **What if a stored credential's JSON is well-formed but has a truncated or otherwise invalid PEM private key?** - Out of scope for this package's validation. `KeyManager.GetCredentials` checks only that the three fields are non-empty strings; whether `PrivateKey` parses as an actual RSA key is the first consumer's (the connection pool, 004) problem to detect when it tries to use it.
@@ -285,11 +291,11 @@ This specification defines the `internal/secrets/` package that:
 - **SC-002**: Every `KeyStore` method carries its value as a `string` — `Get` returns one (alongside a `time.Time`), `Create` and `Update` accept one; no method exposes `[]byte`.
 - **SC-003**: `NewTenantIdentifier` constructs `yk-<org>--<namespace>--<accountName>` from exactly those three inputs, mapping `_` to `-` in each.
 - **SC-004**: `NewOrgAdminIdentifier` constructs `yk-orgadmin--<org>--<orgAdminAccount>`, mapping `_` to `-` in each.
-- **SC-005**: Both identifier constructors return a user error for any empty segment, one starting with `-`/`_`, one containing `/`, `.`, `..`, a repeated `-`/`_`, or a character outside `[A-Za-z0-9_-]`.
+- **SC-005**: Both identifier constructors return a user error for any empty segment, one starting with `-`/`_`, one containing `/`, `.`, `..`, any of `--`, `__`, `-_`, `_-`, or a character outside `[A-Za-z0-9_-]`.
 - **SC-005a**: Both identifier constructors return a system error, not a user error, for a resulting identifier longer than 127 characters — this is a last-resort invariant check, not a condition a caller's input can normally reach.
 - **SC-006**: `Identifier` values are constructible only via `NewTenantIdentifier`/`NewOrgAdminIdentifier` — no exported field or function accepts an arbitrary unvalidated string as an `Identifier`.
 - **SC-007**: `Credentials` marshals to JSON with exactly the fields `username`, `public_key`, `private_key` — no `account` field.
-- **SC-008**: `GenerateKeyPair` produces a minimum 2048-bit RSA key: PKCS#8-encoded, PEM-wrapped private key; PKIX-encoded, single-line base64 public key with no PEM delimiters.
+- **SC-008**: `GenerateKeyPair` produces a minimum 2048-bit RSA key from `crypto/rand`: PKCS#8-encoded, PEM-wrapped private key; PKIX-encoded, single-line base64 public key with no PEM delimiters.
 - **SC-009**: `KeyManager.GetCredentials` returns an error when the stored value's JSON fields (`username`, `public_key`, `private_key`) are not all non-empty; on success it sets the returned `Credentials.RotatedAt` to the store's recorded modification time. Neither `KeyManager.CreateCredentials` nor `KeyManager.UpdateCredentials` ever persists `RotatedAt`.
 - **SC-010**: `Create` on an occupied identifier returns an error and leaves the stored value byte-for-byte unchanged.
 - **SC-012**: `KeyManager.GetCredentials` returns a value built from the cache within `ttl` without invoking the underlying `KeyStore`.
@@ -309,6 +315,7 @@ This specification defines the `internal/secrets/` package that:
 ## Security Considerations
 
 - **Namespace as sole trust anchor** (design.md 3.11.1): `NewTenantIdentifier` takes `namespace` as a plain parameter and performs no Kubernetes lookup of its own — the guarantee depends entirely on every caller passing `metadata.namespace` from the runtime object, never a value read from `spec`. This package can enforce identifier *shape*; it cannot enforce which namespace a caller passes.
+- **Isolation protects against tenants, not against the controller**: the controller's single store role can read every tenant's secret, so a controller bug that builds the wrong identifier, or an attacker inside the controller, is not stopped by the identifier scheme.
 - **Non-resolved account name in the identifier** (design.md 3.11.1, 3.12): `accountName` in `NewTenantIdentifier` must be the CRD's `metadata.name`, not the resolved, hash-suffixed Snowflake account name — using the resolved name would still be internally consistent but would depend on a value not derivable purely from Kubernetes identifiers, weakening the trust-anchor argument design.md makes.
 - **`Create` is the only guard against overwriting a live credential**: because this package never reconciles an occupied identifier, a store whose `Create` is not atomic — one that silently upserts instead of failing — would let a retried request replace the key a live account authenticates with, and nothing above it would notice. Atomic create-if-absent is a hard requirement on every `KeyStore`, not a nicety.
 - **Plaintext in the cache is an accepted trade-off**: `KeyManager` holds decrypted credential strings in process memory for up to `ttl`. This is acceptable under the platform's pod-isolation model (design.md 3.11) and is what makes the cache useful at all; it is not a reason to shorten `ttl` reflexively, since a shorter `ttl` only trades store round-trips for the same in-memory exposure.

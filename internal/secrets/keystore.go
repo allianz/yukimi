@@ -26,8 +26,7 @@ import (
 // by a secret scheduled for deletion rather than a live one. It is identity
 // only: the failure it wraps is still an ordinary system error by
 // default; a caller with more context may catch it via errors.Is and
-// classify it differently. This is the first entry in a small taxonomy of
-// such errors (see Key Concept: A KeyStore Error Taxonomy, specs/003).
+// classify it differently.
 var ErrPendingDeletion = errors.New("secrets: identifier pending deletion")
 
 // KeyStore is a string-valued keystore. It never parses a credential, never
@@ -55,14 +54,9 @@ type KeyStore interface {
 	// is stored there — Update never creates.
 	Update(ctx context.Context, id Identifier, value string) error
 
-	// Delete removes id. Nothing in this package reads a deleted identifier
-	// afterwards.
-	//
-	// An implementation that schedules the removal instead of performing it must
-	// keep that window within whatever account grace period it was constructed
-	// with (002), by whatever means suits its own store — this package
-	// prescribes no shared mechanism for that decision. While the removal is
-	// pending, id stays occupied: Get and Update fail on it and so does
-	// Create, since the store has not released the name yet.
+	// Delete schedules the removal of id, never deleting it immediately, with
+	// a recovery window within the account grace period it was constructed
+	// with (002). While pending, id stays occupied and Get, Create, and Update
+	// all fail on it.
 	Delete(ctx context.Context, id Identifier) error
 }
