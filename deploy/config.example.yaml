@@ -57,8 +57,8 @@ data:
       # Your Snowflake organization name. Load-bearing in three separate places,
       # which all have to agree:
       #   1. the org-admin login identifier, <org>-<orgAdminAccount>
-      #   2. the AWS Secrets Manager paths, snowflake/org/<org>/... and
-      #      snowflake/tenant/<org>/...
+      #   2. the AWS Secrets Manager keys, yk-orgadmin--<org>--... and
+      #      yk-<org>--...
       #   3. the account-name budget: len(org) + 1 + len(accountName) <= 63, so a
       #      long organization name shortens every tenant account name allowed.
       # Must match ^[A-Za-z][A-Za-z0-9_]*$ and is case-sensitive.
@@ -67,7 +67,7 @@ data:
       # The account used for organization-level work such as CREATE ACCOUNT.
       # Together with `org` this determines where the controller looks for its own
       # credentials in AWS Secrets Manager:
-      #   snowflake/org/<org>/<orgAdminAccount>/org-admin-credentials
+      #   yk-orgadmin--<org>--<orgAdminAccount>
       # That secret MUST already exist -- the controller exits at startup if it
       # cannot read it. Its JSON value needs the keys username, public_key and
       # private_key, and the user must hold the GLOBALORGADMIN role.

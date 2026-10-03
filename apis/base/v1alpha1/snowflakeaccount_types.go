@@ -170,7 +170,7 @@ type SnowflakeAccountStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Namespaced
 // +kubebuilder:validation:XValidation:rule="size(self.metadata.name) <= 55",message="metadata.name must be 55 characters or fewer, so the resolved Snowflake account name combined with the organization name (design.md 3.12) stays within Snowflake's 63-character DNS label limit even for a single-character organization name; the account module (012) checks the exact combined length against the real organization name"
-// +kubebuilder:validation:XValidation:rule="self.metadata.name.matches('^[a-z][a-z0-9-]*$')",message="metadata.name must start with a lowercase letter and contain only lowercase letters, digits, and '-', so the resolved Snowflake account name (design.md 3.12) is always a valid Snowflake identifier"
+// +kubebuilder:validation:XValidation:rule="self.metadata.name.matches('^[a-z][a-z0-9]*(-[a-z0-9]+)*$')",message="metadata.name must start with a lowercase letter, contain only lowercase letters, digits, and '-', and never repeat '-', so the resolved Snowflake account name (design.md 3.12) is always a valid Snowflake identifier and the secret identifier (003) built from this name can't collide with another tenant's"
 type SnowflakeAccount struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

@@ -12,10 +12,12 @@ A `KeyStore` sees identifiers and opaque value strings, nothing else. It never p
 
 Identifiers are an opaque `Identifier` type, constructible only through the two constructors below, so an unvalidated identifier can never reach a store:
 
-- **Tenant identifier** (design.md 3.11.1): `snowflake/tenant/<org>/<namespace>/<accountName>/platform-credentials`. `<namespace>` comes from the runtime `metadata.namespace`, never a spec field; `<accountName>` is the CRD's `metadata.name`, **never** the resolved hash-suffixed account name (design.md 3.12). Every segment is a Kubernetes identifier — that is what makes the namespace the trust anchor design.md 3.11.1 requires.
-- **Org-admin identifier**: `snowflake/org/<org>/<orgAdminAccount>/org-admin-credentials`, from `Config.Snowflake` (002) resolved at the call site. This package takes plain strings and does not import `internal/config/base`.
+- **Tenant identifier** (design.md 3.11.1): `yk-<org>--<namespace>--<accountName>`. `<namespace>` comes from the runtime `metadata.namespace`, never a spec field; `<accountName>` is the CRD's `metadata.name`, **never** the resolved hash-suffixed account name (design.md 3.12). Every segment is a Kubernetes identifier — that is what makes the namespace the trust anchor design.md 3.11.1 requires.
+- **Org-admin identifier**: `yk-orgadmin--<org>--<orgAdminAccount>`, from `Config.Snowflake` (002) resolved at the call site. This package takes plain strings and does not import `internal/config/base`.
 
-**Important**: both constructors re-validate every segment regardless of upstream validation — reject an empty segment, or one containing `/`, `.`, `..`, or a character outside `[A-Za-z0-9_-]` — so the isolation guarantee holds even on a flat key-value store with no hierarchical authorization of its own.
+The identifier charset (letters, digits, `-`) and the 127-character ceiling are both set by the tightest of the supported secrets-manager backends, Azure Key Vault — a secret name there must match `^[0-9a-zA-Z-]+$` and be no longer than that. `_` is mapped to `-` for exactly this reason: it is the only character upstream validation (002, the CRD) otherwise permits that Azure's charset does not.
+
+**Important**: both constructors re-validate every segment regardless of upstream validation — reject an empty segment, one starting with `-`/`_`, one containing `/`, `.`, `..`, a repeated `-`/`_` (`--`, `__`, `-_`, `_-`), or a character outside `[A-Za-z0-9_-]` — so the isolation guarantee holds even on a flat key-value store with no hierarchical authorization of its own. The repeated-separator rule exists because the identifier is built by joining segments with `--`: `/` was banned inside a segment under the old `/`-delimited scheme, which made segment boundaries unambiguous by construction, but `-` is not banned (namespace and account names routinely contain it) — without this rule, two different tenants could join onto the identical identifier (e.g. `namespace="foo",accountName="bar-baz"` and `namespace="foo-bar",accountName="baz"`). Combined with no segment ever starting with `-`/`_`, the first `--` run encountered scanning left to right is always a true segment boundary, never segment-internal content, which is what makes the join collision-free again. The final length check against the 127-character ceiling exists because, while `internal/account/modules/account` (012) and Kubernetes already bound `org`+`accountName` and `namespace` tightly enough that the tenant identifier can't currently exceed it (worst case leaves 1 character of headroom), that bound is enforced elsewhere and this package does not trust it silently — and no equivalent bound exists at all for `orgAdminAccount`, which `002` validates for Snowflake-identifier shape but not for length. Because every length this package can see is otherwise already accounted for, a failure here is a system error, not a user error: it means some upstream bound drifted out of sync with this one rather than that the caller passed an ordinary fixable mistake.
 
 ## Key Concept: Credential Shape and Key Generation
 
@@ -103,7 +105,7 @@ type KeyStore interface {
 type Identifier struct{ /* unexported */ }
 
 // NewTenantIdentifier builds the tenant platform-credential identifier
-// (design.md 3.11.1): snowflake/tenant/<org>/<namespace>/<accountName>/platform-credentials.
+// (design.md 3.11.1): yk-<org>--<namespace>--<accountName>.
 //
 // Parameters:
 //   - org: Snowflake organization name (Config.Snowflake.Org, 002)
@@ -113,12 +115,18 @@ type Identifier struct{ /* unexported */ }
 //     hash-suffixed Snowflake account name from design.md 3.12
 //
 // Returns:
-//   - User error if any segment is empty or contains '/', '.', '..', or a
-//     character outside [A-Za-z0-9_-]
+//   - User error if any segment is empty, starts with '-'/'_', contains '/',
+//     '.', '..', a repeated '-'/'_', or a character outside [A-Za-z0-9_-]
+//   - System error if the resulting identifier exceeds the 127-character
+//     ceiling every supported secrets-manager backend shares — every length
+//     this package can see is already bounded tightly enough elsewhere
+//     (006, 012) that this should never actually trigger; firing it means an
+//     invariant drifted out of sync upstream, not that the caller passed a
+//     fixable bad input
 func NewTenantIdentifier(org, namespace, accountName string) (Identifier, error)
 
 // NewOrgAdminIdentifier builds the org-admin credential identifier:
-// snowflake/org/<org>/<orgAdminAccount>/org-admin-credentials.
+// yk-orgadmin--<org>--<orgAdminAccount>.
 //
 // Parameters:
 //   - org: Config.Snowflake.Org (002)
@@ -266,8 +274,9 @@ internal/secrets/
 - Identifier validation failure: `invalid secret identifier segment 'team/a': must not contain '/'`
 
 **System Errors** (use `fmt.Errorf("context: %w", err)`):
-- Nothing stored at the identifier a `Get` or `Update` names: `secrets: no secret stored at snowflake/tenant/my_org/finance/analytics-team-eu/platform-credentials`
-- A `Create` onto an occupied identifier: `secrets: a secret already exists at snowflake/tenant/my_org/finance/analytics-team-eu/platform-credentials`. Also wraps `ErrPendingDeletion` when the occupying secret is scheduled for deletion rather than live (Key Concept: A KeyStore Error Taxonomy).
+- Identifier exceeding the shared backend length limit: `secret identifier "yk-..." is 140 characters, which exceeds the 127-character limit shared by supported secrets-manager backends`. Every length this package can see is already bounded tightly enough elsewhere (006, 012) that this should never actually trigger — if it does, an invariant drifted out of sync upstream, which is an operator's problem to reconcile, not a caller's fixable input mistake.
+- Nothing stored at the identifier a `Get` or `Update` names: `secrets: no secret stored at yk-my-org--finance--analytics-team-eu`
+- A `Create` onto an occupied identifier: `secrets: a secret already exists at yk-my-org--finance--analytics-team-eu`. Also wraps `ErrPendingDeletion` when the occupying secret is scheduled for deletion rather than live (Key Concept: A KeyStore Error Taxonomy).
 - Any other store fault — access denied, throttling, a request timeout, a connection failure, or a vendor condition this package has no opinion about: `failed to read secret at <identifier>: %w`
 - Key generation failure: `failed to generate RSA key pair: %w`
 - Malformed stored JSON: `failed to unmarshal credentials: %w`
@@ -328,9 +337,10 @@ This specification defines the `internal/secrets/` package that:
 
 - **SC-001**: `KeyStore` has exactly four methods — `Get`, `Create`, `Update`, `Delete` — each taking an `Identifier`.
 - **SC-002**: Every `KeyStore` method carries its value as a `string` — `Get` returns one (alongside a `time.Time`), `Create` and `Update` accept one; no method exposes `[]byte`.
-- **SC-003**: `NewTenantIdentifier` constructs `snowflake/tenant/<org>/<namespace>/<accountName>/platform-credentials` from exactly those four inputs.
-- **SC-004**: `NewOrgAdminIdentifier` constructs `snowflake/org/<org>/<orgAdminAccount>/org-admin-credentials`.
-- **SC-005**: Both identifier constructors return a user error for any empty segment, or one containing `/`, `.`, `..`, or a character outside `[A-Za-z0-9_-]`.
+- **SC-003**: `NewTenantIdentifier` constructs `yk-<org>--<namespace>--<accountName>` from exactly those three inputs, mapping `_` to `-` in each.
+- **SC-004**: `NewOrgAdminIdentifier` constructs `yk-orgadmin--<org>--<orgAdminAccount>`, mapping `_` to `-` in each.
+- **SC-005**: Both identifier constructors return a user error for any empty segment, one starting with `-`/`_`, one containing `/`, `.`, `..`, a repeated `-`/`_`, or a character outside `[A-Za-z0-9_-]`.
+- **SC-005a**: Both identifier constructors return a system error, not a user error, for a resulting identifier longer than 127 characters — this is a last-resort invariant check, not a condition a caller's input can normally reach.
 - **SC-006**: `Identifier` values are constructible only via `NewTenantIdentifier`/`NewOrgAdminIdentifier` — no exported field or function accepts an arbitrary unvalidated string as an `Identifier`.
 - **SC-007**: `Credentials` marshals to JSON with exactly the fields `username`, `public_key`, `private_key` — no `account` field.
 - **SC-008**: `GenerateKeyPair` produces a minimum 2048-bit RSA key: PKCS#8-encoded, PEM-wrapped private key; PKIX-encoded, single-line base64 public key with no PEM delimiters.

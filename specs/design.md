@@ -539,10 +539,11 @@ Isolation is enforced physically by the storage path of the credentials in AWS S
 AWS Secrets Manager is the reference implementation, not a requirement: the controller reaches its secret store through a backend interface, so an operator may substitute another store — HashiCorp Vault, for instance — without touching anything else in this document. What must survive the substitution is the model below: the namespace as the sole trust anchor, this exact path grammar, and enforcement of that grammar by the store's own authorization layer rather than by the controller. Read "ASM" and "AWS IAM" below as "the configured secret store" and "its authorization layer".
 
 * **The Trust Anchor:** The Kubernetes Namespace (`metadata.namespace`) is the sole source of truth for tenancy. It is derived directly from the runtime environment (not user input) and is used to cryptographically bind the account to the team's sandbox.
-* **Path Construction:** The controller must construct the ASM Secret ID using the following strict pattern:
-    `snowflake/tenant/<snowflake-org-name>/<kubernetes-ns>/<snowflake-account-name>/platform-credentials`
-* **The Constraint:** When the controller attempts to access an existing account, it must derive the lookup path using the CRD's namespace. This ensures that any attempt to manage an account outside the team's namespace will fail at the AWS IAM level due to an incorrect secret path, thereby preventing cross-tenant access.
-* **Which name:** `<snowflake-account-name>` in the path above is the CRD's `metadata.name`, not the resolved Snowflake name (3.12). The path is deliberately built only from Kubernetes identifiers, keeping the trust anchor above intact — every segment is derived from the runtime environment rather than from a namespace label that is written by hand.
+* **Identifier Construction:** The controller must construct the ASM Secret ID using the following strict pattern:
+    `yk-<snowflake-org-name>--<kubernetes-ns>--<snowflake-account-name>`
+    The format is chosen to work in all common secret stores, e.g. AWS Secrets Manager, Azure Key Vault and GCP Secret Manager.
+* **The Constraint:** When the controller attempts to access an existing account, it must derive the lookup identifier using the CRD's namespace. This ensures that any attempt to manage an account outside the team's namespace will fail at the AWS IAM level due to an incorrect secret identifier, thereby preventing cross-tenant access.
+* **Which name:** `<snowflake-account-name>` in the identifier above is the CRD's `metadata.name`, not the resolved Snowflake name (3.12). The identifier is deliberately built only from Kubernetes identifiers, keeping the trust anchor above intact — every segment is derived from the runtime environment rather than from a namespace label that is written by hand.
 
 #### 3.11.2. OIDC Authentication (Optional) TODO
 

@@ -543,6 +543,54 @@ func TestApply_FreshCreate_AccountNameTooLong_Rejected(t *testing.T) {
 	}
 }
 
+// A fresh create aborts with a user error, issuing no SQL, when the
+// configured organization name contains a repeated '-'/'_' — such a value
+// would make the secret identifier (003) built from it ambiguous.
+func TestApply_FreshCreate_OrgWithRepeatedSeparator_Rejected(t *testing.T) {
+	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
+	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
+
+	m := &module{keyManager: secrets.NewKeyManager(secrets.NewFakeKeyStore(), time.Hour), org: "my__org", gracePeriod: 5 * time.Minute, backplane: testBackplaneConfig("aws-eu-central-1")}
+	outcome := m.Apply(context.Background(), mc)
+
+	if outcome.State != pipeline.StateRejected {
+		t.Errorf("outcome.State = %v, want StateRejected", outcome.State)
+	}
+	if !outcome.Abort {
+		t.Error("outcome.Abort = false, want true")
+	}
+	if !internalerrors.IsUserError(outcome.Err) {
+		t.Errorf("expected a user error, got: %v", outcome.Err)
+	}
+	if cr.Status.AccountLocator != "" {
+		t.Errorf("cr.Status.AccountLocator = %q, want empty", cr.Status.AccountLocator)
+	}
+}
+
+// A fresh create aborts with a user error, issuing no SQL, when the CR's
+// namespace contains a repeated '-'/'_' — same reasoning as the organization
+// name check above, but for the one input the CRD itself can't validate.
+func TestApply_FreshCreate_NamespaceWithRepeatedSeparator_Rejected(t *testing.T) {
+	cr := newTestCR("acct", "my--ns", "aws-eu-central-1", "", "a@b.com", "")
+	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
+
+	m := &module{keyManager: secrets.NewKeyManager(secrets.NewFakeKeyStore(), time.Hour), org: "myorg", gracePeriod: 5 * time.Minute, backplane: testBackplaneConfig("aws-eu-central-1")}
+	outcome := m.Apply(context.Background(), mc)
+
+	if outcome.State != pipeline.StateRejected {
+		t.Errorf("outcome.State = %v, want StateRejected", outcome.State)
+	}
+	if !outcome.Abort {
+		t.Error("outcome.Abort = false, want true")
+	}
+	if !internalerrors.IsUserError(outcome.Err) {
+		t.Errorf("expected a user error, got: %v", outcome.Err)
+	}
+	if cr.Status.AccountLocator != "" {
+		t.Errorf("cr.Status.AccountLocator = %q, want empty", cr.Status.AccountLocator)
+	}
+}
+
 // A fresh create aborts with a user error, and no side effects, when the
 // resolved region exists but is not available and the tenant's namespace is
 // not labeled as an alpha tester (Key Concept: Alpha-Tester Region Bypass).

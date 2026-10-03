@@ -48,7 +48,7 @@ Startup is fail-fast. All of these must be true before the pod first starts, and
 each one shows up as `CrashLoopBackOff` with the cause on the last log line:
 
 1. The org-admin secret already exists in AWS Secrets Manager at
-   `snowflake/org/<org>/<orgAdminAccount>/org-admin-credentials`, as JSON with
+   `yk-orgadmin--<org>--<orgAdminAccount>`, as JSON with
    `username`, `public_key` and `private_key`. The controller never creates it —
    `hack/dev/setup_snowflake_credentials.sh` does.
 2. That Snowflake user holds `GLOBALORGADMIN`.
@@ -62,8 +62,8 @@ each one shows up as `CrashLoopBackOff` with the cause on the last log line:
    by a restart.
 
 The IAM role needs `secretsmanager:GetSecretValue`, `CreateSecret`,
-`PutSecretValue` and `DeleteSecret` on `snowflake/org/<org>/*` and
-`snowflake/tenant/<org>/*` — those four calls are all the controller makes — and
+`PutSecretValue` and `DeleteSecret` on `yk-orgadmin--<org>--*` and
+`yk-<org>--*` — those four calls are all the controller makes — and
 its trust policy must name the ServiceAccount exactly:
 `system:serviceaccount:yukimi-system:yukimi-controller`.
 

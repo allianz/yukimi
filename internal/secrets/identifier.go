@@ -19,25 +19,65 @@ package secrets
 import (
 	"fmt"
 	"regexp"
+	"strings"
 
 	"github.com/allianz/yukimi/internal/errors"
 )
 
-// segmentPattern is the allowed shape for every identifier segment. It rejects
-// an empty segment (the + quantifier requires at least one character) and any
-// segment containing '/', '.', or '..' as a side effect of excluding every
-// character outside this class — a dot is never in the allowed set, so '..'
-// needs no separate check.
-var segmentPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+// maxIdentifierLen is Azure Key Vault's secret-name length limit — the
+// tightest of the supported secrets-manager backends' constraints, so it is
+// the shared budget every Identifier must fit within.
+const maxIdentifierLen = 127
 
-// validateSegment rejects an empty segment, or one containing '/', '.', '..',
-// or a byte outside [A-Za-z0-9_-]. name identifies the segment's role in the
-// resulting error message.
+// segmentPattern is the allowed shape for every identifier segment. It
+// rejects an empty segment, a segment starting with '-' or '_', and any
+// segment containing '/' or '.' as a side effect of excluding every
+// character outside this class.
+var segmentPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
+
+// separatorRunPattern matches a run of 2 or more '-'/'_' characters. Both map
+// to '-' in the final identifier (toSecretSafe), and the identifier joins
+// segments with "--" — so a segment containing such a run would be
+// indistinguishable from a segment boundary, breaking the guarantee that two
+// different (org, namespace, accountName) or (org, orgAdminAccount) tuples
+// never produce the same identifier.
+var separatorRunPattern = regexp.MustCompile(`[-_]{2,}`)
+
+// validateSegment rejects an empty segment, one starting with '-' or '_', one
+// containing '/', '.', a run of 2+ '-'/'_' characters, or a byte outside
+// [A-Za-z0-9_-]. name identifies the segment's role in the resulting error
+// message.
 func validateSegment(name, value string) error {
-	if !segmentPattern.MatchString(value) {
+	if !segmentPattern.MatchString(value) || separatorRunPattern.MatchString(value) {
 		return errors.NewUserError(fmt.Sprintf(
-			"invalid secret identifier segment %q for %s: must be non-empty and contain only letters, digits, '_', or '-'",
+			"invalid secret identifier segment %q for %s: must start with a letter or digit and contain only "+
+				"letters, digits, single '_', or single '-' (no repeated '-'/'_')",
 			value, name))
+	}
+	return nil
+}
+
+// toSecretSafe maps a validated segment onto the charset shared by every
+// supported secrets-manager backend (letters, digits, '-'): Azure Key Vault
+// secret names disallow '_', which is otherwise the only character
+// validateSegment permits beyond that charset.
+func toSecretSafe(s string) string {
+	return strings.ReplaceAll(s, "_", "-")
+}
+
+// checkLen rejects an identifier that would exceed maxIdentifierLen. This is
+// a system error, not a user error: every segment length this package can
+// see is already bounded tightly enough elsewhere (the CRD's metadata.name
+// cap, Kubernetes' namespace cap, and 012's org+accountName check) that this
+// should never actually trigger — if it does, that bound has drifted out of
+// sync with this package, which is an operator's problem to reconcile, not
+// something fixable by editing a CRD or base.yaml.
+func checkLen(value string) error {
+	if len(value) > maxIdentifierLen {
+		return fmt.Errorf(
+			"secret identifier %q is %d characters, which exceeds the %d-character limit shared by supported "+
+				"secrets-manager backends",
+			value, len(value), maxIdentifierLen)
 	}
 	return nil
 }
@@ -49,7 +89,7 @@ type Identifier struct {
 }
 
 // NewTenantIdentifier builds the tenant platform-credential identifier
-// (design.md 3.11.1): snowflake/tenant/<org>/<namespace>/<accountName>/platform-credentials.
+// (design.md 3.11.1): yk-<org>--<namespace>--<accountName>.
 //
 // Parameters:
 //   - org: Snowflake organization name (Config.Snowflake.Org, 002)
@@ -59,8 +99,11 @@ type Identifier struct {
 //     hash-suffixed Snowflake account name from design.md 3.12
 //
 // Returns:
-//   - User error if any segment is empty or contains '/', '.', '..', or a
-//     character outside [A-Za-z0-9_-]
+//   - User error if any segment is empty, starts with '-'/'_', contains '/',
+//     '.', a repeated '-'/'_', or a character outside [A-Za-z0-9_-]
+//   - System error if the resulting identifier exceeds maxIdentifierLen —
+//     every caller-visible length is already bounded tightly enough
+//     elsewhere that this should never actually happen (see checkLen)
 func NewTenantIdentifier(org, namespace, accountName string) (Identifier, error) {
 	for _, seg := range []struct{ name, value string }{
 		{"org", org},
@@ -71,11 +114,15 @@ func NewTenantIdentifier(org, namespace, accountName string) (Identifier, error)
 			return Identifier{}, err
 		}
 	}
-	return Identifier{value: fmt.Sprintf("snowflake/tenant/%s/%s/%s/platform-credentials", org, namespace, accountName)}, nil
+	value := fmt.Sprintf("yk-%s--%s--%s", toSecretSafe(org), toSecretSafe(namespace), toSecretSafe(accountName))
+	if err := checkLen(value); err != nil {
+		return Identifier{}, err
+	}
+	return Identifier{value: value}, nil
 }
 
 // NewOrgAdminIdentifier builds the org-admin credential identifier:
-// snowflake/org/<org>/<orgAdminAccount>/org-admin-credentials.
+// yk-orgadmin--<org>--<orgAdminAccount>.
 //
 // Parameters:
 //   - org: Config.Snowflake.Org (002)
@@ -92,7 +139,11 @@ func NewOrgAdminIdentifier(org, orgAdminAccount string) (Identifier, error) {
 			return Identifier{}, err
 		}
 	}
-	return Identifier{value: fmt.Sprintf("snowflake/org/%s/%s/org-admin-credentials", org, orgAdminAccount)}, nil
+	value := fmt.Sprintf("yk-orgadmin--%s--%s", toSecretSafe(org), toSecretSafe(orgAdminAccount))
+	if err := checkLen(value); err != nil {
+		return Identifier{}, err
+	}
+	return Identifier{value: value}, nil
 }
 
 // String returns the identifier for logging. It never contains secret

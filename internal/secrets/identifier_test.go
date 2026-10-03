@@ -29,7 +29,7 @@ func TestNewTenantIdentifier_BuildsExpectedIdentifier(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := "snowflake/tenant/my_org/finance/analytics-team-eu/platform-credentials"
+	want := "yk-my-org--finance--analytics-team-eu"
 	if id.String() != want {
 		t.Errorf("got %q, want %q", id.String(), want)
 	}
@@ -41,16 +41,17 @@ func TestNewOrgAdminIdentifier_BuildsExpectedIdentifier(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := "snowflake/org/my_org/my_org_admin_account/org-admin-credentials"
+	want := "yk-orgadmin--my-org--my-org-admin-account"
 	if id.String() != want {
 		t.Errorf("got %q, want %q", id.String(), want)
 	}
 }
 
 // SC-005: NewTenantIdentifier rejects an empty, '/'-containing, '.'-containing,
-// '..'-containing, or out-of-class segment in any of its three positions.
+// '..'-containing, leading-separator, repeated-separator, or out-of-class
+// segment in any of its three positions.
 func TestNewTenantIdentifier_RejectsInvalidSegments(t *testing.T) {
-	invalid := []string{"", "team/a", "team.a", "..", "team a", "team@a"}
+	invalid := []string{"", "team/a", "team.a", "..", "team a", "team@a", "-team", "_team", "team--a", "team__a", "team-_a", "team_-a"}
 	for _, bad := range invalid {
 		if _, err := NewTenantIdentifier(bad, "finance", "analytics-team-eu"); err == nil || !errors.IsUserError(err) {
 			t.Errorf("org=%q: expected user error, got %v", bad, err)
@@ -66,7 +67,7 @@ func TestNewTenantIdentifier_RejectsInvalidSegments(t *testing.T) {
 
 // SC-005: NewOrgAdminIdentifier rejects the same invalid forms in both of its positions.
 func TestNewOrgAdminIdentifier_RejectsInvalidSegments(t *testing.T) {
-	invalid := []string{"", "org/admin", "org.admin", "..", "org admin", "org@admin"}
+	invalid := []string{"", "org/admin", "org.admin", "..", "org admin", "org@admin", "-org", "_org", "org--admin", "org__admin", "org-_admin", "org_-admin"}
 	for _, bad := range invalid {
 		if _, err := NewOrgAdminIdentifier(bad, "my_org_admin_account"); err == nil || !errors.IsUserError(err) {
 			t.Errorf("org=%q: expected user error, got %v", bad, err)
@@ -74,6 +75,22 @@ func TestNewOrgAdminIdentifier_RejectsInvalidSegments(t *testing.T) {
 		if _, err := NewOrgAdminIdentifier("my_org", bad); err == nil || !errors.IsUserError(err) {
 			t.Errorf("orgAdminAccount=%q: expected user error, got %v", bad, err)
 		}
+	}
+}
+
+// An identifier exceeding the shared backend length limit is rejected as a
+// system error, not a user error: every length this package can see is
+// already bounded tightly enough elsewhere that this should never actually
+// trigger, so firing it means an invariant drifted out of sync somewhere
+// upstream rather than that the caller supplied a fixable bad input.
+func TestNewTenantIdentifier_RejectsOverLongIdentifier(t *testing.T) {
+	longNamespace := strings.Repeat("a", maxIdentifierLen)
+	_, err := NewTenantIdentifier("my_org", longNamespace, "analytics-team-eu")
+	if err == nil {
+		t.Fatal("expected an error for over-long identifier")
+	}
+	if errors.IsUserError(err) {
+		t.Errorf("expected a system error for over-long identifier, got a user error: %v", err)
 	}
 }
 
@@ -97,12 +114,12 @@ func TestIdentifierString_ContainsOnlyIdentifiers(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	got := id.String()
-	for _, want := range []string{"my_org", "finance", "analytics-team-eu", "snowflake/tenant", "platform-credentials"} {
+	for _, want := range []string{"my-org", "finance", "analytics-team-eu", "yk-"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("String() = %q, missing expected substring %q", got, want)
 		}
 	}
-	if strings.Count(got, "/") != 5 {
-		t.Errorf("String() = %q, want exactly 5 '/' separators (no extra content)", got)
+	if strings.Contains(got, "/") {
+		t.Errorf("String() = %q, must not contain '/' (illegal in some secrets-manager backends)", got)
 	}
 }

@@ -49,6 +49,23 @@ const maxAccountLabelLen = 63
 // otherwise).
 const resolvedNameSuffixLen = 6
 
+// hasRepeatedSeparator reports whether s contains a run of 2+ '-'/'_'
+// characters. The secret identifier (003) joins org/namespace/accountName
+// with "--", mapping '_' to '-' first — a segment containing such a run
+// would be indistinguishable from that join, which could make two different
+// tenants collide onto the same secret identifier. org comes from base.yaml
+// (002), not the CRD, so it can't be validated via kubebuilder; namespace is
+// cluster metadata, not part of this CRD's own spec, so it can't be either —
+// both are checked here instead, ahead of secrets.NewTenantIdentifier.
+func hasRepeatedSeparator(s string) bool {
+	for i := 1; i < len(s); i++ {
+		if (s[i] == '-' || s[i] == '_') && (s[i-1] == '-' || s[i-1] == '_') {
+			return true
+		}
+	}
+	return false
+}
+
 // withinGracePeriod reports whether cr's account was created recently enough
 // that a connection attempt should be skipped rather than tried and left to
 // fail — Snowflake accounts take minutes to become reachable after CREATE
@@ -171,6 +188,16 @@ func (m *module) createAccount(ctx context.Context, mc *pipeline.ModuleContext) 
 	if maxNameLen := maxAccountLabelLen - 1 - resolvedNameSuffixLen - len(m.org); len(cr.Name) > maxNameLen {
 		return pipeline.Rejected(errors.NewUserError(fmt.Sprintf(
 			"account name must be %d characters or fewer", maxNameLen))).Aborting()
+	}
+
+	if hasRepeatedSeparator(m.org) {
+		return pipeline.Rejected(errors.NewUserError(
+			"the configured Snowflake organization name contains a repeated '-' or '_'; fix snowflake.org in base.yaml")).Aborting()
+	}
+	if hasRepeatedSeparator(cr.Namespace) {
+		return pipeline.Rejected(errors.NewUserError(fmt.Sprintf(
+			"namespace %q contains a repeated '-' or '_', which is not allowed for a SnowflakeAccount's namespace",
+			cr.Namespace))).Aborting()
 	}
 
 	id, err := secrets.NewTenantIdentifier(m.org, cr.Namespace, cr.Name)
