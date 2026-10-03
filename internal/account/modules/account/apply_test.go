@@ -20,6 +20,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -57,6 +58,26 @@ func testBackplaneConfig(regions ...string) *backplane.Config {
 		m[r] = backplane.Region{Available: true}
 	}
 	return &backplane.Config{Regions: m}
+}
+
+// seedResumableCredential stores a valid "platform" credential at id in
+// store, recording it as written at writtenAt — simulating an earlier,
+// crashed attempt by this same resource. It uses a throwaway
+// *secrets.KeyManager over store (never the module's own KeyManager under
+// test) so it can produce valid credential JSON without reaching into
+// secrets' unexported marshaling, and returns the stored *secrets.Credentials
+// so a test can assert the module reuses it verbatim.
+func seedResumableCredential(t *testing.T, store *secrets.FakeKeyStore, id secrets.Identifier, writtenAt time.Time) *secrets.Credentials {
+	t.Helper()
+	original := store.Clock
+	store.Clock = func() time.Time { return writtenAt }
+	defer func() { store.Clock = original }()
+
+	creds, err := secrets.NewKeyManager(store, time.Hour).CreateCredentials(context.Background(), id, "platform")
+	if err != nil {
+		t.Fatalf("seeding resumable credential: %v", err)
+	}
+	return creds
 }
 
 // SC-006/SC-015: a fresh create issues CREATE ACCOUNT, captures the locator
@@ -435,6 +456,221 @@ func TestApply_FreshCreate_SecretIdentifierOccupied(t *testing.T) {
 	}
 	if !outcome.Abort {
 		t.Error("outcome.Abort = false, want true")
+	}
+	if cr.Status.AccountLocator != "" {
+		t.Errorf("cr.Status.AccountLocator = %q, want empty", cr.Status.AccountLocator)
+	}
+}
+
+// Resume (specs/012-account-module.md, Key Concept: Resuming a Crashed
+// Create): the identifier is occupied by a credential written at or after
+// cr.CreationTimestamp (minus the clock-skew buffer) — this resource's own
+// earlier, crashed attempt. The pre-check (SHOW ACCOUNTS LIKE) finds no
+// account yet, so Apply proceeds to CREATE ACCOUNT using the recovered
+// public key verbatim — no new keypair is generated.
+func TestApply_FreshCreate_ResumeCrashedCreate_AccountNotYetCreated(t *testing.T) {
+	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
+	cr.CreationTimestamp = metav1.Time{Time: time.Now().Add(-time.Hour)}
+
+	store := secrets.NewFakeKeyStore()
+	id, err := secrets.NewTenantIdentifier("myorg", cr.Namespace, cr.Name)
+	if err != nil {
+		t.Fatalf("secrets.NewTenantIdentifier: %v", err)
+	}
+	seeded := seedResumableCredential(t, store, id, cr.CreationTimestamp.Add(time.Minute))
+
+	orgAdminDB, mock := newOrgAdminMock(t)
+	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{orgAdminDB: orgAdminDB})
+
+	mock.ExpectQuery("SHOW ACCOUNTS").WillReturnRows(sqlmock.NewRows([]string{"account_name", "account_locator"}))
+	mock.ExpectExec(regexp.QuoteMeta(seeded.PublicKey)).WillReturnResult(sqlmock.NewResult(0, 0))
+	rows := sqlmock.NewRows([]string{"account_name", "account_locator"}).
+		AddRow(mc.ResolvedAccountName(), "AB12345")
+	mock.ExpectQuery("SHOW ACCOUNTS").WillReturnRows(rows)
+
+	m := &module{keyManager: secrets.NewKeyManager(store, time.Hour), org: "myorg", gracePeriod: 5 * time.Minute, backplane: testBackplaneConfig("aws-eu-central-1")}
+	outcome := m.Apply(context.Background(), mc)
+
+	if outcome.State != pipeline.StatePending {
+		t.Errorf("outcome.State = %v, want StatePending", outcome.State)
+	}
+	if cr.Status.AccountLocator != "AB12345" {
+		t.Errorf("cr.Status.AccountLocator = %q, want %q", cr.Status.AccountLocator, "AB12345")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
+	}
+}
+
+// Resume: SHOW ACCOUNTS LIKE finds the account already created by the
+// crashed attempt (the crash landed after CREATE ACCOUNT succeeded but
+// before the locator was persisted). Apply must skip CREATE ACCOUNT
+// entirely — sqlmock has no ExpectExec for it, so any attempt fails the
+// test — and persist the found locator directly.
+func TestApply_FreshCreate_ResumeCrashedCreate_AccountAlreadyExists(t *testing.T) {
+	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
+	cr.CreationTimestamp = metav1.Time{Time: time.Now().Add(-time.Hour)}
+
+	store := secrets.NewFakeKeyStore()
+	id, err := secrets.NewTenantIdentifier("myorg", cr.Namespace, cr.Name)
+	if err != nil {
+		t.Fatalf("secrets.NewTenantIdentifier: %v", err)
+	}
+	seedResumableCredential(t, store, id, cr.CreationTimestamp.Add(time.Minute))
+
+	orgAdminDB, mock := newOrgAdminMock(t)
+	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{orgAdminDB: orgAdminDB})
+
+	rows := sqlmock.NewRows([]string{"account_name", "account_locator"}).
+		AddRow(mc.ResolvedAccountName(), "AB12345")
+	mock.ExpectQuery("SHOW ACCOUNTS").WillReturnRows(rows)
+	// Deliberately no ExpectExec("CREATE ACCOUNT").
+
+	m := &module{keyManager: secrets.NewKeyManager(store, time.Hour), org: "myorg", gracePeriod: 5 * time.Minute, backplane: testBackplaneConfig("aws-eu-central-1")}
+	outcome := m.Apply(context.Background(), mc)
+
+	if outcome.State != pipeline.StatePending {
+		t.Errorf("outcome.State = %v, want StatePending", outcome.State)
+	}
+	if !outcome.Abort {
+		t.Error("outcome.Abort = false, want true")
+	}
+	if cr.Status.AccountLocator != "AB12345" {
+		t.Errorf("cr.Status.AccountLocator = %q, want %q", cr.Status.AccountLocator, "AB12345")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
+	}
+}
+
+// A secret occupying the identifier that was written well before
+// cr.CreationTimestamp cannot be this resource's own crashed attempt —
+// treated exactly as an unrelated orphan: a system error, with no org-admin
+// connection ever attempted.
+func TestApply_FreshCreate_SecretIdentifierOccupiedByOrphan_SystemError(t *testing.T) {
+	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
+	cr.CreationTimestamp = metav1.Time{Time: time.Now()}
+
+	store := secrets.NewFakeKeyStore()
+	id, err := secrets.NewTenantIdentifier("myorg", cr.Namespace, cr.Name)
+	if err != nil {
+		t.Fatalf("secrets.NewTenantIdentifier: %v", err)
+	}
+	seedResumableCredential(t, store, id, cr.CreationTimestamp.Add(-time.Hour))
+
+	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
+
+	m := &module{keyManager: secrets.NewKeyManager(store, time.Hour), org: "myorg", gracePeriod: 5 * time.Minute, backplane: testBackplaneConfig("aws-eu-central-1")}
+	outcome := m.Apply(context.Background(), mc)
+
+	if outcome.State != pipeline.StateFailed {
+		t.Errorf("outcome.State = %v, want StateFailed", outcome.State)
+	}
+	if !outcome.Abort {
+		t.Error("outcome.Abort = false, want true")
+	}
+	if internalerrors.IsUserError(outcome.Err) {
+		t.Errorf("expected a system error, got a user error: %v", outcome.Err)
+	}
+	if cr.Status.AccountLocator != "" {
+		t.Errorf("cr.Status.AccountLocator = %q, want empty", cr.Status.AccountLocator)
+	}
+}
+
+// The clock-skew buffer treats a secret written exactly resumeClockSkewBuffer
+// before cr.CreationTimestamp as still resumable: the comparison is "before
+// cr.CreationTimestamp minus the buffer", so equality at that boundary falls
+// on the resumable side.
+func TestApply_FreshCreate_ResumeCrashedCreate_AtClockSkewBoundary_Resumes(t *testing.T) {
+	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
+	cr.CreationTimestamp = metav1.Time{Time: time.Now()}
+
+	store := secrets.NewFakeKeyStore()
+	id, err := secrets.NewTenantIdentifier("myorg", cr.Namespace, cr.Name)
+	if err != nil {
+		t.Fatalf("secrets.NewTenantIdentifier: %v", err)
+	}
+	seedResumableCredential(t, store, id, cr.CreationTimestamp.Add(-resumeClockSkewBuffer))
+
+	orgAdminDB, mock := newOrgAdminMock(t)
+	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{orgAdminDB: orgAdminDB})
+	mock.ExpectQuery("SHOW ACCOUNTS").WillReturnRows(sqlmock.NewRows([]string{"account_name", "account_locator"}))
+	mock.ExpectExec("CREATE ACCOUNT").WillReturnResult(sqlmock.NewResult(0, 0))
+	rows := sqlmock.NewRows([]string{"account_name", "account_locator"}).
+		AddRow(mc.ResolvedAccountName(), "AB12345")
+	mock.ExpectQuery("SHOW ACCOUNTS").WillReturnRows(rows)
+
+	m := &module{keyManager: secrets.NewKeyManager(store, time.Hour), org: "myorg", gracePeriod: 5 * time.Minute, backplane: testBackplaneConfig("aws-eu-central-1")}
+	outcome := m.Apply(context.Background(), mc)
+
+	if outcome.State != pipeline.StatePending {
+		t.Errorf("outcome.State = %v, want StatePending", outcome.State)
+	}
+	if cr.Status.AccountLocator != "AB12345" {
+		t.Errorf("cr.Status.AccountLocator = %q, want %q", cr.Status.AccountLocator, "AB12345")
+	}
+}
+
+// Resume: the pre-check's SHOW ACCOUNTS LIKE query itself fails (not "no
+// match", an actual query failure) — a system error, and CREATE ACCOUNT is
+// never attempted.
+func TestApply_FreshCreate_ResumeCrashedCreate_ExistenceCheckFails_SystemError(t *testing.T) {
+	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
+	cr.CreationTimestamp = metav1.Time{Time: time.Now().Add(-time.Hour)}
+
+	store := secrets.NewFakeKeyStore()
+	id, err := secrets.NewTenantIdentifier("myorg", cr.Namespace, cr.Name)
+	if err != nil {
+		t.Fatalf("secrets.NewTenantIdentifier: %v", err)
+	}
+	seedResumableCredential(t, store, id, cr.CreationTimestamp.Add(time.Minute))
+
+	orgAdminDB, mock := newOrgAdminMock(t)
+	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{orgAdminDB: orgAdminDB})
+	mock.ExpectQuery("SHOW ACCOUNTS").WillReturnError(errors.New("connection reset"))
+
+	m := &module{keyManager: secrets.NewKeyManager(store, time.Hour), org: "myorg", gracePeriod: 5 * time.Minute, backplane: testBackplaneConfig("aws-eu-central-1")}
+	outcome := m.Apply(context.Background(), mc)
+
+	if outcome.State != pipeline.StateFailed {
+		t.Errorf("outcome.State = %v, want StateFailed", outcome.State)
+	}
+	if !outcome.Abort {
+		t.Error("outcome.Abort = false, want true")
+	}
+	if internalerrors.IsUserError(outcome.Err) {
+		t.Errorf("expected a system error, got a user error: %v", outcome.Err)
+	}
+	if cr.Status.AccountLocator != "" {
+		t.Errorf("cr.Status.AccountLocator = %q, want empty", cr.Status.AccountLocator)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
+	}
+}
+
+// One instant past the clock-skew boundary, the same secret is an orphan.
+func TestApply_FreshCreate_ResumeCrashedCreate_JustPastClockSkewBoundary_SystemError(t *testing.T) {
+	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
+	cr.CreationTimestamp = metav1.Time{Time: time.Now()}
+
+	store := secrets.NewFakeKeyStore()
+	id, err := secrets.NewTenantIdentifier("myorg", cr.Namespace, cr.Name)
+	if err != nil {
+		t.Fatalf("secrets.NewTenantIdentifier: %v", err)
+	}
+	seedResumableCredential(t, store, id, cr.CreationTimestamp.Add(-resumeClockSkewBuffer-time.Second))
+
+	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
+
+	m := &module{keyManager: secrets.NewKeyManager(store, time.Hour), org: "myorg", gracePeriod: 5 * time.Minute, backplane: testBackplaneConfig("aws-eu-central-1")}
+	outcome := m.Apply(context.Background(), mc)
+
+	if outcome.State != pipeline.StateFailed {
+		t.Errorf("outcome.State = %v, want StateFailed", outcome.State)
+	}
+	if internalerrors.IsUserError(outcome.Err) {
+		t.Errorf("expected a system error, got a user error: %v", outcome.Err)
 	}
 }
 

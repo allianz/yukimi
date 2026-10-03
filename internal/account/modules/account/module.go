@@ -45,7 +45,11 @@ type module struct {
 // Parameters:
 //   - keyManager: the *secrets.KeyManager (003) the platform keypair is stored
 //     through, via KeyManager.CreateCredentials and, on teardown,
-//     KeyManager.DeleteCredentials — this module never calls Update.
+//     KeyManager.DeleteCredentials — this module never calls Update. On the
+//     fresh-create path, if CreateCredentials fails because the identifier is
+//     already occupied by a live secret, KeyManager.GetCredentials is called
+//     once, read-only, to decide whether that secret is this resource's own
+//     crashed attempt (Key Concept: Resuming a Crashed Create).
 //   - org: Config.Snowflake.Org (002), used to build the tenant secret
 //     identifier (003) exactly as internal/snowflake/pool does.
 //   - gracePeriod: Config.Snowflake.AccountCreationGracePeriod (002); how
