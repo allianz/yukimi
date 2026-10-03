@@ -1,5 +1,7 @@
 # Specification: Secrets Handling (003)
 
+This specification covers the package: `internal/secrets/`.
+
 ## Overview
 
 The platform uses an organization-admin credential to create Snowflake accounts, then a separate credential to manage each account. Operations within an account use its own credential without requiring highly privileged organization-wide access. The platform stores these RSA credentials in a secret manager and retrieves them when it connects to Snowflake. A common storage contract supports different backends, starting with AWS Secrets Manager.
