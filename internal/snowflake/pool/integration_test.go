@@ -29,12 +29,12 @@ import (
 	secretsaws "github.com/allianz/yukimi/internal/secrets/aws"
 )
 
-// TestIntegration_TenantAccount only runs via `make test-integration`
+// TestIntegration_TenantDB only runs via `make test-integration`
 // (skipped whenever tests run with -short). It exercises a real AWS Secrets
 // Manager read and a real Snowflake connection against the pre-existing
 // sample tenant account .env describes — this test never creates or seeds
 // that credential, only reads it.
-func TestIntegration_TenantAccount(t *testing.T) {
+func TestIntegration_TenantDB(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test — run via `make test-integration`")
 	}
@@ -67,25 +67,25 @@ func TestIntegration_TenantAccount(t *testing.T) {
 	t.Cleanup(func() { _ = p.Close() })
 
 	ctx := context.Background()
-	db, err := p.TenantAccount(ctx,
+	db, err := p.TenantDB(ctx,
 		os.Getenv("SAMPLE_CUSTOMER_NAMESPACE"), os.Getenv("SAMPLE_CUSTOMER_ACCOUNT"),
 		os.Getenv("SAMPLE_CUSTOMER_ACCOUNT_LOCATOR"), os.Getenv("SAMPLE_CUSTOMER_ACCOUNT_REGION"))
 	if err != nil {
-		t.Fatalf("TenantAccount: %v", err)
+		t.Fatalf("TenantDB: %v", err)
 	}
 
 	var role string
 	if err := db.QueryRowContext(ctx, "SELECT CURRENT_ROLE()").Scan(&role); err != nil {
-		t.Fatalf("query failed on a connection TenantAccount reported healthy: %v", err)
+		t.Fatalf("query failed on a connection TenantDB reported healthy: %v", err)
 	}
 	if role != "ACCOUNTADMIN" {
 		t.Fatalf("CURRENT_ROLE() = %q, want ACCOUNTADMIN", role)
 	}
 }
 
-// TestIntegration_TenantAccount_RotatesStaleCredential only runs via `make
+// TestIntegration_TenantDB_RotatesStaleCredential only runs via `make
 // test-integration` (skipped whenever tests run with -short). Unlike
-// TestIntegration_TenantAccount, this test does mutate the pre-existing
+// TestIntegration_TenantDB, this test does mutate the pre-existing
 // sample tenant credential .env describes: it configures an
 // effectively-zero Secrets.RotationInterval so the stored credential is
 // always "due", then confirms Pool pushes a fresh key into Snowflake's spare
@@ -95,7 +95,7 @@ func TestIntegration_TenantAccount(t *testing.T) {
 // cache authenticates with it. Rotation is designed to be repeatable and
 // self-healing (it only ever touches the slot not currently in use), so
 // running this test more than once against the same sample account is safe.
-func TestIntegration_TenantAccount_RotatesStaleCredential(t *testing.T) {
+func TestIntegration_TenantDB_RotatesStaleCredential(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test — run via `make test-integration`")
 	}
@@ -143,9 +143,9 @@ func TestIntegration_TenantAccount_RotatesStaleCredential(t *testing.T) {
 		t.Fatalf("reading the credential before rotation: %v", err)
 	}
 
-	db, err := p.TenantAccount(ctx, namespace, accountName, locator, region)
+	db, err := p.TenantDB(ctx, namespace, accountName, locator, region)
 	if err != nil {
-		t.Fatalf("TenantAccount: %v", err)
+		t.Fatalf("TenantDB: %v", err)
 	}
 	var role string
 	if err := db.QueryRowContext(ctx, "SELECT CURRENT_ROLE()").Scan(&role); err != nil {
@@ -170,9 +170,9 @@ func TestIntegration_TenantAccount_RotatesStaleCredential(t *testing.T) {
 	// the pre-rotation key) and dial fresh. If the new key Snowflake now
 	// holds were not actually valid, this authentication would fail.
 	p.EvictTenant(namespace, accountName)
-	freshDB, err := p.TenantAccount(ctx, namespace, accountName, locator, region)
+	freshDB, err := p.TenantDB(ctx, namespace, accountName, locator, region)
 	if err != nil {
-		t.Fatalf("TenantAccount with the rotated credential: %v", err)
+		t.Fatalf("TenantDB with the rotated credential: %v", err)
 	}
 	var roleAfterRotation string
 	if err := freshDB.QueryRowContext(ctx, "SELECT CURRENT_ROLE()").Scan(&roleAfterRotation); err != nil {

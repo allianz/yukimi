@@ -128,7 +128,7 @@ type SnowflakeSettings struct {
 // wraps a KeyStore in secrets.NewKeyManager — today cmd/provider/main.go.
 type SecretsSettings struct {
 	CacheTTL         time.Duration // TTL for the in-memory secrets cache (003); defaults to 5m when omitted
-	RotationInterval time.Duration // age past which OrgAdmin/TenantAccount rotate a stored credential inline (004); defaults to 4320h (~6 months) when omitted
+	RotationInterval time.Duration // age past which OrgAdminDB/TenantDB rotate a stored credential inline (004); defaults to 4320h (~6 months) when omitted
 }
 
 // DeletionSettings holds the one operator-owned deletion window. Both stores that reserve a
