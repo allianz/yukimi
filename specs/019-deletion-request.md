@@ -30,6 +30,14 @@ request `Expired` when its window closes, and it never deletes anything. The `Sn
 controller (020) does the deletion: it looks for a request for the account that is still `Active`,
 and only then drops the account and marks the request `Consumed`.
 
+```mermaid
+flowchart LR
+    DRC[Deletion request controller] -- "checks expired" --> DR[(Deletion request)]
+    SAC[SnowflakeAccount controller] -- "1. finds Active request" --> DR
+    SAC -- "2. drops account" --> SF[(Snowflake account)]
+    SAC -- "3. marks Consumed" --> DR
+```
+
 ## Public API
 
 ```go
@@ -164,10 +172,8 @@ internal/controller/snowflakedeletionrequest/
 └── reconciler_test.go
 ```
 
-No `integration_test.go` anywhere in this spec: `internal/deletion`'s only external dependency is
-the Kubernetes API, fully exercised through `controller-runtime`'s in-process fake client;
-CLAUDE.md's `TestIntegration...`/`make test-integration` convention is scoped to real AWS and
-Snowflake access, neither of which this spec touches.
+No integration tests: a `SnowflakeDeletionRequest` is only a Kubernetes token with no AWS or
+Snowflake access, so the fake client covers everything.
 
 ## Error Classification
 
@@ -229,7 +235,8 @@ This specification defines the deletion-request subsystem that:
   on its own, with no effect on the outcome.
 - **How stale can `status.state` be relative to `validUntil`?** Bounded by the manager's poll
   interval (`--poll`, default `1m`), because `Observe` recomputes `state` on every call regardless of
-  `Generation`. `FindActiveRequest` trusts `state` directly and performs no live `validUntil` check.
+  `Generation`. `FindActiveRequest` trusts `state` directly and performs no live `validUntil` check, so whether a
+  request is still valid is decided only by this spec's controller.
 - **What actually stops someone from editing an approved request to quietly retarget it or widen its
   window?** Nothing at the schema level. That's left to an RBAC or git-review process outside this
   provider's code, and none is defined anywhere in this repository today — this spec's guarantees
