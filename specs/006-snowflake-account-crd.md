@@ -1,88 +1,50 @@
 # Specification: SnowflakeAccount CRD & Tenant Helpers (006)
 
+This specification covers two packages: `apis/base/v1alpha1/` (the `SnowflakeAccount` types) and `internal/account/tenant/` (tenant helpers).
+
 ## Overview
 
-`SnowflakeAccount` is the resource a team commits to Git to describe the Snowflake account they
-want. This spec defines exactly what that resource looks like — its fields, its status shape, and
-the handful of rules a submitted resource must already satisfy before anything downstream touches
-it — plus a small package of pure helper functions every later spec needs to resolve a tenant's
-identity: turning the name a team chose into the account's actual Snowflake name, reading the few
-pieces of onboarding metadata operations attached to the team's namespace, and building the URL a
-tenant uses once their account exists. This spec covers definitions and helpers only. It defines no
-controller: nothing here talks to the Kubernetes API at runtime, and nothing here talks to
-Snowflake at all — later specs read these fixed shapes, they don't extend them.
+Teams request Snowflake accounts by creating `SnowflakeAccount` resources in Kubernetes. This spec
+defines only the custom resource definition (CRD) for them: the fields a team can set, the status
+the platform reports back, and the basic rules a resource must satisfy. It also provides small
+helpers that later specs use to work out a tenant's account identity. The spec defines no business
+logic: creating and managing the actual Snowflake accounts is the job of later specs.
 
-## Key Concept: Immutable Identity
+## Key Concept: Immutable Fields After Creation
 
-Design.md §3.11.3 asks for `region`, `name`, and `environment` to be immutable, so that a tenant
-can't create an account, let its credentials generate, and then repoint the resource at a
-different target while keeping them. `metadata.name` needs no work here at all: Kubernetes already
-refuses to change an object's `name` after creation — it's part of the object's identity in the
-API server, not an ordinary field. The CEL work in this spec is therefore only two rules, both on
-`SnowflakeAccountSpec`: `self.region == oldSelf.region` and
-`self.environment == oldSelf.environment`. Both fire only on update, never on create — a tenant is
-free to choose either value the first time, just not to change it afterward. `environment`'s
-immutability exists for a different reason than `region`'s: it selects which Guardrails baseline
-applies (§3.3), so leaving it mutable would let an account be created under `prod` and flipped to
-`dev` to pick up its looser network posture.
+Some fields are fixed once the account exists:
 
-## Key Concept: Structural Admission Checks
+- **Name** — identifies the resource in Kubernetes and is part of the account's secret
+  identifier, so renaming it would cut the account off from its credentials.
+- **Region** — an account cannot move to another region.
+- **Environment** — DEV/PROD decides which policies apply, so switching it could leave the account
+  violating many of them at once.
+- **Description** — Snowflake cannot change it after creation.
 
-The API rejects invalid input before an account is created:
+## Key Concept: Only Structural Admission Checks
 
-- `region` must have a cloud-region shape naming one of `aws`/`azure`/`gcp`, such as
-  `aws-eu-central-1`. Guardrails and Backplane Config (007/008) later decide whether that
-  specific region is supported.
-- `metadata.name` must be 55 characters or fewer, start with a lowercase letter, and contain
-  only lowercase letters, digits, and `-`. 55 is the absolute ceiling that holds for any
-  organization name, however short; the account module (012) separately checks the resolved
-  name together with the real organization name against Snowflake's 63-character DNS label
-  limit, since that combined bound depends on a value this CRD never sees.
-- `description` must be 1024 characters or fewer and cannot be changed after creation. Snowflake
-  does not support changing an account's description later.
-- `contact` must be a valid email address. It is the Snowflake account's contact address.
+This spec defines only format validation checks in the CRD, such as a pattern for the region.
+Whether that region is actually supported is decided later by the business logic. The two kinds of failure look different:
 
-These checks prevent basic input errors from reaching the controller or Snowflake.
+- **Format check fails** — Kubernetes rejects the resource, and it is never stored in the cluster.
+- **Business logic fails** — the resource is stored in the cluster and shows a sync error in its
+  status.
 
-## Key Concept: Namespace Defines the Tenant Boundary
+## Key Concept: Only Ops Controls the Namespace
 
-The Kubernetes namespace is the platform's trust anchor for a tenant. Platform ops creates the
-namespace during onboarding, and tenants cannot rename it or move their resources into another
-namespace. The controller always takes the namespace from the running `SnowflakeAccount`; it never
-accepts a tenant-supplied namespace value.
+Platform ops creates each tenant's namespace during onboarding and labels it with onboarding facts
+such as department, cost center, and credit quota. Tenants cannot rename the namespace, move
+resources into another one, or change its labels. Only ops can. So the platform trusts the namespace
+name and labels, but not anything a tenant writes in the `SnowflakeAccount` itself.
 
-The namespace name is part of the path where the account's platform credentials are stored
-(design.md §3.11.1). When the controller reconnects to an existing account, it builds that path
-from the account's own namespace. A tenant can therefore use credentials only for accounts created
-in their namespace. They cannot point to a `SnowflakeAccount` belonging to another tenant.
+The namespace name is part of the secret identifier that holds each account's credentials (003).
+Because the controller takes it from where the resource lives, a tenant can only ever reach
+credentials of accounts in its own namespace.
 
-Ops also sets namespace labels such as `department`, `cost-center`, `credit-quota`, and, where
-needed, `alpha-tester`. Tenants cannot change their department, credit limit, or early-access
-status by editing Git. Only platform ops can change these labels.
+## Key Concept: A Plain Kubernetes Resource, Not a Crossplane Provider
 
-## Key Concept: Minimal Managed-Resource Surface
-
-The project's scaffolding (`make provider.addtype`) defaults new managed-resource types to
-Crossplane's `spec.forProvider.*` / `status.atProvider.*` convention, plus a full
-`ManagedResourceSpec` embed carrying a provider-config reference (defaulted to
-`{kind: ClusterProviderConfig, name: default}`) and a connection-secret reference. Per CLAUDE.md,
-this project's CRDs aren't shaped around Crossplane ecosystem conventions, and design.md §3.1's
-example puts every field directly under `spec` — there is no `forProvider` anywhere in it. This
-spec goes further than just dropping the wrapper name: `SnowflakeAccountSpec` carries no
-provider-config reference and no connection-secret reference at all, because nothing in this
-platform's design needs one — every account's credentials are located by the namespace-derived
-secret path in §3.11.1, not by a `ProviderConfig` object a tenant could point elsewhere.
-
-Checking `crossplane-runtime/v2`'s `pkg/resource` package confirms this is safe to do: the
-reconciler pattern CLAUDE.md describes for `SnowflakeAccount` ("Standard Controller with External
-State") is built on `managed.NewReconciler`, which only requires the base `resource.Managed`
-interface — a Kubernetes object that can report `ManagementPolicies` and `Conditions`. It does
-**not** require the wider `ModernManaged`/`LegacyManaged` interfaces, which are what pull in a
-provider-config reference. So `SnowflakeAccountSpec` carries exactly one field sourced from
-crossplane-runtime — `managementPolicies` — and nothing else; `SnowflakeAccountStatus` embeds
-`xpv1.ResourceStatus` for conditions, which likewise carries no provider-config field. This is the
-minimum needed for the type to compile against `resource.Managed` when spec 020 wires up the
-controller, with zero provider-config surface for a tenant to ever set.
+This project is not a Crossplane provider; it only borrows Crossplane's reconciler machinery.
+So `SnowflakeAccount` is shaped like a plain Kubernetes resource, without Crossplane's `forProvider` / `atProvider` wrappers. It also has no provider-config or connection-secret reference. The resource carries only the Crossplane fields the reconciler needs: management policies and status conditions.
 
 ## Public API
 
@@ -91,16 +53,16 @@ controller, with zero provider-config surface for a tenant to ever set.
 package v1alpha1
 
 // SnowflakeAccountSpec defines the desired state of a SnowflakeAccount. Every
-// field is a direct sibling under spec, matching design.md 3.1's example
-// exactly — there is no forProvider wrapper (Key Concept: Minimal
-// Managed-Resource Surface).
+// field is a direct sibling under spec — there is no forProvider wrapper
+// (Key Concept: A Plain Kubernetes Resource, Not a Crossplane Provider).
 type SnowflakeAccountSpec struct {
 	// Immutable after creation: Snowflake does not support altering an
 	// account's COMMENT after CREATE ACCOUNT (verified directly against
 	// Snowflake; design.md does not document this — see Key Concept:
-	// Structural Admission Checks). Mapped to COMMENT in CREATE ACCOUNT
+	// Immutable Fields After Creation). Mapped to COMMENT in CREATE ACCOUNT
 	// (design.md 3.6).
 	// +optional
+	// +kubebuilder:validation:MaxLength=1024
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="description is immutable"
 	Description string `json:"description,omitempty"`
 
@@ -218,10 +180,9 @@ type SnowflakeAccountStatus struct {
 	AccountURL string `json:"accountUrl,omitempty"`
 }
 
-// A SnowflakeAccount is the resource a team commits to Git to describe the
+// A SnowflakeAccount is the resource a team creates to describe the
 // Snowflake account they want (design.md 3.1). Both rules below are
-// root-level, not on Spec, because metadata.name isn't a field Spec defines
-// (Key Concept: Structural Admission Checks).
+// root-level, not on Spec, because metadata.name isn't a field Spec defines.
 // +kubebuilder:validation:XValidation:rule="size(self.metadata.name) <= 55",message="metadata.name must be 55 characters or fewer, so the resolved Snowflake account name combined with the organization name (design.md 3.12) stays within Snowflake's 63-character DNS label limit even for a single-character organization name; the account module (012) checks the exact combined length against the real organization name"
 // +kubebuilder:validation:XValidation:rule="self.metadata.name.matches('^[a-z][a-z0-9-]*$')",message="metadata.name must start with a lowercase letter and contain only lowercase letters, digits, and '-', so the resolved Snowflake account name (design.md 3.12) is always a valid Snowflake identifier"
 type SnowflakeAccount struct {
@@ -320,7 +281,7 @@ func AccountURL(locator, region string, usePrivateLink bool) (string, error)
 
 | Field Path | Type | Required | Mutability | Validation/Constraints |
 |---|---|---|---|---|
-| `description` | string | No | Immutable | `MaxLength`: 1024 (product choice, not a discovered Snowflake limit); `XValidation`: `self == oldSelf` (Snowflake's `COMMENT` can't be altered post-creation — see Key Concept: Structural Admission Checks) |
+| `description` | string | No | Immutable | `MaxLength`: 1024 (product choice, not a discovered Snowflake limit); `XValidation`: `self == oldSelf` (Snowflake's `COMMENT` can't be altered post-creation — see Key Concept: Immutable Fields After Creation) |
 | `contact` | string | Yes | Mutable | `Pattern`: `` `^[^\s@]+@[^\s@]+\.[^\s@]+$` `` — email shape, checked by the API server; carried into `CREATE ACCOUNT`'s `EMAIL` (012) |
 | `region` | string | Yes | Immutable | `Pattern`: `` `^(aws|azure|gcp)-[a-z][a-z0-9-]*$` `` — identical to 002's `base.orgAdminRegionPattern`; region availability enforced by Guardrails (008), not here |
 | `environment` | string | Yes | Immutable | Enum: `dev`, `prod` |
@@ -339,7 +300,7 @@ func AccountURL(locator, region string, usePrivateLink bool) (string, error)
 | `customAuthRules.exceptions[].rsaKeyAllowed` | bool | No | Mutable | At least one of `rsaKeyAllowed`/`patAllowed` required (CEL) |
 | `customAuthRules.exceptions[].patAllowed` | bool | No | Mutable | See above |
 | `customAuthRules.exceptions[].reason` | string | Yes | Mutable | Audit only; not carried into Snowflake |
-| `managementPolicies[]` | string | No | Mutable | crossplane-runtime field; default `["*"]`. No `providerConfigRef` or `writeConnectionSecretToRef` field exists on this type (Key Concept: Minimal Managed-Resource Surface) |
+| `managementPolicies[]` | string | No | Mutable | crossplane-runtime field; default `["*"]`. No `providerConfigRef` or `writeConnectionSecretToRef` field exists on this type (Key Concept: A Plain Kubernetes Resource, Not a Crossplane Provider) |
 
 ### Fields (status)
 
@@ -415,7 +376,7 @@ caller (020) already has the namespace object from its own reconcile and passes 
   a value with no valid cloud-region shape (e.g. `aaa`) or an unrecognized cloud, reusing spec
   002's `base.orgAdminRegionPattern` allowlist; a root-level rule on
   `metadata.name` rejects a name too long for the resolved Snowflake account name (§3.12) to fit
-  Snowflake's identifier limit (see Key Concept: Structural Admission Checks).
+  Snowflake's identifier limit (see Key Concept: Only Structural Admission Checks).
 - The `status.accountName` / `accountLocator` / `accountUrl` / `conditions` shape (§7.2).
 - The `internal/account/tenant/` package: `ResolveName` (§3.12), the `Department`/`CostCenter`/
   `CreditQuota`/`AlphaTester` namespace-label readers (chapter 2), and `AccountURL` (§7.2, built on
@@ -456,9 +417,7 @@ caller (020) already has the namespace object from its own reconcile and passes 
   `region`/`name`/`environment`?** Because design.md is silent on `description` mutability
   entirely, not because it calls for it to be mutable. Direct verification against Snowflake found
   that `COMMENT` (`description`'s target, design.md §3.6) cannot be altered once `CREATE ACCOUNT`
-  has run — the same kind of gap this spec already closes elsewhere for `metadata.name` (Key
-  Concept: Structural Admission Checks), where testing found real Snowflake behavior design.md
-  never spells out.
+  has run.
 - **Is a malformed `region` (e.g. `aaa`) rejected the same way as a Guardrails violation?** No —
   the `Pattern` marker is a schema check, so the API server itself rejects the write before the
   object is ever persisted; the controller never observes it, never reconciles it, and never gets a
@@ -467,7 +426,7 @@ caller (020) already has the namespace object from its own reconcile and passes 
   Guardrails (008) with a message on `Synced`.
 - **Why no *immutability* CEL rule for `metadata.name`?** Kubernetes already rejects any attempt
   to change an object's `name`; there's nothing left for this CRD's schema to enforce there. The
-  length rule is a separate, unrelated concern (Key Concept: Structural Admission Checks) — it
+  length rule is a separate, unrelated concern (Key Concept: Only Structural Admission Checks) — it
   fires on create too, not just update.
 - **A `metadata.name` at or over the 55-character ceiling — rejected the same way as the length
   problem found in testing?** No, and that's the point: the root-level `XValidation` rejects it at
@@ -578,7 +537,7 @@ caller (020) already has the namespace object from its own reconcile and passes 
   `SnowflakeAccountSpec` lets a tenant name or override their own namespace or account identity.
 - `department`, `cost-center`, and `credit-quota` stay namespace labels, never CRD fields, so a
   tenant cannot self-escalate their department's guardrail scope or their credit ceiling by
-  editing Git-committed YAML.
+  editing their `SnowflakeAccount`.
 - No `providerConfigRef` field exists on this type, so there is no way for a tenant to point the
   controller at credentials or configuration outside their own namespace's trust anchor.
 
