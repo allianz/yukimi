@@ -22,17 +22,15 @@ selected tenants early access by setting the `alpha-tester` namespace label.
 
 ## Key Concept: CIDR Containment
 
-Every ingress path (`connection`) in a region's `inventory` carries `maxCidrs`: the widest IP
-range that connection may ever be opened to. `regionalAllowlist` entries — and, later, a tenant's
-own `customNetworkRules` (014) — narrow that range with their own `allowedIPs`, but can never
-exceed it.
+Each connection in a region — a private link, a VPC endpoint, or the public internet — is
+recorded with the maximum IP ranges whose traffic may travel over it. For a private link, these
+are the source networks routed through that link. This maximum is a ceiling: any IP allowlisting
+on that connection, whether the region's baseline or a tenant's own rules, must stay within it.
+An allowlist may narrow the ceiling but never widen it.
 
-"Contained" means every address a narrower CIDR covers also falls inside at least one of the
-wider ranges — equivalently, the narrower CIDR's prefix is at least as long and its network
-address sits inside one of the wider blocks. `Load` applies this rule itself when validating
-`regionalAllowlist`, using the exact same `ContainsCIDR` helper that 014 will call later for
-`customNetworkRules`, so both places agree on what "fits inside the ceiling" means without
-duplicating the comparison logic.
+The rule is enforced in two places with a single shared check: at startup, against the region's
+baseline allowlist, to catch operator mistakes; and later during provisioning, against tenant
+rules (014), which are untrusted input.
 
 ## Public API
 
