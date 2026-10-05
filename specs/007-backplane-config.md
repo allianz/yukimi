@@ -1,16 +1,16 @@
 # Specification: Backplane Config (007)
 
+This specification covers the package: `internal/config/backplane/`.
+
 ## Overview
 
-The Backplane Config is a platform-owned catalog of the networking infrastructure and Snowflake
-account parameters that platform operations pre-provisions once per cloud region, outside
-Kubernetes. It exists so that creating a new Snowflake account never has to redo region-level
-setup work — VPC endpoints, allowed IP ranges, and baseline account parameters are recorded here
-once, and every account created afterwards simply attaches to what already exists. It is needed
-because later account-provisioning steps depend on details, like VPC endpoint IDs and permitted IP
-ranges, that only exist once Ops has finished a region's one-time Terraform rollout. The technical
-approach is a small YAML file, read once at startup into an immutable in-memory structure, plus a
-few lookup and validation helpers that other packages call directly.
+Platform Ops builds shared network infrastructure once per region, so new Snowflake accounts can
+attach to it instead of needing their own. The platform cannot discover this infrastructure, so
+Ops records it in the Backplane Config: the connections each region offers, the widest IP range
+each may carry, and whether the region is open for new accounts. The config also holds the
+baseline network access and account settings every new account inherits, and caps how far a
+tenant may later widen access. It is validated at startup, so a broken entry stops the platform
+instead of reaching a provisioned account.
 
 ## Key Concept: The Availability Gate
 
