@@ -1,13 +1,13 @@
 # Development Guide
 
 This document is the reference for developing Yukimi. For the contribution process — sign-off, pull
-requests, review — see [CONTRIBUTING.md](../../CONTRIBUTING.md).
+requests, review — see [CONTRIBUTING.md](../CONTRIBUTING.md).
 
 ## Prerequisites
 
 ### Required Software
 
-- **Go**: the version in [`go.mod`](../../go.mod) or later. `go.mod` is the single source of truth for
+- **Go**: the version in [`go.mod`](../go.mod) or later. `go.mod` is the single source of truth for
   this; at the time of writing it pins `go 1.27.0` with `toolchain go1.27.1`.
 - **Docker**: for building container images and running local clusters.
 - **Linux or macOS**: the Crossplane `build` submodule that drives the Makefile refuses to run on a
@@ -18,7 +18,7 @@ requests, review — see [CONTRIBUTING.md](../../CONTRIBUTING.md).
 
 The following tools are **automatically downloaded and installed** by the build pipeline when needed.
 You do **NOT** need to install these manually. Versions come from
-[`build/makelib/k8s_tools.mk`](../../build/makelib/k8s_tools.mk) in the submodule and from the
+[`build/makelib/k8s_tools.mk`](../build/makelib/k8s_tools.mk) in the submodule and from the
 Makefile, so treat those as authoritative rather than the numbers below:
 
 - **kind**: Kubernetes in Docker for local testing

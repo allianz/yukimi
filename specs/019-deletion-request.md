@@ -1,18 +1,16 @@
 # Specification: SnowflakeDeletionRequest & Deletion Lifecycle (019)
 
+This specification covers three packages: `apis/base/v1alpha1` (the `SnowflakeDeletionRequest` type), `internal/deletion` (business logic) and `internal/controller/snowflakedeletionrequest` (the lifecycle controller).
+
 ## Overview
 
-A `SnowflakeDeletionRequest` is the one way to authorize destroying a `SnowflakeAccount` in this
-platform — deleting the account's own Git-committed file is not enough on its own. This exists
-because losing a data platform account by accident, through a bad merge or a stray `git rm`, is
-catastrophic and hard to undo, so destruction is treated as a deliberate, privileged act kept
-separate from editing or removing the account's definition. A tenant creates this resource naming
-the account they want destroyed, a time-boxed window in which the destruction is allowed, and a
-reason for the audit trail; a dedicated controller tracks whether that window is still open. The
-`SnowflakeAccount` controller (spec 020) checks for an open window before it will actually drop an
-account, and marks the window used once it does. The technical approach is a small, standalone CRD
-and controller pair plus a lookup package, entirely independent of the account provisioning
-pipeline (009).
+The platform protects Snowflake accounts from accidental deletion: removing an account's
+definition (CRD) does not by itself destroy the account or its data. This matters because a rename or
+mistaken change to a Git repository can remove a definition without anyone intending to delete
+the account. Destruction requires a separate deletion request that names the account, records the
+reason, and permits deletion for no more than eight hours. If the window closes unused, the
+account remains protected; if deletion succeeds, the request cannot be used again and remains as
+a record of the decision.
 
 ## Key Concept: The Deletion Request's Lifecycle
 
@@ -21,22 +19,24 @@ forward, never back. It starts `Active` the moment it's created, carrying an exp
 from its creation time plus its requested window, capped at eight hours. If nothing consumes it
 before that window closes, it becomes `Expired` on its own, with no further action from anyone;
 from that point it authorizes nothing, and a fresh request is the only way back in. If it's used to
-authorize an actual destruction, it becomes `Consumed` instead, permanently. Once a request reaches
-either terminal state, its recorded expiry freezes at whatever it was at that moment — a later edit
-to the requested window can no longer move it. This is why the request keeps existing after its
-target is gone: it isn't cleanup residue, it's the permanent record of when a window opened, when
-(or whether) it closed, and why.
+authorize an actual destruction, it becomes `Consumed` instead, permanently. Once a request is
+`Expired` or `Consumed`, editing its time window cannot reactivate it. From then on it serves as
+an audit record of when deletion was allowed and why.
 
 ## Key Concept: Two Controllers Implement Deletion Protection
 
-Two controllers share this feature. This spec's controller only tracks requests: it keeps
-`status.state` current and knows nothing about Snowflake. The `SnowflakeAccount` controller (020)
-does the destroying, and asks this one for permission by reading `status.state` rather than working
-out for itself whether the window is still open. So whether a request is valid is decided in one
-place and simply trusted everywhere else.
+Two controllers share this feature. The deletion request controller only tracks state: it marks a
+request `Expired` when its window closes, and it never deletes anything. The `SnowflakeAccount`
+controller (020) does the deletion: it looks for a request for the account that is still `Active`,
+and only then drops the account and marks the request `Consumed`.
 
-**Important**: state transitions are one-way and terminal. A resurrected `duration` value can never
-move a request back to `Active` once it has reached `Expired` or `Consumed`.
+```mermaid
+flowchart LR
+    DRC[Deletion request controller] -- "checks expired" --> DR[(Deletion request)]
+    SAC[SnowflakeAccount controller] -- "1. finds Active request" --> DR
+    SAC -- "2. drops account" --> SF[(Snowflake account)]
+    SAC -- "3. marks Consumed" --> DR
+```
 
 ## Public API
 
@@ -172,10 +172,8 @@ internal/controller/snowflakedeletionrequest/
 └── reconciler_test.go
 ```
 
-No `integration_test.go` anywhere in this spec: `internal/deletion`'s only external dependency is
-the Kubernetes API, fully exercised through `controller-runtime`'s in-process fake client;
-CLAUDE.md's `TestIntegration...`/`make test-integration` convention is scoped to real AWS and
-Snowflake access, neither of which this spec touches.
+No integration tests: a `SnowflakeDeletionRequest` is only a Kubernetes token with no AWS or
+Snowflake access, so the fake client covers everything.
 
 ## Error Classification
 
@@ -237,7 +235,8 @@ This specification defines the deletion-request subsystem that:
   on its own, with no effect on the outcome.
 - **How stale can `status.state` be relative to `validUntil`?** Bounded by the manager's poll
   interval (`--poll`, default `1m`), because `Observe` recomputes `state` on every call regardless of
-  `Generation`. `FindActiveRequest` trusts `state` directly and performs no live `validUntil` check.
+  `Generation`. `FindActiveRequest` trusts `state` directly and performs no live `validUntil` check, so whether a
+  request is still valid is decided only by this spec's controller.
 - **What actually stops someone from editing an approved request to quietly retarget it or widen its
   window?** Nothing at the schema level. That's left to an RBAC or git-review process outside this
   provider's code, and none is defined anywhere in this repository today — this spec's guarantees

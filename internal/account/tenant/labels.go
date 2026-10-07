@@ -19,8 +19,6 @@ package tenant
 import (
 	"fmt"
 	"strconv"
-
-	"github.com/allianz/yukimi/internal/errors"
 )
 
 const (
@@ -33,8 +31,8 @@ const (
 func readLabel(labels map[string]string, key string) (string, error) {
 	value, ok := labels[key]
 	if !ok || value == "" {
-		return "", errors.NewUserError(fmt.Sprintf(
-			"namespace missing required label '%s'; contact platform ops", key))
+		return "", fmt.Errorf(
+			"namespace missing required label '%s'; contact platform ops", key)
 	}
 	return value, nil
 }
@@ -42,11 +40,8 @@ func readLabel(labels map[string]string, key string) (string, error) {
 // Department returns the ops-set "department" namespace label (design.md
 // chapter 2), consumed by Guardrails target matching (008).
 //
-// Returns: User error if the label is missing or empty — the tenant can't
-// fix this by editing their CRD, but a readable message ("namespace missing
-// required label 'department'; contact platform ops") surfaced directly on
-// the resource is more useful to them than a system error's incident ID
-// (see Error Classification).
+// Returns: System error if the label is missing or empty — only ops can fix
+// it (see Error Classification).
 func Department(labels map[string]string) (string, error) {
 	return readLabel(labels, departmentLabel)
 }
@@ -56,8 +51,7 @@ func Department(labels map[string]string) (string, error) {
 // exists so that whichever spec adds the first consumer doesn't also need to
 // touch this package.
 //
-// Returns: User error if the label is missing or empty, for the same
-// readability reason as Department.
+// Returns: System error if the label is missing or empty, as for Department.
 func CostCenter(labels map[string]string) (string, error) {
 	return readLabel(labels, costCenterLabel)
 }
@@ -65,8 +59,8 @@ func CostCenter(labels map[string]string) (string, error) {
 // CreditQuota returns the ops-set "credit-quota" namespace label (design.md
 // chapter 2 and 3.10), parsed to an int.
 //
-// Returns: User error if the label is missing, empty, or not a valid
-// non-negative integer — same readability reasoning as Department.
+// Returns: System error if the label is missing, empty, or not a valid
+// non-negative integer.
 func CreditQuota(labels map[string]string) (int, error) {
 	value, err := readLabel(labels, creditQuotaLabel)
 	if err != nil {
@@ -74,9 +68,9 @@ func CreditQuota(labels map[string]string) (int, error) {
 	}
 	quota, err := strconv.Atoi(value)
 	if err != nil || quota < 0 {
-		return 0, errors.NewUserError(fmt.Sprintf(
+		return 0, fmt.Errorf(
 			"namespace label '%s' must be a non-negative integer, got %q; contact platform ops",
-			creditQuotaLabel, value))
+			creditQuotaLabel, value)
 	}
 	return quota, nil
 }
@@ -87,8 +81,7 @@ func CreditQuota(labels map[string]string) (int, error) {
 // namespaces don't carry it, so a missing or empty value means "not an alpha tester" rather than an
 // error.
 //
-// Returns: User error if the label is present but not a valid boolean — same readability reasoning
-// as CreditQuota's invalid-integer case.
+// Returns: System error if the label is present but not a valid boolean.
 func AlphaTester(labels map[string]string) (bool, error) {
 	value, ok := labels[alphaTesterLabel]
 	if !ok || value == "" {
@@ -96,9 +89,9 @@ func AlphaTester(labels map[string]string) (bool, error) {
 	}
 	isAlphaTester, err := strconv.ParseBool(value)
 	if err != nil {
-		return false, errors.NewUserError(fmt.Sprintf(
+		return false, fmt.Errorf(
 			"namespace label '%s' must be a boolean, got %q; contact platform ops",
-			alphaTesterLabel, value))
+			alphaTesterLabel, value)
 	}
 	return isAlphaTester, nil
 }

@@ -22,7 +22,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/snowflakedb/gosnowflake"
+	"github.com/snowflakedb/gosnowflake/v2"
 )
 
 func TestNewErrorWithSnowflakeError(t *testing.T) {

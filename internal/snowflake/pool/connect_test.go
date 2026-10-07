@@ -25,7 +25,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/snowflakedb/gosnowflake"
+	"github.com/snowflakedb/gosnowflake/v2"
 
 	"github.com/allianz/yukimi/internal/secrets"
 )
