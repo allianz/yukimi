@@ -201,7 +201,7 @@ make dev-clean          # Clean up local development cluster
 ```
 
 ### Code Generation & Adding New Resource Types
-See [docs/development/development.md](docs/development/development.md#adding-new-managed-resource-types)
+See [docs/development.md](docs/development.md#adding-new-managed-resource-types)
 for regenerating auto-generated code (`make generate`) and scaffolding a new managed resource type.
 
 ### E2E Tests
@@ -215,5 +215,6 @@ Follow `.github/PULL_REQUEST_TEMPLATE.md` for the PR title and body.
 
 ### General Reference Specs
 - `specs/design.md` - Product requirements, resource schemas, and behavior specifications
-- `docs/development/development.md` - Development setup, Makefile targets, and scaffolding new managed resource types
+- `docs/architecture.md` - Human-facing explanation of the spec-driven process and how the specs are layered
+- `docs/development.md` - Development setup, Makefile targets, and scaffolding new managed resource types
 

@@ -20,7 +20,7 @@ import (
 	stderrors "errors"
 	"fmt"
 
-	"github.com/snowflakedb/gosnowflake"
+	"github.com/snowflakedb/gosnowflake/v2"
 )
 
 // Error decorates a statement failure with structured context, never with
