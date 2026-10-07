@@ -119,7 +119,7 @@ func TestIntegration_CreateThenDestroy(t *testing.T) {
 			ConnectionProbeTimeout: 5 * time.Second,
 		},
 		// A zero RotationInterval makes maybeRotateLocked (internal/snowflake/pool/rotate.go)
-		// treat the org-admin credential as due on every OrgAdmin call — this test calls it
+		// treat the org-admin credential as due on every OrgAdminDB call — this test calls it
 		// several times (create, then Destroy's drop, then Destroy again on cleanup), and
 		// rapid rotations overwrite both of the org-admin user's RSA key slots while the
 		// already-open *sql.DB's connector keeps signing with the original, now-orphaned key,

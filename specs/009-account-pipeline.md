@@ -269,8 +269,8 @@ func (r Result) FirstError() error
 // depends on, declared here so a test can inject a fake. *pool.Pool satisfies
 // it implicitly.
 type DBPool interface {
-    OrgAdmin(ctx context.Context) (*sql.DB, error)
-    TenantAccount(ctx context.Context, namespace, accountName, locator, region string) (*sql.DB, error)
+    OrgAdminDB(ctx context.Context) (*sql.DB, error)
+    TenantDB(ctx context.Context, namespace, accountName, locator, region string) (*sql.DB, error)
     EvictTenant(namespace, accountName string)
 }
 
@@ -459,7 +459,7 @@ classify. `Destroy` likewise returns a module's `Teardown` error exactly as that
 - **`internal/logger` (001)** - Used APIs: `logger.New()`, `(*Logger).Handle()` - Contract:
   `ModuleContext` carries a `*Logger` for modules to log through; only the caller that built the
   context calls `Handle` on a carried error, once per error.
-- **`internal/snowflake/pool` (004)** - Used APIs: `Pool.OrgAdmin()`, `Pool.TenantAccount()`,
+- **`internal/snowflake/pool` (004)** - Used APIs: `Pool.OrgAdminDB()`, `Pool.TenantDB()`,
   `Pool.EvictTenant()` - Contract: `ModuleContext.OrgAdminDB`/`TenantDB`/`EvictTenant` wrap these;
   `TenantDB` additionally requires a locator.
 - **`internal/account/tenant` (006)** - Used APIs: `tenant.ResolveName()`, `tenant.Department()`,
@@ -576,7 +576,7 @@ instead of reading it off `ModuleContext`. This package neither imports nor refe
 - **Template**: `specs/000-template.md` — the section skeleton this spec follows.
 - **Shape reference**: `specs/007-backplane-config.md` — Public API and Error Classification
   phrasing followed here.
-- **Dependency code**: `internal/snowflake/pool/pool.go` (`OrgAdmin`, `TenantAccount`, `EvictTenant`),
+- **Dependency code**: `internal/snowflake/pool/pool.go` (`OrgAdminDB`, `TenantDB`, `EvictTenant`),
   `internal/account/tenant/` (`ResolveName`, `Department`, `CostCenter`, `CreditQuota`),
   `internal/logger/logger.go` (`New`, `Handle`),
   `apis/base/v1alpha1/snowflakeaccount_types.go` (`SnowflakeAccountStatus`).

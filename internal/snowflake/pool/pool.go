@@ -65,7 +65,7 @@ type Pool struct {
 }
 
 // New constructs a Pool. It makes no connection attempt itself: every
-// *sql.DB is opened lazily, on its first OrgAdmin or TenantAccount call.
+// *sql.DB is opened lazily, on its first OrgAdminDB or TenantDB call.
 //
 // Parameters:
 //   - keyManager: the *secrets.KeyManager (003) credentials are read through
@@ -102,7 +102,7 @@ func (p *Pool) keyLock(key tenantKey) *sync.Mutex {
 	return l
 }
 
-// OrgAdmin returns the single org-admin *sql.DB, used only for CREATE ACCOUNT
+// OrgAdminDB returns the single org-admin *sql.DB, used only for CREATE ACCOUNT
 // and DROP ACCOUNT (design.md 3.6, 6.3, 3.11 intro). The credential is read
 // from the org-admin secret identifier (003) and the connection is authenticated
 // with the GLOBALORGADMIN role. Opened on first call; every later call returns the
@@ -113,7 +113,7 @@ func (p *Pool) keyLock(key tenantKey) *sync.Mutex {
 // Returns:
 //   - System error if the org-admin credential cannot be read, does not
 //     parse as a valid private key, or the connection cannot be established
-func (p *Pool) OrgAdmin(ctx context.Context) (*sql.DB, error) {
+func (p *Pool) OrgAdminDB(ctx context.Context) (*sql.DB, error) {
 	p.orgAdminMu.Lock()
 	defer p.orgAdminMu.Unlock()
 
@@ -156,7 +156,7 @@ func (p *Pool) OrgAdmin(ctx context.Context) (*sql.DB, error) {
 	return db, nil
 }
 
-// TenantAccount returns the per-tenant *sql.DB, authenticated as that
+// TenantDB returns the per-tenant *sql.DB, authenticated as that
 // account's platform service user with the ACCOUNTADMIN role (design.md
 // 3.6, 3.11, Appendix B X1). Keyed by (org, namespace, accountName) — the
 // same tuple as the tenant secret identifier (003) — plus the account's current
@@ -182,7 +182,7 @@ func (p *Pool) OrgAdmin(ctx context.Context) (*sql.DB, error) {
 //     cloud-region format
 //   - System error if the tenant credential cannot be read, does not parse
 //     as a valid private key, or the connection cannot be established
-func (p *Pool) TenantAccount(ctx context.Context, namespace, accountName, locator, region string) (*sql.DB, error) {
+func (p *Pool) TenantDB(ctx context.Context, namespace, accountName, locator, region string) (*sql.DB, error) {
 	key := tenantKey{namespace: namespace, accountName: accountName}
 	sf := &p.cfg.Snowflake
 

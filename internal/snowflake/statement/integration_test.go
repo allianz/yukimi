@@ -74,11 +74,11 @@ func sampleTenantDB(t *testing.T) (db *sql.DB, ctx context.Context) {
 	t.Cleanup(func() { _ = p.Close() })
 
 	ctx = context.Background()
-	db, err = p.TenantAccount(ctx,
+	db, err = p.TenantDB(ctx,
 		os.Getenv("SAMPLE_CUSTOMER_NAMESPACE"), os.Getenv("SAMPLE_CUSTOMER_ACCOUNT"),
 		os.Getenv("SAMPLE_CUSTOMER_ACCOUNT_LOCATOR"), os.Getenv("SAMPLE_CUSTOMER_ACCOUNT_REGION"))
 	if err != nil {
-		t.Fatalf("TenantAccount: %v", err)
+		t.Fatalf("TenantDB: %v", err)
 	}
 	return db, ctx
 }
