@@ -52,7 +52,7 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          A SnowflakeAccount is the resource a team commits to Git to describe the
+          A SnowflakeAccount is the resource a team creates to describe the
           Snowflake account they want (design.md 3.1).
         properties:
           apiVersion:
@@ -75,9 +75,9 @@ spec:
           spec:
             description: |-
               SnowflakeAccountSpec defines the desired state of a SnowflakeAccount. Every
-              field is a direct sibling under spec, matching design.md 3.1's example
-              exactly — there is no forProvider wrapper (Key Concept: Minimal
-              Managed-Resource Surface).
+              field is a direct sibling under spec — there is no forProvider wrapper
+              (Key Concept: A Plain Kubernetes Resource, Not a Crossplane Provider, in
+              spec 006).
             properties:
               contact:
                 pattern: ^[^\s@]+@[^\s@]+\.[^\s@]+$
@@ -164,7 +164,7 @@ spec:
                   Immutable after creation: Snowflake does not support altering an
                   account's COMMENT after CREATE ACCOUNT (verified directly against
                   Snowflake; design.md does not document this — see Key Concept:
-                  Structural Admission Checks in spec 006). Mapped to COMMENT in
+                  Immutable Fields After Creation in spec 006). Mapped to COMMENT in
                   CREATE ACCOUNT (design.md 3.6).
                 maxLength: 1024
                 type: string

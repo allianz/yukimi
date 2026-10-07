@@ -30,14 +30,14 @@ import (
 )
 
 // SnowflakeAccountSpec defines the desired state of a SnowflakeAccount. Every
-// field is a direct sibling under spec, matching design.md 3.1's example
-// exactly — there is no forProvider wrapper (Key Concept: Minimal
-// Managed-Resource Surface).
+// field is a direct sibling under spec — there is no forProvider wrapper
+// (Key Concept: A Plain Kubernetes Resource, Not a Crossplane Provider, in
+// spec 006).
 type SnowflakeAccountSpec struct {
 	// Immutable after creation: Snowflake does not support altering an
 	// account's COMMENT after CREATE ACCOUNT (verified directly against
 	// Snowflake; design.md does not document this — see Key Concept:
-	// Structural Admission Checks in spec 006). Mapped to COMMENT in
+	// Immutable Fields After Creation in spec 006). Mapped to COMMENT in
 	// CREATE ACCOUNT (design.md 3.6).
 	// +optional
 	// +kubebuilder:validation:MaxLength=1024
@@ -160,7 +160,7 @@ type SnowflakeAccountStatus struct {
 
 // +kubebuilder:object:root=true
 
-// A SnowflakeAccount is the resource a team commits to Git to describe the
+// A SnowflakeAccount is the resource a team creates to describe the
 // Snowflake account they want (design.md 3.1).
 // +kubebuilder:printcolumn:name="READY",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
 // +kubebuilder:printcolumn:name="SYNCED",type="string",JSONPath=".status.conditions[?(@.type=='Synced')].status"
@@ -183,11 +183,12 @@ type SnowflakeAccount struct {
 // Conditioned interfaces. angryjet's generator does not recognize this type
 // as a managed resource — its matcher requires an embedded
 // xpv2.ManagedResourceSpec, which this type deliberately omits (Key Concept:
-// Minimal Managed-Resource Surface) — so these are hand-written rather than
-// generated into a zz_generated.managed.go. Go only promotes methods through
-// anonymous (embedded) fields, and Spec/Status are named fields, so these
-// must forward explicitly even though ManagementPolicies and
-// ConditionedStatus are reachable one level down.
+// A Plain Kubernetes Resource, Not a Crossplane Provider, in spec 006) — so
+// these are hand-written rather than generated into a
+// zz_generated.managed.go. Go only promotes methods through anonymous
+// (embedded) fields, and Spec/Status are named fields, so these must forward
+// explicitly even though ManagementPolicies and ConditionedStatus are
+// reachable one level down.
 
 func (a *SnowflakeAccount) GetManagementPolicies() common.ManagementPolicies {
 	return a.Spec.ManagementPolicies
@@ -199,10 +200,11 @@ func (a *SnowflakeAccount) SetManagementPolicies(p common.ManagementPolicies) {
 
 // GetWriteConnectionSecretToReference/SetWriteConnectionSecretToReference
 // satisfy resource.LocalConnectionSecretOwner with a permanent no-op: this
-// type carries no such field (Key Concept: Minimal Managed-Resource
-// Surface) and never wants a connection secret published. Without these,
-// crossplane-runtime v2's reconciler falls through to its default case
-// after every successful Observe and reports a permanent ReconcileError
+// type carries no such field (Key Concept: A Plain Kubernetes Resource, Not
+// a Crossplane Provider, in spec 006) and never wants a connection secret
+// published. Without these, crossplane-runtime v2's reconciler falls
+// through to its default case after every successful Observe and reports a
+// permanent ReconcileError
 // ("managed resource does not implement connection details"), which pins
 // the Synced condition to False forever. Implementing the interface routes
 // PublishConnection/UnpublishConnection into APILocalSecretPublisher's own

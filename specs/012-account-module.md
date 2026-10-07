@@ -203,8 +203,6 @@ internal/account/modules/account/
   `alpha-tester: "true"` (Key Concept: Region Validation) — this module's own message,
   wording matched to `Config.Region`'s unknown-region error so the two stay indistinguishable to the
   tenant.
-- The namespace's `alpha-tester` label is present but not a valid boolean — surfaces as
-  `tenant.AlphaTester`'s own user error, passed through unchanged.
 - `cr.Name` combined with the real organization name would exceed Snowflake's 63-character DNS
   label limit once resolved (Key Concept: Account Name Length Limit) — the message names only
   the max length, never the organization name or "DNS label", since the tenant can't act on
@@ -216,6 +214,8 @@ internal/account/modules/account/
   (`errors.Is(err, secrets.ErrPendingDeletion)`) — the account was deleted too recently.
 
 **System Errors**:
+- The namespace's `alpha-tester` label is present but not a valid boolean — surfaces as
+  `tenant.AlphaTester`'s own system error, passed through unchanged.
 - RSA keypair generation fails.
 - The secret store's create-only write fails for any reason other than `ErrPendingDeletion`, and the
   occupying secret cannot be resumed as this resource's own crashed attempt (Key Concept: Resuming a
@@ -321,8 +321,8 @@ This specification defines the account module that:
   the read and reasserting unconditionally would put a same-value `ALTER USER` in Snowflake's query
   history on nearly every reconcile of a perfectly healthy tenant; the read avoids that at the cost of one
   extra query, and still requires no new state to be kept on `status`.
-- **What does a namespace's malformed `alpha-tester` label do to a fresh create?** Rejects with the
-  user error `tenant.AlphaTester` itself returns (006) — the same readability reasoning as a malformed
+- **What does a namespace's malformed `alpha-tester` label do to a fresh create?** Fails (aborting) with the
+  system error `tenant.AlphaTester` itself returns (006) — an ops-caused label problem, like a malformed
   `credit-quota` label — before the region-existence check's result is even used to decide anything,
   and before any side effect.
 - **A deletion arrives when no locator was ever recorded — what does `Teardown` do?** With no locator
@@ -383,8 +383,8 @@ This specification defines the account module that:
   — Contract: reads the spec fields read-only; writes `AccountLocator`/`AccountCreatedAt` directly on
   `ModuleContext.CR().Status` — the only two status fields this module ever sets. Calls
   `tenant.AlphaTester()` once on the fresh-create path against `ModuleContext.NamespaceLabels()`,
-  before any side effect, and passes its returned error (a malformed label value) straight into
-  `Rejected` unmodified.
+  before any side effect, and passes its returned error (a malformed label value, a system error) straight into
+  `Failed` unmodified.
 - **Account Pipeline (009)** — Used APIs: `account.Module`, `Done()`/`Pending()`/`Rejected()`/`Failed()`,
   `Outcome.Aborting()`, `ModuleContext.CR()`, `.ResolvedAccountName()`, `.OrgAdminDB()`, `.TenantDB()`,
   `.EvictTenant()` — Contract: `Name()` returns `pipeline.AccountModuleName`, which is how
@@ -485,7 +485,7 @@ This specification defines the account module that:
 - **SC-029**: A fresh create proceeds past the availability check — reaching keypair generation exactly
   as an available region would — when `Region.Available` is `false` but the tenant's namespace is
   labeled `alpha-tester: "true"`.
-- **SC-030**: A fresh create aborts with `tenant.AlphaTester`'s own user error, generating no keypair
+- **SC-030**: A fresh create aborts (`Failed`) with `tenant.AlphaTester`'s own system error, generating no keypair
   and issuing no SQL, when the namespace's `alpha-tester` label is present but not a valid boolean.
 - **SC-031**: On the existing-account reconnect path, `Apply` issues `SHOW USERS LIKE 'platform'` over
   the tenant connection and issues no `ALTER USER` when the looked-up `email` already equals

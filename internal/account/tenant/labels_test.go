@@ -32,19 +32,19 @@ func TestDepartment_Present(t *testing.T) {
 	}
 }
 
-// SC-011: missing label returns a user error.
+// SC-011: missing label returns a system error.
 func TestDepartment_Missing(t *testing.T) {
 	_, err := Department(map[string]string{})
-	if err == nil || !errors.IsUserError(err) {
-		t.Fatalf("expected user error, got %v", err)
+	if err == nil || errors.IsUserError(err) {
+		t.Fatalf("expected system error, got %v", err)
 	}
 }
 
-// SC-011: empty label returns a user error.
+// SC-011: empty label returns a system error.
 func TestDepartment_Empty(t *testing.T) {
 	_, err := Department(map[string]string{"department": ""})
-	if err == nil || !errors.IsUserError(err) {
-		t.Fatalf("expected user error, got %v", err)
+	if err == nil || errors.IsUserError(err) {
+		t.Fatalf("expected system error, got %v", err)
 	}
 }
 
@@ -58,19 +58,19 @@ func TestCostCenter_Present(t *testing.T) {
 	}
 }
 
-// SC-011: missing label returns a user error.
+// SC-011: missing label returns a system error.
 func TestCostCenter_Missing(t *testing.T) {
 	_, err := CostCenter(map[string]string{})
-	if err == nil || !errors.IsUserError(err) {
-		t.Fatalf("expected user error, got %v", err)
+	if err == nil || errors.IsUserError(err) {
+		t.Fatalf("expected system error, got %v", err)
 	}
 }
 
-// SC-011: empty label returns a user error.
+// SC-011: empty label returns a system error.
 func TestCostCenter_Empty(t *testing.T) {
 	_, err := CostCenter(map[string]string{"cost-center": ""})
-	if err == nil || !errors.IsUserError(err) {
-		t.Fatalf("expected user error, got %v", err)
+	if err == nil || errors.IsUserError(err) {
+		t.Fatalf("expected system error, got %v", err)
 	}
 }
 
@@ -84,35 +84,35 @@ func TestCreditQuota_Present(t *testing.T) {
 	}
 }
 
-// SC-011: missing label returns a user error.
+// SC-011: missing label returns a system error.
 func TestCreditQuota_Missing(t *testing.T) {
 	_, err := CreditQuota(map[string]string{})
-	if err == nil || !errors.IsUserError(err) {
-		t.Fatalf("expected user error, got %v", err)
+	if err == nil || errors.IsUserError(err) {
+		t.Fatalf("expected system error, got %v", err)
 	}
 }
 
-// SC-011: empty label returns a user error.
+// SC-011: empty label returns a system error.
 func TestCreditQuota_Empty(t *testing.T) {
 	_, err := CreditQuota(map[string]string{"credit-quota": ""})
-	if err == nil || !errors.IsUserError(err) {
-		t.Fatalf("expected user error, got %v", err)
+	if err == nil || errors.IsUserError(err) {
+		t.Fatalf("expected system error, got %v", err)
 	}
 }
 
-// SC-012: non-integer label value returns a user error.
+// SC-012: non-integer label value returns a system error.
 func TestCreditQuota_NonInteger(t *testing.T) {
 	_, err := CreditQuota(map[string]string{"credit-quota": "not-a-number"})
-	if err == nil || !errors.IsUserError(err) {
-		t.Fatalf("expected user error, got %v", err)
+	if err == nil || errors.IsUserError(err) {
+		t.Fatalf("expected system error, got %v", err)
 	}
 }
 
-// SC-012: negative label value returns a user error.
+// SC-012: negative label value returns a system error.
 func TestCreditQuota_Negative(t *testing.T) {
 	_, err := CreditQuota(map[string]string{"credit-quota": "-5"})
-	if err == nil || !errors.IsUserError(err) {
-		t.Fatalf("expected user error, got %v", err)
+	if err == nil || errors.IsUserError(err) {
+		t.Fatalf("expected system error, got %v", err)
 	}
 }
 
@@ -169,10 +169,10 @@ func TestAlphaTester_False(t *testing.T) {
 	}
 }
 
-// A present but non-boolean value is a user error.
+// A present but non-boolean value is a system error.
 func TestAlphaTester_Malformed(t *testing.T) {
 	_, err := AlphaTester(map[string]string{"alpha-tester": "yes"})
-	if err == nil || !errors.IsUserError(err) {
-		t.Fatalf("expected user error, got %v", err)
+	if err == nil || errors.IsUserError(err) {
+		t.Fatalf("expected system error, got %v", err)
 	}
 }
