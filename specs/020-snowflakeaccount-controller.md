@@ -213,7 +213,7 @@ This specification defines the `internal/controller/snowflakeaccount` package th
   key manager, and the loaded `*backplane.Config` into this package's own `SetupGated`, which
   forwards the latter unchanged into the account module's own constructor (012); this package's own
   controller logic never calls `Region()`/`Connection()` itself. Immediately after constructing the
-  pool, `main.go` also calls `Pool.OrgAdmin` once, bounded by a short timeout, and exits fatally if it
+  pool, `main.go` also calls `Pool.OrgAdminDB` once, bounded by a short timeout, and exits fatally if it
   errors, so a broken AWS session or an unreachable org-admin Snowflake connection fails the process at
   startup rather than on the first reconcile.
 
@@ -298,7 +298,7 @@ This specification defines the `internal/controller/snowflakeaccount` package th
   `secrets.NewKeyManager()`, `secretsaws.New()` — Contract: `main.go` constructs exactly one key store and
   wraps it in a `*secrets.KeyManager`, passing that into both `pool.New` and `SetupGated`.
 - **`internal/snowflake/pool` (004)** — Used APIs: `pool.New()`, `Pool.Close()`, and, indirectly through
-  `pipeline.ModuleContext`, `OrgAdmin()`/`TenantAccount()`/`EvictTenant()` — Contract: one `*pool.Pool`
+  `pipeline.ModuleContext`, `OrgAdminDB()`/`TenantDB()`/`EvictTenant()` — Contract: one `*pool.Pool`
   constructed in `main.go`, shared by every controller that needs one; closed exactly once, on shutdown.
 - **`internal/account/tenant` (006)** — Used APIs: `tenant.AccountURL()` — Contract: called directly by
   this controller once `status.accountLocator` is non-empty; `tenant.ResolveName` is reached only

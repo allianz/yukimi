@@ -51,9 +51,9 @@ type fakeDBPool struct {
 	evictAccountName string
 }
 
-func (f *fakeDBPool) OrgAdmin(ctx context.Context) (*sql.DB, error) {
+func (f *fakeDBPool) OrgAdminDB(ctx context.Context) (*sql.DB, error) {
 	if f.forbidCalls {
-		f.t.Fatal("OrgAdmin must not be called")
+		f.t.Fatal("OrgAdminDB must not be called")
 	}
 	if f.onOrgAdmin != nil {
 		f.onOrgAdmin()
@@ -62,9 +62,9 @@ func (f *fakeDBPool) OrgAdmin(ctx context.Context) (*sql.DB, error) {
 	return f.orgAdminDB, f.orgAdminErr
 }
 
-func (f *fakeDBPool) TenantAccount(ctx context.Context, namespace, accountName, locator, region string) (*sql.DB, error) {
+func (f *fakeDBPool) TenantDB(ctx context.Context, namespace, accountName, locator, region string) (*sql.DB, error) {
 	if f.forbidCalls {
-		f.t.Fatal("TenantAccount must not be called")
+		f.t.Fatal("TenantDB must not be called")
 	}
 	f.tenantCalls++
 	return f.tenantDB, f.tenantErr
@@ -125,7 +125,7 @@ func TestObserve_KnownLocator_ConnectionSucceeds(t *testing.T) {
 		t.Errorf("outcome.State = %v, want StateDone", outcome.State)
 	}
 	if fake.tenantCalls != 1 {
-		t.Errorf("TenantAccount called %d times, want 1", fake.tenantCalls)
+		t.Errorf("TenantDB called %d times, want 1", fake.tenantCalls)
 	}
 }
 
@@ -188,6 +188,6 @@ func TestObserve_PastGracePeriod_ConnectionAttempted(t *testing.T) {
 		t.Errorf("outcome.State = %v, want StateDone", outcome.State)
 	}
 	if fake.tenantCalls != 1 {
-		t.Errorf("TenantAccount called %d times, want 1", fake.tenantCalls)
+		t.Errorf("TenantDB called %d times, want 1", fake.tenantCalls)
 	}
 }

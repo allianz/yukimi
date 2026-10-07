@@ -151,7 +151,7 @@ func (e *Error) Unwrap() error
 internal/snowflake/statement/
 ├── statement.go         # Executor, Runner, New, Exec, Query, Result
 ├── statement_test.go    # sqlmock-driven tests
-├── integration_test.go  # live-Snowflake test via a real 004 Pool.TenantAccount connection
+├── integration_test.go  # live-Snowflake test via a real 004 Pool.TenantDB connection
 ├── render.go             # QuoteIdentifier, QuoteLiteral, BareIdentifier
 ├── render_test.go
 ├── errors.go             # Error, Error(), Unwrap()
@@ -209,10 +209,10 @@ This specification defines the `internal/snowflake/statement/` package that:
 
 ## Integration Points
 
-- **Connection Pool (004)** - `Pool.OrgAdmin`/`Pool.TenantAccount` hand back the `*sql.DB` this package wraps as an `Executor` - Key functions: `statement.New` - Notes: no import in either direction from production code; 004 documents this same rule from its side. `integration_test.go` imports 004 (and 003.a, for the `*secrets.KeyManager` `Pool.TenantAccount` needs) to obtain that real `*sql.DB` under test — a test-only exception, not a production dependency.
+- **Connection Pool (004)** - `Pool.OrgAdminDB`/`Pool.TenantDB` hand back the `*sql.DB` this package wraps as an `Executor` - Key functions: `statement.New` - Notes: no import in either direction from production code; 004 documents this same rule from its side. `integration_test.go` imports 004 (and 003.a, for the `*secrets.KeyManager` `Pool.TenantDB` needs) to obtain that real `*sql.DB` under test — a test-only exception, not a production dependency.
 - **Account Modules (012–015, 017, 018, 021 — not yet written)** - Call `statement.New` once per connection, then `Exec`/`Query` per statement, reaching for a renderer only at the specific positions their own spec identifies as unbindable - Key functions: `Runner.Exec`, `Runner.Query`, `QuoteIdentifier`, `QuoteLiteral`, `BareIdentifier`.
 - **Error Handling (001)** - `logger.Handle`, at the controller layer, classifies and logs whatever this package returns; this package never logs anything itself.
-- **Testing** - Module test suites drive the real `statement.New(db)` over `DATA-DOG/go-sqlmock` (`sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual)` for exact statement matching, `.WithArgs(...)` for bind assertions, `mock.ExpectationsWereMet()` for ordering) rather than a hand-rolled fake, exercising the real materializer, renderers and error decoration. `integration_test.go` additionally exercises `Exec`/`Query` against a real `Pool.TenantAccount` connection from the sample tenant account `.env` describes (see `internal/snowflake/pool/integration_test.go` for the same wiring), confirming real `*gosnowflake.SnowflakeError` decoration and real row materialization end to end — skipped under `-short`, run via `make test-integration`.
+- **Testing** - Module test suites drive the real `statement.New(db)` over `DATA-DOG/go-sqlmock` (`sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual)` for exact statement matching, `.WithArgs(...)` for bind assertions, `mock.ExpectationsWereMet()` for ordering) rather than a hand-rolled fake, exercising the real materializer, renderers and error decoration. `integration_test.go` additionally exercises `Exec`/`Query` against a real `Pool.TenantDB` connection from the sample tenant account `.env` describes (see `internal/snowflake/pool/integration_test.go` for the same wiring), confirming real `*gosnowflake.SnowflakeError` decoration and real row materialization end to end — skipped under `-short`, run via `make test-integration`.
 
 ## Success Criteria
 
@@ -242,7 +242,7 @@ This specification defines the `internal/snowflake/statement/` package that:
 
 - **Product design**: `specs/design.md` 3.5–3.10 — the account bootstrapping, network, auth and identity SQL this package's callers render and bind.
 - **Error Handling**: `specs/001-error-and-logging.md` — `errors.NewUserError`, consumed by `BareIdentifier`.
-- **Connection Pooling**: `specs/004-connection-pooling.md` — the `Executor`'s production source (`Pool.OrgAdmin`, `Pool.TenantAccount`) and the two-way import-avoidance rule this spec mirrors.
+- **Connection Pooling**: `specs/004-connection-pooling.md` — the `Executor`'s production source (`Pool.OrgAdminDB`, `Pool.TenantDB`) and the two-way import-avoidance rule this spec mirrors.
 
 ---
 

@@ -30,7 +30,7 @@ import (
 	internalerrors "github.com/allianz/yukimi/internal/errors"
 )
 
-// tenantArgs captures one call to fakeDBPool.TenantAccount.
+// tenantArgs captures one call to fakeDBPool.TenantDB.
 type tenantArgs struct {
 	namespace, accountName, locator, region string
 }
@@ -55,17 +55,17 @@ type fakeDBPool struct {
 	evictAccountName string
 }
 
-func (f *fakeDBPool) OrgAdmin(ctx context.Context) (*sql.DB, error) {
+func (f *fakeDBPool) OrgAdminDB(ctx context.Context) (*sql.DB, error) {
 	if f.forbidCalls {
-		f.t.Fatal("OrgAdmin must not be called")
+		f.t.Fatal("OrgAdminDB must not be called")
 	}
 	f.orgAdminCalls++
 	return f.orgAdminDB, f.orgAdminErr
 }
 
-func (f *fakeDBPool) TenantAccount(ctx context.Context, namespace, accountName, locator, region string) (*sql.DB, error) {
+func (f *fakeDBPool) TenantDB(ctx context.Context, namespace, accountName, locator, region string) (*sql.DB, error) {
 	if f.forbidCalls {
-		f.t.Fatal("TenantAccount must not be called")
+		f.t.Fatal("TenantDB must not be called")
 	}
 	f.tenantCalls++
 	f.tenantArgs = append(f.tenantArgs, tenantArgs{namespace, accountName, locator, region})
@@ -131,7 +131,7 @@ func TestTenantDB_MemoizesSameDB(t *testing.T) {
 		t.Error("TenantDB did not return the pool's *sql.DB")
 	}
 	if fake.tenantCalls != 1 {
-		t.Errorf("TenantAccount called %d times, want 1", fake.tenantCalls)
+		t.Errorf("TenantDB called %d times, want 1", fake.tenantCalls)
 	}
 }
 
@@ -190,7 +190,7 @@ func TestTenantDB_FailureNotCached(t *testing.T) {
 		t.Fatal("expected an error on first call with empty locator")
 	}
 	if fake.tenantCalls != 0 {
-		t.Errorf("TenantAccount called %d times before locator was set, want 0", fake.tenantCalls)
+		t.Errorf("TenantDB called %d times before locator was set, want 0", fake.tenantCalls)
 	}
 
 	cr.Status.AccountLocator = "AB12345"
@@ -202,7 +202,7 @@ func TestTenantDB_FailureNotCached(t *testing.T) {
 		t.Error("TenantDB did not return the pool's *sql.DB after the locator was set")
 	}
 	if fake.tenantCalls != 1 {
-		t.Errorf("TenantAccount called %d times, want 1", fake.tenantCalls)
+		t.Errorf("TenantDB called %d times, want 1", fake.tenantCalls)
 	}
 }
 
@@ -218,7 +218,7 @@ func TestTenantDB_PoolError(t *testing.T) {
 		t.Errorf("err = %v, want %v", err, wantErr)
 	}
 	if fake.tenantCalls != 1 {
-		t.Errorf("TenantAccount called %d times, want 1", fake.tenantCalls)
+		t.Errorf("TenantDB called %d times, want 1", fake.tenantCalls)
 	}
 }
 

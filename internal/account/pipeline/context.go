@@ -33,8 +33,8 @@ import (
 // without reaching into pool's own unexported dial-function test seam.
 // *pool.Pool satisfies this implicitly.
 type DBPool interface {
-	OrgAdmin(ctx context.Context) (*sql.DB, error)
-	TenantAccount(ctx context.Context, namespace, accountName, locator, region string) (*sql.DB, error)
+	OrgAdminDB(ctx context.Context) (*sql.DB, error)
+	TenantDB(ctx context.Context, namespace, accountName, locator, region string) (*sql.DB, error)
 	EvictTenant(namespace, accountName string)
 }
 
@@ -97,7 +97,7 @@ func (c *ModuleContext) Logger() *logger.Logger { return c.log }
 // OrgAdminDB returns an org-admin-scoped connection. Only the account module
 // (012) needs this scope.
 func (c *ModuleContext) OrgAdminDB(ctx context.Context) (*sql.DB, error) {
-	return c.pool.OrgAdmin(ctx)
+	return c.pool.OrgAdminDB(ctx)
 }
 
 // TenantDB returns a connection scoped to this tenant's own account,
@@ -116,7 +116,7 @@ func (c *ModuleContext) TenantDB(ctx context.Context) (*sql.DB, error) {
 		return nil, fmt.Errorf("cannot resolve tenant connection: account locator is not yet known for %s/%s", c.namespace, c.cr.Name)
 	}
 
-	db, err := c.pool.TenantAccount(ctx, c.namespace, c.cr.Name, locator, c.cr.Spec.Region)
+	db, err := c.pool.TenantDB(ctx, c.namespace, c.cr.Name, locator, c.cr.Spec.Region)
 	if err != nil {
 		return nil, err
 	}
