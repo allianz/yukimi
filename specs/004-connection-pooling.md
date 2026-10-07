@@ -178,9 +178,9 @@ internal/snowflake/pool/
 └── doc.go
 ```
 
-`internal/snowflake/host` imports only the standard library and `internal/errors` (001) — never `internal/config/base`, never `github.com/snowflakedb/gosnowflake`, never `internal/snowflake/pool`. That leaf position is what lets `internal/account/tenant` (006) build `status.accountUrl` from the same code without inheriting a driver, a secret store, or configuration.
+`internal/snowflake/host` imports only the standard library and `internal/errors` (001) — never `internal/config/base`, never `github.com/snowflakedb/gosnowflake/v2`, never `internal/snowflake/pool`. That leaf position is what lets `internal/account/tenant` (006) build `status.accountUrl` from the same code without inheriting a driver, a secret store, or configuration.
 
-`internal/snowflake/pool` must never import `internal/snowflake/statement` (005) or `internal/secrets/aws` (003.a). The only imports outside the standard library are `internal/snowflake/host`, `internal/config/base` (002), `internal/secrets` (003), `internal/errors` (001), and `github.com/snowflakedb/gosnowflake`, pinned at **v1.18.1** — the version this spec's driver findings were verified against; an upgrade means re-verifying those findings before relying on them.
+`internal/snowflake/pool` must never import `internal/snowflake/statement` (005) or `internal/secrets/aws` (003.a). The only imports outside the standard library are `internal/snowflake/host`, `internal/config/base` (002), `internal/secrets` (003), `internal/errors` (001), and `github.com/snowflakedb/gosnowflake/v2`. The driver findings in this spec were verified against the version in `go.mod`; a driver upgrade means re-verifying them before relying on them.
 
 ## Error Classification
 
@@ -241,7 +241,7 @@ This specification defines the `internal/snowflake/pool/` and `internal/snowflak
 - **`internal/errors` (001)** - Used APIs: `errors.NewUserError()` - Contract: used by both packages; in `host` for the one region-format validation above, in `pool` nowhere else.
 - **`internal/config/base` (002)** - Read by `pool` only; `host` never imports it - Used APIs: `base.Config`, `Snowflake.Org`, `Snowflake.OrgAdminAccount`, `Snowflake.OrgAdminAccountLocator`, `Snowflake.OrgAdminAccountRegion`, `Snowflake.UsePrivateLink`, `Snowflake.DisableOCSPChecks`, `Snowflake.MaxConnectionPoolSize`, `Snowflake.MaxIdleConnections`, `Snowflake.ConnectionMaxLifetime`, `Snowflake.ConnectionMaxIdleTime`, `Snowflake.ConnectionProbeTimeout` - Contract: `Pool` reads these once at construction and treats them as fixed for the process's life, matching `Config`'s own immutability.
 - **`internal/secrets` (003)** - Used APIs: `secrets.KeyManager`, `NewOrgAdminIdentifier()`, `NewTenantIdentifier()`, `KeyManager.GetCredentials()`, `NewCredentials()`, `KeyManager.UpdateCredentials()` - Contract: takes a `*secrets.KeyManager` as a constructor parameter, constructed and wrapped by `cmd/provider/main.go` via `secrets.NewKeyManager`; never imports a concrete key store itself.
-- **`github.com/snowflakedb/gosnowflake` v1.18.1** - the only Snowflake driver dependency in the tree; this is the spec that adds it to `go.mod` (see Project Structure).
+- **`github.com/snowflakedb/gosnowflake/v2`** - the only Snowflake driver dependency in the tree; this is the spec that adds it to `go.mod` (see Project Structure).
 
 ## Integration Points
 
@@ -272,9 +272,9 @@ This specification defines the `internal/snowflake/pool/` and `internal/snowflak
 - **SC-014**: `Close` closes every cached `*sql.DB` — org-admin, if opened, and every tenant entry — and returns a joined error if any individual close fails, without skipping the rest.
 - **SC-015**: The `gosnowflake.Config` built for `OrgAdmin` sets `Authenticator` to `AuthTypeJwt`, `User` and `PrivateKey` from the stored org-admin credential, `Role` to `GLOBALORGADMIN`, and `Account`/`Host` from `OrgAdminAccountLocator`/`OrgAdminAccountRegion`.
 - **SC-016**: The `gosnowflake.Config` built for `TenantAccount` sets `Role` to `ACCOUNTADMIN` and `Account`/`Host` from the caller-supplied `locator`/`region`.
-- **SC-017**: `internal/snowflake/pool` imports `internal/snowflake/host`, `internal/config/base`, `internal/secrets`, `internal/errors`, and `github.com/snowflakedb/gosnowflake` among dependencies with an `internal/` boundary or a new `go.mod` entry — never `internal/secrets/aws` and never `internal/snowflake/statement`, grep-provable.
-- **SC-017a**: `internal/snowflake/host` imports only the standard library and `internal/errors` — never `internal/config/base`, `internal/secrets`, `internal/snowflake/pool`, or `github.com/snowflakedb/gosnowflake`, grep-provable.
-- **SC-018**: `go.mod` pins `github.com/snowflakedb/gosnowflake` at `v1.18.1`.
+- **SC-017**: `internal/snowflake/pool` imports `internal/snowflake/host`, `internal/config/base`, `internal/secrets`, `internal/errors`, and `github.com/snowflakedb/gosnowflake/v2` among dependencies with an `internal/` boundary or a new `go.mod` entry — never `internal/secrets/aws` and never `internal/snowflake/statement`, grep-provable.
+- **SC-017a**: `internal/snowflake/host` imports only the standard library and `internal/errors` — never `internal/config/base`, `internal/secrets`, `internal/snowflake/pool`, or `github.com/snowflakedb/gosnowflake/v2`, grep-provable.
+- **SC-018**: `go.mod` requires the Snowflake driver at its `github.com/snowflakedb/gosnowflake/v2` module path.
 - **SC-019**: The dial step is reachable through an unexported, swappable seam so unit tests exercise `Pool`'s caching, eviction, self-healing, and concurrency behavior without a real Snowflake account, a real network call, or the real driver.
 - **SC-020**: Unit test coverage exceeds 95% for both packages.
 - **SC-021**: Every `*sql.DB` this package dials has `SetMaxOpenConns`, `SetMaxIdleConns`, `SetConnMaxLifetime`, and `SetConnMaxIdleTime` applied from `cfg.Snowflake.MaxConnectionPoolSize`/`MaxIdleConnections`/`ConnectionMaxLifetime`/`ConnectionMaxIdleTime`, and the health probe's context deadline is `cfg.Snowflake.ConnectionProbeTimeout`.
@@ -305,7 +305,7 @@ This specification defines the `internal/snowflake/pool/` and `internal/snowflak
 - **SnowflakeAccount CRD (006, not yet written)**: `specs/scope-006-snowflake-account-crd.md` - `internal/account/tenant`, the second consumer of `internal/snowflake/host`, which builds `status.accountUrl` from `host.URL`.
 - **Secrets Handling (003)**: `specs/003-secrets-handling.md` - `KeyStore`, `KeyManager`, `Identifier`, `NewOrgAdminIdentifier()`, `NewTenantIdentifier()`, `Credentials`, `KeyManager.GetCredentials()`.
 - **Base Config (002)**: `specs/002-base-config.md` - `SnowflakeSettings`, in particular `OrgAdminAccountLocator`, `OrgAdminAccountRegion`, `UsePrivateLink`.
-- **Driver documentation**: `github.com/snowflakedb/gosnowflake` (`godoc`) - `Config`, `NewConnector`, `DSN`, `AuthTypeJwt`; consult the pinned version's source before implementation, per this repo's own convention of verifying vendor behavior rather than assuming it.
+- **Driver documentation**: `github.com/snowflakedb/gosnowflake/v2` (`godoc`) - `Config`, `NewConnector`, `DSN`, `AuthTypeJwt`; consult the pinned version's source before implementation, per this repo's own convention of verifying vendor behavior rather than assuming it.
 
 <br/><br/><br/><br/><br/>
 

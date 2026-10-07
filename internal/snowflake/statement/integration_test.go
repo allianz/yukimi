@@ -27,7 +27,7 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
-	"github.com/snowflakedb/gosnowflake"
+	"github.com/snowflakedb/gosnowflake/v2"
 
 	"github.com/allianz/yukimi/internal/config/base"
 	"github.com/allianz/yukimi/internal/secrets"
