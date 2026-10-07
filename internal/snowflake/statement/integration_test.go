@@ -27,7 +27,7 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
-	"github.com/snowflakedb/gosnowflake"
+	"github.com/snowflakedb/gosnowflake/v2"
 
 	"github.com/allianz/yukimi/internal/config/base"
 	"github.com/allianz/yukimi/internal/secrets"
@@ -74,11 +74,11 @@ func sampleTenantDB(t *testing.T) (db *sql.DB, ctx context.Context) {
 	t.Cleanup(func() { _ = p.Close() })
 
 	ctx = context.Background()
-	db, err = p.TenantAccount(ctx,
+	db, err = p.TenantDB(ctx,
 		os.Getenv("SAMPLE_CUSTOMER_NAMESPACE"), os.Getenv("SAMPLE_CUSTOMER_ACCOUNT"),
 		os.Getenv("SAMPLE_CUSTOMER_ACCOUNT_LOCATOR"), os.Getenv("SAMPLE_CUSTOMER_ACCOUNT_REGION"))
 	if err != nil {
-		t.Fatalf("TenantAccount: %v", err)
+		t.Fatalf("TenantDB: %v", err)
 	}
 	return db, ctx
 }

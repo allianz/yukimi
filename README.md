@@ -87,6 +87,13 @@ $EDITOR .env
 make dev             # creates a kind cluster, applies CRDs, runs the controller
 ```
 
-See [docs/development/development.md](docs/development/development.md) for the
-full set of targets.
+
+## Documentation
+
+- [docs/architecture.md](docs/architecture.md) — how the system is designed and documented: the
+  product design, one spec per package, and the spec-driven process that produces them
+- [docs/development.md](docs/development.md) — setup, make targets,
+  testing, local development and scaffolding
+- [CONTRIBUTING.md](CONTRIBUTING.md) — reporting issues, which path a change takes, pull requests
+  and review
 

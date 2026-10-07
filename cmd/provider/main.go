@@ -191,7 +191,7 @@ func main() {
 	}()
 
 	startupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	_, err = p.OrgAdmin(startupCtx)
+	_, err = p.OrgAdminDB(startupCtx)
 	cancel()
 	kingpin.FatalIfError(err, "failed to establish org-admin Snowflake connection")
 

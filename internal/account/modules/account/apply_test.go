@@ -26,7 +26,7 @@ import (
 	"time"
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
-	"github.com/snowflakedb/gosnowflake"
+	"github.com/snowflakedb/gosnowflake/v2"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/allianz/yukimi/internal/account/pipeline"
@@ -115,7 +115,7 @@ func TestApply_FreshCreate_Success(t *testing.T) {
 		t.Errorf("AccountCreatedAt = %v, want at or after %v", cr.Status.AccountCreatedAt.Time, before)
 	}
 	if fake.tenantCalls != 0 {
-		t.Errorf("TenantAccount called %d times, want 0 — a fresh create must not verify reachability itself", fake.tenantCalls)
+		t.Errorf("TenantDB called %d times, want 0 — a fresh create must not verify reachability itself", fake.tenantCalls)
 	}
 }
 
@@ -139,7 +139,7 @@ func TestApply_KnownLocator_NilCreatedAt_ConnectionSucceeds(t *testing.T) {
 		t.Errorf("outcome.State = %v, want StateDone", outcome.State)
 	}
 	if fake.tenantCalls != 1 {
-		t.Errorf("TenantAccount called %d times, want 1", fake.tenantCalls)
+		t.Errorf("TenantDB called %d times, want 1", fake.tenantCalls)
 	}
 }
 
@@ -206,7 +206,7 @@ func TestApply_KnownLocator_PastGracePeriod_ConnectionSucceeds(t *testing.T) {
 		t.Errorf("outcome.State = %v, want StateDone", outcome.State)
 	}
 	if fake.tenantCalls != 1 {
-		t.Errorf("TenantAccount called %d times, want 1", fake.tenantCalls)
+		t.Errorf("TenantDB called %d times, want 1", fake.tenantCalls)
 	}
 }
 
