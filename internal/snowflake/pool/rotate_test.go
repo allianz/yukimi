@@ -264,9 +264,9 @@ func TestRotateCredential_FailedAlterUserLeavesStoreUntouched(t *testing.T) {
 	}
 }
 
-// --- maybeRotateLocked, exercised through OrgAdmin/TenantAccount ---------------
+// --- maybeRotateLocked, exercised through OrgAdminDB/TenantDB ---------------
 
-func TestOrgAdmin_FreshCredential_NeverAttemptsRotation(t *testing.T) {
+func TestOrgAdminDB_FreshCredential_NeverAttemptsRotation(t *testing.T) {
 	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
 	id, _ := secrets.NewOrgAdminIdentifier(cfg.Snowflake.Org, cfg.Snowflake.OrgAdminAccount)
@@ -277,8 +277,8 @@ func TestOrgAdmin_FreshCredential_NeverAttemptsRotation(t *testing.T) {
 	p := New(keyManager, cfg)
 	p.dial = func(dialConfig) (*sql.DB, error) { return rotDB, nil }
 
-	if _, err := p.OrgAdmin(context.Background()); err != nil {
-		t.Fatalf("OrgAdmin: %v", err)
+	if _, err := p.OrgAdminDB(context.Background()); err != nil {
+		t.Fatalf("OrgAdminDB: %v", err)
 	}
 	if len(*queryCalls) != 0 || len(*execCalls) != 0 {
 		t.Errorf("expected no DESC USER or ALTER USER for a fresh credential, got queries=%v execs=%v", *queryCalls, *execCalls)
@@ -286,7 +286,7 @@ func TestOrgAdmin_FreshCredential_NeverAttemptsRotation(t *testing.T) {
 
 	// A second call — now a cache hit — must check again and still find
 	// nothing due.
-	if _, err := p.OrgAdmin(context.Background()); err != nil {
+	if _, err := p.OrgAdminDB(context.Background()); err != nil {
 		t.Fatalf("second call: %v", err)
 	}
 	if len(*queryCalls) != 0 || len(*execCalls) != 0 {
@@ -294,7 +294,7 @@ func TestOrgAdmin_FreshCredential_NeverAttemptsRotation(t *testing.T) {
 	}
 }
 
-func TestOrgAdmin_StaleCredential_RotatesInline(t *testing.T) {
+func TestOrgAdminDB_StaleCredential_RotatesInline(t *testing.T) {
 	store := secrets.NewFakeKeyStore()
 	staleAt := time.Now().AddDate(0, -7, 0)
 	store.Clock = func() time.Time { return staleAt }
@@ -315,12 +315,12 @@ func TestOrgAdmin_StaleCredential_RotatesInline(t *testing.T) {
 	p := New(keyManager, cfg)
 	p.dial = func(dialConfig) (*sql.DB, error) { return rotDB, nil }
 
-	db, err := p.OrgAdmin(context.Background())
+	db, err := p.OrgAdminDB(context.Background())
 	if err != nil {
-		t.Fatalf("OrgAdmin: %v", err)
+		t.Fatalf("OrgAdminDB: %v", err)
 	}
 	if db != rotDB {
-		t.Error("expected OrgAdmin to still return the dialed connection")
+		t.Error("expected OrgAdminDB to still return the dialed connection")
 	}
 	if len(*execCalls) != 1 {
 		t.Fatalf("expected exactly one ALTER USER, got %v", *execCalls)
@@ -338,7 +338,7 @@ func TestOrgAdmin_StaleCredential_RotatesInline(t *testing.T) {
 // A rotation failure (here: DESC USER reports neither slot matching the
 // current key — a drift scenario) never fails the caller's connection
 // request, and never reaches the store write.
-func TestTenantAccount_RotationFailureDoesNotFailCall(t *testing.T) {
+func TestTenantDB_RotationFailureDoesNotFailCall(t *testing.T) {
 	store := secrets.NewFakeKeyStore()
 	staleAt := time.Now().AddDate(0, -7, 0)
 	store.Clock = func() time.Time { return staleAt }
@@ -356,9 +356,9 @@ func TestTenantAccount_RotationFailureDoesNotFailCall(t *testing.T) {
 	p := New(keyManager, cfg)
 	p.dial = func(dialConfig) (*sql.DB, error) { return rotDB, nil }
 
-	db, err := p.TenantAccount(context.Background(), "finance", "a", "xy12345", "aws-eu-central-1")
+	db, err := p.TenantDB(context.Background(), "finance", "a", "xy12345", "aws-eu-central-1")
 	if err != nil {
-		t.Fatalf("TenantAccount must not fail even though rotation itself fails: %v", err)
+		t.Fatalf("TenantDB must not fail even though rotation itself fails: %v", err)
 	}
 	if db != rotDB {
 		t.Error("expected the caller's connection regardless of rotation outcome")
