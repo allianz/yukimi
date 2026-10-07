@@ -184,11 +184,11 @@ func TestNew_NoNetworkCall(t *testing.T) {
 	}
 }
 
-// --- OrgAdmin ----------------------------------------------------------------
+// --- OrgAdminDB ----------------------------------------------------------------
 
-// SC-002, SC-015: OrgAdmin's first call reads the org-admin credential via
+// SC-002, SC-015: OrgAdminDB's first call reads the org-admin credential via
 // NewOrgAdminIdentifier, builds the host, and dials with the right Config fields.
-func TestOrgAdmin_FirstCall(t *testing.T) {
+func TestOrgAdminDB_FirstCall(t *testing.T) {
 	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
 	id, err := secrets.NewOrgAdminIdentifier(cfg.Snowflake.Org, cfg.Snowflake.OrgAdminAccount)
@@ -202,9 +202,9 @@ func TestOrgAdmin_FirstCall(t *testing.T) {
 	p := New(keyManager, cfg)
 	p.dial = dialer.dial
 
-	db, err := p.OrgAdmin(context.Background())
+	db, err := p.OrgAdminDB(context.Background())
 	if err != nil {
-		t.Fatalf("OrgAdmin: %v", err)
+		t.Fatalf("OrgAdminDB: %v", err)
 	}
 	if db == nil {
 		t.Fatal("expected a non-nil *sql.DB")
@@ -235,8 +235,8 @@ func TestOrgAdmin_FirstCall(t *testing.T) {
 	}
 }
 
-// SC-003: every later OrgAdmin call returns the identical *sql.DB pointer.
-func TestOrgAdmin_CachesPointer(t *testing.T) {
+// SC-003: every later OrgAdminDB call returns the identical *sql.DB pointer.
+func TestOrgAdminDB_CachesPointer(t *testing.T) {
 	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
 	id, _ := secrets.NewOrgAdminIdentifier(cfg.Snowflake.Org, cfg.Snowflake.OrgAdminAccount)
@@ -248,11 +248,11 @@ func TestOrgAdmin_CachesPointer(t *testing.T) {
 	p.dial = dialer.dial
 
 	ctx := context.Background()
-	first, err := p.OrgAdmin(ctx)
+	first, err := p.OrgAdminDB(ctx)
 	if err != nil {
 		t.Fatalf("first call: %v", err)
 	}
-	second, err := p.OrgAdmin(ctx)
+	second, err := p.OrgAdminDB(ctx)
 	if err != nil {
 		t.Fatalf("second call: %v", err)
 	}
@@ -265,8 +265,8 @@ func TestOrgAdmin_CachesPointer(t *testing.T) {
 }
 
 // A malformed org-admin region returns a user error before any credential
-// read or dial is attempted, mirroring TenantAccount's SC-008 behavior.
-func TestOrgAdmin_MalformedRegion_NoConnectionAttempt(t *testing.T) {
+// read or dial is attempted, mirroring TenantDB's SC-008 behavior.
+func TestOrgAdminDB_MalformedRegion_NoConnectionAttempt(t *testing.T) {
 	store := secrets.NewFakeKeyStore()
 	getCalled := false
 	store.OnGet = func(secrets.Identifier) error { getCalled = true; return nil }
@@ -279,7 +279,7 @@ func TestOrgAdmin_MalformedRegion_NoConnectionAttempt(t *testing.T) {
 	p := New(keyManager, cfg)
 	p.dial = dialer.dial
 
-	_, err := p.OrgAdmin(context.Background())
+	_, err := p.OrgAdminDB(context.Background())
 	if err == nil || !errors.IsUserError(err) {
 		t.Fatalf("expected a user error, got %v", err)
 	}
@@ -293,20 +293,20 @@ func TestOrgAdmin_MalformedRegion_NoConnectionAttempt(t *testing.T) {
 
 // A malformed Org config value surfaces NewOrgAdminIdentifier's own validation
 // error before any credential read.
-func TestOrgAdmin_InvalidIdentifierSegment(t *testing.T) {
+func TestOrgAdminDB_InvalidIdentifierSegment(t *testing.T) {
 	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
 	cfg.Snowflake.Org = "my/org"
 
 	keyManager := secrets.NewKeyManager(store, time.Hour)
 	p := New(keyManager, cfg)
-	if _, err := p.OrgAdmin(context.Background()); err == nil || !errors.IsUserError(err) {
+	if _, err := p.OrgAdminDB(context.Background()); err == nil || !errors.IsUserError(err) {
 		t.Fatalf("expected a user error, got %v", err)
 	}
 }
 
 // A credential read failure is not cached; the next call retries in full.
-func TestOrgAdmin_CredentialReadFailureNotCached(t *testing.T) {
+func TestOrgAdminDB_CredentialReadFailureNotCached(t *testing.T) {
 	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
 	id, _ := secrets.NewOrgAdminIdentifier(cfg.Snowflake.Org, cfg.Snowflake.OrgAdminAccount)
@@ -326,10 +326,10 @@ func TestOrgAdmin_CredentialReadFailureNotCached(t *testing.T) {
 	p := New(keyManager, cfg)
 	p.dial = dialer.dial
 
-	if _, err := p.OrgAdmin(context.Background()); err == nil {
+	if _, err := p.OrgAdminDB(context.Background()); err == nil {
 		t.Fatal("expected an error on the first, failing credential read")
 	}
-	if _, err := p.OrgAdmin(context.Background()); err != nil {
+	if _, err := p.OrgAdminDB(context.Background()); err != nil {
 		t.Fatalf("retry: %v", err)
 	}
 	if dialer.callCount() != 1 {
@@ -339,7 +339,7 @@ func TestOrgAdmin_CredentialReadFailureNotCached(t *testing.T) {
 
 // A stored credential that fails to unmarshal (not valid JSON) is a system
 // error, not cached.
-func TestOrgAdmin_UnmarshalFailure(t *testing.T) {
+func TestOrgAdminDB_UnmarshalFailure(t *testing.T) {
 	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
 	id, _ := secrets.NewOrgAdminIdentifier(cfg.Snowflake.Org, cfg.Snowflake.OrgAdminAccount)
@@ -349,13 +349,13 @@ func TestOrgAdmin_UnmarshalFailure(t *testing.T) {
 
 	keyManager := secrets.NewKeyManager(store, time.Hour)
 	p := New(keyManager, cfg)
-	if _, err := p.OrgAdmin(context.Background()); err == nil {
+	if _, err := p.OrgAdminDB(context.Background()); err == nil {
 		t.Fatal("expected an error for a credential that does not unmarshal")
 	}
 }
 
 // A stored credential whose private key does not parse is a system error.
-func TestOrgAdmin_ParsePrivateKeyFailure(t *testing.T) {
+func TestOrgAdminDB_ParsePrivateKeyFailure(t *testing.T) {
 	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
 	id, _ := secrets.NewOrgAdminIdentifier(cfg.Snowflake.Org, cfg.Snowflake.OrgAdminAccount)
@@ -366,14 +366,14 @@ func TestOrgAdmin_ParsePrivateKeyFailure(t *testing.T) {
 
 	keyManager := secrets.NewKeyManager(store, time.Hour)
 	p := New(keyManager, cfg)
-	if _, err := p.OrgAdmin(context.Background()); err == nil {
+	if _, err := p.OrgAdminDB(context.Background()); err == nil {
 		t.Fatal("expected an error for a private key that does not parse")
 	}
 }
 
-// SC-009: a failed dial on OrgAdmin's first call leaves nothing cached; the
+// SC-009: a failed dial on OrgAdminDB's first call leaves nothing cached; the
 // next call retries the credential read and dial from scratch.
-func TestOrgAdmin_FailedDialNotCached(t *testing.T) {
+func TestOrgAdminDB_FailedDialNotCached(t *testing.T) {
 	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
 	id, _ := secrets.NewOrgAdminIdentifier(cfg.Snowflake.Org, cfg.Snowflake.OrgAdminAccount)
@@ -391,14 +391,14 @@ func TestOrgAdmin_FailedDialNotCached(t *testing.T) {
 	p.dial = dialer.dial
 
 	ctx := context.Background()
-	if _, err := p.OrgAdmin(ctx); err == nil {
+	if _, err := p.OrgAdminDB(ctx); err == nil {
 		t.Fatal("expected an error on the first, failing dial")
 	}
 	if p.orgAdminDB != nil {
 		t.Error("a failed dial must not be cached")
 	}
 
-	db, err := p.OrgAdmin(ctx)
+	db, err := p.OrgAdminDB(ctx)
 	if err != nil {
 		t.Fatalf("second call: %v", err)
 	}
@@ -410,10 +410,10 @@ func TestOrgAdmin_FailedDialNotCached(t *testing.T) {
 	}
 }
 
-// --- TenantAccount -----------------------------------------------------------
+// --- TenantDB -----------------------------------------------------------
 
-// SC-004: TenantAccount builds its secret identifier via NewTenantIdentifier.
-func TestTenantAccount_BuildsIdentifier(t *testing.T) {
+// SC-004: TenantDB builds its secret identifier via NewTenantIdentifier.
+func TestTenantDB_BuildsIdentifier(t *testing.T) {
 	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
 
@@ -427,8 +427,8 @@ func TestTenantAccount_BuildsIdentifier(t *testing.T) {
 	p := New(keyManager, cfg)
 	p.dial = dialer.dial
 
-	if _, err := p.TenantAccount(context.Background(), "finance", "analytics-team-eu", "xy12345", "aws-eu-central-1"); err != nil {
-		t.Fatalf("TenantAccount: %v", err)
+	if _, err := p.TenantDB(context.Background(), "finance", "analytics-team-eu", "xy12345", "aws-eu-central-1"); err != nil {
+		t.Fatalf("TenantDB: %v", err)
 	}
 	if gotId != id {
 		t.Errorf("Get called with id %q, want %q", gotId, id)
@@ -438,7 +438,7 @@ func TestTenantAccount_BuildsIdentifier(t *testing.T) {
 // SC-005, SC-016: identical calls cache-hit the same pointer; a different
 // namespace or accountName dials a distinct one, with Role=ACCOUNTADMIN and
 // Account/Host built from the caller-supplied locator/region.
-func TestTenantAccount_CachesByFullKey(t *testing.T) {
+func TestTenantDB_CachesByFullKey(t *testing.T) {
 	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
 	for _, name := range []string{"a", "b"} {
@@ -452,11 +452,11 @@ func TestTenantAccount_CachesByFullKey(t *testing.T) {
 	p.dial = dialer.dial
 
 	ctx := context.Background()
-	first, err := p.TenantAccount(ctx, "finance", "a", "xy12345", "aws-eu-central-1")
+	first, err := p.TenantDB(ctx, "finance", "a", "xy12345", "aws-eu-central-1")
 	if err != nil {
 		t.Fatalf("first call: %v", err)
 	}
-	second, err := p.TenantAccount(ctx, "finance", "a", "xy12345", "aws-eu-central-1")
+	second, err := p.TenantDB(ctx, "finance", "a", "xy12345", "aws-eu-central-1")
 	if err != nil {
 		t.Fatalf("second call: %v", err)
 	}
@@ -467,7 +467,7 @@ func TestTenantAccount_CachesByFullKey(t *testing.T) {
 		t.Fatalf("dial count = %d, want 1", dialer.callCount())
 	}
 
-	third, err := p.TenantAccount(ctx, "finance", "b", "xc00001", "aws-eu-west-3")
+	third, err := p.TenantDB(ctx, "finance", "b", "xc00001", "aws-eu-west-3")
 	if err != nil {
 		t.Fatalf("third call: %v", err)
 	}
@@ -493,7 +493,7 @@ func TestTenantAccount_CachesByFullKey(t *testing.T) {
 
 // SC-008: a malformed region returns a user error before any credential read
 // or dial.
-func TestTenantAccount_MalformedRegion_NoConnectionAttempt(t *testing.T) {
+func TestTenantDB_MalformedRegion_NoConnectionAttempt(t *testing.T) {
 	store := secrets.NewFakeKeyStore()
 	getCalled := false
 	store.OnGet = func(secrets.Identifier) error { getCalled = true; return nil }
@@ -503,7 +503,7 @@ func TestTenantAccount_MalformedRegion_NoConnectionAttempt(t *testing.T) {
 	p := New(keyManager, testConfig())
 	p.dial = dialer.dial
 
-	_, err := p.TenantAccount(context.Background(), "finance", "a", "xy12345", "eu-central-1")
+	_, err := p.TenantDB(context.Background(), "finance", "a", "xy12345", "eu-central-1")
 	if err == nil || !errors.IsUserError(err) {
 		t.Fatalf("expected a user error, got %v", err)
 	}
@@ -517,17 +517,17 @@ func TestTenantAccount_MalformedRegion_NoConnectionAttempt(t *testing.T) {
 
 // A malformed namespace/accountName surfaces NewTenantIdentifier's own validation
 // error before any credential read.
-func TestTenantAccount_InvalidIdentifierSegment(t *testing.T) {
+func TestTenantDB_InvalidIdentifierSegment(t *testing.T) {
 	store := secrets.NewFakeKeyStore()
 	keyManager := secrets.NewKeyManager(store, time.Hour)
 	p := New(keyManager, testConfig())
-	if _, err := p.TenantAccount(context.Background(), "finance/eu", "a", "xy12345", "aws-eu-central-1"); err == nil || !errors.IsUserError(err) {
+	if _, err := p.TenantDB(context.Background(), "finance/eu", "a", "xy12345", "aws-eu-central-1"); err == nil || !errors.IsUserError(err) {
 		t.Fatalf("expected a user error, got %v", err)
 	}
 }
 
 // A credential read failure is not cached; the next call retries in full.
-func TestTenantAccount_CredentialReadFailureNotCached(t *testing.T) {
+func TestTenantDB_CredentialReadFailureNotCached(t *testing.T) {
 	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
 	id, _ := secrets.NewTenantIdentifier(cfg.Snowflake.Org, "finance", "a")
@@ -548,10 +548,10 @@ func TestTenantAccount_CredentialReadFailureNotCached(t *testing.T) {
 	p.dial = dialer.dial
 
 	ctx := context.Background()
-	if _, err := p.TenantAccount(ctx, "finance", "a", "xy12345", "aws-eu-central-1"); err == nil {
+	if _, err := p.TenantDB(ctx, "finance", "a", "xy12345", "aws-eu-central-1"); err == nil {
 		t.Fatal("expected an error on the first, failing credential read")
 	}
-	if _, err := p.TenantAccount(ctx, "finance", "a", "xy12345", "aws-eu-central-1"); err != nil {
+	if _, err := p.TenantDB(ctx, "finance", "a", "xy12345", "aws-eu-central-1"); err != nil {
 		t.Fatalf("retry: %v", err)
 	}
 	if dialer.callCount() != 1 {
@@ -561,7 +561,7 @@ func TestTenantAccount_CredentialReadFailureNotCached(t *testing.T) {
 
 // A stored credential that fails to unmarshal (not valid JSON) is a system
 // error, not cached.
-func TestTenantAccount_UnmarshalFailure(t *testing.T) {
+func TestTenantDB_UnmarshalFailure(t *testing.T) {
 	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
 	id, _ := secrets.NewTenantIdentifier(cfg.Snowflake.Org, "finance", "a")
@@ -571,13 +571,13 @@ func TestTenantAccount_UnmarshalFailure(t *testing.T) {
 
 	keyManager := secrets.NewKeyManager(store, time.Hour)
 	p := New(keyManager, cfg)
-	if _, err := p.TenantAccount(context.Background(), "finance", "a", "xy12345", "aws-eu-central-1"); err == nil {
+	if _, err := p.TenantDB(context.Background(), "finance", "a", "xy12345", "aws-eu-central-1"); err == nil {
 		t.Fatal("expected an error for a credential that does not unmarshal")
 	}
 }
 
 // A stored credential whose private key does not parse is a system error.
-func TestTenantAccount_ParsePrivateKeyFailure(t *testing.T) {
+func TestTenantDB_ParsePrivateKeyFailure(t *testing.T) {
 	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
 	id, _ := secrets.NewTenantIdentifier(cfg.Snowflake.Org, "finance", "a")
@@ -588,14 +588,14 @@ func TestTenantAccount_ParsePrivateKeyFailure(t *testing.T) {
 
 	keyManager := secrets.NewKeyManager(store, time.Hour)
 	p := New(keyManager, cfg)
-	if _, err := p.TenantAccount(context.Background(), "finance", "a", "xy12345", "aws-eu-central-1"); err == nil {
+	if _, err := p.TenantDB(context.Background(), "finance", "a", "xy12345", "aws-eu-central-1"); err == nil {
 		t.Fatal("expected an error for a private key that does not parse")
 	}
 }
 
 // SC-009: a failed dial on the first call for a key leaves nothing cached;
 // the next call retries the credential read and dial from scratch.
-func TestTenantAccount_FailedDialNotCached(t *testing.T) {
+func TestTenantDB_FailedDialNotCached(t *testing.T) {
 	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
 	id, _ := secrets.NewTenantIdentifier(cfg.Snowflake.Org, "finance", "a")
@@ -612,14 +612,14 @@ func TestTenantAccount_FailedDialNotCached(t *testing.T) {
 	p.dial = dialer.dial
 
 	ctx := context.Background()
-	if _, err := p.TenantAccount(ctx, "finance", "a", "xy12345", "aws-eu-central-1"); err == nil {
+	if _, err := p.TenantDB(ctx, "finance", "a", "xy12345", "aws-eu-central-1"); err == nil {
 		t.Fatal("expected an error on the first, failing dial")
 	}
 	if _, ok := p.cachedTenant(tenantKey{"finance", "a"}, "xy12345", "aws-eu-central-1"); ok {
 		t.Error("a failed dial must not be cached")
 	}
 
-	if _, err := p.TenantAccount(ctx, "finance", "a", "xy12345", "aws-eu-central-1"); err != nil {
+	if _, err := p.TenantDB(ctx, "finance", "a", "xy12345", "aws-eu-central-1"); err != nil {
 		t.Fatalf("retry: %v", err)
 	}
 	if dialer.callCount() != 2 {
@@ -629,7 +629,7 @@ func TestTenantAccount_FailedDialNotCached(t *testing.T) {
 
 // SC-010: concurrent callers for the same key on a cold cache result in
 // exactly one dial and one cached *sql.DB, observed by all callers.
-func TestTenantAccount_ConcurrentSameKey_OneDial(t *testing.T) {
+func TestTenantDB_ConcurrentSameKey_OneDial(t *testing.T) {
 	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
 	id, _ := secrets.NewTenantIdentifier(cfg.Snowflake.Org, "finance", "a")
@@ -648,7 +648,7 @@ func TestTenantAccount_ConcurrentSameKey_OneDial(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			results[i], errs[i] = p.TenantAccount(context.Background(), "finance", "a", "xy12345", "aws-eu-central-1")
+			results[i], errs[i] = p.TenantDB(context.Background(), "finance", "a", "xy12345", "aws-eu-central-1")
 		}(i)
 	}
 	wg.Wait()
@@ -671,7 +671,7 @@ func TestTenantAccount_ConcurrentSameKey_OneDial(t *testing.T) {
 // SC-010a: a cold dial for one key never waits on a cold dial for a
 // different key — proven by blocking key A's dial and asserting key B's
 // completes anyway.
-func TestTenantAccount_ConcurrentDifferentKeys_DoNotSerialize(t *testing.T) {
+func TestTenantDB_ConcurrentDifferentKeys_DoNotSerialize(t *testing.T) {
 	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
 	for _, name := range []string{"a", "b"} {
@@ -696,7 +696,7 @@ func TestTenantAccount_ConcurrentDifferentKeys_DoNotSerialize(t *testing.T) {
 	wgA.Add(1)
 	go func() {
 		defer wgA.Done()
-		_, _ = p.TenantAccount(context.Background(), "finance", "a", "locatorA", "aws-eu-central-1")
+		_, _ = p.TenantDB(context.Background(), "finance", "a", "locatorA", "aws-eu-central-1")
 	}()
 
 	select {
@@ -707,7 +707,7 @@ func TestTenantAccount_ConcurrentDifferentKeys_DoNotSerialize(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		_, _ = p.TenantAccount(context.Background(), "finance", "b", "locatorB", "aws-eu-central-1")
+		_, _ = p.TenantDB(context.Background(), "finance", "b", "locatorB", "aws-eu-central-1")
 		close(done)
 	}()
 
@@ -725,7 +725,7 @@ func TestTenantAccount_ConcurrentDifferentKeys_DoNotSerialize(t *testing.T) {
 
 // SC-011: a call whose locator or region differs from what is cached closes
 // the stale *sql.DB and returns a freshly dialed one.
-func TestTenantAccount_SelfHealsOnLocatorChange(t *testing.T) {
+func TestTenantDB_SelfHealsOnLocatorChange(t *testing.T) {
 	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
 	id, _ := secrets.NewTenantIdentifier(cfg.Snowflake.Org, "finance", "a")
@@ -737,12 +737,12 @@ func TestTenantAccount_SelfHealsOnLocatorChange(t *testing.T) {
 	p.dial = dialer.dial
 
 	ctx := context.Background()
-	first, err := p.TenantAccount(ctx, "finance", "a", "xy12345", "aws-eu-central-1")
+	first, err := p.TenantDB(ctx, "finance", "a", "xy12345", "aws-eu-central-1")
 	if err != nil {
 		t.Fatalf("first call: %v", err)
 	}
 
-	second, err := p.TenantAccount(ctx, "finance", "a", "xc99999", "aws-eu-central-1")
+	second, err := p.TenantDB(ctx, "finance", "a", "xc99999", "aws-eu-central-1")
 	if err != nil {
 		t.Fatalf("second call (new locator): %v", err)
 	}
@@ -757,7 +757,7 @@ func TestTenantAccount_SelfHealsOnLocatorChange(t *testing.T) {
 	}
 }
 
-func TestTenantAccount_SelfHealsOnRegionChange(t *testing.T) {
+func TestTenantDB_SelfHealsOnRegionChange(t *testing.T) {
 	store := secrets.NewFakeKeyStore()
 	cfg := testConfig()
 	id, _ := secrets.NewTenantIdentifier(cfg.Snowflake.Org, "finance", "a")
@@ -769,11 +769,11 @@ func TestTenantAccount_SelfHealsOnRegionChange(t *testing.T) {
 	p.dial = dialer.dial
 
 	ctx := context.Background()
-	first, err := p.TenantAccount(ctx, "finance", "a", "xy12345", "aws-eu-central-1")
+	first, err := p.TenantDB(ctx, "finance", "a", "xy12345", "aws-eu-central-1")
 	if err != nil {
 		t.Fatalf("first call: %v", err)
 	}
-	second, err := p.TenantAccount(ctx, "finance", "a", "xy12345", "aws-eu-west-3")
+	second, err := p.TenantDB(ctx, "finance", "a", "xy12345", "aws-eu-west-3")
 	if err != nil {
 		t.Fatalf("second call (new region): %v", err)
 	}
@@ -801,7 +801,7 @@ func TestEvictTenant_ClosesAndDialsAgain(t *testing.T) {
 	p.dial = dialer.dial
 
 	ctx := context.Background()
-	first, err := p.TenantAccount(ctx, "finance", "a", "xy12345", "aws-eu-central-1")
+	first, err := p.TenantDB(ctx, "finance", "a", "xy12345", "aws-eu-central-1")
 	if err != nil {
 		t.Fatalf("first call: %v", err)
 	}
@@ -815,7 +815,7 @@ func TestEvictTenant_ClosesAndDialsAgain(t *testing.T) {
 		t.Error("expected the evicted connection to be closed")
 	}
 
-	second, err := p.TenantAccount(ctx, "finance", "a", "xy12345", "aws-eu-central-1")
+	second, err := p.TenantDB(ctx, "finance", "a", "xy12345", "aws-eu-central-1")
 	if err != nil {
 		t.Fatalf("second call: %v", err)
 	}
