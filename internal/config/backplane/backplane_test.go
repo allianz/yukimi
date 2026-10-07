@@ -105,15 +105,15 @@ func TestLoad_WellFormed(t *testing.T) {
 	}
 }
 
-// SC-002: Load returns a user error when <configDir>/backplane.yaml does not exist.
+// SC-002: Load returns a system error when <configDir>/backplane.yaml does not exist.
 func TestLoad_FileNotFound(t *testing.T) {
 	dir := t.TempDir()
 	_, err := Load(dir)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if !errors.IsUserError(err) {
-		t.Errorf("expected user error, got: %v", err)
+	if errors.IsUserError(err) {
+		t.Errorf("expected system error, got user error: %v", err)
 	}
 	want := "backplane.yaml not found in " + dir
 	if err.Error() != want {
@@ -141,14 +141,14 @@ func TestLoad_UnreadableFile(t *testing.T) {
 	}
 }
 
-// SC-003: Load returns a user error when the file is not valid YAML.
+// SC-003: Load returns a system error when the file is not valid YAML.
 func TestLoad_MalformedYAML(t *testing.T) {
 	_, err := Load(newBackplaneDir(t, "regions: [this is not a valid map"))
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if !errors.IsUserError(err) {
-		t.Errorf("expected user error, got: %v", err)
+	if errors.IsUserError(err) {
+		t.Errorf("expected system error, got user error: %v", err)
 	}
 	if !strings.HasPrefix(err.Error(), "failed to parse backplane.yaml:") {
 		t.Errorf("error = %q, want prefix %q", err.Error(), "failed to parse backplane.yaml:")
@@ -277,7 +277,7 @@ func TestConnection_Lookup(t *testing.T) {
 	}
 }
 
-// SC-008: Load returns a user error when the same connection name appears twice in one
+// SC-008: Load returns a system error when the same connection name appears twice in one
 // region's inventory.
 func TestLoad_DuplicateConnection(t *testing.T) {
 	yaml := `
@@ -293,8 +293,8 @@ regions:
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if !errors.IsUserError(err) {
-		t.Errorf("expected user error, got: %v", err)
+	if errors.IsUserError(err) {
+		t.Errorf("expected system error, got user error: %v", err)
 	}
 	want := "regions.aws-eu-central-1.inventory contains connection 'agn' more than once"
 	if err.Error() != want {
@@ -302,7 +302,7 @@ regions:
 	}
 }
 
-// SC-009: Load returns a user error when an inventory entry is missing connection or type.
+// SC-009: Load returns a system error when an inventory entry is missing connection or type.
 func TestLoad_MissingInventoryFields(t *testing.T) {
 	t.Run("missingConnection", func(t *testing.T) {
 		yaml := "regions:\n  aws-eu-central-1:\n    inventory:\n      - type: AWSVPCEID\n"
@@ -314,8 +314,8 @@ func TestLoad_MissingInventoryFields(t *testing.T) {
 		if err.Error() != want {
 			t.Errorf("error = %q, want %q", err.Error(), want)
 		}
-		if !errors.IsUserError(err) {
-			t.Errorf("expected user error, got: %v", err)
+		if errors.IsUserError(err) {
+			t.Errorf("expected system error, got user error: %v", err)
 		}
 	})
 
@@ -329,13 +329,13 @@ func TestLoad_MissingInventoryFields(t *testing.T) {
 		if err.Error() != want {
 			t.Errorf("error = %q, want %q", err.Error(), want)
 		}
-		if !errors.IsUserError(err) {
-			t.Errorf("expected user error, got: %v", err)
+		if errors.IsUserError(err) {
+			t.Errorf("expected system error, got user error: %v", err)
 		}
 	})
 }
 
-// SC-010: Load returns a user error when a regionalAllowlist entry references a connection
+// SC-010: Load returns a system error when a regionalAllowlist entry references a connection
 // absent from that region's inventory.
 func TestLoad_UnknownAllowlistConnection(t *testing.T) {
 	yaml := `
@@ -352,8 +352,8 @@ regions:
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if !errors.IsUserError(err) {
-		t.Errorf("expected user error, got: %v", err)
+	if errors.IsUserError(err) {
+		t.Errorf("expected system error, got user error: %v", err)
 	}
 	want := "regions.aws-eu-central-1.regionalAllowlist references unknown connection 'agn'"
 	if err.Error() != want {
@@ -387,7 +387,7 @@ regions:
 	}
 }
 
-// SC-012: Load returns a user error when a regionalAllowlist entry's allowedIPs falls
+// SC-012: Load returns a system error when a regionalAllowlist entry's allowedIPs falls
 // outside its connection's maxCidrs.
 func TestLoad_AllowlistOutsideMaxCidrs(t *testing.T) {
 	yaml := `
@@ -405,8 +405,8 @@ regions:
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if !errors.IsUserError(err) {
-		t.Errorf("expected user error, got: %v", err)
+	if errors.IsUserError(err) {
+		t.Errorf("expected system error, got user error: %v", err)
 	}
 	want := "regions.aws-eu-central-1.regionalAllowlist connection 'agn' allowedIPs " +
 		"'172.32.0.0/16' is not contained within maxCidrs [172.16.0.0/12]"
@@ -415,7 +415,7 @@ regions:
 	}
 }
 
-// SC-013: Load returns a user error when allowedIPs is set for a connection with no maxCidrs.
+// SC-013: Load returns a system error when allowedIPs is set for a connection with no maxCidrs.
 func TestLoad_AllowlistWithNoMaxCidrsToNarrow(t *testing.T) {
 	yaml := `
 regions:
@@ -431,8 +431,8 @@ regions:
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if !errors.IsUserError(err) {
-		t.Errorf("expected user error, got: %v", err)
+	if errors.IsUserError(err) {
+		t.Errorf("expected system error, got user error: %v", err)
 	}
 	want := "regions.aws-eu-central-1.regionalAllowlist connection 'dbt-cloud' specifies " +
 		"allowedIPs but this connection has no maxCidrs to narrow"
@@ -441,7 +441,7 @@ regions:
 	}
 }
 
-// SC-014: Load returns a user error when any maxCidrs or allowedIPs entry is not a valid CIDR.
+// SC-014: Load returns a system error when any maxCidrs or allowedIPs entry is not a valid CIDR.
 func TestLoad_InvalidCIDR(t *testing.T) {
 	t.Run("maxCidrs", func(t *testing.T) {
 		yaml := `
@@ -460,8 +460,8 @@ regions:
 		if err.Error() != want {
 			t.Errorf("error = %q, want %q", err.Error(), want)
 		}
-		if !errors.IsUserError(err) {
-			t.Errorf("expected user error, got: %v", err)
+		if errors.IsUserError(err) {
+			t.Errorf("expected system error, got user error: %v", err)
 		}
 	})
 
@@ -486,8 +486,8 @@ regions:
 		if err.Error() != want {
 			t.Errorf("error = %q, want %q", err.Error(), want)
 		}
-		if !errors.IsUserError(err) {
-			t.Errorf("expected user error, got: %v", err)
+		if errors.IsUserError(err) {
+			t.Errorf("expected system error, got user error: %v", err)
 		}
 	})
 }

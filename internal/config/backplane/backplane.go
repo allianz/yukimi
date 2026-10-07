@@ -93,7 +93,7 @@ type rawAllowlistEntry struct {
 //
 // Returns:
 //   - *Config: the validated configuration; never nil on a nil error
-//   - User error if the file is missing, unreadable, not valid YAML, an inventory entry is
+//   - System error if the file is missing, unreadable, not valid YAML, an inventory entry is
 //     missing its connection name or type, a connection name repeats within one region's
 //     inventory, a regionalAllowlist entry names a connection absent from that region's
 //     inventory, any maxCidrs/allowedIPs entry is not a valid CIDR, an allowedIPs entry falls
@@ -103,14 +103,14 @@ func Load(configDir string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, errors.NewUserError(fmt.Sprintf("backplane.yaml not found in %s", configDir))
+			return nil, fmt.Errorf("backplane.yaml not found in %s", configDir)
 		}
 		return nil, fmt.Errorf("reading backplane.yaml: %w", err)
 	}
 
 	var raw rawConfig
 	if err := yaml.Unmarshal(data, &raw); err != nil {
-		return nil, errors.NewUserError(fmt.Sprintf("failed to parse backplane.yaml: %v", err))
+		return nil, fmt.Errorf("failed to parse backplane.yaml: %w", err)
 	}
 
 	regionNames := make([]string, 0, len(raw.Regions))
@@ -151,23 +151,23 @@ func loadRegion(regionName string, rr rawRegion) (*Region, error) {
 	seenConnections := make(map[string]bool, len(rr.Inventory))
 	for idx, rc := range rr.Inventory {
 		if rc.Connection == "" {
-			return nil, errors.NewUserError(fmt.Sprintf(
-				"regions.%s.inventory[%d].connection is required", regionName, idx))
+			return nil, fmt.Errorf(
+				"regions.%s.inventory[%d].connection is required", regionName, idx)
 		}
 		if rc.Type == "" {
-			return nil, errors.NewUserError(fmt.Sprintf(
-				"regions.%s.inventory[%d].type is required", regionName, idx))
+			return nil, fmt.Errorf(
+				"regions.%s.inventory[%d].type is required", regionName, idx)
 		}
 		if seenConnections[rc.Connection] {
-			return nil, errors.NewUserError(fmt.Sprintf(
-				"regions.%s.inventory contains connection '%s' more than once", regionName, rc.Connection))
+			return nil, fmt.Errorf(
+				"regions.%s.inventory contains connection '%s' more than once", regionName, rc.Connection)
 		}
 		seenConnections[rc.Connection] = true
 
 		for _, cidr := range rc.MaxCidrs {
 			if _, _, err := net.ParseCIDR(cidr); err != nil {
-				return nil, errors.NewUserError(fmt.Sprintf(
-					"regions.%s.inventory[%d].maxCidrs '%s' is not a valid CIDR", regionName, idx, cidr))
+				return nil, fmt.Errorf(
+					"regions.%s.inventory[%d].maxCidrs '%s' is not a valid CIDR", regionName, idx, cidr)
 			}
 		}
 
@@ -188,22 +188,22 @@ func loadRegion(regionName string, rr rawRegion) (*Region, error) {
 	for _, ra := range rr.RegionalAllowlist {
 		conn, ok := connByName[ra.Connection]
 		if !ok {
-			return nil, errors.NewUserError(fmt.Sprintf(
-				"regions.%s.regionalAllowlist references unknown connection '%s'", regionName, ra.Connection))
+			return nil, fmt.Errorf(
+				"regions.%s.regionalAllowlist references unknown connection '%s'", regionName, ra.Connection)
 		}
 
 		for _, ip := range ra.AllowedIPs {
 			if _, _, err := net.ParseCIDR(ip); err != nil {
-				return nil, errors.NewUserError(fmt.Sprintf(
+				return nil, fmt.Errorf(
 					"regions.%s.regionalAllowlist connection '%s' allowedIPs '%s' is not a valid CIDR",
-					regionName, ra.Connection, ip))
+					regionName, ra.Connection, ip)
 			}
 		}
 
 		if len(ra.AllowedIPs) > 0 && len(conn.MaxCidrs) == 0 {
-			return nil, errors.NewUserError(fmt.Sprintf(
+			return nil, fmt.Errorf(
 				"regions.%s.regionalAllowlist connection '%s' specifies allowedIPs but this connection has no maxCidrs to narrow",
-				regionName, ra.Connection))
+				regionName, ra.Connection)
 		}
 
 		for _, ip := range ra.AllowedIPs {
@@ -211,9 +211,9 @@ func loadRegion(regionName string, rr rawRegion) (*Region, error) {
 			// so ContainsCIDR cannot itself error here.
 			contained, _ := ContainsCIDR(conn.MaxCidrs, ip)
 			if !contained {
-				return nil, errors.NewUserError(fmt.Sprintf(
+				return nil, fmt.Errorf(
 					"regions.%s.regionalAllowlist connection '%s' allowedIPs '%s' is not contained within maxCidrs %v",
-					regionName, ra.Connection, ip, conn.MaxCidrs))
+					regionName, ra.Connection, ip, conn.MaxCidrs)
 			}
 		}
 

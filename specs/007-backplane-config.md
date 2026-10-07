@@ -1,16 +1,16 @@
 # Specification: Backplane Config (007)
 
+This specification covers the package: `internal/config/backplane/`.
+
 ## Overview
 
-The Backplane Config is a platform-owned catalog of the networking infrastructure and Snowflake
-account parameters that platform operations pre-provisions once per cloud region, outside
-Kubernetes. It exists so that creating a new Snowflake account never has to redo region-level
-setup work — VPC endpoints, allowed IP ranges, and baseline account parameters are recorded here
-once, and every account created afterwards simply attaches to what already exists. It is needed
-because later account-provisioning steps depend on details, like VPC endpoint IDs and permitted IP
-ranges, that only exist once Ops has finished a region's one-time Terraform rollout. The technical
-approach is a small YAML file, read once at startup into an immutable in-memory structure, plus a
-few lookup and validation helpers that other packages call directly.
+Platform Ops builds shared network infrastructure once per region, so new Snowflake accounts can
+attach to it instead of needing their own. The platform cannot discover this infrastructure, so
+Ops records it in the Backplane Config: the connections each region offers, the widest IP range
+each may carry, and whether the region is open for new accounts. The config also holds the
+baseline network access and account settings every new account inherits, and caps how far a
+tenant may later widen access. It is validated at startup, so a broken entry stops the platform
+instead of reaching a provisioned account.
 
 ## Key Concept: The Availability Gate
 
@@ -22,17 +22,15 @@ selected tenants early access by setting the `alpha-tester` namespace label.
 
 ## Key Concept: CIDR Containment
 
-Every ingress path (`connection`) in a region's `inventory` carries `maxCidrs`: the widest IP
-range that connection may ever be opened to. `regionalAllowlist` entries — and, later, a tenant's
-own `customNetworkRules` (014) — narrow that range with their own `allowedIPs`, but can never
-exceed it.
+Each connection in a region — a private link, a VPC endpoint, or the public internet — is
+recorded with the maximum IP ranges whose traffic may travel over it. For a private link, these
+are the source networks routed through that link. This maximum is a ceiling: any IP allowlisting
+on that connection, whether the region's baseline or a tenant's own rules, must stay within it.
+An allowlist may narrow the ceiling but never widen it.
 
-"Contained" means every address a narrower CIDR covers also falls inside at least one of the
-wider ranges — equivalently, the narrower CIDR's prefix is at least as long and its network
-address sits inside one of the wider blocks. `Load` applies this rule itself when validating
-`regionalAllowlist`, using the exact same `ContainsCIDR` helper that 014 will call later for
-`customNetworkRules`, so both places agree on what "fits inside the ceiling" means without
-duplicating the comparison logic.
+The rule is enforced in two places with a single shared check: at startup, against the region's
+baseline allowlist, to catch operator mistakes; and later during provisioning, against tenant
+rules (014), which are untrusted input.
 
 ## Public API
 
@@ -72,7 +70,7 @@ type AllowlistEntry struct {
 //
 // Returns:
 //   - *Config: the validated configuration; never nil on a nil error
-//   - User error if the file is missing, unreadable, not valid YAML, an inventory entry is
+//   - System error if the file is missing, unreadable, not valid YAML, an inventory entry is
 //     missing its connection name or type, a connection name repeats within one region's
 //     inventory, a regionalAllowlist entry names a connection absent from that region's
 //     inventory, any maxCidrs/allowedIPs entry is not a valid CIDR, an allowedIPs entry falls
@@ -135,25 +133,30 @@ internal/config/backplane/
 
 ## Error Classification
 
-**User Errors** (use `errors.NewUserError()`):
+**User Errors** (use `errors.NewUserError()`): only the two lookups whose input is typically a
+tenant's own CRD value; `Load` itself returns none.
+- Unknown region: `region 'aws-ap-southeast-1' is not yet available; choose a different one` (from
+  `Region()`, not `Load`) — deliberately tenant-facing wording, naming neither `backplane.yaml` nor
+  any other operator-only detail, since `Region()`'s caller is typically a `SnowflakeAccount`'s own
+  `spec.region` (012) and this message may reach a tenant unchanged.
+- Malformed CIDR from `ContainsCIDR`: `'not-a-cidr' is not a valid CIDR` — its caller (014) passes
+  tenant `allowedIPs` as the candidate.
+
+**System Errors** (plain `fmt.Errorf`, wrapping the cause with `%w` where there is one):
+`backplane.yaml` is edited only by Platform Ops, so a missing, unreadable or inconsistent file is
+an operator mistake, not something a tenant can fix in their CRD. The caller's error handling (001)
+treats these as system errors, since `Load` never wraps them in `errors.NewUserError`.
 - Missing file: `backplane.yaml not found in <configDir>`
+- Unreadable file: `reading backplane.yaml: <os error>`
 - Malformed YAML: `failed to parse backplane.yaml: <parse error>`
 - Missing inventory field: `regions.aws-eu-central-1.inventory[1].connection is required`
 - Missing inventory field: `regions.aws-eu-central-1.inventory[1].type is required`
 - Duplicate connection: `regions.aws-eu-central-1.inventory contains connection 'agn' more than once`
 - Unknown connection reference: `regions.aws-eu-central-1.regionalAllowlist references unknown connection 'agn'`
 - Malformed CIDR: `regions.aws-eu-central-1.inventory[0].maxCidrs '172.16.0.0/99' is not a valid CIDR`
+- Malformed CIDR: `regions.aws-eu-central-1.regionalAllowlist connection 'agn' allowedIPs 'not-a-cidr' is not a valid CIDR`
 - Containment violation: `regions.aws-eu-central-1.regionalAllowlist connection 'agn' allowedIPs '172.32.0.0/16' is not contained within maxCidrs [172.16.0.0/12]`
 - Nothing-to-narrow violation: `regions.aws-eu-central-1.regionalAllowlist connection 'dbt-cloud' specifies allowedIPs but this connection has no maxCidrs to narrow`
-- Unknown region: `region 'aws-ap-southeast-1' is not yet available; choose a different one` (from
-  `Region()`, not `Load`) — deliberately tenant-facing wording, naming neither `backplane.yaml` nor
-  any other operator-only detail, since `Region()`'s caller is typically a `SnowflakeAccount`'s own
-  `spec.region` (012) and this message may reach a tenant unchanged.
-
-**System Errors**: like `002`, this package makes no network calls and classifies nothing as a
-system error on its own. An unexpected filesystem error surfaces as a raw wrapped error
-(`fmt.Errorf("reading backplane.yaml: %w", err)`); the caller's error handling (001) treats it as
-a system error by default, since `Load` never wraps it in `errors.NewUserError`.
 
 <br/><br/><br/><br/><br/>
 
@@ -224,8 +227,8 @@ This specification defines the `internal/config/backplane/` package that:
 ## Success Criteria
 
 - **SC-001**: `Load` returns a populated `*Config` for a well-formed `backplane.yaml`.
-- **SC-002**: `Load` returns a user error when `<configDir>/backplane.yaml` does not exist.
-- **SC-003**: `Load` returns a user error when the file is not valid YAML.
+- **SC-002**: `Load` returns a system error when `<configDir>/backplane.yaml` does not exist.
+- **SC-003**: `Load` returns a system error when the file is not valid YAML.
 - **SC-004**: `Load` accepts an empty or omitted `regions` map.
 - **SC-005**: A region's `Available` defaults to `false` when `available` is omitted, and honors
   an explicit `true` or `false`.
@@ -233,18 +236,18 @@ This specification defines the `internal/config/backplane/` package that:
   for an unknown one.
 - **SC-007**: `Connection(name)` returns the matching `*Connection` and `ok == true` for a known
   connection, and `ok == false` for an unknown one.
-- **SC-008**: `Load` returns a user error when the same connection name appears twice in one
+- **SC-008**: `Load` returns a system error when the same connection name appears twice in one
   region's `inventory`.
-- **SC-009**: `Load` returns a user error when an inventory entry is missing `connection` or `type`.
-- **SC-010**: `Load` returns a user error when a `regionalAllowlist` entry references a connection
+- **SC-009**: `Load` returns a system error when an inventory entry is missing `connection` or `type`.
+- **SC-010**: `Load` returns a system error when a `regionalAllowlist` entry references a connection
   absent from that region's `inventory`.
 - **SC-011**: `Load` accepts a `regionalAllowlist` entry with no `allowedIPs`, treating it as
   inheriting the connection's full `maxCidrs`.
-- **SC-012**: `Load` returns a user error when a `regionalAllowlist` entry's `allowedIPs` falls
+- **SC-012**: `Load` returns a system error when a `regionalAllowlist` entry's `allowedIPs` falls
   outside its connection's `maxCidrs`.
-- **SC-013**: `Load` returns a user error when `allowedIPs` is set for a connection with no
+- **SC-013**: `Load` returns a system error when `allowedIPs` is set for a connection with no
   `maxCidrs`.
-- **SC-014**: `Load` returns a user error when any `maxCidrs` or `allowedIPs` entry is not a valid
+- **SC-014**: `Load` returns a system error when any `maxCidrs` or `allowedIPs` entry is not a valid
   CIDR.
 - **SC-015**: `ContainsCIDR` returns `true` when candidate is fully inside one of ranges (including
   when it equals a range exactly), and `false` when it exceeds every range or matches none.
