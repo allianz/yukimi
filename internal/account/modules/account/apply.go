@@ -180,7 +180,7 @@ func (m *module) createAccount(ctx context.Context, mc *pipeline.ModuleContext) 
 
 	isAlphaTester, err := tenant.AlphaTester(mc.NamespaceLabels())
 	if err != nil {
-		return pipeline.Rejected(err).Aborting()
+		return pipeline.Failed(err).Aborting()
 	}
 	if !region.Available && !isAlphaTester {
 		return pipeline.Rejected(errors.NewUserError(fmt.Sprintf(

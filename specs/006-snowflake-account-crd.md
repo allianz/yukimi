@@ -216,11 +216,8 @@ func ResolveName(name, namespace string) string
 // Department returns the ops-set "department" namespace label (design.md
 // chapter 2), consumed by Guardrails target matching (008).
 //
-// Returns: User error if the label is missing or empty — the tenant can't
-// fix this by editing their CRD, but a readable message ("namespace missing
-// required label 'department'; contact platform ops") surfaced directly on
-// the resource is more useful to them than a system error's incident ID
-// (see Error Classification).
+// Returns: System error if the label is missing or empty — only ops can fix
+// it (see Error Classification).
 func Department(labels map[string]string) (string, error)
 
 // CostCenter returns the ops-set "cost-center" namespace label (design.md
@@ -228,15 +225,14 @@ func Department(labels map[string]string) (string, error)
 // exists so that whichever spec adds the first consumer doesn't also need to
 // touch this package.
 //
-// Returns: User error if the label is missing or empty, for the same
-// readability reason as Department.
+// Returns: System error if the label is missing or empty, as for Department.
 func CostCenter(labels map[string]string) (string, error)
 
 // CreditQuota returns the ops-set "credit-quota" namespace label (design.md
 // chapter 2 and 3.10), parsed to an int.
 //
-// Returns: User error if the label is missing, empty, or not a valid
-// non-negative integer — same readability reasoning as Department.
+// Returns: System error if the label is missing, empty, or not a valid
+// non-negative integer.
 func CreditQuota(labels map[string]string) (int, error)
 
 // AlphaTester returns whether the namespace carries the ops-set "alpha-tester"
@@ -246,8 +242,7 @@ func CreditQuota(labels map[string]string) (int, error)
 // don't carry it, so a missing or empty value means "not an alpha tester"
 // rather than an error.
 //
-// Returns: User error if the label is present but not a valid boolean —
-// same readability reasoning as CreditQuota's invalid-integer case.
+// Returns: System error if the label is present but not a valid boolean.
 func AlphaTester(labels map[string]string) (bool, error)
 
 // AccountURL returns the SnowflakeAccount's status.accountUrl (design.md
@@ -333,30 +328,20 @@ internal/account/tenant/
 └── doc.go
 ```
 
-`internal/account/tenant` imports nothing beyond the Go standard library, `internal/errors`, and
+`internal/account/tenant` imports nothing beyond the Go standard library and
 `internal/snowflake/host` — no Kubernetes client, no Snowflake driver. The label readers take
 `map[string]string`, never a `corev1.Namespace`, specifically to keep that boundary intact; the
 caller (020) already has the namespace object from its own reconcile and passes its labels in.
 
 ## Error Classification
 
-- **User Errors**: `Department`, `CostCenter`, and `CreditQuota` all return one when their label
-  is missing or empty, and `CreditQuota` additionally returns one for a value that doesn't parse
-  as a non-negative integer. This is a deliberate deviation from CLAUDE.md's general rule that a
-  user error must be tenant-fixable: onboarding (chapter 2) is supposed to always set these
-  labels, so an absent value is genuinely an operator-side problem. A tenant still can't fix it by
-  editing their CRD — but classifying it as a system error would surface only an incident ID on
-  the resource, forcing the tenant to file a ticket just to find out what's wrong. A user error
-  carries the readable message itself (e.g. "namespace missing required label 'department';
-  contact platform ops") directly onto the resource's condition, which is more useful to the
-  tenant even though they can't act on it alone — and still tells them exactly who to loop in.
-  `AlphaTester` follows the same reasoning for its one error case (a present-but-malformed value),
-  but a missing or empty label is not an error at all — it is the expected state for every namespace
-  that isn't opted into alpha testing, so it returns `false, nil` rather than the required-label
-  error `Department`/`CostCenter`/`CreditQuota` return.
-  `AccountURL`'s region-format error is a genuine, ordinary user error, constructed and classified
-  in spec 004 (`internal/snowflake/host`); `internal/account/tenant` only passes it through unchanged.
-- **System Errors**: none originate in `internal/account/tenant`.
+**User Errors** (use `errors.NewUserError()`):
+- Malformed region passed to `AccountURL`: `region 'Frankfurt!' does not match the expected cloud-region format (expected: aws-eu-central-1)`. Constructed and classified by `host.URL` (004); this package passes it through unchanged and creates no user errors of its own.
+
+**System Errors** (use `fmt.Errorf("context: %w", err)`):
+- Required label missing or empty (`Department`, `CostCenter`, `CreditQuota`): `namespace missing required label 'department'; contact platform ops`
+- `credit-quota` label not a non-negative integer: `namespace label 'credit-quota' must be a non-negative integer, got "lots"; contact platform ops`
+- `alpha-tester` label (optional) present but not a boolean: `namespace label 'alpha-tester' must be a boolean, got "yes"; contact platform ops`
 
 <br/><br/><br/><br/><br/>
 
@@ -409,8 +394,8 @@ caller (020) already has the namespace object from its own reconcile and passes 
 - **A namespace is missing `department`/`cost-center`/`credit-quota` entirely — does the CRD fail
   validation?** No — these are namespace labels, not CRD fields, so nothing about the
   `SnowflakeAccount` resource itself is invalid. The failure surfaces only when a caller (008, 011,
-  018) invokes the corresponding `internal/account/tenant` reader and gets a user error back (see Error
-  Classification for why this is a user error despite being ops-caused).
+  018) invokes the corresponding `internal/account/tenant` reader and gets a system error back (see Error
+  Classification).
 - **Do the `region`/`environment` CEL rules block the first `CREATE`?** No — `oldSelf` doesn't
   exist yet on create, so both rules only evaluate (and can only fail) on `UPDATE`.
 - **Why is `description` immutable when design.md §3.11.3 doesn't list it alongside
@@ -451,15 +436,9 @@ caller (020) already has the namespace object from its own reconcile and passes 
 
 ## Dependencies
 
-- **internal/errors (001)** - Used APIs: `errors.NewUserError` - Contract: `internal/account/tenant`
-  constructs a user error directly for every missing/malformed ops-owned label, prioritizing a
-  readable message on the resource over the strict "tenant-fixable" framing CLAUDE.md otherwise
-  uses for the user/system split (see Error Classification); it never constructs a system error
-  itself, and only re-surfaces the user error `internal/snowflake/host` (004) already produces for
-  `AccountURL`'s region-format failure.
 - **internal/snowflake/host (004)** - Used APIs: `host.URL(locator, region, usePrivateLink)` -
   Contract: `internal/account/tenant/url.go` calls `host.URL` and appends `/console/login`; no validation
-  of its own.
+  of its own, and the user error `host.URL` produces for a malformed region passes through unchanged.
 
 ## Integration Points
 
@@ -518,15 +497,14 @@ caller (020) already has the namespace object from its own reconcile and passes 
 - **SC-010**: `tenant.ResolveName` translates every `-` in `metadata.name` to `_` and is
   deterministic — same inputs always produce the same output, with no stored state.
 - **SC-011**: `tenant.Department`, `tenant.CostCenter`, and `tenant.CreditQuota` each return a
-  user error (readable message, per Error Classification's deliberate deviation) when their label
-  is absent or empty from the input map.
-- **SC-012**: `tenant.CreditQuota` returns a user error for a non-integer or negative label value,
+  system error (not a user error) when their label is absent or empty from the input map.
+- **SC-012**: `tenant.CreditQuota` returns a system error for a non-integer or negative label value,
   and the parsed `int` otherwise.
 - **SC-012a**: `tenant.AlphaTester` returns `false, nil` when the label is absent or empty, the
-  parsed `bool` for a valid `"true"`/`"false"` value, and a user error for any other present value.
+  parsed `bool` for a valid `"true"`/`"false"` value, and a system error for any other present value.
 - **SC-013**: `tenant.AccountURL`'s error path matches spec 004's `host.URL` error path exactly —
   verified by a shared test case, not a re-implementation.
-- **SC-014**: `internal/account/tenant` imports nothing beyond the Go standard library, `internal/errors`,
+- **SC-014**: `internal/account/tenant` imports nothing beyond the Go standard library
   and `internal/snowflake/host` (grep-provable — no Kubernetes or Snowflake-driver import).
 - **SC-015**: unit test coverage exceeds 95% for `internal/account/tenant`.
 - **SC-016**: `make generate` produces a valid CRD manifest and `make reviewable` passes.
@@ -582,7 +560,7 @@ if err != nil {
 ```go
 department, err := tenant.Department(ns.Labels)
 if err != nil {
-    return log.Handle(err) // user error: readable message, though ops-caused (see Error Classification)
+    return log.Handle(err) // system error: ops must fix the namespace labels (see Error Classification)
 }
 
 quota, err := tenant.CreditQuota(ns.Labels)

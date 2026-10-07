@@ -890,10 +890,10 @@ func TestApply_FreshCreate_UnavailableRegion_AlphaTesterBypass(t *testing.T) {
 	}
 }
 
-// A fresh create aborts with the user error from tenant.AlphaTester, and no
+// A fresh create aborts with the system error from tenant.AlphaTester, and no
 // side effects, when the namespace's alpha-tester label is present but not a
 // valid boolean.
-func TestApply_FreshCreate_AlphaTesterLabelMalformed_Rejected(t *testing.T) {
+func TestApply_FreshCreate_AlphaTesterLabelMalformed_Failed(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
 	mc := pipeline.NewModuleContext(cr, map[string]string{"alpha-tester": "yes"}, nil, &fakeDBPool{t: t, forbidCalls: true})
 
@@ -905,13 +905,13 @@ func TestApply_FreshCreate_AlphaTesterLabelMalformed_Rejected(t *testing.T) {
 	}
 	outcome := m.Apply(context.Background(), mc)
 
-	if outcome.State != pipeline.StateRejected {
-		t.Errorf("outcome.State = %v, want StateRejected", outcome.State)
+	if outcome.State != pipeline.StateFailed {
+		t.Errorf("outcome.State = %v, want StateFailed", outcome.State)
 	}
 	if !outcome.Abort {
 		t.Error("outcome.Abort = false, want true")
 	}
-	if !internalerrors.IsUserError(outcome.Err) {
-		t.Errorf("expected a user error, got: %v", outcome.Err)
+	if outcome.Err == nil || internalerrors.IsUserError(outcome.Err) {
+		t.Errorf("expected a system error, got: %v", outcome.Err)
 	}
 }
