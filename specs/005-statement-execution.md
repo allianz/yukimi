@@ -205,7 +205,7 @@ This specification defines the `internal/snowflake/statement/` package that:
 ## Dependencies
 
 - `internal/errors` (001) — `BareIdentifier`'s user error.
-- `github.com/snowflakedb/gosnowflake` (pinned v1.18.1, added and registered by 004) — this package imports only the `SnowflakeError` type, for error decoration; it registers nothing and opens no connection.
+- `github.com/snowflakedb/gosnowflake/v2` (added and registered by 004) — this package imports only the `SnowflakeError` type, for error decoration; it registers nothing and opens no connection.
 
 ## Integration Points
 

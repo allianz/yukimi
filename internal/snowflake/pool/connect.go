@@ -27,7 +27,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/snowflakedb/gosnowflake"
+	"github.com/snowflakedb/gosnowflake/v2"
 )
 
 // dialConfig carries everything defaultDial needs to open and probe one
