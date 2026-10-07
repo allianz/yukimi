@@ -18,11 +18,11 @@ A `*sql.DB` is already a connection pool — the standard library multiplexes ph
 
 ## Key Concept: Self-Healing on a Locator Change
 
-A Snowflake account name is unique only while it exists — design.md 6.3's `DROP ACCOUNT` followed by a later resource under the same `metadata.name` and namespace resolves to the same tenant secret identifier (003) and the same cache key here, but Snowflake assigns the new account a **different locator** on `CREATE ACCOUNT` (design.md 3.6). A cache keyed only on `(namespace, accountName)` would keep serving a connection to an account that no longer exists. To avoid depending on every future caller remembering to evict before reconnecting, the tenant scope's cache entry carries the locator and region it was built with alongside the `*sql.DB`; a call whose locator or region does not match what is cached closes the stale connection and dials again before returning, exactly as if it had been evicted first. This is a correctness property of `TenantAccount` itself, not a workaround callers must apply.
+A Snowflake account name is unique only while it exists — design.md 6.3's `DROP ACCOUNT` followed by a later resource under the same `metadata.name` and namespace resolves to the same tenant secret identifier (003) and the same cache key here, but Snowflake assigns the new account a **different locator** on `CREATE ACCOUNT` (design.md 3.6). A cache keyed only on `(namespace, accountName)` would keep serving a connection to an account that no longer exists. To avoid depending on every future caller remembering to evict before reconnecting, the tenant scope's cache entry carries the locator and region it was built with alongside the `*sql.DB`; a call whose locator or region does not match what is cached closes the stale connection and dials again before returning, exactly as if it had been evicted first. This is a correctness property of `TenantDB` itself, not a workaround callers must apply.
 
 ## Key Concept: Inline Rotation Using Snowflake's Two Key Slots
 
-`OrgAdmin`/`TenantAccount` check the stored credential's age on every call and rotate once it's over `cfg.Secrets.RotationInterval` (Base Config, 002; default `4320h`, ~6 months). Rotation runs synchronously on the connection already in hand: it finds the Snowflake key slot (`RSA_PUBLIC_KEY`/`RSA_PUBLIC_KEY_2`, via `DESC USER` and the existing `publicKeyFingerprint` helper) that doesn't match the current key, pushes a freshly generated key there with `ALTER USER`, and only then updates the secret store. The slot in use is never touched until that update succeeds, so a failure at any step leaves the working credential exactly as valid as before, and the call never fails because of it — it just retries next time. The existing per-key/org-admin locks that serialize a cold dial serialize a rotation too.
+`OrgAdminDB`/`TenantDB` check the stored credential's age on every call and rotate once it's over `cfg.Secrets.RotationInterval` (Base Config, 002; default `4320h`, ~6 months). Rotation runs synchronously on the connection already in hand: it finds the Snowflake key slot (`RSA_PUBLIC_KEY`/`RSA_PUBLIC_KEY_2`, via `DESC USER` and the existing `publicKeyFingerprint` helper) that doesn't match the current key, pushes a freshly generated key there with `ALTER USER`, and only then updates the secret store. The slot in use is never touched until that update succeeds, so a failure at any step leaves the working credential exactly as valid as before, and the call never fails because of it — it just retries next time. The existing per-key/org-admin locks that serialize a cold dial serialize a rotation too.
 
 ## Key Concept: Host Construction from a Locator and a Cloud-Region String
 
@@ -91,7 +91,7 @@ import (
 type Pool struct { /* unexported */ }
 
 // New constructs a Pool. It makes no connection attempt itself: every
-// *sql.DB is opened lazily, on its first OrgAdmin or TenantAccount call.
+// *sql.DB is opened lazily, on its first OrgAdminDB or TenantDB call.
 //
 // Parameters:
 //   - keyManager: the *secrets.KeyManager (003) credentials are read through
@@ -104,7 +104,7 @@ type Pool struct { /* unexported */ }
 //   - *Pool: never nil
 func New(keyManager *secrets.KeyManager, cfg *base.Config) *Pool
 
-// OrgAdmin returns the single org-admin *sql.DB, used only for CREATE ACCOUNT
+// OrgAdminDB returns the single org-admin *sql.DB, used only for CREATE ACCOUNT
 // and DROP ACCOUNT (design.md 3.6, 6.3, 3.11 intro). The credential is read
 // from the org-admin secret identifier (003) and the connection is authenticated
 // with the GLOBALORGADMIN role. Opened on first call; every later call returns the
@@ -115,9 +115,9 @@ func New(keyManager *secrets.KeyManager, cfg *base.Config) *Pool
 // Returns:
 //   - System error if the org-admin credential cannot be read, does not
 //     parse as a valid private key, or the connection cannot be established
-func (p *Pool) OrgAdmin(ctx context.Context) (*sql.DB, error)
+func (p *Pool) OrgAdminDB(ctx context.Context) (*sql.DB, error)
 
-// TenantAccount returns the per-tenant *sql.DB, authenticated as that
+// TenantDB returns the per-tenant *sql.DB, authenticated as that
 // account's platform service user with the ACCOUNTADMIN role (design.md
 // 3.6, 3.11, Appendix B X1). Keyed by (org, namespace, accountName) — the
 // same tuple as the tenant secret identifier (003) — plus the account's current
@@ -142,7 +142,7 @@ func (p *Pool) OrgAdmin(ctx context.Context) (*sql.DB, error)
 //     cloud-region format
 //   - System error if the tenant credential cannot be read, does not parse
 //     as a valid private key, or the connection cannot be established
-func (p *Pool) TenantAccount(ctx context.Context, namespace, accountName, locator, region string) (*sql.DB, error)
+func (p *Pool) TenantDB(ctx context.Context, namespace, accountName, locator, region string) (*sql.DB, error)
 
 // EvictTenant closes and removes the cached *sql.DB for (namespace,
 // accountName), if one exists. Called once an account is dropped (012) so a
@@ -169,7 +169,7 @@ internal/snowflake/host/
 └── doc.go
 
 internal/snowflake/pool/
-├── pool.go          # Pool, New, OrgAdmin, TenantAccount, EvictTenant, Close, cache keys
+├── pool.go          # Pool, New, OrgAdminDB, TenantDB, EvictTenant, Close, cache keys
 ├── pool_test.go
 ├── connect.go       # dialFunc seam, defaultDial, gosnowflake.Config construction, health probe
 ├── connect_test.go
@@ -178,16 +178,16 @@ internal/snowflake/pool/
 └── doc.go
 ```
 
-`internal/snowflake/host` imports only the standard library and `internal/errors` (001) — never `internal/config/base`, never `github.com/snowflakedb/gosnowflake/v2`, never `internal/snowflake/pool`. That leaf position is what lets `internal/account/tenant` (006) build `status.accountUrl` from the same code without inheriting a driver, a secret store, or configuration.
+`internal/snowflake/host` imports only the standard library and `internal/errors` (001) — never `internal/config/base`, never `github.com/snowflakedb/gosnowflake`, never `internal/snowflake/pool`. That leaf position is what lets `internal/account/tenant` (006) build `status.accountUrl` from the same code without inheriting a driver, a secret store, or configuration.
 
-`internal/snowflake/pool` must never import `internal/snowflake/statement` (005) or `internal/secrets/aws` (003.a). The only imports outside the standard library are `internal/snowflake/host`, `internal/config/base` (002), `internal/secrets` (003), `internal/errors` (001), and `github.com/snowflakedb/gosnowflake/v2`. The driver findings in this spec were verified against the version in `go.mod`; a driver upgrade means re-verifying them before relying on them.
+`internal/snowflake/pool` must never import `internal/snowflake/statement` (005) or `internal/secrets/aws` (003.a). The only imports outside the standard library are `internal/snowflake/host`, `internal/config/base` (002), `internal/secrets` (003), `internal/errors` (001), and `github.com/snowflakedb/gosnowflake`, pinned at **v1.18.1** — the version this spec's driver findings were verified against; an upgrade means re-verifying those findings before relying on them.
 
 ## Error Classification
 
 **User Errors** (use `errors.NewUserError()`):
 - Malformed cloud-region string: `region 'Frankfurt!' does not match the expected cloud-region format (expected: aws-eu-central-1)`
 
-`host.Hostname` and `host.URL` raise this, and `Pool.TenantAccount` surfaces it unchanged from its own call to `host.Hostname`. Validating in `host` means every consumer — this package and 006 — rejects the same regions with the same message, rather than each deciding for itself.
+`host.Hostname` and `host.URL` raise this, and `Pool.TenantDB` surfaces it unchanged from its own call to `host.Hostname`. Validating in `host` means every consumer — this package and 006 — rejects the same regions with the same message, rather than each deciding for itself.
 
 `host` validates the region shape independently of whatever validation the caller (a guardrail, 008, or 002's own shape check on `OrgAdminAccountRegion`) already performed — the same reasoning 003 gives for re-validating every secret identifier segment independently of the caller.
 
@@ -206,7 +206,7 @@ internal/snowflake/pool/
 
 This specification defines the `internal/snowflake/pool/` and `internal/snowflake/host/` packages that:
 - Maintains pooled `*sql.DB` connections to Snowflake, authenticated with JWT keypair credentials read through the `*secrets.KeyManager` (003) — never through a concrete key store package.
-- Checks a stored credential's age on every `OrgAdmin`/`TenantAccount` call and, once it exceeds a fixed threshold, rotates it inline via Snowflake's unused key slot over the connection already in hand, rather than in a background process that could race an active session.
+- Checks a stored credential's age on every `OrgAdminDB`/`TenantDB` call and, once it exceeds a fixed threshold, rotates it inline via Snowflake's unused key slot over the connection already in hand, rather than in a background process that could race an active session.
 - Offers two connection scopes reflecting the privilege step-down of design.md 3.11: a single organization-admin connection used only for `CREATE ACCOUNT`/`DROP ACCOUNT`, and a per-tenant-account connection, keyed the same way as a tenant's secret identifier, used for everything else.
 - Builds the Snowflake connection host and account URL from a locator and a cloud-region string in `internal/snowflake/host`, serving `gosnowflake.Config.Host` here and `status.accountUrl` in 006, with the PrivateLink decision passed in by the caller.
 - Opens each connection lazily on first use, keeps it open for later reuse rather than closing it after each call, and only ever closes it on explicit eviction or process shutdown.
@@ -223,14 +223,14 @@ This specification defines the `internal/snowflake/pool/` and `internal/snowflak
 
 ## Edge Cases
 
-- **What happens on the very first call for a key that fails to connect?** - Nothing is cached. `OrgAdmin`/`TenantAccount` returns the error, and the next call retries the credential read and dial from scratch — mirroring 003's rule that a failed `Get` is never cached.
-- **What happens if two goroutines call `TenantAccount` for the same key at the same time on a cold cache?** - Both block behind that key's own lock, acquired per-key rather than pool-wide; the first to acquire it dials and caches, the second observes the now-populated cache and returns the same `*sql.DB` without dialing a second time. A cold dial for a *different* key never waits on this — see Edge Cases below on running at a few thousand accounts.
+- **What happens on the very first call for a key that fails to connect?** - Nothing is cached. `OrgAdminDB`/`TenantDB` returns the error, and the next call retries the credential read and dial from scratch — mirroring 003's rule that a failed `Get` is never cached.
+- **What happens if two goroutines call `TenantDB` for the same key at the same time on a cold cache?** - Both block behind that key's own lock, acquired per-key rather than pool-wide; the first to acquire it dials and caches, the second observes the now-populated cache and returns the same `*sql.DB` without dialing a second time. A cold dial for a *different* key never waits on this — see Edge Cases below on running at a few thousand accounts.
 - **Does a pool-wide lock serialize connecting a few thousand accounts, e.g. right after the process starts?** - No — the lock is per key, so cold dials for different accounts proceed concurrently; only two callers racing for the *same* account's first connection serialize. A shared pool-wide lock would have made a cold start across thousands of accounts take minutes of pure lock contention instead of running them in parallel, so this is a hard design requirement, not an implementation detail. The map holding thousands of cached entries costs a small, fixed amount of memory per entry (map slot plus an idle `*sql.DB`) — negligible at this scale. What ops must size for instead is the pod's open-file-descriptor limit: with per-account idle-connection limits set (see below), a few thousand actively-reconciled accounts can hold a correspondingly large number of idle TCP connections at once, all to different Snowflake accounts rather than concentrated on one, so no single account's own connection limit is at risk.
 - **What happens when an account is dropped and later recreated under the same CRD name and namespace?** - See Key Concept: Self-Healing. The new locator no longer matches the cached entry, so the stale connection is closed and a fresh one dialed automatically, without requiring 012 to call `EvictTenant` first — though 012 calls it anyway, immediately after `DROP ACCOUNT`, so the cache never briefly serves a connection to an account already gone.
 - **What tunes the underlying `*sql.DB`'s own connection limits, idle timeout, and maximum lifetime?** - `Config.Snowflake` (002): `MaxConnectionPoolSize`, `MaxIdleConnections`, `ConnectionMaxLifetime`, `ConnectionMaxIdleTime`, each with a documented default when omitted from `base.yaml`. `New` reads them once and applies them via `SetMaxOpenConns`/`SetMaxIdleConns`/`SetConnMaxLifetime`/`SetConnMaxIdleTime` to every `*sql.DB` this package dials.
-- **Does the health probe run on every `OrgAdmin`/`TenantAccount` call, or only when a new connection is dialed?** - Only when a new connection is dialed (a cold cache, or after eviction/self-healing). A cache hit returns the already-cached `*sql.DB` with no probe and no other network call — probing on every call would defeat the point of caching.
+- **Does the health probe run on every `OrgAdminDB`/`TenantDB` call, or only when a new connection is dialed?** - Only when a new connection is dialed (a cold cache, or after eviction/self-healing). A cache hit returns the already-cached `*sql.DB` with no probe and no other network call — probing on every call would defeat the point of caching.
 - **Why does session role scoping use a `Config` field instead of a runtime `USE ROLE` statement?** - The Snowflake Go driver accepts a `Role` at connection construction time, applied automatically to every physical connection the driver opens underneath the cached `*sql.DB` — this needs no SQL statement and therefore no dependency on 005's statement execution. If a future need arises for session setup `Config` cannot express, it is done with the raw driver (`db.ExecContext`) directly in this package — never via `internal/snowflake/statement` (005), which is exactly the dependency direction this package must not create (005 already depends on the connection this package hands it; the reverse would be a cycle).
-- **What if the region passed to `TenantAccount` names a cloud this package has never seen (say a future fourth cloud)?** - Rejected. `host.regionSegment` checks the segment before the first `-` against `validClouds` — the same `aws`/`azure`/`gcp` allowlist `internal/config/base.cloudSectionKeys` (002) already uses — and returns a user error for anything else. Onboarding a new cloud is a deliberate, coordinated change to that map, `base.go`'s `cloudSectionKeys`, and the CRD's `region` `Pattern` (006), not something that already works structurally.
+- **What if the region passed to `TenantDB` names a cloud this package has never seen (say a future fourth cloud)?** - Rejected. `host.regionSegment` checks the segment before the first `-` against `validClouds` — the same `aws`/`azure`/`gcp` allowlist `internal/config/base.cloudSectionKeys` (002) already uses — and returns a user error for anything else. Onboarding a new cloud is a deliberate, coordinated change to that map, `base.go`'s `cloudSectionKeys`, and the CRD's `region` `Pattern` (006), not something that already works structurally.
 - **Why does `host` take a PrivateLink bool instead of reading `Config.Snowflake.UsePrivateLink` (002) itself?** - To stay reusable: 006 builds a tenant's `status.accountUrl` from the same host, and a configuration-free leaf can be imported by `internal/account/tenant` without dragging `internal/config/base` in with it. Callers pass the flag, so its origin can change without touching this package.
 - **Does `host.URL` include a path such as `/console/login`?** - No. design.md 7.2 specifies `status.accountUrl` as scheme plus host, and Snowflake redirects a bare host to the login console on its own. If an explicit console link is ever wanted, it is a new exported function in `host` rather than a change to `URL`, so a tenant's status URL keeps the form 7.2 documents.
 - **What happens if a rotation attempt fails?** - The call still returns the already-valid `*sql.DB`; the credential's stored age is unchanged, so the same check retries on the next call. This package does not log or otherwise surface the failure in this version — an accepted gap, not a design goal.
@@ -241,50 +241,50 @@ This specification defines the `internal/snowflake/pool/` and `internal/snowflak
 - **`internal/errors` (001)** - Used APIs: `errors.NewUserError()` - Contract: used by both packages; in `host` for the one region-format validation above, in `pool` nowhere else.
 - **`internal/config/base` (002)** - Read by `pool` only; `host` never imports it - Used APIs: `base.Config`, `Snowflake.Org`, `Snowflake.OrgAdminAccount`, `Snowflake.OrgAdminAccountLocator`, `Snowflake.OrgAdminAccountRegion`, `Snowflake.UsePrivateLink`, `Snowflake.DisableOCSPChecks`, `Snowflake.MaxConnectionPoolSize`, `Snowflake.MaxIdleConnections`, `Snowflake.ConnectionMaxLifetime`, `Snowflake.ConnectionMaxIdleTime`, `Snowflake.ConnectionProbeTimeout` - Contract: `Pool` reads these once at construction and treats them as fixed for the process's life, matching `Config`'s own immutability.
 - **`internal/secrets` (003)** - Used APIs: `secrets.KeyManager`, `NewOrgAdminIdentifier()`, `NewTenantIdentifier()`, `KeyManager.GetCredentials()`, `NewCredentials()`, `KeyManager.UpdateCredentials()` - Contract: takes a `*secrets.KeyManager` as a constructor parameter, constructed and wrapped by `cmd/provider/main.go` via `secrets.NewKeyManager`; never imports a concrete key store itself.
-- **`github.com/snowflakedb/gosnowflake/v2`** - the only Snowflake driver dependency in the tree; this is the spec that adds it to `go.mod` (see Project Structure).
+- **`github.com/snowflakedb/gosnowflake` v1.18.1** - the only Snowflake driver dependency in the tree; this is the spec that adds it to `go.mod` (see Project Structure).
 
 ## Integration Points
 
 - **`cmd/provider/main.go`** - Constructs the `Pool` once via `pool.New(keyManager, cfg)` after building the AWS key store (003.a), wrapping it in a `*secrets.KeyManager` (003), and loading `Config` (002), and calls `Pool.Close()` on shutdown - Key functions: `pool.New()`, `Pool.Close()`.
 - **`internal/snowflake/statement` (005, not yet written)** - Takes the `*sql.DB` this package returns as its injected executor and never imports this package directly; this package never imports it either, so the two-way avoidance is enforced from both sides.
-- **`internal/account/modules/account` (012, not yet written)** - Calls `Pool.OrgAdmin()` to run `CREATE ACCOUNT` and reads back its response's locator for status (design.md 3.6, 7.2); on teardown, calls it again to run `DROP ACCOUNT` and then `Pool.EvictTenant()` immediately afterward, so the cache does not keep serving a connection to a dropped account - Key functions: `Pool.OrgAdmin()`, `Pool.EvictTenant()`.
-- **Every other account module (013–015, 017) and the account pipeline/controller (009, 020, not yet written)** - Call `Pool.TenantAccount()` to reach an account's own connection for parameters, network rules, identity import, and auth rules - Key functions: `Pool.TenantAccount()`.
+- **`internal/account/modules/account` (012, not yet written)** - Calls `Pool.OrgAdminDB()` to run `CREATE ACCOUNT` and reads back its response's locator for status (design.md 3.6, 7.2); on teardown, calls it again to run `DROP ACCOUNT` and then `Pool.EvictTenant()` immediately afterward, so the cache does not keep serving a connection to a dropped account - Key functions: `Pool.OrgAdminDB()`, `Pool.EvictTenant()`.
+- **Every other account module (013–015, 017) and the account pipeline/controller (009, 020, not yet written)** - Call `Pool.TenantDB()` to reach an account's own connection for parameters, network rules, identity import, and auth rules - Key functions: `Pool.TenantDB()`.
 - **`internal/account/tenant` (006, not yet written)** - Calls `host.URL()` to build `status.accountUrl` (design.md 7.2), passing the locator 012 captures from `CREATE ACCOUNT`, the account's region, and the PrivateLink flag its caller (020) reads from `Config` (002). It never calls `Pool`, and `host` never imports `internal/account/tenant`, so the boundary holds from both sides - Key functions: `host.URL()`.
 
 ## Success Criteria
 
 - **SC-001**: `New` returns a non-nil `*Pool` and makes no network call.
-- **SC-002**: `OrgAdmin`'s first call reads the org-admin credential via `KeyManager.GetCredentials`/`NewOrgAdminIdentifier`, builds the host from `OrgAdminAccountLocator`/`OrgAdminAccountRegion`/`UsePrivateLink`, and returns a `*sql.DB`.
-- **SC-003**: Every later `OrgAdmin` call returns the identical `*sql.DB` pointer from the first call, without re-reading the credential or dialing again.
-- **SC-004**: `TenantAccount` builds its secret identifier via `NewTenantIdentifier(org, namespace, accountName)`, using `Config.Snowflake.Org` and the caller-supplied `namespace`/`accountName`.
-- **SC-005**: Two `TenantAccount` calls with identical `namespace`/`accountName`/`locator`/`region` return the identical `*sql.DB` pointer; a call with a different `namespace` or `accountName` returns a distinct one.
+- **SC-002**: `OrgAdminDB`'s first call reads the org-admin credential via `KeyManager.GetCredentials`/`NewOrgAdminIdentifier`, builds the host from `OrgAdminAccountLocator`/`OrgAdminAccountRegion`/`UsePrivateLink`, and returns a `*sql.DB`.
+- **SC-003**: Every later `OrgAdminDB` call returns the identical `*sql.DB` pointer from the first call, without re-reading the credential or dialing again.
+- **SC-004**: `TenantDB` builds its secret identifier via `NewTenantIdentifier(org, namespace, accountName)`, using `Config.Snowflake.Org` and the caller-supplied `namespace`/`accountName`.
+- **SC-005**: Two `TenantDB` calls with identical `namespace`/`accountName`/`locator`/`region` return the identical `*sql.DB` pointer; a call with a different `namespace` or `accountName` returns a distinct one.
 - **SC-006**: `host.regionSegment("aws-eu-central-1")` returns `"eu-central-1"`; `host.regionSegment("aws-eu-west-3")` returns `"eu-west-3.aws"`.
 - **SC-007**: `host.Hostname` appends `.privatelink.snowflakecomputing.com` when `usePrivateLink` is true and `.snowflakecomputing.com` when false, and the locator forms the leading label in both.
 - **SC-007a**: `host.URL("xy12345", "aws-eu-central-1", true)` returns `https://xy12345.eu-central-1.privatelink.snowflakecomputing.com` — design.md 7.2's example verbatim, with no trailing path.
-- **SC-008**: `TenantAccount` returns a user error for a `region` missing its cloud prefix (e.g. `"eu-central-1"`) or otherwise malformed, and never attempts a connection in that case — satisfied by its call to `host.Hostname` preceding any credential read or dial.
+- **SC-008**: `TenantDB` returns a user error for a `region` missing its cloud prefix (e.g. `"eu-central-1"`) or otherwise malformed, and never attempts a connection in that case — satisfied by its call to `host.Hostname` preceding any credential read or dial.
 - **SC-008a**: `host.Hostname` and `host.URL` both return an empty string and a user error for a region missing its cloud prefix or otherwise malformed.
 - **SC-009**: A failed credential read, key parse, dial, or health probe on the first call for a key leaves nothing cached — the next call for the same key retries in full.
-- **SC-010**: Concurrent goroutines calling `TenantAccount` with the same key against a cold cache result in exactly one dial and one cached `*sql.DB`, observed by all callers.
+- **SC-010**: Concurrent goroutines calling `TenantDB` with the same key against a cold cache result in exactly one dial and one cached `*sql.DB`, observed by all callers.
 - **SC-010a**: Concurrent cold dials for *different* keys do not serialize behind a single pool-wide lock — locking is scoped per key, provable by a test that blocks one key's dial and asserts a second key's dial still completes.
-- **SC-011**: A `TenantAccount` call whose `locator` or `region` differs from what is cached for that `(namespace, accountName)` closes the stale `*sql.DB` and returns a freshly dialed one.
-- **SC-012**: `EvictTenant` closes and removes the cached entry for `(namespace, accountName)`; a following `TenantAccount` call with the same key dials again.
+- **SC-011**: A `TenantDB` call whose `locator` or `region` differs from what is cached for that `(namespace, accountName)` closes the stale `*sql.DB` and returns a freshly dialed one.
+- **SC-012**: `EvictTenant` closes and removes the cached entry for `(namespace, accountName)`; a following `TenantDB` call with the same key dials again.
 - **SC-013**: `EvictTenant` on a key never dialed does not error and does not panic.
 - **SC-014**: `Close` closes every cached `*sql.DB` — org-admin, if opened, and every tenant entry — and returns a joined error if any individual close fails, without skipping the rest.
-- **SC-015**: The `gosnowflake.Config` built for `OrgAdmin` sets `Authenticator` to `AuthTypeJwt`, `User` and `PrivateKey` from the stored org-admin credential, `Role` to `GLOBALORGADMIN`, and `Account`/`Host` from `OrgAdminAccountLocator`/`OrgAdminAccountRegion`.
-- **SC-016**: The `gosnowflake.Config` built for `TenantAccount` sets `Role` to `ACCOUNTADMIN` and `Account`/`Host` from the caller-supplied `locator`/`region`.
-- **SC-017**: `internal/snowflake/pool` imports `internal/snowflake/host`, `internal/config/base`, `internal/secrets`, `internal/errors`, and `github.com/snowflakedb/gosnowflake/v2` among dependencies with an `internal/` boundary or a new `go.mod` entry — never `internal/secrets/aws` and never `internal/snowflake/statement`, grep-provable.
-- **SC-017a**: `internal/snowflake/host` imports only the standard library and `internal/errors` — never `internal/config/base`, `internal/secrets`, `internal/snowflake/pool`, or `github.com/snowflakedb/gosnowflake/v2`, grep-provable.
-- **SC-018**: `go.mod` requires the Snowflake driver at its `github.com/snowflakedb/gosnowflake/v2` module path.
+- **SC-015**: The `gosnowflake.Config` built for `OrgAdminDB` sets `Authenticator` to `AuthTypeJwt`, `User` and `PrivateKey` from the stored org-admin credential, `Role` to `GLOBALORGADMIN`, and `Account`/`Host` from `OrgAdminAccountLocator`/`OrgAdminAccountRegion`.
+- **SC-016**: The `gosnowflake.Config` built for `TenantDB` sets `Role` to `ACCOUNTADMIN` and `Account`/`Host` from the caller-supplied `locator`/`region`.
+- **SC-017**: `internal/snowflake/pool` imports `internal/snowflake/host`, `internal/config/base`, `internal/secrets`, `internal/errors`, and `github.com/snowflakedb/gosnowflake` among dependencies with an `internal/` boundary or a new `go.mod` entry — never `internal/secrets/aws` and never `internal/snowflake/statement`, grep-provable.
+- **SC-017a**: `internal/snowflake/host` imports only the standard library and `internal/errors` — never `internal/config/base`, `internal/secrets`, `internal/snowflake/pool`, or `github.com/snowflakedb/gosnowflake`, grep-provable.
+- **SC-018**: `go.mod` pins `github.com/snowflakedb/gosnowflake` at `v1.18.1`.
 - **SC-019**: The dial step is reachable through an unexported, swappable seam so unit tests exercise `Pool`'s caching, eviction, self-healing, and concurrency behavior without a real Snowflake account, a real network call, or the real driver.
 - **SC-020**: Unit test coverage exceeds 95% for both packages.
 - **SC-021**: Every `*sql.DB` this package dials has `SetMaxOpenConns`, `SetMaxIdleConns`, `SetConnMaxLifetime`, and `SetConnMaxIdleTime` applied from `cfg.Snowflake.MaxConnectionPoolSize`/`MaxIdleConnections`/`ConnectionMaxLifetime`/`ConnectionMaxIdleTime`, and the health probe's context deadline is `cfg.Snowflake.ConnectionProbeTimeout`.
-- **SC-022**: The `gosnowflake.Config` built for both `OrgAdmin` and `TenantAccount` sets `DisableOCSPChecks` from `cfg.Snowflake.DisableOCSPChecks`.
-- **SC-023**: A stored credential more than six calendar months old triggers a rotation attempt on the next `OrgAdmin`/`TenantAccount` call; a younger one never does.
+- **SC-022**: The `gosnowflake.Config` built for both `OrgAdminDB` and `TenantDB` sets `DisableOCSPChecks` from `cfg.Snowflake.DisableOCSPChecks`.
+- **SC-023**: A stored credential more than six calendar months old triggers a rotation attempt on the next `OrgAdminDB`/`TenantDB` call; a younger one never does.
 - **SC-024**: A rotation failure never fails that call, and `KeyManager.UpdateCredentials` is only called once the `ALTER USER` pushing the new key has succeeded.
 
 ## Security Considerations
 
-- **Privilege step-down is structural, not conventional** (design.md 3.11): `OrgAdmin` and `TenantAccount` are two different methods with two different signatures; there is no shared method with a scope parameter a caller could pass incorrectly, and no code path anywhere in this package derives one scope's connection from the other's credential or cache entry.
+- **Privilege step-down is structural, not conventional** (design.md 3.11): `OrgAdminDB` and `TenantDB` are two different methods with two different signatures; there is no shared method with a scope parameter a caller could pass incorrectly, and no code path anywhere in this package derives one scope's connection from the other's credential or cache entry.
 - **Credentials never touch a concrete key store from this package's own code**: this package depends only on `*secrets.KeyManager` (003), constructed and wrapped elsewhere; it cannot be the place a future key-store-specific bug leaks a credential, because it never imports one.
 - **Role is set explicitly, not inherited**: both scopes set `Role` on every connection they dial (`ORGADMIN`, `ACCOUNTADMIN`) rather than relying on whatever a user's default role happens to be — matching design.md 3.11's framing of the platform "impersonating the accountadmin role exclusively for that specific tenant" as a deliberate choice, not an accident of account defaults.
 - **No credential material in an error message**: every error this package produces is built from an identifier's own constituent segments (namespace, account name, org-admin account), a host, and the underlying error — never a private key or any other credential content, matching 003's own rule for the identifiers it hands this package.
@@ -305,7 +305,7 @@ This specification defines the `internal/snowflake/pool/` and `internal/snowflak
 - **SnowflakeAccount CRD (006, not yet written)**: `specs/scope-006-snowflake-account-crd.md` - `internal/account/tenant`, the second consumer of `internal/snowflake/host`, which builds `status.accountUrl` from `host.URL`.
 - **Secrets Handling (003)**: `specs/003-secrets-handling.md` - `KeyStore`, `KeyManager`, `Identifier`, `NewOrgAdminIdentifier()`, `NewTenantIdentifier()`, `Credentials`, `KeyManager.GetCredentials()`.
 - **Base Config (002)**: `specs/002-base-config.md` - `SnowflakeSettings`, in particular `OrgAdminAccountLocator`, `OrgAdminAccountRegion`, `UsePrivateLink`.
-- **Driver documentation**: `github.com/snowflakedb/gosnowflake/v2` (`godoc`) - `Config`, `NewConnector`, `DSN`, `AuthTypeJwt`; consult the pinned version's source before implementation, per this repo's own convention of verifying vendor behavior rather than assuming it.
+- **Driver documentation**: `github.com/snowflakedb/gosnowflake` (`godoc`) - `Config`, `NewConnector`, `DSN`, `AuthTypeJwt`; consult the pinned version's source before implementation, per this repo's own convention of verifying vendor behavior rather than assuming it.
 
 <br/><br/><br/><br/><br/>
 
@@ -344,7 +344,7 @@ func main() {
 
     // ... later, inside a controller's Observe/Create/Update, once the account's
     // locator is known (design.md 3.6, 7.2):
-    db, err := p.TenantAccount(context.Background(), "finance", "analytics-team-eu", "xy12345", "aws-eu-central-1")
+    db, err := p.TenantDB(context.Background(), "finance", "analytics-team-eu", "xy12345", "aws-eu-central-1")
     if err != nil {
         log.Fatalf("failed to get tenant connection: %v", err)
     }
@@ -361,7 +361,7 @@ func main() {
 ```go
 // The pool-side sequence the account module's teardown (012, not yet written) performs immediately
 // after DROP ACCOUNT succeeds. 012 reaches both calls through pipeline.ModuleContext (009), which
-// wraps OrgAdmin and EvictTenant; the order and effect are the same either way.
+// wraps OrgAdminDB and EvictTenant; the order and effect are the same either way.
 import "github.com/allianz/yukimi/internal/snowflake/pool"
 
 func (m *Module) dropAccount(ctx context.Context, p *pool.Pool, orgAdminDB *sql.DB, namespace, accountName, resolvedName string) error {
@@ -390,7 +390,7 @@ import (
 // In pool_test.go: the package's own tests substitute the unexported dial
 // seam so caching, eviction, and self-healing are testable without a real
 // Snowflake account, network call, or driver.
-func TestTenantAccount_CachesByKey(t *testing.T) {
+func TestTenantDB_CachesByKey(t *testing.T) {
     p := New(secrets.NewKeyManager(secrets.NewFakeKeyStore(), time.Hour), testConfig())
     dialCount := 0
     p.dial = func(cfg dialConfig) (*sql.DB, error) {
@@ -401,11 +401,11 @@ func TestTenantAccount_CachesByKey(t *testing.T) {
     seedTenantCredential(t, p, "finance", "analytics-team-eu")
 
     ctx := context.Background()
-    first, err := p.TenantAccount(ctx, "finance", "analytics-team-eu", "xy12345", "aws-eu-central-1")
+    first, err := p.TenantDB(ctx, "finance", "analytics-team-eu", "xy12345", "aws-eu-central-1")
     if err != nil {
         t.Fatalf("first call: %v", err)
     }
-    second, err := p.TenantAccount(ctx, "finance", "analytics-team-eu", "xy12345", "aws-eu-central-1")
+    second, err := p.TenantDB(ctx, "finance", "analytics-team-eu", "xy12345", "aws-eu-central-1")
     if err != nil {
         t.Fatalf("second call: %v", err)
     }
