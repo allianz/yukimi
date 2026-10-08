@@ -51,15 +51,6 @@ func (r *Runner) Exec(ctx context.Context, label, sql string, args ...any) error
 	return nil
 }
 
-// Result is a materialized row-returning query result. Deliberately thin:
-// no accessor or coercion methods. Every caller already knows its own
-// query's column shape and casts at the call site, comma-ok
-// (e.g. name, ok := row["NAME"].(string)).
-type Result struct {
-	Columns []string
-	Rows    []map[string]any
-}
-
 // Query runs one row-returning statement (SHOW ... LIKE existence checks,
 // drift read-backs) and materializes every row before returning, so callers
 // never drive rows.Next()/rows.Err() themselves.
@@ -77,7 +68,7 @@ func (r *Runner) Query(ctx context.Context, label, sql string, args ...any) (Res
 		return Result{}, newError(label, sql, err)
 	}
 
-	var matched []map[string]any
+	var matched []Row
 	for rows.Next() {
 		values := make([]any, len(columns))
 		ptrs := make([]any, len(columns))
@@ -88,7 +79,7 @@ func (r *Runner) Query(ctx context.Context, label, sql string, args ...any) (Res
 			return Result{}, newError(label, sql, err)
 		}
 
-		row := make(map[string]any, len(columns))
+		row := make(Row, len(columns))
 		for i, col := range columns {
 			row[col] = values[i]
 		}

@@ -20,7 +20,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strings"
 	"testing"
 	"time"
 
@@ -348,7 +347,7 @@ func TestIntegration_CreateWithFuzzedFields(t *testing.T) {
 	if len(result.Rows) != 1 {
 		t.Fatalf("len(Rows) = %d, want 1", len(result.Rows))
 	}
-	comment, ok := commentValue(result.Rows[0])
+	comment, ok := result.Rows[0].StringValue("comment")
 	if !ok {
 		t.Fatal("SHOW ACCOUNTS row has no comment column")
 	}
@@ -359,17 +358,4 @@ func TestIntegration_CreateWithFuzzedFields(t *testing.T) {
 	if err := pl.Destroy(ctx, mc); err != nil {
 		t.Fatalf("Destroy: %v", err)
 	}
-}
-
-// commentValue extracts the comment column from a SHOW ACCOUNTS row,
-// matching the key case-insensitively for the same reason
-// accountNameAndLocator does in apply.go.
-func commentValue(row map[string]any) (string, bool) {
-	for key, value := range row {
-		if strings.EqualFold(key, "comment") {
-			s, ok := value.(string)
-			return s, ok
-		}
-	}
-	return "", false
 }
