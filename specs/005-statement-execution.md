@@ -1,28 +1,34 @@
 # Specification: Statement Execution (005)
 
+This specification covers the package: `internal/snowflake/statement/`.
+
 ## Overview
 
-This specification defines `internal/snowflake/statement/`, the shared mechanics every account-provisioning module (012–015, 017, 018, 021) uses to talk to Snowflake: running one SQL statement at a time against an injected connection, materializing whatever rows come back, and decorating a failure with the driver's own diagnostic fields. It binds values and object names wherever Snowflake accepts a bind, and owns the handful of rendering primitives for the few positions that require literal SQL text instead — but a position is only rendered once a failing integration test has proven that binding it does not work. Escaping is therefore solved once, here, and used only where it is demonstrably needed.
+This package is the platform's single path for executing SQL against Snowflake. It protects against SQL injection by ensuring that tenant-supplied input cannot alter the meaning of a statement. It also owns the lifecycle of query results, so callers never hold an open cursor and cannot leak connections. Callers receive fully loaded results that can be searched in memory, and any failure identifies the exact statement that caused it.
 
-## Key Concept: Bind First, Render Only Where Binding Is Proven Impossible
+## Key Concept: Bind Inputs Where Snowflake Allows
 
-Snowflake accepts `?` binds for values, and object names via `IDENTIFIER(?)`, across queries, DML and DDL alike, so the default shape for every statement in this design is something like `ALTER USER IDENTIFIER(?) SET NETWORK_POLICY = ?` — nothing interpolated, nothing to escape. Interpolating text into a statement is the exception, and this package owns every place it happens so that escaping is solved once rather than re-derived by each module.
+Snowflake usually accepts input as a bound parameter, separate from the SQL command, so that input cannot change the command's meaning. Its documentation does not reliably identify every place binding works, but tests against a live account show it works in nearly all positions checked so far. When Snowflake does not accept a bound parameter, this package provides helpers that safely quote or validate the input before it becomes part of the command text.
 
-The order is fixed: bind first, render second. Documentation and intuition about where Snowflake accepts a bind have repeatedly turned out wrong in both directions, so neither is accepted as a reason to skip the attempt. The module writes the bound form of its statement and runs it in an integration test against a live Snowflake account. Only if that bound attempt fails with the server's own error, and the test asserts that failure, may the position fall back to a rendering primitive. Until then the position stays bound; a position that has not been shown to fail when bound is, by definition, bindable.
+| Statement | Approach | Example |
+|---|---|---|
+| `CREATE ACCOUNT` | Bound parameters: Snowflake accepts binds here | `r.Exec(ctx, "create account", "CREATE ACCOUNT IDENTIFIER(?) ADMIN_NAME = ?", name, admin)` |
+| `ALTER ACCOUNT SET` | Rendered text: Snowflake rejects binds here, so a helper quotes the value | `r.Exec(ctx, "set timezone", "ALTER ACCOUNT SET TIMEZONE = "+statement.QuoteLiteral(tz))` |
 
-Three rendering primitives exist for the positions that pass this test: a quoted object name, a quoted string literal, and a charset-validated bare token. Each is a fallback, and each call site in production code must be traceable to the failed bound attempt that justifies it. The positions checked so far, and what they showed, are recorded under Verified Bind Positions below.
+## Key Concept: No Transactions — Callers Make Their SQL Idempotent
 
-## Key Concept: Ordered Execution, No Rollback
+Snowflake commits every DDL statement immediately and cannot roll it back, so this package offers no transactions and runs exactly one statement per call. A caller that needs several statements runs them in order and stops at the first failure, which identifies exactly which statement failed. Statements that already succeeded stay applied. Callers therefore write idempotent SQL, so the next attempt completes a partially applied sequence instead of repeating it.
 
-`Exec` and `Query` each run exactly one statement per call. A module that needs several statements — bootstrapping an account is a dozen or more — calls this package once per statement, in order, and stops at the first failure. There is no batching and no multi-statement mode: Snowflake's own multi-statement execution buys no atomicity (each DDL statement is still its own transaction and cannot be rolled back) while costing exact failure attribution, so one statement per call is strictly better for a caller that needs to know precisely which statement failed.
+## Key Concept: Fully Loaded Results, Searched in Memory
 
-Partial application on failure is therefore the expected outcome of an error, not a defect to guard against here. Snowflake DDL cannot be rolled back at all, so an account that fails halfway through bootstrapping is left with whatever statements already succeeded. Convergence is the next reconcile's job: each module's own SQL is written to be idempotent (`CREATE ... IF NOT EXISTS`, `CREATE OR ALTER`, and similar), so repeating a partially-applied sequence completes it rather than duplicating what already landed. This package has no opinion on idempotency — it only runs what it is given.
+A query reads every row into memory before it returns, and the connection is released straight away. Callers therefore never hold an open cursor: they cannot forget to close it and leak a pooled connection, and they cannot mistake a read that failed halfway through for an empty result. The queries in this design are small existence checks and read-backs of a few rows, so keeping the whole result in memory costs nothing.
 
-## Key Concept: Reading Results Without Boilerplate
+The result is an in-memory table of rows and named columns. Reading a single cell from it by hand means looping over the rows, comparing a column on each, and then pulling the value out of the matching row — boilerplate that every query would otherwise repeat. Helpers replace it, for instance to retrieve a specific row and read a column value from it. For example, looking up an account's locator:
 
-Almost every query in this design asks the same question: is there a row where one column has a given value, and if so, what does another column say? A `SHOW ... LIKE` is only a coarse filter — `_` is a wildcard to `LIKE`, so a hit is not yet a match — which means every caller needs the same exact-match step on top. The result therefore answers that question itself: it can be searched by column value, and a row's columns can be read by name regardless of the casing the driver reports.
-
-A search that finds nothing yields an empty row rather than an error, and reading from an empty row yields an empty value plus a "not found" flag. A lookup is therefore a single chained expression with one check at the end, not a loop with a check at every step. Beyond strings, the result does no type coercion; a caller that needs another type reads the raw value and converts it itself.
+```go
+result, err := r.Query(ctx, "show accounts", "SHOW ACCOUNTS LIKE ?", "TEAM_A")
+locator, ok := result.FindRow("account_name", "TEAM_A").StringValue("account_locator")
+```
 
 ## Public API
 
