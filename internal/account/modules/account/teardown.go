@@ -60,13 +60,10 @@ func (m *module) dropAccount(ctx context.Context, mc *pipeline.ModuleContext) er
 		return err
 	}
 
-	nameToken, err := statement.BareIdentifier(mc.ResolvedAccountName())
-	if err != nil {
-		return err
-	}
-
-	sql := fmt.Sprintf("DROP ACCOUNT IF EXISTS %s GRACE_PERIOD_IN_DAYS = %d", nameToken, m.deletionGracePeriodDays)
-	if err := statement.New(db).Exec(ctx, "drop account", sql); err != nil {
+	// The name binds; GRACE_PERIOD_IN_DAYS does not (specs/005, Verified Bind
+	// Positions), so the integer from config is formatted into the text.
+	sql := fmt.Sprintf("DROP ACCOUNT IF EXISTS IDENTIFIER(?) GRACE_PERIOD_IN_DAYS = %d", m.deletionGracePeriodDays)
+	if err := statement.New(db).Exec(ctx, "drop account", sql, mc.ResolvedAccountName()); err != nil {
 		return fmt.Errorf("failed to drop account: %w", err)
 	}
 	return nil
