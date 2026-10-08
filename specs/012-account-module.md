@@ -173,11 +173,9 @@ account survives, then `KeyManager.DeleteCredentials` on the tenant secret ident
 it succeeded, and a step whose object is already absent counts as success, so the whole sequence is safe to
 re-run.
 
-**Note**: whether `CREATE ACCOUNT` additionally accepts bind parameters for any of its positions (rather
-than rendered text, see Security Considerations) is an unverified vendor fact — not needed to build this
-module correctly, since the rendering Security Considerations describes is already safe, but worth
-confirming opportunistically and recording in a Snowflake SQL-mechanics notes file if one is ever
-started.
+**Note**: every position of `CREATE ACCOUNT` was confirmed against live Snowflake to accept a bind (the
+account name through `IDENTIFIER(?)`, every value through a plain `?`), so this module binds all of them
+and renders nothing but its fixed keywords; see Security Considerations and 005's Verified Bind Positions.
 
 ## Project Structure
 
@@ -208,8 +206,6 @@ internal/account/modules/account/
   the max length, never the organization name or "DNS label", since the tenant can't act on
   either.
 - `CREATE ACCOUNT` fails because the resolved account name is already taken by another account org-wide.
-- The resolved account name does not start with a letter (backstop; Guardrails (008) is expected to
-  already block this at admission).
 - The secret store's create-only write fails because the occupying secret is scheduled for deletion
   (`errors.Is(err, secrets.ErrPendingDeletion)`) — the account was deleted too recently.
 
@@ -302,7 +298,7 @@ This specification defines the account module that:
   fresh-create path and both before any side effect (keypair generation, secret storage, or the
   org-admin connection): `Region(cr.Spec.Region)`, to confirm the region exists in the loaded config,
   and a check of the returned `Region.Available`, bypassed only for alpha-tester namespaces (Key
-  Concept: Region Validation). The region literal `CREATE ACCOUNT` renders still comes
+  Concept: Region Validation). The region value `CREATE ACCOUNT` binds still comes
   entirely from the CRD plus a fixed transform; the Backplane Config only gates whether that literal
   is attempted at all.
 - **Why does this module re-check an account-name length the CRD (006) already bounds?** The
@@ -376,8 +372,8 @@ This specification defines the account module that:
   `ModuleContext.EvictTenant()` — Contract: reached only through `ModuleContext`; this module never
   imports `internal/snowflake/pool` or `internal/snowflake/host` directly.
 - **Statement Execution (005)** — Used APIs: `statement.New()`, `Runner.Exec()`, `Runner.Query()`,
-  `QuoteLiteral()`, `BareIdentifier()`, `*statement.Error` — Contract: every tenant-influenced value is
-  rendered through one of these, never concatenated raw.
+  `*statement.Error` — Contract: every tenant-influenced value is passed as a bind argument, never
+  concatenated into statement text; none of 005's rendering primitives is used.
 - **SnowflakeAccount CRD (006)** — Used APIs: `SnowflakeAccountSpec.Description`, `.Contact`, `.Region`,
   `SnowflakeAccountStatus.AccountLocator`, `.AccountCreatedAt`, `internal/account/tenant.AlphaTester()`
   — Contract: reads the spec fields read-only; writes `AccountLocator`/`AccountCreatedAt` directly on
@@ -464,7 +460,7 @@ This specification defines the account module that:
   period.
 - **SC-021**: A `nil` `cr.Status.AccountCreatedAt` with a known locator is treated as past the grace
   period: `Observe`/`Apply` attempt a connection exactly as they did before this field existed.
-- **SC-022**: `Teardown` renders the resolved account name as a bare identifier and always includes a
+- **SC-022**: `Teardown` binds the resolved account name via `IDENTIFIER(?)` and always includes a
   `GRACE_PERIOD_IN_DAYS` clause carrying the value `New` was given, unchanged and unclamped.
 - **SC-023**: `Teardown` issues no SQL and evicts nothing when `cr.Status.AccountLocator` is empty, and
   still deletes the credential.
@@ -517,40 +513,41 @@ This specification defines the account module that:
 - The post-create locator lookup's pattern matching is a coarse pre-filter only; the exact,
   case-insensitive re-check is load-bearing, not defensive style, given how often the resolved account
   name's own underscores would otherwise produce a false match.
-- **`CREATE ACCOUNT` rendering.** Only two of this statement's values are tenant-supplied free text —
-  `EMAIL` and `COMMENT` — and both are rendered as escaped, quoted string literals. Every other position
-  is either a fixed controller literal or an algorithmically-derived token, never raw tenant input, and
-  is still passed through a bare-identifier charset check as a defense-in-depth backstop rather than
-  trusted implicitly. None of these values is ever concatenated into the statement text unescaped.
+- **`CREATE ACCOUNT` binding.** Every position that carries a value binds, so no tenant-supplied text —
+  `EMAIL` and `COMMENT` are the free-text ones — is ever part of the statement text and none needs
+  escaping. Only the fixed keywords (`ADMIN_USER_TYPE=SERVICE`, `EDITION=ENTERPRISE`) are literal text. The
+  region value is the one transformed into Snowflake's region-identifier form before binding.
+  Priority is injection safety over fidelity: Snowflake interprets backslash escapes and doubled single
+  quotes inside a bound string, so a `spec.description` containing `\` or `''` is stored altered (005,
+  Verified Bind Positions). That is accepted.
 
-  | Position | Value | Rendering |
+  | Position | Value | Form |
   | --- | --- | --- |
-  | account name | the resolved account name (design.md 3.12) | bare identifier |
-  | `ADMIN_NAME` | fixed `"platform"` | quoted literal |
-  | `ADMIN_RSA_PUBLIC_KEY` | the generated public key | quoted literal |
-  | `ADMIN_USER_TYPE` | fixed `SERVICE` | bare token |
-  | `EMAIL` | `spec.contact` (email-shape checked at admission, 006) | quoted literal |
-  | `EDITION` | fixed `ENTERPRISE` | bare token |
-  | `REGION` | `spec.region`, transformed into Snowflake's region-identifier form | bare identifier |
-  | `COMMENT` | `spec.description` (tenant free text); clause omitted if empty | quoted literal |
+  | account name | the resolved account name (design.md 3.12) | `IDENTIFIER(?)` |
+  | `ADMIN_NAME` | fixed `"platform"` | `?` |
+  | `ADMIN_RSA_PUBLIC_KEY` | the generated public key | `?` |
+  | `ADMIN_USER_TYPE` | fixed `SERVICE` | keyword |
+  | `EMAIL` | `spec.contact` (email-shape checked at admission, 006) | `?` |
+  | `EDITION` | fixed `ENTERPRISE` | keyword |
+  | `REGION` | `spec.region`, transformed into Snowflake's region-identifier form | `?` |
+  | `COMMENT` | `spec.description` (tenant free text); clause omitted if empty | `?` |
 
-- **`DROP ACCOUNT` rendering.** Its only two positions are the resolved account name, rendered as a bare
-  identifier, and `GRACE_PERIOD_IN_DAYS`, an `int` from ops-owned provider configuration (002) that 002's
-  loader has already bounded to 7-90. No tenant-supplied text reaches this statement at all, and no tenant
-  can influence the grace period — deletion protection would be worthless if the party being protected
-  from could shorten the window it is protected by.
+- **`DROP ACCOUNT` binding.** The resolved account name binds through `IDENTIFIER(?)`. `GRACE_PERIOD_IN_DAYS`
+  does not bind (the statement fails with a syntax error, 005's Verified Bind Positions), so the `int`
+  from ops-owned provider configuration (002), already bounded to 7-90 by 002's loader, is formatted into
+  the text. No tenant-supplied text reaches this statement at all, and no tenant can influence the grace
+  period — deletion protection would be worthless if the party being protected from could shorten the
+  window it is protected by.
 
-- **`SHOW USERS`/`ALTER USER` rendering (Key Concept: Contact Email Kept In Sync).** The fixed literal
-  `"platform"` — both in the `SHOW USERS LIKE` pattern and as the `ALTER USER` target — is rendered as a
-  quoted literal and a bare identifier respectively, passed through the same bare-identifier charset
-  check as every other fixed literal in this module, as a defense-in-depth backstop. `spec.contact` is
-  rendered as a quoted literal, identical to its `CREATE ACCOUNT` `EMAIL` rendering.
+- **`SHOW USERS`/`ALTER USER` binding (Key Concept: Contact Email Kept In Sync).** The fixed literal
+  `"platform"` — both as the `SHOW USERS LIKE` pattern and as the `ALTER USER` target — and
+  `spec.contact` are all bind arguments.
 
-  | Position | Value | Rendering |
+  | Position | Value | Form |
   | --- | --- | --- |
-  | `SHOW USERS LIKE` pattern | fixed `"platform"` | quoted literal |
-  | `ALTER USER` target | fixed `"platform"` | bare identifier |
-  | `EMAIL` | `spec.contact` (email-shape checked at admission, 006) | quoted literal |
+  | `SHOW USERS LIKE` pattern | fixed `"platform"` | `?` |
+  | `ALTER USER` target | fixed `"platform"` | `IDENTIFIER(?)` |
+  | `EMAIL` | `spec.contact` (email-shape checked at admission, 006) | `?` |
 
 ## References
 

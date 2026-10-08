@@ -117,7 +117,7 @@ func (m *module) Apply(ctx context.Context, mc *pipeline.ModuleContext) pipeline
 // detect here beyond "does Snowflake already have what the CRD says" — no
 // state is persisted to status for this purpose.
 func syncPlatformEmail(ctx context.Context, runner *statement.Runner, contact string) error {
-	result, err := runner.Query(ctx, "show platform user", "SHOW USERS LIKE "+statement.QuoteLiteral("platform"))
+	result, err := runner.Query(ctx, "show platform user", "SHOW USERS LIKE ?", "platform")
 	if err != nil {
 		return fmt.Errorf("failed to look up platform user: %w", err)
 	}
@@ -128,12 +128,8 @@ func syncPlatformEmail(ctx context.Context, runner *statement.Runner, contact st
 		return nil
 	}
 
-	nameToken, err := statement.BareIdentifier("platform")
-	if err != nil {
-		return err
-	}
-	sql := fmt.Sprintf("ALTER USER %s SET EMAIL = %s", nameToken, statement.QuoteLiteral(contact))
-	if err := runner.Exec(ctx, "sync platform user email", sql); err != nil {
+	if err := runner.Exec(ctx, "sync platform user email",
+		"ALTER USER IDENTIFIER(?) SET EMAIL = ?", "platform", contact); err != nil {
 		return fmt.Errorf("failed to update platform user email: %w", err)
 	}
 	return nil
@@ -274,29 +270,22 @@ func finishCreate(cr *v1alpha1.SnowflakeAccount, locator string) pipeline.Outcom
 // looks up the locator Snowflake assigned. It is pure with respect to
 // ModuleContext — testable with a sqlmock-backed *statement.Runner alone.
 func runCreateAccount(ctx context.Context, runner *statement.Runner, resolvedName, region, email, description, publicKey string) (string, pipeline.Outcome) {
-	nameToken, err := statement.BareIdentifier(resolvedName)
-	if err != nil {
-		return "", pipeline.Rejected(err).Aborting()
+	// Every position binds (specs/005, Verified Bind Positions): the account
+	// name via IDENTIFIER(?), everything else with a plain ?.
+	sql := "CREATE ACCOUNT IDENTIFIER(?) ADMIN_NAME=? ADMIN_RSA_PUBLIC_KEY=? ADMIN_USER_TYPE=SERVICE EMAIL=? EDITION=ENTERPRISE REGION=?"
+	args := []any{
+		resolvedName,
+		"platform",
+		publicKey,
+		email,
+		strings.ToUpper(strings.ReplaceAll(region, "-", "_")),
 	}
-
-	regionToken, err := statement.BareIdentifier(strings.ToUpper(strings.ReplaceAll(region, "-", "_")))
-	if err != nil {
-		return "", pipeline.Rejected(err).Aborting()
-	}
-
-	sql := fmt.Sprintf(
-		"CREATE ACCOUNT %s ADMIN_NAME=%s ADMIN_RSA_PUBLIC_KEY=%s ADMIN_USER_TYPE=SERVICE EMAIL=%s EDITION=ENTERPRISE REGION=%s",
-		nameToken,
-		statement.QuoteLiteral("platform"),
-		statement.QuoteLiteral(publicKey),
-		statement.QuoteLiteral(email),
-		regionToken,
-	)
 	if description != "" {
-		sql += " COMMENT=" + statement.QuoteLiteral(description)
+		sql += " COMMENT=?"
+		args = append(args, description)
 	}
 
-	if err := runner.Exec(ctx, "create account", sql); err != nil {
+	if err := runner.Exec(ctx, "create account", sql, args...); err != nil {
 		var stmtErr *statement.Error
 		if errors.As(err, &stmtErr) && stmtErr.SQLState == duplicateAccountSQLState {
 			return "", pipeline.Rejected(errors.NewUserError(fmt.Sprintf(
@@ -322,7 +311,7 @@ func runCreateAccount(ctx context.Context, runner *statement.Runner, resolvedNam
 // exact match is discarded before trusting its locator
 // (specs/012-account-module.md, Edge Cases).
 func findAccountLocator(ctx context.Context, runner *statement.Runner, label, resolvedName string) (locator string, found bool, err error) {
-	result, err := runner.Query(ctx, label, "SHOW ACCOUNTS LIKE "+statement.QuoteLiteral(resolvedName))
+	result, err := runner.Query(ctx, label, "SHOW ACCOUNTS LIKE ?", resolvedName)
 	if err != nil {
 		return "", false, fmt.Errorf("failed to look up account %q: %w", resolvedName, err)
 	}

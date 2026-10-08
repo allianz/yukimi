@@ -20,7 +20,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -33,6 +32,7 @@ import (
 	"github.com/allianz/yukimi/internal/config/backplane"
 	internalerrors "github.com/allianz/yukimi/internal/errors"
 	"github.com/allianz/yukimi/internal/secrets"
+	"github.com/allianz/yukimi/internal/snowflake/statement"
 )
 
 // newOrgAdminMock returns a *sql.DB backed by sqlmock, closed automatically
@@ -90,10 +90,15 @@ func TestApply_FreshCreate_Success(t *testing.T) {
 	fake := &fakeDBPool{orgAdminDB: orgAdminDB}
 	mc := pipeline.NewModuleContext(cr, nil, nil, fake)
 
-	mock.ExpectExec("CREATE ACCOUNT").WillReturnResult(sqlmock.NewResult(0, 0))
+	// Every CREATE ACCOUNT position is bound (specs/005, Verified Bind
+	// Positions): name, admin name, key, email, region (upper-cased, "_"
+	// separated).
+	mock.ExpectExec("CREATE ACCOUNT").
+		WithArgs(mc.ResolvedAccountName(), "platform", sqlmock.AnyArg(), "a@b.com", "AWS_EU_CENTRAL_1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	rows := sqlmock.NewRows([]string{"account_name", "account_locator"}).
 		AddRow(mc.ResolvedAccountName(), "AB12345")
-	mock.ExpectQuery("SHOW ACCOUNTS").WillReturnRows(rows)
+	mock.ExpectQuery("SHOW ACCOUNTS").WithArgs(mc.ResolvedAccountName()).WillReturnRows(rows)
 
 	m := &module{keyManager: secrets.NewKeyManager(secrets.NewFakeKeyStore(), time.Hour), org: "myorg", gracePeriod: 5 * time.Minute, backplane: testBackplaneConfig("aws-eu-central-1")}
 	before := time.Now()
@@ -216,9 +221,9 @@ func TestApply_KnownLocator_EmailDrifted_AltersEmail(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345", "a@b.com", "")
 	cr.Status.AccountCreatedAt = &metav1.Time{Time: time.Now().Add(-10 * time.Minute)}
 	tenantDB, mock := newOrgAdminMock(t)
-	mock.ExpectQuery("SHOW USERS").WillReturnRows(
+	mock.ExpectQuery("SHOW USERS").WithArgs("platform").WillReturnRows(
 		sqlmock.NewRows([]string{"name", "email"}).AddRow("platform", "old@b.com"))
-	mock.ExpectExec("ALTER USER").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("ALTER USER").WithArgs("platform", "a@b.com").WillReturnResult(sqlmock.NewResult(0, 0))
 	fake := &fakeDBPool{tenantDB: tenantDB}
 	mc := pipeline.NewModuleContext(cr, nil, nil, fake)
 
@@ -368,26 +373,6 @@ func TestApply_FreshCreate_OrgAdminConnectionFails(t *testing.T) {
 	}
 }
 
-// A malformed spec.region — one that fails the bare-identifier charset check
-// even after the CREATE ACCOUNT region transform — is rejected as a
-// defense-in-depth backstop (specs/012-account-module.md, Security
-// Considerations), issuing no SQL.
-func TestApply_FreshCreate_MalformedRegion_Rejected(t *testing.T) {
-	cr := newTestCR("acct", "ns", "aws-eu-1!", "", "a@b.com", "")
-	orgAdminDB, _ := newOrgAdminMock(t)
-	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{orgAdminDB: orgAdminDB})
-
-	m := &module{keyManager: secrets.NewKeyManager(secrets.NewFakeKeyStore(), time.Hour), org: "myorg", gracePeriod: 5 * time.Minute, backplane: testBackplaneConfig("aws-eu-1!")}
-	outcome := m.Apply(context.Background(), mc)
-
-	if outcome.State != pipeline.StateRejected {
-		t.Errorf("outcome.State = %v, want StateRejected", outcome.State)
-	}
-	if !internalerrors.IsUserError(outcome.Err) {
-		t.Errorf("expected a user error, got: %v", outcome.Err)
-	}
-}
-
 // SC-014: a fresh create aborts with a system error when the post-create
 // locator lookup finds no matching row.
 func TestApply_FreshCreate_LocateAccount_NoMatch(t *testing.T) {
@@ -483,7 +468,9 @@ func TestApply_FreshCreate_ResumeCrashedCreate_AccountNotYetCreated(t *testing.T
 	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{orgAdminDB: orgAdminDB})
 
 	mock.ExpectQuery("SHOW ACCOUNTS").WillReturnRows(sqlmock.NewRows([]string{"account_name", "account_locator"}))
-	mock.ExpectExec(regexp.QuoteMeta(seeded.PublicKey)).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("CREATE ACCOUNT").
+		WithArgs(mc.ResolvedAccountName(), "platform", seeded.PublicKey, "a@b.com", "AWS_EU_CENTRAL_1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	rows := sqlmock.NewRows([]string{"account_name", "account_locator"}).
 		AddRow(mc.ResolvedAccountName(), "AB12345")
 	mock.ExpectQuery("SHOW ACCOUNTS").WillReturnRows(rows)
@@ -913,5 +900,36 @@ func TestApply_FreshCreate_AlphaTesterLabelMalformed_Failed(t *testing.T) {
 	}
 	if outcome.Err == nil || internalerrors.IsUserError(outcome.Err) {
 		t.Errorf("expected a system error, got: %v", outcome.Err)
+	}
+}
+
+// A tenant-controlled description is only ever a bind argument: whatever
+// quotes, semicolons and comment markers it contains, the statement text is
+// the fixed bound template (specs/005, Key Concept: Bind First). The exact
+// text is matched, so any interpolation would fail the expectation.
+func TestRunCreateAccount_DescriptionIsBoundNeverInterpolated(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual))
+	if err != nil {
+		t.Fatalf("sqlmock.New() error: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	const description = `x'; DROP ACCOUNT other; -- /* y */ "z"`
+	mock.ExpectExec("CREATE ACCOUNT IDENTIFIER(?) ADMIN_NAME=? ADMIN_RSA_PUBLIC_KEY=? ADMIN_USER_TYPE=SERVICE EMAIL=? EDITION=ENTERPRISE REGION=? COMMENT=?").
+		WithArgs("acct_ns", "platform", "KEY", "a@b.com", "AWS_EU_CENTRAL_1", description).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery("SHOW ACCOUNTS LIKE ?").WithArgs("acct_ns").
+		WillReturnRows(sqlmock.NewRows([]string{"account_name", "account_locator"}).AddRow("acct_ns", "AB12345"))
+
+	locator, outcome := runCreateAccount(context.Background(), statement.New(db), "acct_ns", "aws-eu-central-1", "a@b.com", description, "KEY")
+
+	if outcome.State != pipeline.StateDone {
+		t.Fatalf("outcome = %+v, want Done", outcome)
+	}
+	if locator != "AB12345" {
+		t.Errorf("locator = %q, want AB12345", locator)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
 	}
 }

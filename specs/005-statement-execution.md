@@ -2,19 +2,15 @@
 
 ## Overview
 
-This specification defines `internal/snowflake/statement/`, the shared mechanics every account-provisioning module (012–015, 017, 018, 021) uses to talk to Snowflake: running one SQL statement at a time against an injected connection, materializing whatever rows come back, and decorating a failure with the driver's own diagnostic fields. It binds values and object names wherever Snowflake accepts a bind, and owns the handful of rendering primitives needed for the few positions that require literal SQL text instead — so escaping is solved once, here, rather than five times over in the modules that actually decide what SQL to emit.
+This specification defines `internal/snowflake/statement/`, the shared mechanics every account-provisioning module (012–015, 017, 018, 021) uses to talk to Snowflake: running one SQL statement at a time against an injected connection, materializing whatever rows come back, and decorating a failure with the driver's own diagnostic fields. It binds values and object names wherever Snowflake accepts a bind, and owns the handful of rendering primitives for the few positions that require literal SQL text instead — but a position is only rendered once a failing integration test has proven that binding it does not work. Escaping is therefore solved once, here, and used only where it is demonstrably needed.
 
-## Key Concept: Bind First, Render Only Where Binding Is Impossible
+## Key Concept: Bind First, Render Only Where Binding Is Proven Impossible
 
-Snowflake accepts `?` binds for both values and object names (the latter via `IDENTIFIER(?)`) across queries, DML, and DDL alike, so the default shape for every statement in this design is something like `ALTER USER IDENTIFIER(?) SET NETWORK_POLICY = ?` — nothing interpolated, nothing to escape. Interpolating text directly into a statement is the exception, not the default, and this package owns every place it happens so that escaping is solved once rather than re-derived by each module that needs it.
+Snowflake accepts `?` binds for values, and object names via `IDENTIFIER(?)`, across queries, DML and DDL alike, so the default shape for every statement in this design is something like `ALTER USER IDENTIFIER(?) SET NETWORK_POLICY = ?` — nothing interpolated, nothing to escape. Interpolating text into a statement is the exception, and this package owns every place it happens so that escaping is solved once rather than re-derived by each module.
 
-Three rendering primitives cover the known and suspected exceptions, each with a real caller elsewhere in this design:
+The order is fixed: bind first, render second. Documentation and intuition about where Snowflake accepts a bind have repeatedly turned out wrong in both directions, so neither is accepted as a reason to skip the attempt. The module writes the bound form of its statement and runs it in an integration test against a live Snowflake account. Only if that bound attempt fails with the server's own error, and the test asserts that failure, may the position fall back to a rendering primitive. Until then the position stays bound; a position that has not been shown to fail when bound is, by definition, bindable.
 
-- **`QuoteIdentifier`** — a double-quoted, escaped object name. For positions where `IDENTIFIER(?)` binding turns out not to be accepted once checked (the `CREATE ACCOUNT` account name, 3.6; the policy-name value positions of 3.8/3.9).
-- **`QuoteLiteral`** — a single-quoted, escaped string literal. Its primary caller is `SHOW ... LIKE '<pattern>'`: whether `SHOW` accepts a bind for its pattern at all is unverified, so the pattern is rendered. This is the single most frequent rendering call site in the platform, since every existence check goes through `SHOW`.
-- **`BareIdentifier`** — a charset-validated, unquoted token, returned unchanged or rejected outright. Its one known caller is the parameter *name* in `ALTER ACCOUNT SET <param> = <value>` (3.5, 3.6): that position is keyword-like rather than a true object name, so neither `IDENTIFIER()` nor quoting is believed to apply, and operators supply these names arbitrarily. A regex check on the bare token is the only available defense — this is the load-bearing rendering case in this package, not a convenience.
-
-A fourth known no-bind context, `CREATE SECURITY INTEGRATION` (the account-wide SSO integration of 3.2/3.9, and `PLATFORM_OIDC` of 3.11.2 once built), needs no primitive of its own — binds are prohibited across the whole `CREATE/ALTER INTEGRATION` family, and whatever object names or literals that statement needs reuse `QuoteIdentifier`/`QuoteLiteral` above.
+Three rendering primitives exist for the positions that pass this test: a quoted object name, a quoted string literal, and a charset-validated bare token. Each is a fallback, and each call site in production code must be traceable to the failed bound attempt that justifies it. The positions checked so far, and what they showed, are recorded under Verified Bind Positions below.
 
 ## Key Concept: Ordered Execution, No Rollback
 
@@ -122,25 +118,26 @@ func (r Row) Value(column string) (value any, ok bool)
 func (r *Runner) Query(ctx context.Context, label, sql string, args ...any) (Result, error)
 
 // QuoteIdentifier double-quotes name for use as a rendered SQL identifier,
-// doubling any embedded double quote. Use only where IDENTIFIER(?) binding
-// has been confirmed, at the calling module's spec-writing time, not to
-// work for that statement position (e.g. CREATE ACCOUNT's account name, if
-// found unsupported there).
+// doubling any embedded double quote. Binding the name via IDENTIFIER(?)
+// must be tried first; use this only once an integration test shows that
+// bound attempt failing against live Snowflake (see Verified Bind
+// Positions). No such position is confirmed yet.
 func QuoteIdentifier(name string) string
 
 // QuoteLiteral single-quotes s for use as a rendered SQL string literal,
-// doubling any embedded single quote. Its primary caller is
-// SHOW ... LIKE '<pattern>', since whether SHOW accepts a bind for its
-// pattern at all is unverified — assume rendered.
+// doubling any embedded single quote. Binding the value with ? must be
+// tried first; use this only once an integration test shows that bound
+// attempt failing against live Snowflake (see Verified Bind Positions).
 func QuoteLiteral(s string) string
 
 // BareIdentifier validates name as a bare, unquoted SQL token and returns
 // it unchanged, or a user error if it does not match the expected charset.
-// Its one known caller is the parameter name in ALTER ACCOUNT SET <param> =
-// <value>: that position is keyword-like rather than a true object name, so
-// neither IDENTIFIER(?) nor quoting is believed to apply — this check is
-// the only defense against an operator-supplied parameter name reaching SQL
-// text unescaped, and is the load-bearing rendering case in this package.
+// Its one confirmed caller is the parameter name in ALTER ACCOUNT SET <param>
+// = <value>: an integration test shows that both ? and IDENTIFIER(?) fail
+// there with a syntax error. That position is keyword-like rather than a true
+// object name, so this check is the only defense against an operator-supplied
+// parameter name reaching SQL text unescaped. Like the other renderers, it
+// must not be used at any position without such a failing test.
 //
 // Returns:
 //   - name unchanged if it matches ^[A-Za-z][A-Za-z0-9_]*$
@@ -217,16 +214,53 @@ This specification defines the `internal/snowflake/statement/` package that:
 - Offers **two execution paths**: `Exec`, for statements that return no rows (DDL and non-`SELECT` DML), and `Query`, for statements that do (`SHOW ... LIKE` existence checks, drift read-backs). Which path a given statement uses is each calling module's decision, not this package's.
 - **Materializes every row-returning result** before returning it: column names plus rows keyed by column name, values as `any`.
 - **Offers chainable, error-free lookups on that result**: find a row by a string column's value, then read another column by name. A missing row is a nil `Row`, not an error. Column names and the searched value match ignoring case. Only string reads are provided; anything else is read raw and converted by the caller.
-- **Binds first, renders only where binding is impossible.** Supplies three rendering primitives — a quoted identifier, a quoted string literal, and a charset-validated bare identifier — for the small set of statement positions that cannot be bound.
+- **Binds first, renders only where binding is impossible.** Supplies three rendering primitives — a quoted identifier, a quoted string literal, and a charset-validated bare identifier — for the small set of statement positions where an integration test has proven that binding fails.
 - **Runs statements in order, one per call, and stops on the first error.** No batching, no multi-statement execution, no rollback.
 - **Decorates a failure with structured fields only**: a caller-supplied label, the statement text, and — when the underlying error is a `*gosnowflake.SnowflakeError` — its `Number`, `SQLState`, and `QueryID`. Never the bound arguments.
 
 **Out of Scope**:
 - **Which SQL to emit, and in what order, for any given operation.** That is every downstream module's business (012–015, 017, 018, 021), not this package's.
-- **Whether `IDENTIFIER(?)` binding works at a given statement position.** Several of these positions remain unconfirmed — the account name in `CREATE ACCOUNT` (3.6), and the policy-name value in `ALTER USER ... SET NETWORK_POLICY` (3.8) and `ALTER USER ... SET AUTHENTICATION_POLICY` (3.9). This package does not adjudicate those questions. It supplies the rendering primitives and the bind-first policy; the module that actually emits each statement (006, and the network/auth modules of 014/015) decides, at its own spec-writing time, whether to attempt a bind there or go straight to a renderer — including a live check against a real account if it chooses to attempt the bind first. This division is deliberate, not an oversight left for later.
+- **Running the bind tests for a given statement.** This package supplies the rendering primitives and the policy that governs their use; the module that emits each statement owns the failing integration test that justifies rendering one of its positions, next to the code that renders it. Positions not yet checked — the policy-name values in `ALTER USER ... SET NETWORK_POLICY` (3.8) and `ALTER USER ... SET AUTHENTICATION_POLICY` (3.9) — are bound until that module's test shows otherwise.
 - **Type coercion on the materialized `Result`** beyond string reads — no integer, boolean or timestamp accessors until a module actually needs one. Callers read the raw value and convert it themselves.
 - **Retries.** No retry logic lives in this package or anywhere in this codebase's business logic; a failure is returned as-is and the caller (ultimately Kubernetes/Crossplane, per project-wide policy) decides whether to try again.
 - **Connections, credentials, and pooling** — entirely 004's job. This package accepts an already-open `Executor` and never asks how it got that way.
+
+## Verified Bind Positions
+
+Results of live probes against the sample organization (2026-10-08), as run by the account module's integration tests. "Binds" means the bound form executed successfully; "fails" is the server's rejection, which is what justifies a renderer.
+
+| Statement position | Form tried | Outcome |
+|---|---|---|
+| `CREATE ACCOUNT` name | `IDENTIFIER(?)` | Binds |
+| `CREATE ACCOUNT` name | `?` | Fails: `1003` / `42000` syntax error |
+| `CREATE ACCOUNT` `ADMIN_NAME`, `ADMIN_RSA_PUBLIC_KEY`, `EMAIL`, `REGION`, `COMMENT` | `?` | Binds (`COMMENT` alters backslashes, see below) |
+| `SHOW ... LIKE` pattern (`SHOW ACCOUNTS`, `SHOW USERS`, `SHOW PARAMETERS`) | `?` | Binds |
+| `SHOW ... LIKE` pattern | `IDENTIFIER(?)` | Fails: `1003` / `42000` syntax error |
+| `ALTER USER <name> SET EMAIL = <value>`, name and value | `IDENTIFIER(?)` and `?`, separately and together | Binds |
+| `ALTER USER <name> SET RSA_PUBLIC_KEY[_2] = <key>`, name and key | `IDENTIFIER(?)` and `?` | Binds |
+| `ALTER USER <name> SET <slot> = <key>`, slot name | `?` | Fails: `1003` / `42000` syntax error |
+| `DESC USER <name>` | `IDENTIFIER(?)` | Binds |
+| `DROP ACCOUNT IF EXISTS <name> ...`, name | `IDENTIFIER(?)` | Binds; the account is dropped |
+| `DROP ACCOUNT ... GRACE_PERIOD_IN_DAYS = <n>`, days | `?` | Fails: `1003` / `42000` syntax error |
+| `ALTER ACCOUNT SET <param> = <value>`, value | `?` (integer and boolean parameters; string and `bool` args) | Fails: `1008` / `22023` `invalid value [?] for parameter ...` |
+| `ALTER ACCOUNT SET <param>`, parameter name | `?` and `IDENTIFIER(?)` | Fails: `1003` / `42000` syntax error |
+
+Consequences: `CREATE ACCOUNT`, every `SHOW ... LIKE`, `DESC USER`, `ALTER USER ... SET EMAIL` and the key-rotation `ALTER USER` bind throughout. Rendering is justified only for the `ALTER ACCOUNT SET` parameter name and value, the `DROP ACCOUNT` grace period, and the key slot name in `ALTER USER ... SET <slot>`. Snowflake's own documentation excludes the `CREATE/ALTER INTEGRATION` family from binds, which is why `CREATE SECURITY INTEGRATION` is rendered too; that exclusion should still be backed by a test when the first such statement is written. Parenthesized placeholders such as `(?)` are not a supported bind form and are not probed.
+
+### Bound string values are not stored verbatim
+
+A bind that executes is not necessarily lossless. Snowflake interprets backslash escape sequences and quote doubling inside a bound string value, so the stored value can differ from the one sent. Compared against the same value rendered through `QuoteLiteral` (which doubles backslashes), using `ALTER USER ... SET COMMENT` and `CREATE ACCOUNT ... COMMENT`:
+
+| Value sent | Stored when bound with `?` |
+|---|---|
+| a single `'`, `"`, `--`, `/* */`, `;`, Unicode, a trailing `\` | unchanged |
+| `a''b` (doubled single quote) | `a'b` (one quote) |
+| `a\b` | `a` + backspace + `b` |
+| `a\nb` | `a` + newline + `b` |
+| `a\ b` | `a b` (backslash dropped) |
+| `a\\b` | `a\b` (one backslash) |
+
+**Decision: security takes priority over fidelity.** A bound value can never leave its position or change the statement's structure, whereas a rendered one depends on escaping being right. Free-text values (an account description, a contact) are therefore bound, and the alteration of backslash sequences and doubled quotes is accepted and documented rather than avoided by rendering. Modules that bind free text must not rely on it round-tripping byte for byte when it contains a backslash or a doubled single quote.
 
 ## Edge Cases
 
@@ -241,7 +275,9 @@ This specification defines the `internal/snowflake/statement/` package that:
 - **Does `Value` distinguish a NULL from a missing column?** - Yes: a NULL is `(nil, true)`, a missing column or nil `Row` is `(nil, false)`.
 - **Does column-name matching depend on the casing the driver reports?** - No. An exact key is tried first, then a case-insensitive scan, so `SHOW` output reported as `account_name` or `ACCOUNT_NAME` is read the same way.
 - **How does a module run several statements in sequence?** - It calls `Exec`/`Query` once per statement in its own loop and stops at the first non-nil error; this package has no multi-statement call of its own.
-- **Does this package decide whether `IDENTIFIER(?)` works for `CREATE ACCOUNT`'s account name, or the policy-name positions of 3.8/3.9?** - No. Those remain unconfirmed and are left to whichever future module (006 for `CREATE ACCOUNT`; the network/auth modules for 3.8/3.9) emits that statement, at its own spec-writing time.
+- **May a module render a position because the documentation, or a similar statement, suggests it cannot be bound?** - No. The bound form is tried first; only its failure in an integration test for that exact statement justifies a renderer.
+- **What counts as a failing test?** - One that runs the bound form against live Snowflake and asserts the server's own rejection (error number and SQL state, ideally a message fragment). A test that fails for an unrelated reason — a wrong region, a rejected email — proves nothing about binding, so every other part of the statement in the test must be valid.
+- **Does `IDENTIFIER(?)` work for `CREATE ACCOUNT`'s account name?** - Yes; see Verified Bind Positions. The account name is bound, not rendered.
 - **Is a `*Runner` safe for concurrent use?** - Exactly when its `Executor` is — true of a shared `*sql.DB`, not of a shared `*sql.Tx`. `Runner` itself holds no mutable state beyond the `Executor`.
 
 ## Dependencies
@@ -252,7 +288,7 @@ This specification defines the `internal/snowflake/statement/` package that:
 ## Integration Points
 
 - **Connection Pool (004)** - `Pool.OrgAdminDB`/`Pool.TenantDB` hand back the `*sql.DB` this package wraps as an `Executor` - Key functions: `statement.New` - Notes: no import in either direction from production code; 004 documents this same rule from its side. `integration_test.go` imports 004 (and 003.a, for the `*secrets.KeyManager` `Pool.TenantDB` needs) to obtain that real `*sql.DB` under test — a test-only exception, not a production dependency.
-- **Account Modules (012–015, 017, 018, 021 — not yet written)** - Call `statement.New` once per connection, then `Exec`/`Query` per statement, reaching for a renderer only at the specific positions their own spec identifies as unbindable - Key functions: `Runner.Exec`, `Runner.Query`, `QuoteIdentifier`, `QuoteLiteral`, `BareIdentifier`.
+- **Account Modules (012–015, 017, 018, 021 — not yet written)** - Call `statement.New` once per connection, then `Exec`/`Query` per statement, reaching for a renderer only at positions a failing integration test in their own package has proven unbindable - Key functions: `Runner.Exec`, `Runner.Query`, `QuoteIdentifier`, `QuoteLiteral`, `BareIdentifier`.
 - **Error Handling (001)** - `logger.Handle`, at the controller layer, classifies and logs whatever this package returns; this package never logs anything itself.
 - **Testing** - Module test suites drive the real `statement.New(db)` over `DATA-DOG/go-sqlmock` (`sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual)` for exact statement matching, `.WithArgs(...)` for bind assertions, `mock.ExpectationsWereMet()` for ordering) rather than a hand-rolled fake, exercising the real materializer, renderers and error decoration. `integration_test.go` additionally exercises `Exec`/`Query` against a real `Pool.TenantDB` connection from the sample tenant account `.env` describes (see `internal/snowflake/pool/integration_test.go` for the same wiring), confirming real `*gosnowflake.SnowflakeError` decoration and real row materialization end to end — skipped under `-short`, run via `make test-integration`.
 
@@ -280,12 +316,13 @@ This specification defines the `internal/snowflake/statement/` package that:
 - **SC-020**: `Value` returns the raw value and true for a present column (a NULL as `(nil, true)`), and `(nil, false)` for a nil `Row` or a missing column
 - **SC-021**: A chain such as `result.FindRow(...).StringValue(...)` on a `Result` with no match returns `("", false)` without panicking
 - **SC-022**: Unit test coverage exceeds 90%
+- **SC-023**: Every production call site of `QuoteIdentifier`, `QuoteLiteral` or `BareIdentifier` has an integration test, in the calling module's package, that first sends the bound form of that statement to live Snowflake and asserts the server's rejection
 
 ## Security Considerations
 
 - The three renderers re-validate their input independently of whatever validation a calling module already performed — the same defense-in-depth reasoning 003 and 004 apply to their own inputs — so a module's own validation bug does not automatically become an injection bug here.
 - Bound arguments never appear in a returned `*Error`, and therefore never in an operator log built from one; only the statement text (safe, since it carries placeholders rather than values) and the driver's structured fields do.
-- `BareIdentifier`'s regex is the sole defense at its one call site (the `ALTER ACCOUNT SET <param>` parameter name) and must reject anything containing quotes, whitespace, or SQL metacharacters, since that position accepts neither a bind nor an `IDENTIFIER()`-quoted alternative.
+- `BareIdentifier`'s regex is the sole defense at its one call site (the `ALTER ACCOUNT SET <param>` parameter name) and must reject anything containing quotes, whitespace, or SQL metacharacters, since an integration test shows that position accepts neither a bind nor an `IDENTIFIER()` alternative.
 
 ## References
 
@@ -307,29 +344,24 @@ import "github.com/allianz/yukimi/internal/snowflake/statement"
 func bootstrap(ctx context.Context, db *sql.DB, accountName, publicKey, region string) error {
     r := statement.New(db)
 
+    // CREATE ACCOUNT binds everywhere, including the name via IDENTIFIER(?).
     if err := r.Exec(ctx, "create account",
-        `CREATE ACCOUNT IDENTIFIER(?) ADMIN_NAME = 'platform' ADMIN_RSA_PUBLIC_KEY = ? ADMIN_USER_TYPE = 'SERVICE' EDITION = 'ENTERPRISE' REGION = ?`,
-        accountName, publicKey, region); err != nil {
+        `CREATE ACCOUNT IDENTIFIER(?) ADMIN_NAME = ? ADMIN_RSA_PUBLIC_KEY = ? ADMIN_USER_TYPE = SERVICE EDITION = ENTERPRISE REGION = ?`,
+        accountName, "platform", publicKey, region); err != nil {
         return err // *statement.Error; stop here, next reconcile resumes
-    }
-
-    if err := r.Exec(ctx, "set global parameter",
-        `ALTER ACCOUNT SET PREVENT_UNLOAD_TO_INLINE_URL = ?`, "true"); err != nil {
-        return err
     }
 
     return nil
 }
 ```
 
-### Example 2: An Existence Check via `Query` and `QuoteLiteral`
+### Example 2: An Existence Check via `Query` and a Bound `LIKE`
 
 ```go
 func networkPolicyExists(ctx context.Context, r *statement.Runner, name string) (bool, error) {
-    // SHOW's pattern position is rendered, not bound (notes §7).
-    sql := `SHOW NETWORK POLICIES LIKE ` + statement.QuoteLiteral(name)
-
-    result, err := r.Query(ctx, "check network policy exists", sql)
+    // SHOW's pattern position binds (see Verified Bind Positions).
+    result, err := r.Query(ctx, "check network policy exists",
+        `SHOW NETWORK POLICIES LIKE ?`, name)
     if err != nil {
         return false, err
     }
@@ -339,19 +371,38 @@ func networkPolicyExists(ctx context.Context, r *statement.Runner, name string) 
 }
 ```
 
-### Example 3: A Bare Identifier for a Parameter Name
+### Example 3: Rendering Where Binding Is Proven Impossible
 
 ```go
 func setAccountParameter(ctx context.Context, r *statement.Runner, param, value string) error {
-    // ALTER ACCOUNT SET <param> = <value>: param is keyword-like, so it goes
-    // through BareIdentifier rather than IDENTIFIER(?) or a bind (notes §7).
+    // ALTER ACCOUNT SET <param> = <value>: both positions are proven
+    // unbindable (see Verified Bind Positions), so both are rendered.
     bare, err := statement.BareIdentifier(param)
     if err != nil {
         return err // user error: operator supplied a bad parameter name
     }
 
+    // Whether the server accepts a quoted literal for every parameter type
+    // (integer, boolean) is for the parameter module (013) to confirm.
     return r.Exec(ctx, "set account parameter",
-        `ALTER ACCOUNT SET `+bare+` = ?`, value)
+        `ALTER ACCOUNT SET `+bare+` = `+statement.QuoteLiteral(value))
+}
+```
+
+### Example 4: Reading a Value from a Matched Row
+
+```go
+func accountLocator(ctx context.Context, r *statement.Runner, resolvedName string) (string, bool, error) {
+    result, err := r.Query(ctx, "look up account",
+        `SHOW ACCOUNTS LIKE ?`, resolvedName)
+    if err != nil {
+        return "", false, err
+    }
+
+    // One chained expression: no loop, no per-step error. No matching row
+    // simply yields ("", false).
+    locator, ok := result.FindRow("account_name", resolvedName).StringValue("account_locator")
+    return locator, ok && locator != "", nil
 }
 ```
 

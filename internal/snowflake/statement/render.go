@@ -27,10 +27,10 @@ import (
 var bareIdentifierPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*$`)
 
 // QuoteIdentifier double-quotes name for use as a rendered SQL identifier,
-// doubling any embedded double quote. Use only where IDENTIFIER(?) binding
-// has been confirmed, at the calling module's spec-writing time, not to
-// work for that statement position (e.g. CREATE ACCOUNT's account name, if
-// found unsupported there).
+// doubling any embedded double quote. Binding the name via IDENTIFIER(?) must
+// be tried first; use this only once an integration test shows that bound
+// attempt failing against live Snowflake (see specs/005, Verified Bind
+// Positions). No such position is confirmed yet.
 func QuoteIdentifier(name string) string {
 	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
@@ -42,9 +42,11 @@ func QuoteIdentifier(name string) string {
 // un-doubled trailing backslash would let its own closing quote be consumed
 // as an escaped literal quote rather than the literal's terminator, letting
 // s run on into whatever SQL text follows (confirmed live — see
-// notes-snowflake-sql-mechanics.md §7). Its primary caller is
-// SHOW ... LIKE '<pattern>', since whether SHOW accepts a bind for its
-// pattern at all is unverified — assume rendered.
+// notes-snowflake-sql-mechanics.md §7). Binding the value with ? must be
+// tried first; use this only once an integration test shows that bound
+// attempt failing against live Snowflake (see specs/005, Verified Bind
+// Positions). The expected callers are the ALTER ACCOUNT SET value and the
+// CREATE SECURITY INTEGRATION family.
 func QuoteLiteral(s string) string {
 	escaped := strings.ReplaceAll(s, `\`, `\\`)
 	escaped = strings.ReplaceAll(escaped, "'", "''")
@@ -53,11 +55,13 @@ func QuoteLiteral(s string) string {
 
 // BareIdentifier validates name as a bare, unquoted SQL token and returns
 // it unchanged, or a user error if it does not match the expected charset.
-// Its one known caller is the parameter name in ALTER ACCOUNT SET <param> =
-// <value>: that position is keyword-like rather than a true object name, so
-// neither IDENTIFIER(?) nor quoting is believed to apply — this check is
-// the only defense against an operator-supplied parameter name reaching SQL
-// text unescaped, and is the load-bearing rendering case in this package.
+// Its confirmed callers are the parameter name in ALTER ACCOUNT SET <param> =
+// <value> and the key slot name in ALTER USER ... SET <slot> = <key>:
+// integration tests show that both ? and IDENTIFIER(?) fail there with a
+// syntax error. Those positions are keyword-like rather than true object
+// names, so this check is the only defense against an operator-supplied name
+// reaching SQL text unescaped. It must not be used at any position without
+// such a failing test.
 func BareIdentifier(name string) (string, error) {
 	if !bareIdentifierPattern.MatchString(name) {
 		return "", errors.NewUserError(fmt.Sprintf(

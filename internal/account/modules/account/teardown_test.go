@@ -58,7 +58,7 @@ func TestTeardown_NoLocator_SkipsAccountSteps_DeletesCredential(t *testing.T) {
 	}
 }
 
-// SC-022, SC-025, SC-026: a known locator drops the account (bare identifier,
+// SC-022, SC-025, SC-026: a known locator drops the account (bound name,
 // unclamped GRACE_PERIOD_IN_DAYS), evicts the pooled connection, then deletes
 // the credential — in that order.
 func TestTeardown_KnownLocator_DropsEvictsDeletes_InOrder(t *testing.T) {
@@ -78,8 +78,10 @@ func TestTeardown_KnownLocator_DropsEvictsDeletes_InOrder(t *testing.T) {
 				t.Fatalf("store.Create: %v", err)
 			}
 
-			wantSQL := fmt.Sprintf("DROP ACCOUNT IF EXISTS %s GRACE_PERIOD_IN_DAYS = %d", mc.ResolvedAccountName(), days)
-			mock.ExpectExec(regexp.QuoteMeta(wantSQL)).WillReturnResult(sqlmock.NewResult(0, 0))
+			// The name is bound; only the integer grace period is part of the text
+			// (GRACE_PERIOD_IN_DAYS = ? does not bind, specs/005).
+			wantSQL := fmt.Sprintf("DROP ACCOUNT IF EXISTS IDENTIFIER(?) GRACE_PERIOD_IN_DAYS = %d", days)
+			mock.ExpectExec(regexp.QuoteMeta(wantSQL)).WithArgs(mc.ResolvedAccountName()).WillReturnResult(sqlmock.NewResult(0, 0))
 
 			m := &module{keyManager: secrets.NewKeyManager(store, time.Hour), org: "myorg", deletionGracePeriodDays: days}
 			if err := m.Teardown(context.Background(), mc); err != nil {
