@@ -22,6 +22,12 @@ A fourth known no-bind context, `CREATE SECURITY INTEGRATION` (the account-wide 
 
 Partial application on failure is therefore the expected outcome of an error, not a defect to guard against here. Snowflake DDL cannot be rolled back at all, so an account that fails halfway through bootstrapping is left with whatever statements already succeeded. Convergence is the next reconcile's job: each module's own SQL is written to be idempotent (`CREATE ... IF NOT EXISTS`, `CREATE OR ALTER`, and similar), so repeating a partially-applied sequence completes it rather than duplicating what already landed. This package has no opinion on idempotency — it only runs what it is given.
 
+## Key Concept: Reading Results Without Boilerplate
+
+Almost every query in this design asks the same question: is there a row where one column has a given value, and if so, what does another column say? A `SHOW ... LIKE` is only a coarse filter — `_` is a wildcard to `LIKE`, so a hit is not yet a match — which means every caller needs the same exact-match step on top. The result therefore answers that question itself: it can be searched by column value, and a row's columns can be read by name regardless of the casing the driver reports.
+
+A search that finds nothing yields an empty row rather than an error, and reading from an empty row yields an empty value plus a "not found" flag. A lookup is therefore a single chained expression with one check at the end, not a loop with a check at every step. Beyond strings, the result does no type coercion; a caller that needs another type reads the raw value and converts it itself.
+
 ## Public API
 
 ```go
@@ -67,14 +73,41 @@ func New(exec Executor) *Runner
 //   - nil on success; otherwise a *Error wrapping the Executor's failure
 func (r *Runner) Exec(ctx context.Context, label, sql string, args ...any) error
 
-// Result is a materialized row-returning query result. Deliberately thin:
-// no accessor or coercion methods. Every caller already knows its own
-// query's column shape and casts at the call site, comma-ok
-// (e.g. name, ok := row["NAME"].(string)).
+// Row is one materialized row, keyed by column name as the driver reported
+// it. A nil Row means "no such row": every accessor below returns its zero
+// value and false on it, so lookups chain without intermediate checks.
+// Because Row is a map, callers may still index or range over it directly.
+type Row map[string]any
+
+// Result is a materialized row-returning query result.
 type Result struct {
     Columns []string
-    Rows    []map[string]any
+    Rows    []Row
 }
+
+// FindRow returns the first row whose column holds a string equal to value,
+// or nil if there is none. Both the column name and value are compared
+// ignoring case (the way Snowflake treats unquoted identifiers), so
+// FindRow("name", "MY_POLICY") finds a row whose NAME is "my_policy". It is
+// the exact-match step every SHOW ... LIKE check needs, since LIKE treats
+// "_" as a wildcard. It never returns an error: if several rows match
+// ignoring case, the first wins.
+func (r Result) FindRow(column, value string) Row
+
+// Found reports whether the row exists, i.e. whether FindRow matched.
+func (r Row) Found() bool
+
+// StringValue returns the column's value if it is a string. The column name
+// is matched ignoring case. ok is false for a nil Row, a missing column, a
+// NULL, or a non-string value; an empty string is returned as ("", true), so
+// a caller that treats empty as absent adds its own `&& value != ""`.
+func (r Row) StringValue(column string) (value string, ok bool)
+
+// Value returns the column's raw value, for types StringValue does not
+// cover (e.g. a timestamp). Same column-name matching and nil-Row behavior
+// as StringValue; ok is false only for a nil Row or a missing column — a
+// NULL is (nil, true).
+func (r Row) Value(column string) (value any, ok bool)
 
 // Query runs one row-returning statement (SHOW ... LIKE existence checks,
 // drift read-backs) and materializes every row before returning, so callers
@@ -149,8 +182,10 @@ func (e *Error) Unwrap() error
 
 ```text
 internal/snowflake/statement/
-├── statement.go         # Executor, Runner, New, Exec, Query, Result
+├── statement.go         # Executor, Runner, New, Exec, Query
 ├── statement_test.go    # sqlmock-driven tests
+├── result.go            # Result, Row, FindRow, Found, StringValue, Value
+├── result_test.go
 ├── integration_test.go  # live-Snowflake test via a real 004 Pool.TenantDB connection
 ├── render.go             # QuoteIdentifier, QuoteLiteral, BareIdentifier
 ├── render_test.go
@@ -180,7 +215,8 @@ Production code here depends only on `internal/errors` (001) and never imports `
 This specification defines the `internal/snowflake/statement/` package that:
 - Executes SQL against an **injected `Executor`** — the subset of `*sql.DB` this package needs (`ExecContext`, `QueryContext`). It never opens a connection itself and never imports `internal/snowflake/pool` (004); 004 documents the mirror-image rule and never imports this package either.
 - Offers **two execution paths**: `Exec`, for statements that return no rows (DDL and non-`SELECT` DML), and `Query`, for statements that do (`SHOW ... LIKE` existence checks, drift read-backs). Which path a given statement uses is each calling module's decision, not this package's.
-- **Materializes every row-returning result** before returning it: column names plus rows keyed by column name, values as `any`. Deliberately thin — no accessor or coercion tier. Every caller already knows its own query's shape and casts at the call site with a comma-ok assertion.
+- **Materializes every row-returning result** before returning it: column names plus rows keyed by column name, values as `any`.
+- **Offers chainable, error-free lookups on that result**: find a row by a string column's value, then read another column by name. A missing row is a nil `Row`, not an error. Column names and the searched value match ignoring case. Only string reads are provided; anything else is read raw and converted by the caller.
 - **Binds first, renders only where binding is impossible.** Supplies three rendering primitives — a quoted identifier, a quoted string literal, and a charset-validated bare identifier — for the small set of statement positions that cannot be bound.
 - **Runs statements in order, one per call, and stops on the first error.** No batching, no multi-statement execution, no rollback.
 - **Decorates a failure with structured fields only**: a caller-supplied label, the statement text, and — when the underlying error is a `*gosnowflake.SnowflakeError` — its `Number`, `SQLState`, and `QueryID`. Never the bound arguments.
@@ -188,7 +224,7 @@ This specification defines the `internal/snowflake/statement/` package that:
 **Out of Scope**:
 - **Which SQL to emit, and in what order, for any given operation.** That is every downstream module's business (012–015, 017, 018, 021), not this package's.
 - **Whether `IDENTIFIER(?)` binding works at a given statement position.** Several of these positions remain unconfirmed — the account name in `CREATE ACCOUNT` (3.6), and the policy-name value in `ALTER USER ... SET NETWORK_POLICY` (3.8) and `ALTER USER ... SET AUTHENTICATION_POLICY` (3.9). This package does not adjudicate those questions. It supplies the rendering primitives and the bind-first policy; the module that actually emits each statement (006, and the network/auth modules of 014/015) decides, at its own spec-writing time, whether to attempt a bind there or go straight to a renderer — including a live check against a real account if it chooses to attempt the bind first. This division is deliberate, not an oversight left for later.
-- **Accessor or coercion helpers** on the materialized `Result` beyond a caller's own comma-ok type assertion.
+- **Type coercion on the materialized `Result`** beyond string reads — no integer, boolean or timestamp accessors until a module actually needs one. Callers read the raw value and convert it themselves.
 - **Retries.** No retry logic lives in this package or anywhere in this codebase's business logic; a failure is returned as-is and the caller (ultimately Kubernetes/Crossplane, per project-wide policy) decides whether to try again.
 - **Connections, credentials, and pooling** — entirely 004's job. This package accepts an already-open `Executor` and never asks how it got that way.
 
@@ -198,6 +234,12 @@ This specification defines the `internal/snowflake/statement/` package that:
 - **What happens if `rows.Err()` reports a failure after `rows.Next()` has already returned some rows?** - `Query` returns a `*Error` wrapping that failure, not the rows collected so far. A mid-iteration failure must never look like a smaller, valid result.
 - **What if the underlying error isn't a `*gosnowflake.SnowflakeError`?** - `Number`, `SQLState` and `QueryID` stay at their zero values; `Label` and `Statement` are still set, so the decoration degrades gracefully rather than failing to construct.
 - **Can bound arguments ever end up in a returned `*Error` or its `Error()` string?** - No, by construction — `Error` has no field for them, and none of this package's code paths reads `args` after passing them to the `Executor`.
+- **What does `FindRow` return on an empty `Result`, or when no row matches?** - A nil `Row`. `Found` is false on it and `StringValue`/`Value` return their zero value and false, so the chain never needs an intermediate check.
+- **Why not just test `len(result.Rows) > 0` after a `SHOW ... LIKE`?** - `LIKE` treats `_` as a wildcard, so `LIKE 'tenant_a'` also returns `tenantXa`. `FindRow` performs the exact, case-insensitive match that existence checks actually need.
+- **What if several rows match `FindRow` ignoring case?** - The first wins. It is not an error, which keeps the chain error-free; quoted identifiers that differ only by case are not expected in this design.
+- **What does `StringValue` return for a NULL, a missing column or a non-string value?** - `("", false)` for all three. An empty string is `("", true)`; a caller that treats empty as absent adds its own check.
+- **Does `Value` distinguish a NULL from a missing column?** - Yes: a NULL is `(nil, true)`, a missing column or nil `Row` is `(nil, false)`.
+- **Does column-name matching depend on the casing the driver reports?** - No. An exact key is tried first, then a case-insensitive scan, so `SHOW` output reported as `account_name` or `ACCOUNT_NAME` is read the same way.
 - **How does a module run several statements in sequence?** - It calls `Exec`/`Query` once per statement in its own loop and stops at the first non-nil error; this package has no multi-statement call of its own.
 - **Does this package decide whether `IDENTIFIER(?)` works for `CREATE ACCOUNT`'s account name, or the policy-name positions of 3.8/3.9?** - No. Those remain unconfirmed and are left to whichever future module (006 for `CREATE ACCOUNT`; the network/auth modules for 3.8/3.9) emits that statement, at its own spec-writing time.
 - **Is a `*Runner` safe for concurrent use?** - Exactly when its `Executor` is — true of a shared `*sql.DB`, not of a shared `*sql.Tx`. `Runner` itself holds no mutable state beyond the `Executor`.
@@ -230,7 +272,14 @@ This specification defines the `internal/snowflake/statement/` package that:
 - **SC-012**: `BareIdentifier` returns its input unchanged when it matches `^[A-Za-z][A-Za-z0-9_]*$`
 - **SC-013**: `BareIdentifier` returns a user error (`errors.IsUserError` true) for input containing whitespace, quotes, or other characters outside that charset
 - **SC-014**: `*Error.Unwrap()` lets `errors.As` reach the original `*gosnowflake.SnowflakeError` through this package's return value
-- **SC-015**: Unit test coverage exceeds 90%
+- **SC-015**: `FindRow` returns the first row whose column holds a string equal to the value, ignoring case in both the column name and the value
+- **SC-016**: `FindRow` returns a nil `Row` on an empty `Result`, and when only a `LIKE`-style near match exists (e.g. searching `tenant_a` when the only row is `tenantXa`)
+- **SC-017**: `Found` is true for a matched row and false for a nil `Row`
+- **SC-018**: `StringValue` matches the column name ignoring case, and returns `("", false)` for a nil `Row`, a missing column, a NULL and a non-string value
+- **SC-019**: `StringValue` returns `("", true)` for a column holding an empty string
+- **SC-020**: `Value` returns the raw value and true for a present column (a NULL as `(nil, true)`), and `(nil, false)` for a nil `Row` or a missing column
+- **SC-021**: A chain such as `result.FindRow(...).StringValue(...)` on a `Result` with no match returns `("", false)` without panicking
+- **SC-022**: Unit test coverage exceeds 90%
 
 ## Security Considerations
 
@@ -284,7 +333,9 @@ func networkPolicyExists(ctx context.Context, r *statement.Runner, name string) 
     if err != nil {
         return false, err
     }
-    return len(result.Rows) > 0, nil
+    // Not len(result.Rows) > 0: LIKE treats "_" as a wildcard, so a row can
+    // come back that is not an exact match for name.
+    return result.FindRow("name", name).Found(), nil
 }
 ```
 
@@ -301,5 +352,22 @@ func setAccountParameter(ctx context.Context, r *statement.Runner, param, value 
 
     return r.Exec(ctx, "set account parameter",
         `ALTER ACCOUNT SET `+bare+` = ?`, value)
+}
+```
+
+### Example 4: Reading a Value from a Matched Row
+
+```go
+func accountLocator(ctx context.Context, r *statement.Runner, resolvedName string) (string, bool, error) {
+    result, err := r.Query(ctx, "look up account",
+        `SHOW ACCOUNTS LIKE `+statement.QuoteLiteral(resolvedName))
+    if err != nil {
+        return "", false, err
+    }
+
+    // One chained expression: no loop, no per-step error. No matching row
+    // simply yields ("", false).
+    locator, ok := result.FindRow("account_name", resolvedName).StringValue("account_locator")
+    return locator, ok && locator != "", nil
 }
 ```

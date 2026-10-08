@@ -121,7 +121,10 @@ func syncPlatformEmail(ctx context.Context, runner *statement.Runner, contact st
 	if err != nil {
 		return fmt.Errorf("failed to look up platform user: %w", err)
 	}
-	if currentPlatformEmail(result.Rows) == contact {
+	// A missing platform row or email yields "", never matching a real
+	// contact, so either case is treated as drift and ALTER USER runs rather
+	// than silently skipping.
+	if email, _ := result.FindRow("name", "platform").StringValue("email"); email == contact {
 		return nil
 	}
 
@@ -134,31 +137,6 @@ func syncPlatformEmail(ctx context.Context, runner *statement.Runner, contact st
 		return fmt.Errorf("failed to update platform user email: %w", err)
 	}
 	return nil
-}
-
-// currentPlatformEmail returns "" — never matching a real contact — when no
-// row names the platform user or the row has no email, so either case is
-// treated as drift and ALTER USER runs rather than silently skipping.
-func currentPlatformEmail(rows []map[string]any) string {
-	for _, row := range rows {
-		var name, email string
-		for key, value := range row {
-			s, ok := value.(string)
-			if !ok {
-				continue
-			}
-			switch {
-			case strings.EqualFold(key, "name"):
-				name = s
-			case strings.EqualFold(key, "email"):
-				email = s
-			}
-		}
-		if strings.EqualFold(name, "platform") {
-			return email
-		}
-	}
-	return ""
 }
 
 // createAccount runs the fresh-create path: confirm the region exists in the
@@ -349,14 +327,8 @@ func findAccountLocator(ctx context.Context, runner *statement.Runner, label, re
 		return "", false, fmt.Errorf("failed to look up account %q: %w", resolvedName, err)
 	}
 
-	for _, row := range result.Rows {
-		name, loc, ok := accountNameAndLocator(row)
-		if ok && strings.EqualFold(name, resolvedName) {
-			return loc, true, nil
-		}
-	}
-
-	return "", false, nil
+	locator, ok := result.FindRow("account_name", resolvedName).StringValue("account_locator")
+	return locator, ok && locator != "", nil
 }
 
 // locateCreatedAccount is findAccountLocator with "not found" treated as an
@@ -371,23 +343,4 @@ func locateCreatedAccount(ctx context.Context, runner *statement.Runner, resolve
 		return "", fmt.Errorf("CREATE ACCOUNT succeeded but no account named %q was found by SHOW ACCOUNTS", resolvedName)
 	}
 	return locator, nil
-}
-
-// accountNameAndLocator extracts the account_name/account_locator values from
-// a SHOW ACCOUNTS row, matching column keys case-insensitively since the
-// driver's actual casing for SHOW output columns is not confirmed.
-func accountNameAndLocator(row map[string]any) (name, locator string, ok bool) {
-	for key, value := range row {
-		s, isString := value.(string)
-		if !isString {
-			continue
-		}
-		switch {
-		case strings.EqualFold(key, "account_name"):
-			name = s
-		case strings.EqualFold(key, "account_locator"):
-			locator = s
-		}
-	}
-	return name, locator, name != "" && locator != ""
 }
