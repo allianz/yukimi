@@ -405,3 +405,20 @@ func accountLocator(ctx context.Context, r *statement.Runner, resolvedName strin
     return locator, ok && locator != "", nil
 }
 ```
+
+### Example 4: Reading a Value from a Matched Row
+
+```go
+func accountLocator(ctx context.Context, r *statement.Runner, resolvedName string) (string, bool, error) {
+    result, err := r.Query(ctx, "look up account",
+        `SHOW ACCOUNTS LIKE `+statement.QuoteLiteral(resolvedName))
+    if err != nil {
+        return "", false, err
+    }
+
+    // One chained expression: no loop, no per-step error. No matching row
+    // simply yields ("", false).
+    locator, ok := result.FindRow("account_name", resolvedName).StringValue("account_locator")
+    return locator, ok && locator != "", nil
+}
+```
