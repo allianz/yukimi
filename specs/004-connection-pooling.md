@@ -4,31 +4,64 @@ This specification covers two packages: `internal/snowflake/pool` (pooled Snowfl
 
 ## Overview
 
-`internal/snowflake/pool/` keeps one already-authenticated connection open per account it manages for the whole life of the controller process, instead of connecting and disconnecting on every reconcile. It solves a scaling problem: the platform manages many Snowflake accounts at once, and a reconcile's own cadence swings from once every few minutes in steady state down to several times a second during error backoff, so paying a fresh login cost on every call would be both slow and wasteful. It also gives every tenant account its own connection, separate from the one used for account creation and deletion — the security motivation for that split is detailed in the Key Concepts below. The technical approach is to keep one open connection handle per distinct target — one for the powerful connection, one per tenant account — opened the first time it is needed and kept for later reuse rather than closed after use, with credentials read fresh from the secret store only when a handle is first created. Host construction sits in a small leaf package of its own, `internal/snowflake/host`, because 006 builds a tenant's `status.accountUrl` from the same host. It also drives inline credential rotation: because both scopes already hold an authenticated connection, this package is where a stale credential's replacement gets pushed into Snowflake, using that same connection rather than a separate process.
+Authenticating to Snowflake is costly, and the platform reconciles many accounts repeatedly. Connections are therefore established once per account, on first use, and reused for subsequent operations. Each tenant account has a dedicated connection, isolated from the privileged organization-level connection, which is reserved for creating and deleting accounts. Since these connections are already authenticated, they also serve as the channel for rotating expiring credentials.
 
 ## Key Concept: Two Connection Scopes and the Privilege Step-Down
 
-A `Pool` never exposes more than two kinds of connection, matching design.md 3.11's own split. The **org-admin scope** is a single connection, authenticated as the organization-level credential at the org-admin secret identifier (003), used only for `CREATE ACCOUNT` and `DROP ACCOUNT` (design.md 3.6, 6.3). The **tenant scope** is one connection per Snowflake account, authenticated as that account's `platform` service user (design.md 3.6, Appendix B X1) at the tenant secret identifier — the same `(org, namespace, accountName)` tuple 003 already uses to build that identifier. Every other operation this platform performs — parameters, network rules, identity import, quotas — goes through a tenant connection, never the org-admin one.
+The platform uses two kinds of connection, following the privilege split in design.md 3.11. The **organization-level connection** is a single, privileged connection reserved for creating and deleting accounts (design.md 3.6, 6.3). The **tenant connection** exists once per account and authenticates as that account's platform service user. 
 
-**Important**: nothing in this package's public surface lets a caller reach the org-admin connection from a tenant-scoped call, or vice versa. The two scopes are two different methods with two different signatures, not a shared method with a scope flag a caller could get wrong. This is what makes design.md 3.11's step-down a property of the code's shape rather than of callers remembering to ask for the narrow connection.
+Immediately after an account is created, the platform steps down to the tenant connection, and every further operation, such as parameters, network rules, identity import and quotas, runs through it. Because a tenant connection can only act within its own account, an attacker who exploits a bug or weakness can at most affect their own account, never another one. The two kinds are requested through separate entry points, so a tenant operation cannot obtain the privileged connection by mistake.
 
-## Key Concept: Open Lazily, Never Close Until Shutdown or Eviction
+```mermaid
+flowchart LR
+    P["Platform"]
+    P -- "organization-level connection<br/>create / delete only" --> O["Organization"]
+    O -. creates .-> A
+    O -. creates .-> B
+    P -- "tenant connection A<br/>parameters, network, identity, quotas" --> A["Account A"]
+    P -- "tenant connection B<br/>parameters, network, identity, quotas" --> B["Account B"]
+```
 
-A `*sql.DB` is already a connection pool — the standard library multiplexes physical connections underneath one handle and recycles them on its own schedule (idle-time limit, maximum lifetime), configured once at creation. This package's `Pool` type just caches one `*sql.DB` per target and hands back the same one on every call, so the JWT handshake is paid once per target rather than on every reconcile. `Close` is only ever called on eviction or process shutdown — never after ordinary use. Eviction's primary trigger is account deletion: once an account is dropped (design.md 6.3), the account module's teardown (012) calls `EvictTenant` so that entry is closed and removed rather than left open forever. The same primitive also covers a subtler, automatic case below.
+## Key Concept: Open on First Use, Close Only on Shutdown or Deletion
+
+A connection to an account is opened the first time it is needed and then kept for the lifetime of the controller, so authentication is performed once per account rather than on every reconcile. Each such connection is itself a small pool: the standard library manages the underlying network connections, recycling idle or aged ones within configured limits, without the platform having to intervene. A connection is acrtively closed only when the process shuts down or when its account is deleted (design.md 6.3), so connections to accounts that no longer exist do not remain open. 
 
 ## Key Concept: Self-Healing on a Locator Change
 
-A Snowflake account name is unique only while it exists — design.md 6.3's `DROP ACCOUNT` followed by a later resource under the same `metadata.name` and namespace resolves to the same tenant secret identifier (003) and the same cache key here, but Snowflake assigns the new account a **different locator** on `CREATE ACCOUNT` (design.md 3.6). A cache keyed only on `(namespace, accountName)` would keep serving a connection to an account that no longer exists. To avoid depending on every future caller remembering to evict before reconnecting, the tenant scope's cache entry carries the locator and region it was built with alongside the `*sql.DB`; a call whose locator or region does not match what is cached closes the stale connection and dials again before returning, exactly as if it had been evicted first. This is a correctness property of `TenantDB` itself, not a workaround callers must apply.
+An account that is deleted and later recreated under the same name and namespace is, to Snowflake, a different account with a different locator (design.md 3.6, 6.3). Each cached connection therefore remembers the locator and region it was opened for. When a request names a different locator or region, the outdated connection is closed and a new one opened, so callers never need to clear the cache themselves.
 
 ## Key Concept: Inline Rotation Using Snowflake's Two Key Slots
 
-`OrgAdminDB`/`TenantDB` check the stored credential's age on every call and rotate once it's over `cfg.Secrets.RotationInterval` (Base Config, 002; default `4320h`, ~6 months). Rotation runs synchronously on the connection already in hand: it finds the Snowflake key slot (`RSA_PUBLIC_KEY`/`RSA_PUBLIC_KEY_2`, via `DESC USER` and the existing `publicKeyFingerprint` helper) that doesn't match the current key, pushes a freshly generated key there with `ALTER USER`, and only then updates the secret store. The slot in use is never touched until that update succeeds, so a failure at any step leaves the working credential exactly as valid as before, and the call never fails because of it — it just retries next time. The existing per-key/org-admin locks that serialize a cold dial serialize a rotation too.
+Credentials are rotated once they exceed a configured age (002, six months by default). Snowflake accepts two public keys per user at the same time, so the new key is registered in the slot not currently in use while the existing key remains valid. The secret store is updated only after Snowflake has accepted the new key. A failure at any step therefore leaves the working credential intact: the operation that triggered the rotation proceeds normally, and the rotation is retried on the next use. Because the rotation runs over the connection that is already open, it requires neither a separate process nor an additional login.
 
-## Key Concept: Host Construction from a Locator and a Cloud-Region String
+```mermaid
+flowchart LR
+    subgraph T1["1. Before rotation"]
+        direction TB
+        A1["Slot 1: key A ✔ in use"]
+        B1["Slot 2: old key (superseded)"]
+    end
+    subgraph T2["2. New key registered"]
+        direction TB
+        A2["Slot 1: key A ✔ in use"]
+        B2["Slot 2: key B ✔ valid"]
+    end
+    subgraph T3["3. Secret store updated"]
+        direction TB
+        A3["Slot 1: key A (superseded)"]
+        B3["Slot 2: key B ✔ in use"]
+    end
+    T1 --> T2 --> T3
+```
 
-The connection host is built from the account's locator (design.md 3.6) and its cloud-region string (e.g. `aws-eu-central-1`, design.md 3.1). Most regions repeat the cloud as a trailing segment after the region (`aws-eu-west-3` → `eu-west-3.aws`); `eu-central-1` is the one known exception and needs no suffix, so an unexported `switch` names it and the default case strips the cloud prefix and reattaches it — not a lookup table or Backplane Config (007) entry, since there is one exception to name. The locator leads, and the suffix is `.privatelink.snowflakecomputing.com` or `.snowflakecomputing.com` depending on the flag the caller passes.
+## Key Concept: One Region Format, Translated to Snowflake's Hostnames
 
-`host` is its own leaf package because 006 builds a tenant's `status.accountUrl` from the same host. `URL` is `Hostname` with `https://` prefixed (design.md 7.2).
+For historical reasons, Snowflake's regional hostnames do not follow a uniform convention: most include the cloud provider after the region, whereas certain legacy regions omit it. The platform therefore exposes a consistent `<provider>-<region>` identifier to users (design.md 3.1) and derives both the connection host and the tenant's account URL (design.md 7.2) from it. Regions that deviate from the general convention are handled as explicitly defined exceptions in the code.
+
+| Region ID (provided by the user) | Host (used for the connection) | Comment |
+|----------------------------------|--------------------------------|---------|
+| `aws-eu-central-1` | `eu-central-1.snowflakecomputing.com` | Special case: host omits the cloud provider |
+| `aws-eu-west-3` | `eu-west-3.aws.snowflakecomputing.com` | General rule: cloud provider follows the region |
 
 ## Public API
 
@@ -178,18 +211,15 @@ internal/snowflake/pool/
 └── doc.go
 ```
 
-`internal/snowflake/host` imports only the standard library and `internal/errors` (001) — never `internal/config/base`, never `github.com/snowflakedb/gosnowflake/v2`, never `internal/snowflake/pool`. That leaf position is what lets `internal/account/tenant` (006) build `status.accountUrl` from the same code without inheriting a driver, a secret store, or configuration.
+Allowed imports beyond the standard library:
 
-`internal/snowflake/pool` must never import `internal/snowflake/statement` (005) or `internal/secrets/aws` (003.a). The only imports outside the standard library are `internal/snowflake/host`, `internal/config/base` (002), `internal/secrets` (003), `internal/errors` (001), and `github.com/snowflakedb/gosnowflake/v2`. The driver findings in this spec were verified against the version in `go.mod`; a driver upgrade means re-verifying them before relying on them.
+- `internal/snowflake/host`: only `internal/errors` (001), so 006 can build `status.accountUrl` without pulling in the driver, secrets or configuration.
+- `internal/snowflake/pool`: only `internal/snowflake/host`, `internal/config/base` (002), `internal/secrets` (003), `internal/errors` (001) and `github.com/snowflakedb/gosnowflake/v2`. In particular, never 005 (would create a cycle) or 003.a.
 
 ## Error Classification
 
 **User Errors** (use `errors.NewUserError()`):
 - Malformed cloud-region string: `region 'Frankfurt!' does not match the expected cloud-region format (expected: aws-eu-central-1)`
-
-`host.Hostname` and `host.URL` raise this, and `Pool.TenantDB` surfaces it unchanged from its own call to `host.Hostname`. Validating in `host` means every consumer — this package and 006 — rejects the same regions with the same message, rather than each deciding for itself.
-
-`host` validates the region shape independently of whatever validation the caller (a guardrail, 008, or 002's own shape check on `OrgAdminAccountRegion`) already performed — the same reasoning 003 gives for re-validating every secret identifier segment independently of the caller.
 
 **System Errors** (use `fmt.Errorf("context: %w", err)`):
 - Credential read failure: `failed to read org-admin credentials: %w` / `failed to read tenant credentials for finance/analytics-team-eu: %w`
@@ -231,10 +261,13 @@ This specification defines the `internal/snowflake/pool/` and `internal/snowflak
 - **Does the health probe run on every `OrgAdminDB`/`TenantDB` call, or only when a new connection is dialed?** - Only when a new connection is dialed (a cold cache, or after eviction/self-healing). A cache hit returns the already-cached `*sql.DB` with no probe and no other network call — probing on every call would defeat the point of caching.
 - **Why does session role scoping use a `Config` field instead of a runtime `USE ROLE` statement?** - The Snowflake Go driver accepts a `Role` at connection construction time, applied automatically to every physical connection the driver opens underneath the cached `*sql.DB` — this needs no SQL statement and therefore no dependency on 005's statement execution. If a future need arises for session setup `Config` cannot express, it is done with the raw driver (`db.ExecContext`) directly in this package — never via `internal/snowflake/statement` (005), which is exactly the dependency direction this package must not create (005 already depends on the connection this package hands it; the reverse would be a cycle).
 - **What if the region passed to `TenantDB` names a cloud this package has never seen (say a future fourth cloud)?** - Rejected. `host.regionSegment` checks the segment before the first `-` against `validClouds` — the same `aws`/`azure`/`gcp` allowlist `internal/config/base.cloudSectionKeys` (002) already uses — and returns a user error for anything else. Onboarding a new cloud is a deliberate, coordinated change to that map, `base.go`'s `cloudSectionKeys`, and the CRD's `region` `Pattern` (006), not something that already works structurally.
+- **How is another region with a non-standard hostname supported?** - By adding a case to `host.regionSegment`'s switch. Snowflake has further legacy regions that omit the cloud provider; only `eu-central-1` is implemented today because no other is currently needed.
 - **Why does `host` take a PrivateLink bool instead of reading `Config.Snowflake.UsePrivateLink` (002) itself?** - To stay reusable: 006 builds a tenant's `status.accountUrl` from the same host, and a configuration-free leaf can be imported by `internal/account/tenant` without dragging `internal/config/base` in with it. Callers pass the flag, so its origin can change without touching this package.
 - **Does `host.URL` include a path such as `/console/login`?** - No. design.md 7.2 specifies `status.accountUrl` as scheme plus host, and Snowflake redirects a bare host to the login console on its own. If an explicit console link is ever wanted, it is a new exported function in `host` rather than a change to `URL`, so a tenant's status URL keeps the form 7.2 documents.
 - **What happens if a rotation attempt fails?** - The call still returns the already-valid `*sql.DB`; the credential's stored age is unchanged, so the same check retries on the next call. This package does not log or otherwise surface the failure in this version — an accepted gap, not a design goal.
 - **What if the second key slot was never used (an account only ever bootstrapped by 012)?** - Treated the same as a slot holding an old, superseded key: it doesn't match the current key's fingerprint either way, so it's still the correct rotation target.
+- **How is the unused key slot identified?** - `DESC USER` reports the fingerprints of `RSA_PUBLIC_KEY` and `RSA_PUBLIC_KEY_2`; the existing `publicKeyFingerprint` helper computes the current key's fingerprint, and the slot that does not match it receives the new key via `ALTER USER`. The age threshold is `cfg.Secrets.RotationInterval` (002, default `4320h`).
+- **Can two concurrent calls rotate the same credential at once?** - No. The per-key and org-admin locks that serialize a cold dial serialize a rotation too.
 
 ## Dependencies
 
