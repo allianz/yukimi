@@ -198,32 +198,32 @@ func TestObserve_PopulatesOutcomesInOrder(t *testing.T) {
 	}
 }
 
-// SC-018: a gate that is not Done in Observe has no effect on control flow —
+// SC-018: an aborting outcome in Observe has no effect on control flow —
 // every later module still runs and is recorded.
-func TestObserve_GateDoesNotStopEarly(t *testing.T) {
+func TestObserve_AbortDoesNotStopEarly(t *testing.T) {
 	var order []string
 	m1 := &fakeModule{name: "m1", order: &order, observeOut: Done()}
-	m2 := &fakeModule{name: "m2", order: &order, observeOut: Failed(errors.New("bad"))}
+	m2 := &fakeModule{name: "m2", order: &order, observeOut: Failed(errors.New("bad")).Abort()}
 	m3 := &fakeModule{name: "m3", order: &order, observeOut: Done()}
 
-	obs := New(m1, Gate(m2), m3).Observe(context.Background(), newMC(1, 1, false))
+	obs := New(m1, m2, m3).Observe(context.Background(), newMC(1, 1, false))
 
 	want := []string{"observe:m1", "observe:m2", "observe:m3"}
 	if !reflect.DeepEqual(order, want) {
-		t.Errorf("call order = %v, want %v — Observe must not stop early at a gate", order, want)
+		t.Errorf("call order = %v, want %v — Observe must not stop early on Abort", order, want)
 	}
 	if len(obs.Outcomes) != 3 {
 		t.Fatalf("len(Outcomes) = %d, want 3", len(obs.Outcomes))
 	}
 }
 
-// SC-004: a Gate module whose Apply is not Done stops Pipeline.Apply
-// immediately after it; Result.Outcomes has no entry for any later module.
-func TestApply_GateStopsEarly(t *testing.T) {
+// SC-004: a non-Done outcome marked Abort stops Pipeline.Apply immediately
+// after that module; Result.Outcomes has no entry for any later module.
+func TestApply_AbortStopsEarly(t *testing.T) {
 	for name, out := range map[string]Outcome{
-		"Pending": Pending("wait"),
-		"Failed":  Failed(errors.New("bad")),
-		"Drifted": Drifted(),
+		"Pending": Pending("wait").Abort(),
+		"Failed":  Failed(errors.New("bad")).Abort(),
+		"Drifted": Drifted().Abort(),
 	} {
 		t.Run(name, func(t *testing.T) {
 			var order []string
@@ -232,7 +232,7 @@ func TestApply_GateStopsEarly(t *testing.T) {
 			m3 := &fakeModule{name: "m3", order: &order, applyOut: Done()}
 
 			mc := newMC(2, 1, false)
-			result := New(m1, Gate(m2), m3).Apply(context.Background(), mc)
+			result := New(m1, m2, m3).Apply(context.Background(), mc)
 
 			if len(result.Outcomes) != 2 {
 				t.Fatalf("len(Outcomes) = %d, want 2", len(result.Outcomes))
@@ -247,25 +247,25 @@ func TestApply_GateStopsEarly(t *testing.T) {
 	}
 }
 
-// A Gate that is Done does not stop the run, and its Name is passed through.
-func TestApply_DoneGateContinues(t *testing.T) {
+// Abort on a Done outcome is a no-op: the run continues and can complete.
+func TestApply_AbortOnDoneContinues(t *testing.T) {
 	var order []string
-	m1 := &fakeModule{name: AccountModuleName, order: &order, applyOut: Done()}
+	m1 := &fakeModule{name: "m1", order: &order, applyOut: Done().Abort()}
 	m2 := &fakeModule{name: "m2", order: &order, applyOut: Done()}
 
-	g := Gate(m1)
-	if g.Name() != AccountModuleName {
-		t.Errorf("Gate(m).Name() = %q, want %q", g.Name(), AccountModuleName)
-	}
-	result := New(g, m2).Apply(context.Background(), newMC(1, 0, false))
+	mc := newMC(1, 0, false)
+	result := New(m1, m2).Apply(context.Background(), mc)
 	if len(result.Outcomes) != 2 || m2.applyCalled != 1 {
 		t.Errorf("outcomes = %d, m2.applyCalled = %d, want 2 and 1", len(result.Outcomes), m2.applyCalled)
 	}
+	if got := mc.CR().Status.GetObservedGeneration(); got != 1 {
+		t.Errorf("observedGeneration = %d, want 1", got)
+	}
 }
 
-// SC-005: a non-Done Outcome from a module that is not a gate does not prevent
+// SC-005: a non-Done Outcome that is not marked Abort does not prevent
 // later modules from running.
-func TestApply_NonGateOutcomesDontStopLaterModules(t *testing.T) {
+func TestApply_NonAbortingOutcomesDontStopLaterModules(t *testing.T) {
 	var order []string
 	m1 := &fakeModule{name: "m1", order: &order, applyOut: Done()}
 	m2 := &fakeModule{name: "m2", order: &order, applyOut: Failed(errors.New("rejected"))}

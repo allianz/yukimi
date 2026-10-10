@@ -142,8 +142,8 @@ func newExternal(t *testing.T, m pipeline.Module, objs ...client.Object) (*exter
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(objs...).WithStatusSubresource(&v1alpha1.SnowflakeDeletionRequest{}, &v1alpha1.SnowflakeAccount{}).Build()
 	e := &external{
 		kube:     c,
-		pool:     nil,                            // fakeModule never touches the ModuleContext's pool
-		pipeline: pipeline.New(pipeline.Gate(m)), // like Setup: the account module is the gate
+		pool:     nil, // fakeModule never touches the ModuleContext's pool
+		pipeline: pipeline.New(m),
 		cfg:      &base.Config{Snowflake: base.SnowflakeSettings{UsePrivateLink: true}, Deletion: base.DeletionSettings{Protection: true}},
 		logger:   logging.NewNopLogger(),
 		record:   &fakeRecorder{},
@@ -174,7 +174,7 @@ func testBaseConfig() *base.Config {
 }
 
 // SC-004 (in combination with reconciler.go's source, which calls
-// pipeline.New with exactly pipeline.Gate(accountmodule.New(...)) as its sole argument):
+// pipeline.New with exactly accountmodule.New(...) as its sole argument):
 // Setup succeeds end to end, constructing the real account module and
 // registering it as the pipeline's only module.
 func TestSetup_Default(t *testing.T) {
@@ -480,9 +480,9 @@ func TestApply_AllDone_AdvancesGenerationAndSetsReady(t *testing.T) {
 	}
 }
 
-// SC-011: an Apply stopped at the gate leaves observedGeneration untouched.
+// SC-011: an Apply stopped by an aborting outcome leaves observedGeneration untouched.
 func TestApply_Stopped_DoesNotAdvanceGeneration(t *testing.T) {
-	m := &fakeModule{name: pipeline.AccountModuleName, applyOut: pipeline.Failed(assertNewSystemError())}
+	m := &fakeModule{name: pipeline.AccountModuleName, applyOut: pipeline.Failed(assertNewSystemError()).Abort()}
 	e, _ := newExternal(t, m, newTestNamespace("ns", nil))
 	cr := newTestCR("acct", "ns", "aws-eu-central-1")
 	cr.Generation = 7

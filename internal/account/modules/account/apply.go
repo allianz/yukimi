@@ -93,7 +93,9 @@ func withinGracePeriod(cr *v1alpha1.SnowflakeAccount, gracePeriod time.Duration)
 func (m *module) Apply(ctx context.Context, mc *pipeline.ModuleContext) pipeline.Outcome {
 	out := m.apply(ctx, mc)
 	m.syncStatus(mc) // after apply: a fresh create has just set the locator
-	return out
+	// Nothing after this module can run without a live account, so every
+	// result but Done stops the pipeline (Abort is a no-op on Done).
+	return out.Abort()
 }
 
 func (m *module) apply(ctx context.Context, mc *pipeline.ModuleContext) pipeline.Outcome {

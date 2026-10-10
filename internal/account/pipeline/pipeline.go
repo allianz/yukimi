@@ -31,7 +31,7 @@ type Pipeline struct {
 }
 
 // New builds a pipeline from an ordered module list, e.g.
-// New(Gate(guardrailcheck), Gate(account), network, auth). Registration order
+// New(guardrailcheck, account, network, auth). Registration order
 // is execution order for Observe and Apply, and its reverse for Destroy.
 // Exactly one module must be the account module, identified by
 // Name() == AccountModuleName: its Observe outcome alone decides whether the
@@ -43,12 +43,6 @@ type Pipeline struct {
 func New(modules ...Module) *Pipeline {
 	return &Pipeline{modules: modules}
 }
-
-// gated marks a Module as a prerequisite; see Gate.
-type gated struct{ Module }
-
-// Gate marks m as a prerequisite: Apply stops after it unless it is Done.
-func Gate(m Module) Module { return gated{m} }
 
 // Outcomes is every module's Outcome from one run, in execution order. All
 // derived values are computed here, nowhere else.
@@ -190,7 +184,7 @@ type Result struct {
 func (r Result) Ready() xpv1.Condition { return ready(r.readyLatched, r.complete(), r.Outcomes) }
 
 // complete reports that the generation counts as applied: every module ran and
-// was Done. A stopped run always contains a non-Done Gate.
+// was Done. A stopped run always contains a non-Done aborting outcome.
 func (r Result) complete() bool { return r.AllDone() }
 
 // Observe calls every module's Observe in order and collects the outcomes. It
@@ -209,8 +203,8 @@ func (p *Pipeline) Observe(ctx context.Context, mc *ModuleContext) Observation {
 	return obs
 }
 
-// Apply calls every module's Apply in order, stopping early only after a Gate
-// module that is not Done. It sets status.observedGeneration iff the run
+// Apply calls every module's Apply in order, stopping early only after a
+// non-Done outcome marked Abort. It sets status.observedGeneration iff the run
 // completed. It is idempotent by construction — callers may call it from both
 // a create and an update path with identical behavior.
 func (p *Pipeline) Apply(ctx context.Context, mc *ModuleContext) Result {
@@ -219,7 +213,7 @@ func (p *Pipeline) Apply(ctx context.Context, mc *ModuleContext) Result {
 		out := m.Apply(ctx, mc)
 		out.Module = m.Name()
 		result.Outcomes = append(result.Outcomes, out)
-		if _, isGate := m.(gated); isGate && out.State != StateDone {
+		if out.Aborted {
 			break
 		}
 	}

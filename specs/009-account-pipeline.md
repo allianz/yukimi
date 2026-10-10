@@ -13,7 +13,7 @@ controller's questions from them (does the account exist, is it up to date, is i
 which conditions and events arose), so the controller can turn what happened into Kubernetes conditions
 without understanding what any individual module actually did.
 
-## Key Concept: Sequential Modules, Gates
+## Key Concept: Sequential Modules, One Abort Signal
 
 Modules run strictly one at a time, in registration order — never in parallel, never calling one
 another. One module plays a distinguished role: the account module (012). It alone determines whether
@@ -23,12 +23,12 @@ no Snowflake connection of its own can still be registered ahead of the account 
 (010) and quota-check (011) are the concrete cases: each can reject and stop the whole run before the
 account is ever created.
 
-Whether a module stops the run is a fixed property of the module, not of any single result it returns.
-It is decided once, at registration, by marking the module as a *gate*: a gate that does not finish
-`Done` ends `Apply` for that pass. It exists for the module whose own failure makes the rest of the run
+A module's outcome can carry an abort signal that stops `Apply` for the rest of that pass. The mechanism
+belongs to no module in particular — any module can use it — and it only has an effect on an outcome that
+is not `Done`. It exists for the module whose own failure makes the rest of the run
 pointless — either because later modules depend on something only this one establishes (the account
 module's case), or because this module's whole job is deciding whether the run should happen at all
-(quota-check's case). Only `Apply` stops early; `Observe` always asks every module, since nothing there
+(quota-check's case). Only `Apply` honors the signal; `Observe` always asks every module, since nothing there
 mutates and there is nothing a stop would protect against.
 
 **Important**: every other module's failure must never stop the pipeline — a failed network rule, a
@@ -67,7 +67,7 @@ Each helper evaluates the states exactly once:
 | up to date (also needs generation applied) | ✓ | ✓ | ✗ | – |
 | exists (account module only) | ✓ | ✗ | ✓ | – |
 | run complete (`Apply`) | ✓ | ✗ | ✗ | ✗ |
-| gate stops `Apply` | no | yes | yes | yes |
+| aborting outcome stops `Apply` | no (signal ignored) | yes | yes | yes |
 
 A `Pending` in `Observe` triggers no update by itself and needs none: an `Apply` that reports `Pending`
 does not record the generation, so the next `Observe` sees it unapplied and the resource updates. An
@@ -153,6 +153,7 @@ type Outcome struct {
     State     State
     Reason    string          // Pending: why it is waiting; becomes Ready's message
     Err       error           // Failed: errors.NewUserError(...) or a wrapped system error
+    Aborted   bool            // set via Abort(): Apply stops after this module on this pass
     Condition *xpv1.Condition // optional: a condition this module owns
     Events    []event.Event   // optional: zero or more events
 }
@@ -162,6 +163,9 @@ func Pending(reason string) Outcome
 func Drifted() Outcome
 func Failed(err error) Outcome
 
+// Abort returns o with Aborted set; a no-op on a Done outcome, so a stopped
+// run is never complete. Observe ignores it.
+func (o Outcome) Abort() Outcome
 func (o Outcome) WithCondition(c xpv1.Condition) Outcome
 func (o Outcome) WithEvent(e event.Event) Outcome
 
@@ -198,14 +202,12 @@ type Module interface {
 // regardless of that module's position in the registered list.
 const AccountModuleName = "account"
 
-// Gate marks m as a prerequisite: Apply stops after it unless it is Done.
-func Gate(m Module) Module
 
 // Pipeline runs an ordered list of modules against one ModuleContext per call.
 type Pipeline struct{ /* unexported */ }
 
 // New builds a pipeline from an ordered module list, e.g.
-// New(Gate(guardrailcheck), Gate(account), network, auth). Registration order is
+// New(guardrailcheck, account, network, auth). Registration order is
 // execution order for Observe and Apply, and its reverse for Destroy. Exactly one module must be the
 // account module, identified by Name() == AccountModuleName: its Observe
 // outcome is the sole source of whether the resource exists, and every module that
@@ -221,8 +223,8 @@ func New(modules ...Module) *Pipeline
 // is in its Outcome; Observation.Err() returns the first one.
 func (p *Pipeline) Observe(ctx context.Context, mc *ModuleContext) Observation
 
-// Apply calls every module's Apply in order, stopping early only after a Gate
-// module that is not Done. It sets status.observedGeneration (through
+// Apply calls every module's Apply in order, stopping early only after an
+// outcome marked Abort. It sets status.observedGeneration (through
 // mc.CR()) iff the run completed. It is idempotent by construction (Key
 // Concept: Overwrite Apply) — callers may call it from both a create and an
 // update path with identical behavior.
@@ -357,7 +359,7 @@ const (
 ```
 internal/account/pipeline/
 ├── module.go       # Module interface, Outcome (Condition/Events), State, Done/Pending/Drifted/Failed, WithCondition/WithEvent
-├── pipeline.go     # Pipeline, New, Gate, Observe, Apply, Destroy, Outcomes (+ helpers), Observation, Result, Report
+├── pipeline.go     # Pipeline, New, Observe, Apply, Destroy, Outcomes (+ helpers), Observation, Result, Report
 ├── context.go      # ModuleContext, NewModuleContext, DBPool, OrgAdminDB/TenantDB/EvictTenant
 └── conditions.go   # TypeQuotaAvailable, TypeIdentitySynced
 ```
@@ -392,7 +394,7 @@ classify. `Destroy` likewise returns a module's `Teardown` error exactly as that
   disagrees with another about any of it. Static, binary-lifetime dependencies (e.g. backplane
   config) are not carried here; a module that needs one injects its own copy at construction.
 - A fixed outcome vocabulary (`Done`, `Pending`, `Drifted`, `Failed`) that every module reports
-  through, and a registration-time `Gate` marking the modules whose non-`Done` ends `Apply`.
+  through, and an abort signal an outcome can carry to end `Apply` early.
 - Collecting what ran into one `Outcomes` list per run, and deriving everything the controller needs
   from it in one place: existence and up-to-dateness (`ExternalObservation`), the finished `Ready`
   condition including the latch and the first pending reason, the first error, and every module
@@ -420,10 +422,10 @@ classify. `Destroy` likewise returns a module's `Teardown` error exactly as that
 - **What does the reconciler do if it calls `Observe` without ever calling `Apply` afterward?** -
   Nothing breaks. `Observe` and `Apply` share no state (`ModuleContext` is rebuilt per call), and
   `Observe` performs no mutation, so the up-to-date path never touches Snowflake.
-- **Does a gate's non-`Done` result from a module's `Observe` stop later modules from running?** - No.
-  Gates only matter to `Apply` (Key Concept: Sequential Modules, Gates); `Observe` always runs every
+- **Does an aborting outcome from a module's `Observe` stop later modules from running?** - No.
+  The signal only matters to `Apply` (Key Concept: Sequential Modules, One Abort Signal); `Observe` always runs every
   registered module and records every `Outcome`.
-- **`Apply` stops after the first of six modules (a gate) — what does `Result` say about the other five?** -
+- **`Apply` stops after the first of six modules (it aborts) — what does `Result` say about the other five?** -
   They are absent from `Result.Outcomes` entirely, not recorded with any placeholder state. A
   condition owned by an absent module is left exactly as the previous reconcile set it.
 - **A module's `Failed` outcome (a tenant error) was already surfaced (on `Synced` or on the module's own `Condition`);
@@ -439,7 +441,7 @@ classify. `Destroy` likewise returns a module's `Teardown` error exactly as that
 - **What happens on the very first reconcile, before `CREATE ACCOUNT` has ever returned a locator?** -
   `cr.Status.AccountLocator` is `""`. Only the account module (012) can proceed without one; every
   module that calls `TenantDB` fails with a system error until 012 has set `cr.Status.AccountLocator`
-  directly, which is why 012 must run before any such module, and is registered as a gate. A
+  directly, which is why 012 must run before any such module, and aborts on anything but `Done`. A
   module that never calls `TenantDB` (guardrail-check, 010, or quota-check, 011) has no such constraint
   and may be registered ahead of 012.
 - **A module's `Observe` returns `Failed` — does the controller still create or update?** - No. The
@@ -511,13 +513,13 @@ instead of reading it off `ModuleContext`. This package neither imports nor refe
   identical bodies — no separate guardrail gate runs before either call. Registers modules in the
   fixed order 010 → 011 → 012 → 013 → 014 → 015 → 017 → 018 — guardrail-check (010) first, quota-check
   (011) second, both ahead of the account module, since neither needs a Snowflake connection and both
-  must abort before `CREATE ACCOUNT` when their own check fails. Registers the account module — and the admission checks — with `Gate`. Renders
+  must abort before `CREATE ACCOUNT` when their own check fails. Renders
   whatever the run's `Report` returns (events, module conditions, `Ready`) and persists the status;
   it computes nothing itself.
   Calls `Pipeline.Destroy` from `Delete`, after the deletion request's gate (019) has authorized the
   destruction and before that request is marked consumed. - Key functions: `pipeline.New()`,
   `(*Pipeline).Observe`, `(*Pipeline).Apply`, `(*Pipeline).Destroy`, `pipeline.NewModuleContext()`,
-  `pipeline.Gate()`, `Observation.ExternalObservation()`, `Report`, `Outcomes.Err()`.
+  `Observation.ExternalObservation()`, `Report`, `Outcomes.Err()`.
 - **`internal/account/modules/{guardrailcheck,quotacheck,account,parameter,network,auth,identity,quotamonitor}`
   (010–015, 017–018)** - Each implements `Module` in full and is registered with `pipeline.New()` by
   020; none has any out-of-band entry point outside the `Module` contract. guardrail-check (010) and
@@ -534,14 +536,16 @@ instead of reading it off `ModuleContext`. This package neither imports nor refe
    registered list or what later modules report.
 3. **SC-003**: `ResourceUpToDate` is true iff the CR's `observedGeneration` equals its generation at the
    start of the run and no outcome is `Drifted`; `Pending` does not make it false, errors do not affect it.
-4. **SC-004**: A `Gate`-registered module whose `Apply` is not `Done` stops `Pipeline.Apply` immediately
+4. **SC-004**: An outcome that is not `Done` and carries the abort signal stops `Pipeline.Apply` immediately
    after it; `Result.Outcomes` contains no entry for any later module.
-5. **SC-005**: A non-`Done` outcome from a module that is not a gate does not prevent later modules from
+5. **SC-005**: A non-`Done` outcome that does not carry the abort signal does not prevent later modules from
    running.
 6. **SC-006**: `Done()`, `Pending()`, `Drifted()`, `Failed()` construct an `Outcome` with the correct
    `State` and only the fields documented for that state populated; `WithCondition`/`WithEvent` return a
    copy with that field added and everything else unchanged.
-7. **SC-007**: The pipeline sets `Outcome.Module` to the module's `Name()` on every collected outcome.
+7. **SC-007**: `Outcome.Abort()` returns a copy with `Aborted` set and every other field unchanged, except
+   on a `Done` outcome, which it returns as is. The pipeline sets `Outcome.Module` to the module's `Name()`
+   on every collected outcome.
 8. **SC-008**: `Outcomes.AllDone()` is true iff the list is non-empty and every entry's `State` is
    `StateDone`.
 9. **SC-009**: `ModuleContext.TenantDB` returns a system error when `CR().Status.AccountLocator` is
@@ -562,7 +566,7 @@ instead of reading it off `ModuleContext`. This package neither imports nor refe
     state having been erased.
 17. **SC-017**: `Observation.Outcomes` contains exactly one entry per registered module, in
     registration order, matching what each module's `Observe` returned.
-18. **SC-018**: A gate that is not `Done` in `Observe` has no effect on `Pipeline.Observe`'s control flow —
+18. **SC-018**: An aborting outcome in `Observe` has no effect on `Pipeline.Observe`'s control flow —
     every later module still runs and is still recorded.
 19. **SC-019**: A module's `Events` and `Condition` survive unchanged through `Events()`/`Conditions()` of
     both `Observation` and `Result`, independent of `State`.
@@ -766,9 +770,9 @@ func (m *Module) Apply(ctx context.Context, mc *pipeline.ModuleContext) pipeline
         }
     }
 
-    // Contrast: the account module (012) is registered with pipeline.Gate, so
-    // any outcome that is not Done ends Apply — no later module can do anything
-    // useful without a live account. This module is a plain registration: a
+    // Contrast: the account module (012) aborts (outcome.Abort()) on any
+    // outcome that is not Done — no later module can do anything useful without
+    // a live account. This module never does that: a
     // failed parameter must not block the network, auth, identity, or quota
     // modules from still running.
     return pipeline.Done()

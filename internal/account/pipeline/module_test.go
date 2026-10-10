@@ -108,3 +108,31 @@ func TestOutcome_WithConditionAndEvent(t *testing.T) {
 		t.Error("WithEvent dropped the condition")
 	}
 }
+
+// Abort returns a copy with Aborted set (except on Done, where it is a no-op)
+// and every other field unchanged; the original is untouched.
+func TestOutcome_Abort(t *testing.T) {
+	cond := xpv1.Available()
+	cases := []Outcome{
+		Done(),
+		Pending("reason"),
+		Drifted(),
+		Failed(errors.New("failed")),
+		Failed(errors.New("with condition")).WithCondition(cond),
+		Failed(errors.New("with event")).WithEvent(event.Warning("R", errors.New("boom"))),
+	}
+	for _, original := range cases {
+		got := original.Abort()
+		if wantAborted := original.State != StateDone; got.Aborted != wantAborted {
+			t.Errorf("Abort() on %+v: Aborted = %v, want %v", original, got.Aborted, wantAborted)
+		}
+		if original.Aborted {
+			t.Errorf("original Outcome was mutated by Abort(): %+v", original)
+		}
+		got.Aborted = false // compare the rest
+		if got.State != original.State || got.Reason != original.Reason || got.Err != original.Err ||
+			got.Condition != original.Condition || len(got.Events) != len(original.Events) {
+			t.Errorf("Abort() on %+v changed another field: got %+v", original, got)
+		}
+	}
+}

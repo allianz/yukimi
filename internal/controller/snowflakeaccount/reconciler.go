@@ -63,9 +63,9 @@ func SetupGated(mgr ctrl.Manager, o controller.Options, cfg *base.Config, p *poo
 func Setup(mgr ctrl.Manager, o controller.Options, cfg *base.Config, p *pool.Pool, keyManager *secrets.KeyManager, bpConfig *backplane.Config) error {
 	name := managed.ControllerName(v1alpha1.SnowflakeAccountGroupKind)
 
-	pl := pipeline.New(pipeline.Gate(accountmodule.New(
+	pl := pipeline.New(accountmodule.New(
 		keyManager, cfg.Snowflake.Org, cfg.Snowflake.AccountCreationGracePeriod, cfg.Deletion.GracePeriodDays,
-		cfg.Snowflake.UsePrivateLink, bpConfig)))
+		cfg.Snowflake.UsePrivateLink, bpConfig))
 	rec := event.NewAPIRecorder(mgr.GetEventRecorderFor(name)) //nolint:staticcheck // event.NewAPIRecorder only accepts the old record.EventRecorder GetEventRecorderFor returns; no migration path until crossplane-runtime supports the new events API
 	opLogger := o.Logger.WithValues("controller", name)
 

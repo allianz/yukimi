@@ -95,14 +95,14 @@ package snowflakeaccount // internal/controller/snowflakeaccount
 // Registers a pipeline (009) of exactly one module for this cut (Key
 // Concept: A Deliberately Partial Pipeline):
 //
-//	pipeline.New(pipeline.Gate(accountmodule.New(
+//	pipeline.New(accountmodule.New(
 //	    keyManager,
 //	    cfg.Snowflake.Org,
 //	    cfg.Snowflake.AccountCreationGracePeriod,
 //	    cfg.Deletion.GracePeriodDays,
 //	    cfg.Snowflake.UsePrivateLink,
 //	    bpConfig,
-//	)))
+//	))
 //
 // Parameters:
 //   - cfg: the provider's base configuration (002) — read for
@@ -308,7 +308,7 @@ This specification defines the `internal/controller/snowflakeaccount` package th
 - **`apis/base/v1alpha1` (006, 019)** — Used APIs: the `SnowflakeAccount`/`SnowflakeDeletionRequest`
   types, `SnowflakeAccountKind`, `SnowflakeAccountGroupVersionKind` — Contract: this package registers
   the former with `managed.NewReconciler` and reads/writes its `Status` directly.
-- **`internal/account/pipeline` (009)** — Used APIs: `pipeline.New()`, `pipeline.Gate()`,
+- **`internal/account/pipeline` (009)** — Used APIs: `pipeline.New()`,
   `Pipeline.Observe()`, `.Apply()`, `.Destroy()`, `pipeline.NewModuleContext()`,
   `Observation.ExternalObservation()`, `pipeline.Report` (`Events()`, `Conditions()`, `Ready()`),
   `Outcomes.Err()` — Contract: exactly one `*pipeline.Pipeline`
@@ -358,7 +358,7 @@ of `internal/account/modules/{guardrailcheck,quotacheck,parameter,network,auth,i
 - **SC-003**: `cmd/provider/main.go` calls `backplane.Load` exactly once, alongside `base.Load`, and
   forwards the result unchanged into `SetupGated` — never calling `Region()`/`Connection()` itself.
 - **SC-004**: the pipeline `SetupGated` builds contains exactly one module, identified by
-  `Name() == pipeline.AccountModuleName`, registered with `pipeline.Gate`.
+  `Name() == pipeline.AccountModuleName`.
 - **SC-005**: every `pipeline.NewModuleContext` call this controller makes passes no backplane
   config — the constructor itself accepts none.
 - **SC-006**: `Observe` on a resource with a non-nil `GetDeletionTimestamp()` reports `ResourceExists:

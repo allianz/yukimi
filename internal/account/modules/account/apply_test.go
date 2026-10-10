@@ -882,3 +882,34 @@ func TestRunCreateAccount_DescriptionIsBoundNeverInterpolated(t *testing.T) {
 		t.Errorf("unmet sqlmock expectations: %v", err)
 	}
 }
+
+// SC-016: every Apply outcome other than Done carries Aborted, so nothing runs
+// after a module that has no live account; Done does not stop the run.
+func TestApply_NonDoneOutcomesAbort(t *testing.T) {
+	m := &module{gracePeriod: 5 * time.Minute, backplane: testBackplaneConfig("aws-eu-central-1")}
+
+	// Pending: locator known, still inside the post-create grace period.
+	pending := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345", "a@b.com", "")
+	pending.Status.AccountCreatedAt = &metav1.Time{Time: time.Now()}
+	out := m.Apply(context.Background(), pipeline.NewModuleContext(pending, nil, nil, &fakeDBPool{t: t, forbidCalls: true}))
+	if out.State != pipeline.StatePending || !out.Aborted {
+		t.Errorf("grace-period Apply = %+v, want an aborting Pending", out)
+	}
+
+	// Failed: fresh create in a region the Backplane Config does not know.
+	unknown := newTestCR("acct", "ns", "aws-us-nowhere-1", "", "a@b.com", "")
+	out = m.Apply(context.Background(), pipeline.NewModuleContext(unknown, nil, nil, &fakeDBPool{t: t, forbidCalls: true}))
+	if out.State != pipeline.StateFailed || !out.Aborted {
+		t.Errorf("unknown-region Apply = %+v, want an aborting Failed", out)
+	}
+
+	// Done does not stop the run.
+	done := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345", "a@b.com", "")
+	done.Status.AccountCreatedAt = &metav1.Time{Time: time.Now().Add(-10 * time.Minute)}
+	db, mock := newOrgAdminMock(t)
+	mock.ExpectQuery("SHOW USERS").WillReturnRows(sqlmock.NewRows([]string{"name", "email"}).AddRow("platform", "a@b.com"))
+	out = m.Apply(context.Background(), pipeline.NewModuleContext(done, nil, nil, &fakeDBPool{tenantDB: db}))
+	if out.State != pipeline.StateDone || out.Aborted {
+		t.Errorf("healthy Apply = %+v, want a non-aborting Done", out)
+	}
+}

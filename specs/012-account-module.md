@@ -24,7 +24,7 @@ never verifies reachability inline: a Snowflake account takes minutes to become 
 `CREATE ACCOUNT` returns, so trying to connect in the same pass — which is what would happen next, since
 every later pipeline module needs `TenantDB` — would just produce a predictable string of connection
 failures. Instead, a fresh create records the locator and the moment of creation directly on the CRD's
-status and returns `Pending(...)`; because this module is registered as a pipeline gate (009), that stops the pipeline for this pass and defers the first
+status and returns `Pending(...).Abort()`, stopping the pipeline for this pass and deferring the first
 reachability check to a later reconcile. Both `Observe` and `Apply`'s reconnect path skip attempting a
 connection entirely while the account is within its post-create grace period, rather than trying and
 leaving a failure in the log — see Key Concept: Post-Create Grace Period.
@@ -285,7 +285,7 @@ This specification defines the account module that:
   account whose `Apply` is running only because some other module further down the pipeline has drifted.
   Reconnecting distinguishes "healthy, nothing to do here" from "the account exists but the platform
   cannot reach it" — the second case, and only the second, is a real failure, and only that case is a failure
-  (it stops the pipeline like any other non-`Done` result of this gated module).
+  (it aborts the pipeline like any other non-`Done` result of this module).
 - **Why does the post-create locator lookup discard rows that aren't an exact, case-insensitive match?**
   A pattern-matching lookup treats every underscore in the resolved account name as a single-character
   wildcard, since the resolved name always contains underscores by construction. Left unguarded, this
@@ -386,15 +386,14 @@ This specification defines the account module that:
 - **Account Pipeline (009)** — Used APIs: `account.Module`, `Done()`/`Pending()`/`Failed()`,
   `ModuleContext.CR()`, `.Logger()`, `.ResolvedAccountName()`, `.OrgAdminDB()`, `.TenantDB()`,
   `.EvictTenant()` — Contract: `Name()` returns `pipeline.AccountModuleName`, which is how
-  `Pipeline.Observe` finds the outcome that decides existence regardless of registration position; is registered with
-  `pipeline.Gate` by 020, so every outcome that is not `Done` ends `Apply` — the module itself marks
-  nothing; a tenant mistake is `Failed(errors.NewUserError(...))`; `Teardown` returns a plain classified error, not an `Outcome`, and
+  `Pipeline.Observe` finds the outcome that decides existence regardless of registration position; calls `.Abort()` on every
+  outcome that is not `Done`; a tenant mistake is `Failed(errors.NewUserError(...))`; `Teardown` returns a plain classified error, not an `Outcome`, and
   is reached only through `Pipeline.Destroy`.
 
 ## Integration Points
 
 - **SnowflakeAccount Controller (020)** — Registers this module in the pipeline via
-  `pipeline.Gate(account.New(keyManager, baseConfig.Snowflake.Org, baseConfig.Snowflake.AccountCreationGracePeriod,
+  `account.New(keyManager, baseConfig.Snowflake.Org, baseConfig.Snowflake.AccountCreationGracePeriod,
   baseConfig.Deletion.GracePeriodDays, baseConfig.Snowflake.UsePrivateLink, bpConfig))`,
   after the guardrail-check (010) and quota-check (011) modules. This module itself writes all four
   account status fields on the CRD: `status.accountLocator` and `status.accountCreatedAt` on create,
@@ -452,7 +451,7 @@ This specification defines the account module that:
 - **SC-015**: A successful fresh create sets `cr.Status.AccountLocator` to the looked-up locator and
   `cr.Status.AccountCreatedAt` to the current time, directly on the CRD, before returning
   `Pending(...)` — never `Done()`.
-- **SC-016**: This module never sets a stop signal itself; stopping the run on every non-`Done` outcome is the pipeline's gate registration (009, 020).
+- **SC-016**: Every `Apply` outcome other than `Done()` carries `Aborted == true`; `Done()` does not.
 - **SC-017**: Unit test coverage exceeds 95%.
 - **SC-018**: Integration test coverage includes a full create-then-reconnect-then-destroy round trip
   against a live Snowflake organization and a live secrets backend.
@@ -597,18 +596,18 @@ import (
 )
 
 pl := pipeline.New(
-    pipeline.Gate(guardrailcheckmodule.New(...)),                 // 010, runs first, stops before anything else
-    pipeline.Gate(quotacheckmodule.New(...)),                     // 011, runs second, stops before CREATE ACCOUNT
+    guardrailcheckmodule.New(...),                                // 010, runs first, aborts before anything else
+    quotacheckmodule.New(...),                                    // 011, runs second, aborts before CREATE ACCOUNT
     // 012 — the two grace periods are unrelated: the duration is a post-create
     // reachability delay, the int is DROP ACCOUNT's GRACE_PERIOD_IN_DAYS.
-    pipeline.Gate(accountmodule.New(
+    accountmodule.New(
         keyManager,
         baseConfig.Snowflake.Org,
         baseConfig.Snowflake.AccountCreationGracePeriod,
         baseConfig.Deletion.GracePeriodDays,
         baseConfig.Snowflake.UsePrivateLink,
         bpConfig,
-    )),
+    ),
     // ... modules 013-015, 017, 018, in order
 )
 ```
@@ -622,13 +621,13 @@ mc := pipeline.NewModuleContext(cr, nsLabels, log, pool)
 o := module.Observe(ctx, mc)           // Pending("account not created yet"), nothing has been touched yet
 outcome := module.Apply(ctx, mc)       // generates keypair, stores it, issues CREATE ACCOUNT,
                                         // sets cr.Status.AccountLocator/.AccountCreatedAt directly,
-                                        // returns Pending(...) — as a gate, it stops the pipeline here
+                                        // returns Pending(...).Abort() — the pipeline stops here
 
 // A reconcile landing inside the grace period, against the same cr (status.accountLocator and
 // status.accountCreatedAt already set by the pass above):
 mc2 := pipeline.NewModuleContext(cr, nsLabels, log, pool)
 outcome2 := module.Observe(ctx, mc2) // StatePending — no connection attempted
-_ = module.Apply(ctx, mc2)                    // same skip; Pending(...), no connection attempted
+_ = module.Apply(ctx, mc2)                    // same skip; Pending(...).Abort(), no connection attempted
 
 // A later reconcile, once the grace period has elapsed:
 mc3 := pipeline.NewModuleContext(cr, nsLabels, log, pool)

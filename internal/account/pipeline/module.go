@@ -43,6 +43,7 @@ type Outcome struct {
 	State     State
 	Reason    string          // Pending: why it is waiting; becomes Ready's message
 	Err       error           // Failed: errors.NewUserError(...) or a wrapped system error
+	Aborted   bool            // set via Abort(): Apply stops after this module on this pass
 	Condition *xpv1.Condition // optional: a condition this module owns
 	Events    []event.Event   // optional: zero or more events
 }
@@ -63,6 +64,19 @@ func Drifted() Outcome { return Outcome{State: StateDrifted} }
 // module — errors.NewUserError for a tenant mistake, fmt.Errorf wrapping for a
 // system failure; this package never classifies or wraps it.
 func Failed(err error) Outcome { return Outcome{State: StateFailed, Err: err} }
+
+// Abort returns a copy of o that stops Apply after this module on this pass.
+// It is for the module whose own non-Done result makes the rest of the run
+// pointless — the account module (nothing else can connect without it),
+// admission checks (the run should not happen at all). Observe ignores it. On
+// a Done outcome it does nothing, so a stopped run is never complete and a
+// module may call it unconditionally on its way out.
+func (o Outcome) Abort() Outcome {
+	if o.State != StateDone {
+		o.Aborted = true
+	}
+	return o
+}
 
 // WithCondition returns a copy of o carrying c as the condition this module owns.
 func (o Outcome) WithCondition(c xpv1.Condition) Outcome {
