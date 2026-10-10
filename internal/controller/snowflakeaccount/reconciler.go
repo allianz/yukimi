@@ -37,7 +37,6 @@ import (
 	"github.com/allianz/yukimi/apis/base/v1alpha1"
 	accountmodule "github.com/allianz/yukimi/internal/account/modules/account"
 	"github.com/allianz/yukimi/internal/account/pipeline"
-	"github.com/allianz/yukimi/internal/account/tenant"
 	"github.com/allianz/yukimi/internal/config/backplane"
 	"github.com/allianz/yukimi/internal/config/base"
 	"github.com/allianz/yukimi/internal/deletion"
@@ -64,8 +63,9 @@ func SetupGated(mgr ctrl.Manager, o controller.Options, cfg *base.Config, p *poo
 func Setup(mgr ctrl.Manager, o controller.Options, cfg *base.Config, p *pool.Pool, keyManager *secrets.KeyManager, bpConfig *backplane.Config) error {
 	name := managed.ControllerName(v1alpha1.SnowflakeAccountGroupKind)
 
-	pl := pipeline.New(accountmodule.New(
-		keyManager, cfg.Snowflake.Org, cfg.Snowflake.AccountCreationGracePeriod, cfg.Deletion.GracePeriodDays, bpConfig))
+	pl := pipeline.New(pipeline.Gate(accountmodule.New(
+		keyManager, cfg.Snowflake.Org, cfg.Snowflake.AccountCreationGracePeriod, cfg.Deletion.GracePeriodDays,
+		cfg.Snowflake.UsePrivateLink, bpConfig)))
 	rec := event.NewAPIRecorder(mgr.GetEventRecorderFor(name)) //nolint:staticcheck // event.NewAPIRecorder only accepts the old record.EventRecorder GetEventRecorderFor returns; no migration path until crossplane-runtime supports the new events API
 	opLogger := o.Logger.WithValues("controller", name)
 
@@ -164,35 +164,15 @@ func (e *external) namespaceLabels(ctx context.Context, namespace string) (map[s
 	return ns.Labels, nil
 }
 
-// renderOutcomes records every outcome's Event/Condition onto cr, in outcome
-// order, exactly as Observe or apply received them from the pipeline.
-func (e *external) renderOutcomes(cr *v1alpha1.SnowflakeAccount, outcomes []pipeline.ModuleOutcome) {
-	for _, mo := range outcomes {
-		if mo.Outcome.Event != nil {
-			e.record.Event(cr, *mo.Outcome.Event)
-		}
-		if mo.Outcome.Condition != nil {
-			cr.SetConditions(*mo.Outcome.Condition)
-		}
+// report renders any pipeline run — Observe or Apply — onto cr: the events and
+// module-owned conditions it collected, and the finished Ready condition. It
+// computes nothing itself; the pipeline (009) decides all of it.
+func (e *external) report(cr *v1alpha1.SnowflakeAccount, r pipeline.Report) {
+	for _, ev := range r.Events() {
+		e.record.Event(cr, ev)
 	}
-}
-
-// updateAccountStatus computes status.accountName/status.accountUrl directly
-// from mc and the CRD's own already-set status.accountLocator — never from a
-// module's Outcome. A tenant.AccountURL error is logged and swallowed, never
-// failing the caller: it can only fire despite CREATE ACCOUNT having already
-// succeeded with that same region string (Edge Cases).
-func (e *external) updateAccountStatus(cr *v1alpha1.SnowflakeAccount, log *logger.Logger, mc *pipeline.ModuleContext) {
-	cr.Status.AccountName = mc.ResolvedAccountName()
-	if cr.Status.AccountLocator == "" {
-		return
-	}
-	url, err := tenant.AccountURL(cr.Status.AccountLocator, cr.Spec.Region, e.cfg.Snowflake.UsePrivateLink)
-	if err != nil {
-		_ = log.Handle(err)
-		return
-	}
-	cr.Status.AccountURL = url
+	cr.SetConditions(r.Conditions()...)
+	cr.SetConditions(r.Ready())
 }
 
 func (e *external) Observe(ctx context.Context, cr *v1alpha1.SnowflakeAccount) (managed.ExternalObservation, error) {
@@ -207,31 +187,19 @@ func (e *external) Observe(ctx context.Context, cr *v1alpha1.SnowflakeAccount) (
 
 	labels, err := e.namespaceLabels(ctx, cr.Namespace)
 	if err != nil {
-		retryErr := log.Handle(err)
-		cr.SetConditions(xpv1.Unavailable().WithMessage(retryErr.Error()))
-		return managed.ExternalObservation{}, retryErr
+		return managed.ExternalObservation{}, log.Handle(err)
 	}
 
 	// NewModuleContext itself takes no backplane config — the account module
 	// (012) that needs one already has its own copy from construction time.
 	mc := pipeline.NewModuleContext(cr, labels, log, e.pool)
 	obs := e.pipeline.Observe(ctx, mc)
-	if !obs.Exists {
-		return managed.ExternalObservation{ResourceExists: false}, nil
-	}
+	e.report(cr, obs)
 
-	e.renderOutcomes(cr, obs.Outcomes)
-	e.updateAccountStatus(cr, log, mc)
-
-	// Observe never flips Ready to True for the first time — only apply()'s
-	// AllDone branch does that (Key Concept: The Ready Latch Lives on the
-	// Persisted Condition).
-	if cr.GetCondition(xpv1.TypeReady).Status != corev1.ConditionTrue {
-		cr.SetConditions(xpv1.Unavailable().WithMessage(obs.PendingReason()))
-	}
-
-	upToDate := cr.Status.GetObservedGeneration() == cr.Generation && obs.InSync
-	return managed.ExternalObservation{ResourceExists: true, ResourceUpToDate: upToDate}, nil
+	// log.Handle(nil) == nil. On an error Crossplane ignores the observation,
+	// sets Synced=False, persists the conditions above and calls neither Create
+	// nor Update.
+	return obs.ExternalObservation(), log.Handle(obs.Err())
 }
 
 func (e *external) Create(ctx context.Context, cr *v1alpha1.SnowflakeAccount) (managed.ExternalCreation, error) {
@@ -253,21 +221,10 @@ func (e *external) apply(ctx context.Context, cr *v1alpha1.SnowflakeAccount) err
 	}
 
 	mc := pipeline.NewModuleContext(cr, labels, log, e.pool)
-	result := e.pipeline.Apply(ctx, mc)
-
-	e.renderOutcomes(cr, result.Outcomes)
+	res := e.pipeline.Apply(ctx, mc)
+	e.report(cr, res)
 	// firstErr becomes Synced's message below; log.Handle(nil) == nil.
-	firstErr := log.Handle(result.FirstError())
-
-	e.updateAccountStatus(cr, log, mc)
-
-	if result.AllDone() {
-		cr.Status.SetObservedGeneration(cr.Generation)
-		cr.SetConditions(xpv1.Available())
-	}
-	if cr.GetCondition(xpv1.TypeReady).Status != corev1.ConditionTrue {
-		cr.SetConditions(xpv1.Unavailable().WithMessage(result.PendingReason()))
-	}
+	firstErr := log.Handle(res.Err())
 
 	// Persist status now, before returning: the managed reconciler's own
 	// post-Create/Update status write happens after UpdateCriticalAnnotations,

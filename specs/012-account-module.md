@@ -24,7 +24,7 @@ never verifies reachability inline: a Snowflake account takes minutes to become 
 `CREATE ACCOUNT` returns, so trying to connect in the same pass — which is what would happen next, since
 every later pipeline module needs `TenantDB` — would just produce a predictable string of connection
 failures. Instead, a fresh create records the locator and the moment of creation directly on the CRD's
-status and returns `Pending(...).Aborting()`, stopping the pipeline for this pass and deferring the first
+status and returns `Pending(...)`; because this module is registered as a pipeline gate (009), that stops the pipeline for this pass and defers the first
 reachability check to a later reconcile. Both `Observe` and `Apply`'s reconnect path skip attempting a
 connection entirely while the account is within its post-create grace period, rather than trying and
 leaving a failure in the log — see Key Concept: Post-Create Grace Period.
@@ -151,13 +151,15 @@ an operator has to restore the credential by hand.
 //     above, which is a post-create reachability delay and has nothing to do with deletion.
 //     Already bounded to 7-90 by 002's loader, so this module does not
 //     re-validate it.
+//   - usePrivateLink: Config.Snowflake.UsePrivateLink (002), used only to build status.accountUrl
+//     (tenant.AccountURL).
 //   - bpConfig: the loaded Backplane Config (007), consulted on the fresh-create path for region
 //     existence via Region(), and — combined with the tenant's alpha-tester namespace label
 //     (Key Concept: Region Validation) — for region availability via Region.Available.
 //
 // Returns:
 //   - pipeline.Module: never nil.
-func New(keyManager *secrets.KeyManager, org string, gracePeriod time.Duration, deletionGracePeriodDays int, bpConfig *backplane.Config) pipeline.Module
+func New(keyManager *secrets.KeyManager, org string, gracePeriod time.Duration, deletionGracePeriodDays int, usePrivateLink bool, bpConfig *backplane.Config) pipeline.Module
 ```
 
 `Observe`, `Apply` and `Teardown` themselves are unexported methods on the value `New` returns — nothing
@@ -282,8 +284,8 @@ This specification defines the account module that:
   locator being known does not by itself mean anything is wrong — it is also true of a perfectly healthy
   account whose `Apply` is running only because some other module further down the pipeline has drifted.
   Reconnecting distinguishes "healthy, nothing to do here" from "the account exists but the platform
-  cannot reach it" — the second case, and only the second, is a real failure, and only that case aborts
-  the pipeline.
+  cannot reach it" — the second case, and only the second, is a real failure, and only that case is a failure
+  (it stops the pipeline like any other non-`Done` result of this gated module).
 - **Why does the post-create locator lookup discard rows that aren't an exact, case-insensitive match?**
   A pattern-matching lookup treats every underscore in the resolved account name as a single-character
   wildcard, since the resolved name always contains underscores by construction. Left unguarded, this
@@ -352,7 +354,7 @@ This specification defines the account module that:
   bounded to 7-90.
 - **Backplane Config (007)** — Used APIs: `Config.Region()`, `Region.Available` — Contract: `bpConfig`
   passed to `New`; the fresh-create path calls `Region(cr.Spec.Region)` once, before any side effect,
-  and passes any returned error straight into `Rejected` unmodified — the error is already
+  and passes any returned error straight into `Failed` unmodified — the error is already
   tenant-appropriate and user-classified by 007 itself, so this module authors no message of its own
   for that case. It then reads the returned `Region.Available` itself and, combined with
   `tenant.AlphaTester`, authors its own user error when the region is unavailable and the tenant is
@@ -377,27 +379,29 @@ This specification defines the account module that:
 - **SnowflakeAccount CRD (006)** — Used APIs: `SnowflakeAccountSpec.Description`, `.Contact`, `.Region`,
   `SnowflakeAccountStatus.AccountLocator`, `.AccountCreatedAt`, `internal/account/tenant.AlphaTester()`
   — Contract: reads the spec fields read-only; writes `AccountLocator`/`AccountCreatedAt` directly on
-  `ModuleContext.CR().Status` — the only two status fields this module ever sets. Calls
+  `ModuleContext.CR().Status`, plus `AccountName`/`AccountURL` (Integration Points). Calls
   `tenant.AlphaTester()` once on the fresh-create path against `ModuleContext.NamespaceLabels()`,
   before any side effect, and passes its returned error (a malformed label value, a system error) straight into
   `Failed` unmodified.
-- **Account Pipeline (009)** — Used APIs: `account.Module`, `Done()`/`Pending()`/`Rejected()`/`Failed()`,
-  `Outcome.Aborting()`, `ModuleContext.CR()`, `.ResolvedAccountName()`, `.OrgAdminDB()`, `.TenantDB()`,
+- **Account Pipeline (009)** — Used APIs: `account.Module`, `Done()`/`Pending()`/`Failed()`,
+  `ModuleContext.CR()`, `.Logger()`, `.ResolvedAccountName()`, `.OrgAdminDB()`, `.TenantDB()`,
   `.EvictTenant()` — Contract: `Name()` returns `pipeline.AccountModuleName`, which is how
-  `Pipeline.Observe` finds `Observation.Exists` regardless of registration position; calls `.Aborting()`
-  on every outcome that is not `Done`; `Teardown` returns a plain classified error, not an `Outcome`, and
+  `Pipeline.Observe` finds the outcome that decides existence regardless of registration position; is registered with
+  `pipeline.Gate` by 020, so every outcome that is not `Done` ends `Apply` — the module itself marks
+  nothing; a tenant mistake is `Failed(errors.NewUserError(...))`; `Teardown` returns a plain classified error, not an `Outcome`, and
   is reached only through `Pipeline.Destroy`.
 
 ## Integration Points
 
 - **SnowflakeAccount Controller (020)** — Registers this module in the pipeline via
-  `account.New(keyManager, baseConfig.Snowflake.Org, baseConfig.Snowflake.AccountCreationGracePeriod,
-  baseConfig.Deletion.GracePeriodDays, bpConfig)`,
-  after the guardrail-check (010) and quota-check (011) modules. After `Pipeline.Apply` returns, reads
-  `ModuleContext.ResolvedAccountName()` directly — never from this module's `Outcome` — plus
-  `cr.Status.AccountLocator`, which this module has already set directly on the CRD, to render
-  `status.accountName` and (via `internal/account/tenant.AccountURL`) `status.accountUrl`.
-  `status.accountLocator` and `status.accountCreatedAt` need no separate persist step: this module writes
+  `pipeline.Gate(account.New(keyManager, baseConfig.Snowflake.Org, baseConfig.Snowflake.AccountCreationGracePeriod,
+  baseConfig.Deletion.GracePeriodDays, baseConfig.Snowflake.UsePrivateLink, bpConfig))`,
+  after the guardrail-check (010) and quota-check (011) modules. This module itself writes all four
+  account status fields on the CRD: `status.accountLocator` and `status.accountCreatedAt` on create,
+  and `status.accountName` (from `ModuleContext.ResolvedAccountName()`) and `status.accountUrl` (via
+  `internal/account/tenant.AccountURL`, using `usePrivateLink`) on every `Observe` once a locator is known and
+  on every `Apply`. A `tenant.AccountURL` error is logged through `ModuleContext.Logger()` and never fails the
+  run; the URL then simply stays unset. None of the four needs a separate persist step: this module writes
   them straight onto the same `*v1alpha1.SnowflakeAccount` the controller already holds and will persist
   when the reconcile returns. Minimizing how long that persist is deferred is still 020's responsibility,
   since every reconcile between a successful `CREATE ACCOUNT` and the actual API-server write is the
@@ -406,9 +410,9 @@ This specification defines the account module that:
 
 ## Success Criteria
 
-- **SC-001**: `Observe` returns not-in-sync with no connection attempt when no locator is known.
-- **SC-002**: `Observe` returns in-sync once a known locator's platform connection succeeds.
-- **SC-003**: `Observe` returns not-in-sync, with a system error, when a known locator's platform
+- **SC-001**: `Observe` returns `Pending("account not created yet")` with no connection attempt when no locator is known.
+- **SC-002**: `Observe` returns `Done` once a known locator's platform connection succeeds.
+- **SC-003**: `Observe` returns `Failed`, with a system error, when a known locator's platform
   connection fails.
 - **SC-004**: `Apply` returns `Done()` without touching the credential store or issuing `CREATE ACCOUNT`
   when a locator is already known, the grace period (if any) has elapsed, and the platform connection
@@ -447,14 +451,14 @@ This specification defines the account module that:
   matching row.
 - **SC-015**: A successful fresh create sets `cr.Status.AccountLocator` to the looked-up locator and
   `cr.Status.AccountCreatedAt` to the current time, directly on the CRD, before returning
-  `Pending(...).Aborting()` — never `Done()`.
-- **SC-016**: Every outcome other than `Done()` carries `Abort == true`.
+  `Pending(...)` — never `Done()`.
+- **SC-016**: This module never sets a stop signal itself; stopping the run on every non-`Done` outcome is the pipeline's gate registration (009, 020).
 - **SC-017**: Unit test coverage exceeds 95%.
 - **SC-018**: Integration test coverage includes a full create-then-reconnect-then-destroy round trip
   against a live Snowflake organization and a live secrets backend.
 - **SC-019**: Both `Observe` and `Apply`'s reconnect path attempt no platform connection, and issue no
-  error, while `time.Since(cr.Status.AccountCreatedAt) < gracePeriod`; `Apply` reports `Pending(...).Aborting()`
-  and `Observe` reports not-in-sync with no outcome error.
+  error, while `time.Since(cr.Status.AccountCreatedAt) < gracePeriod`; `Apply` and `Observe` report
+  `Pending(...)` with no error.
 - **SC-020**: `cr.Status.AccountCreatedAt` is set exactly once, on the reconcile that first creates the
   account, and is never touched again on any later reconcile — including one that lands inside the grace
   period.
@@ -473,7 +477,7 @@ This specification defines the account module that:
   own for the credential.
 - **SC-027**: A fresh create calls `Config.Region(cr.Spec.Region)` before generating a keypair,
   storing any secret, or opening the org-admin connection; when `Region()` returns an error, `Apply`
-  aborts with that error unchanged (`Rejected(err).Aborting()`) and performs none of those three
+  aborts with that error unchanged (`Failed(err)`, a user error) and performs none of those three
   side effects.
 - **SC-028**: A fresh create aborts with a user error, generating no keypair and issuing no SQL, when
   the resolved region exists, `Region.Available` is `false`, and the tenant's namespace is not labeled
@@ -490,7 +494,7 @@ This specification defines the account module that:
   spec.contact`, over the tenant connection and never the org-admin connection, whenever the looked-up
   email differs from `spec.contact` or no row names the `platform` user at all.
 - **SC-033**: A `SHOW USERS` or `ALTER USER` failure during the email sync is classified as a system
-  error and aborts `Apply` (`Failed(...).Aborting()`).
+  error and aborts `Apply` (`Failed(...)`).
 - **SC-034**: A fresh create aborts with a user error, generating no keypair and issuing no SQL,
   when `cr.Name` is longer than `63 - 1 - 6 - len(org)` characters; it proceeds normally at
   exactly that length. The error message states only the numeric max length — never `org` or
@@ -593,17 +597,18 @@ import (
 )
 
 pl := pipeline.New(
-    guardrailcheckmodule.New(...),                                // 010, runs first, aborts before anything else
-    quotacheckmodule.New(...),                                    // 011, runs second, aborts before CREATE ACCOUNT
+    pipeline.Gate(guardrailcheckmodule.New(...)),                 // 010, runs first, stops before anything else
+    pipeline.Gate(quotacheckmodule.New(...)),                     // 011, runs second, stops before CREATE ACCOUNT
     // 012 — the two grace periods are unrelated: the duration is a post-create
     // reachability delay, the int is DROP ACCOUNT's GRACE_PERIOD_IN_DAYS.
-    accountmodule.New(
+    pipeline.Gate(accountmodule.New(
         keyManager,
         baseConfig.Snowflake.Org,
         baseConfig.Snowflake.AccountCreationGracePeriod,
         baseConfig.Deletion.GracePeriodDays,
+        baseConfig.Snowflake.UsePrivateLink,
         bpConfig,
-    ),
+    )),
     // ... modules 013-015, 017, 018, in order
 )
 ```
@@ -614,20 +619,20 @@ pl := pipeline.New(
 mc := pipeline.NewModuleContext(cr, nsLabels, log, pool)
 
 // First reconcile: no locator yet.
-inSync, _ := module.Observe(ctx, mc)   // inSync == false, nothing has been touched yet
+o := module.Observe(ctx, mc)           // Pending("account not created yet"), nothing has been touched yet
 outcome := module.Apply(ctx, mc)       // generates keypair, stores it, issues CREATE ACCOUNT,
                                         // sets cr.Status.AccountLocator/.AccountCreatedAt directly,
-                                        // returns Pending(...).Aborting() — the pipeline stops here
+                                        // returns Pending(...) — as a gate, it stops the pipeline here
 
 // A reconcile landing inside the grace period, against the same cr (status.accountLocator and
 // status.accountCreatedAt already set by the pass above):
 mc2 := pipeline.NewModuleContext(cr, nsLabels, log, pool)
-inSync2, outcome2 := module.Observe(ctx, mc2) // inSync2 == false, StatePending — no connection attempted
-_ = module.Apply(ctx, mc2)                    // same skip; Pending(...).Aborting(), no connection attempted
+outcome2 := module.Observe(ctx, mc2) // StatePending — no connection attempted
+_ = module.Apply(ctx, mc2)                    // same skip; Pending(...), no connection attempted
 
 // A later reconcile, once the grace period has elapsed:
 mc3 := pipeline.NewModuleContext(cr, nsLabels, log, pool)
-inSync3, _ := module.Observe(ctx, mc3) // reconnects as platform; inSync3 == true
+o3 := module.Observe(ctx, mc3) // reconnects as platform; Done
 outcome3 := module.Apply(ctx, mc3)     // reconnects again; SHOW USERS LIKE 'platform' finds the email
                                         // already matches spec.Contact, so no ALTER USER is issued;
                                         // returns Done()

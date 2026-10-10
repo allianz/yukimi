@@ -149,7 +149,7 @@ func TestIntegration_CreateThenDestroy(t *testing.T) {
 	}
 
 	bpConfig := &backplane.Config{Regions: map[string]backplane.Region{region: {Available: true}}}
-	m := New(keyManager, org, 5*time.Minute, 3, bpConfig).(*module)
+	m := New(keyManager, org, 5*time.Minute, 3, false, bpConfig).(*module)
 	ctx := context.Background()
 
 	// Registered before Apply ever runs: the module stores this secret
@@ -178,14 +178,13 @@ func TestIntegration_CreateThenDestroy(t *testing.T) {
 		}
 	})
 
-	inSync, _ := m.Observe(ctx, mc1)
-	if inSync {
-		t.Fatal("Observe reported in-sync before the account was ever created")
+	if o := m.Observe(ctx, mc1); o.State != pipeline.StatePending {
+		t.Fatalf("Observe before the account was ever created = %+v, want Pending", o)
 	}
 
 	outcome := m.Apply(ctx, mc1)
-	if outcome.State != pipeline.StatePending || !outcome.Abort {
-		t.Fatalf("Apply (fresh create) = %+v, want Pending().Aborting()", outcome)
+	if outcome.State != pipeline.StatePending {
+		t.Fatalf("Apply (fresh create) = %+v, want Pending()", outcome)
 	}
 	if cr.Status.AccountLocator == "" {
 		t.Fatal("Apply succeeded but cr.Status.AccountLocator is still empty")
@@ -318,7 +317,7 @@ func TestIntegration_CreateWithFuzzedFields(t *testing.T) {
 	}
 
 	bpConfig := &backplane.Config{Regions: map[string]backplane.Region{region: {Available: true}}}
-	m := New(keyManager, org, 5*time.Minute, 3, bpConfig).(*module)
+	m := New(keyManager, org, 5*time.Minute, 3, false, bpConfig).(*module)
 	ctx := context.Background()
 
 	secretIdentifier, err := secrets.NewTenantIdentifier(org, namespace, fuzzedName)
@@ -340,8 +339,8 @@ func TestIntegration_CreateWithFuzzedFields(t *testing.T) {
 	})
 
 	outcome := m.Apply(ctx, mc)
-	if outcome.State != pipeline.StatePending || !outcome.Abort {
-		t.Fatalf("Apply (fresh create with fuzzed fields) = %+v, want Pending().Aborting()", outcome)
+	if outcome.State != pipeline.StatePending {
+		t.Fatalf("Apply (fresh create with fuzzed fields) = %+v, want Pending()", outcome)
 	}
 	if cr.Status.AccountLocator == "" {
 		t.Fatal("Apply succeeded but cr.Status.AccountLocator is still empty")

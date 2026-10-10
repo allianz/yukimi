@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/allianz/yukimi/internal/account/pipeline"
+	"github.com/allianz/yukimi/internal/account/tenant"
 	"github.com/allianz/yukimi/internal/config/backplane"
 	"github.com/allianz/yukimi/internal/secrets"
 )
@@ -37,6 +38,7 @@ type module struct {
 	org                     string
 	gracePeriod             time.Duration
 	deletionGracePeriodDays int
+	usePrivateLink          bool
 	backplane               *backplane.Config
 }
 
@@ -61,6 +63,8 @@ type module struct {
 //     reachability delay and has nothing to do with deletion. Already
 //     bounded to 7-90 by 002's loader, so this module does
 //     not re-validate it.
+//   - usePrivateLink: Config.Snowflake.UsePrivateLink (002), used only to
+//     build status.accountUrl via tenant.AccountURL.
 //   - bpConfig: the loaded Backplane Config (007), consulted on the
 //     fresh-create path for region existence via Region(), and — combined
 //     with the tenant's alpha-tester namespace label — for region
@@ -69,8 +73,27 @@ type module struct {
 //
 // Returns:
 //   - pipeline.Module: never nil.
-func New(keyManager *secrets.KeyManager, org string, gracePeriod time.Duration, deletionGracePeriodDays int, bpConfig *backplane.Config) pipeline.Module {
-	return &module{keyManager: keyManager, org: org, gracePeriod: gracePeriod, deletionGracePeriodDays: deletionGracePeriodDays, backplane: bpConfig}
+func New(keyManager *secrets.KeyManager, org string, gracePeriod time.Duration, deletionGracePeriodDays int, usePrivateLink bool, bpConfig *backplane.Config) pipeline.Module {
+	return &module{keyManager: keyManager, org: org, gracePeriod: gracePeriod, deletionGracePeriodDays: deletionGracePeriodDays, usePrivateLink: usePrivateLink, backplane: bpConfig}
 }
 
 func (m *module) Name() string { return pipeline.AccountModuleName }
+
+// syncStatus sets status.accountName and, once a locator is known,
+// status.accountUrl on the CRD. A tenant.AccountURL error is logged and
+// swallowed, never failing the caller: it can only fire despite CREATE ACCOUNT
+// having already succeeded with that same region string
+// (specs/012-account-module.md, Integration Points).
+func (m *module) syncStatus(mc *pipeline.ModuleContext) {
+	cr := mc.CR()
+	cr.Status.AccountName = mc.ResolvedAccountName()
+	if cr.Status.AccountLocator == "" {
+		return
+	}
+	url, err := tenant.AccountURL(cr.Status.AccountLocator, cr.Spec.Region, m.usePrivateLink)
+	if err != nil {
+		_ = mc.Logger().Handle(err)
+		return
+	}
+	cr.Status.AccountURL = url
+}

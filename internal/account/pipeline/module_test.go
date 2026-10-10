@@ -30,7 +30,7 @@ func TestDone(t *testing.T) {
 	if o.State != StateDone {
 		t.Errorf("State = %v, want StateDone", o.State)
 	}
-	if o.Reason != "" || o.Err != nil || o.Abort || o.Condition != nil || o.Event != nil {
+	if o.Reason != "" || o.Err != nil || o.Condition != nil || o.Events != nil {
 		t.Errorf("Done() populated fields beyond State: %+v", o)
 	}
 }
@@ -45,24 +45,19 @@ func TestPending(t *testing.T) {
 	if o.Reason != "waiting for identity sync" {
 		t.Errorf("Reason = %q, want %q", o.Reason, "waiting for identity sync")
 	}
-	if o.Err != nil || o.Abort || o.Condition != nil || o.Event != nil {
+	if o.Err != nil || o.Condition != nil || o.Events != nil {
 		t.Errorf("Pending() populated fields beyond State/Reason: %+v", o)
 	}
 }
 
-// SC-006: Rejected constructs an Outcome with State and Err populated, and
-// nothing else.
-func TestRejected(t *testing.T) {
-	wantErr := errors.New("bad input")
-	o := Rejected(wantErr)
-	if o.State != StateRejected {
-		t.Errorf("State = %v, want StateRejected", o.State)
+// SC-006: Drifted constructs an Outcome with only State populated.
+func TestDrifted(t *testing.T) {
+	o := Drifted()
+	if o.State != StateDrifted {
+		t.Errorf("State = %v, want StateDrifted", o.State)
 	}
-	if o.Err != wantErr {
-		t.Errorf("Err = %v, want %v", o.Err, wantErr)
-	}
-	if o.Reason != "" || o.Abort || o.Condition != nil || o.Event != nil {
-		t.Errorf("Rejected() populated fields beyond State/Err: %+v", o)
+	if o.Reason != "" || o.Err != nil || o.Condition != nil || o.Events != nil {
+		t.Errorf("Drifted() populated fields beyond State: %+v", o)
 	}
 }
 
@@ -77,39 +72,39 @@ func TestFailed(t *testing.T) {
 	if o.Err != wantErr {
 		t.Errorf("Err = %v, want %v", o.Err, wantErr)
 	}
-	if o.Reason != "" || o.Abort || o.Condition != nil || o.Event != nil {
+	if o.Reason != "" || o.Condition != nil || o.Events != nil {
 		t.Errorf("Failed() populated fields beyond State/Err: %+v", o)
 	}
 }
 
-// SC-007: Aborting returns a copy with Abort set true and every other field
-// unchanged; the original Outcome is untouched.
-func TestOutcome_Aborting(t *testing.T) {
+// SC-006: WithCondition and WithEvent return a copy with that field added and
+// every other field unchanged; the original is untouched.
+func TestOutcome_WithConditionAndEvent(t *testing.T) {
 	cond := xpv1.Available()
-	evt := event.Warning("SomeReason", errors.New("boom"))
-	cases := []Outcome{
-		Done(),
-		Pending("reason"),
-		Rejected(errors.New("rejected")),
-		Failed(errors.New("failed")),
-		{State: StateFailed, Err: errors.New("with condition"), Condition: &cond},
-		{State: StateFailed, Err: errors.New("with event"), Event: &evt},
-		{State: StateDone, Abort: true}, // already aborting
+	e1 := event.Normal("First", "one")
+	e2 := event.Warning("Second", errors.New("two"))
+
+	original := Pending("waiting")
+	withCond := original.WithCondition(cond)
+	if original.Condition != nil {
+		t.Error("WithCondition mutated the original Outcome")
+	}
+	if withCond.Condition == nil || withCond.Condition.Type != cond.Type {
+		t.Fatalf("WithCondition did not set the condition: %+v", withCond)
+	}
+	if withCond.State != StatePending || withCond.Reason != "waiting" {
+		t.Errorf("WithCondition changed another field: %+v", withCond)
 	}
 
-	for _, original := range cases {
-		wantAbort := original.Abort
-		got := original.Aborting()
-
-		if !got.Abort {
-			t.Errorf("Aborting() on %+v: Abort = false, want true", original)
-		}
-		if got.State != original.State || got.Reason != original.Reason ||
-			got.Err != original.Err || got.Condition != original.Condition || got.Event != original.Event {
-			t.Errorf("Aborting() on %+v changed a field it shouldn't have: got %+v", original, got)
-		}
-		if original.Abort != wantAbort {
-			t.Errorf("original Outcome was mutated by Aborting(): Abort = %v, want %v", original.Abort, wantAbort)
-		}
+	one := withCond.WithEvent(e1)
+	two := one.WithEvent(e2)
+	if len(withCond.Events) != 0 || len(one.Events) != 1 || len(two.Events) != 2 {
+		t.Fatalf("event counts = %d/%d/%d, want 0/1/2", len(withCond.Events), len(one.Events), len(two.Events))
+	}
+	if two.Events[0].Reason != e1.Reason || two.Events[1].Reason != e2.Reason {
+		t.Errorf("events out of order: %+v", two.Events)
+	}
+	if two.Condition == nil {
+		t.Error("WithEvent dropped the condition")
 	}
 }
