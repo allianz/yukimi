@@ -8,8 +8,10 @@ and enforcing a credit quota. This package gives each of those steps its own sel
 called a module, and runs them in a fixed order on every reconcile. It exists so that the controller
 for `SnowflakeAccount` stays a thin caller instead of one large function that knows about every
 concern at once, and so each concern can be built and tested on its own. A module reports back one of
-a small, fixed set of outcomes — done, pending, rejected, or failed — so the controller can turn what
-happened into Kubernetes conditions without understanding what any individual module actually did.
+a small, fixed set of outcomes — done, pending, drifted, or failed — and the pipeline answers the
+controller's questions from them (does the account exist, is it up to date, is it ready and if not why,
+which conditions and events arose), so the controller can turn what happened into Kubernetes conditions
+without understanding what any individual module actually did.
 
 ## Key Concept: Sequential Modules, One Abort Signal
 
@@ -21,30 +23,56 @@ no Snowflake connection of its own can still be registered ahead of the account 
 (010) and quota-check (011) are the concrete cases: each can reject and stop the whole run before the
 account is ever created.
 
-A module's outcome can carry a signal that stops the pipeline for the rest of that pass. The mechanism
-belongs to no module in particular — any module can use it. It exists for the rare module whose own
-failure makes the rest of the run pointless: either because later modules depend on something only this
-one establishes (the account module's case), or because this module's whole job is deciding whether the
-run should happen at all (quota-check's case).
+A module's outcome can carry an abort signal that stops `Apply` for the rest of that pass. The mechanism
+belongs to no module in particular — any module can use it — and it only has an effect on an outcome that
+is not `Done`. It exists for the module whose own failure makes the rest of the run
+pointless — either because later modules depend on something only this one establishes (the account
+module's case), or because this module's whole job is deciding whether the run should happen at all
+(quota-check's case). Only `Apply` honors the signal; `Observe` always asks every module, since nothing there
+mutates and there is nothing a stop would protect against.
 
-**Important**: every other module's failure must never stop the pipeline — a rejected network rule, a
+**Important**: every other module's failure must never stop the pipeline — a failed network rule, a
 failed auth exception, a pending identity sync all let later modules keep running. That's what makes
 design's "leaves the account on its baseline" guarantee (§3.8/§3.9) hold.
 
-Every module's `Observe` call is likewise recorded in full, not just its `inSync` bool:
-`Observation.Outcomes` carries each module's `Outcome` in full (Key Concept: Conditions and Events), so a
-module that owns a condition (quota-monitor's `QuotaAvailable`, identity's `IdentitySynced`) can be
-re-rendered on every `Observe`, not only after an `Apply`. This is required because the managed
-reconciler re-derives `Ready` after every `Observe` on the up-to-date path, never just after `Apply` (see
-References, "Vendored behavior").
+Every module's `Observe` result is kept in full, so a module that owns a condition (quota-monitor's
+`QuotaAvailable`, identity's `IdentitySynced`) can be re-rendered on every `Observe`, not only after an
+`Apply`. This is required because the managed reconciler re-derives `Ready` after every `Observe` on the
+up-to-date path, never just after `Apply` (see References, "Vendored behavior").
 
-## Key Concept: Conditions and Events
+## Key Concept: One Result Type, Answers Computed Once
 
-A module's `Outcome` can carry two optional signals for the controller, independent of `State` and of
-each other: a `Condition` it owns and wants reflected in the resource's status, and an `Event` it wants
-recorded as a one-off note. Both are values, not live calls — the pipeline forwards them untouched;
-turning either into `status.conditions` or an actual Event is the controller's job, not this package's.
-A module may set neither, either, or both.
+Every module reports through the same `Outcome`, from `Observe` and `Apply` alike: a state, a pending
+reason, an error, optionally a condition it owns, and any events it wants recorded. A run's result is
+essentially the list of those outcomes. Everything the controller needs to know is derived from that
+list by helper methods, and each derived value is computed in exactly one of them — the controller
+calls helpers and calculates nothing itself.
+
+The states keep three concerns apart. *Pending* affects only `Ready` and carries the reason. *Drifted*
+(only meaningful from `Observe`) affects only whether the resource is up to date. *Failed* affects only
+`Synced`, through the error; whether the error is the tenant's or the platform's is carried by the error
+itself. Modules write their status fields directly on the CR through the module context, because later
+modules in the same run may need them (the account locator), and the pipeline records
+`status.observedGeneration` once a run completed.
+
+A module's condition and events are values, not live calls — the pipeline collects and forwards them
+untouched; turning them into `status.conditions` or actual Events is the controller's job. A module may
+set neither, either, or both, independent of its state.
+
+Each helper evaluates the states exactly once:
+
+| Helper | Done | Pending | Drifted | Failed |
+|---|---|---|---|---|
+| `Ready()` / `PendingReason()` | ready | not ready, `Reason` | ready | not ready, no reason (error only on Synced) |
+| up to date (also needs generation applied) | ✓ | ✓ | ✗ | – |
+| exists (account module only) | ✓ | ✗ | ✓ | – |
+| run complete (`Apply`) | ✓ | ✗ | ✗ | ✗ |
+| aborting outcome stops `Apply` | no (signal ignored) | yes | yes | yes |
+
+A `Pending` in `Observe` triggers no update by itself and needs none: an `Apply` that reports `Pending`
+does not record the generation, so the next `Observe` sees it unapplied and the resource updates. An
+error in `Observe` makes the controller return it: `Synced` becomes `False`, the previous conditions are
+persisted, and neither create nor update is called.
 
 ## Key Concept: Overwrite Apply, Generation-Gated Re-Apply
 
@@ -57,9 +85,9 @@ next `Apply` finishes re-asserting in full, with nothing to resume and nothing t
 
 Because no module diffs to decide whether to act, nothing on the Snowflake side tells the pipeline
 *when* to bother calling `Apply` at all. That decision falls to the Kubernetes generation counter instead: the controller only
-calls `Apply` when the CRD's generation has moved past what the last successful run recorded, and it
-only records a new generation once every module in that run reported `Done`. A `Pending` identity
-sync or a `Rejected` network-rule entry therefore keeps the pipeline re-applying on every reconcile
+calls `Apply` when the CRD's generation has moved past what the last successful run recorded, and the
+pipeline only records a new generation once every module in that run reported `Done`. A `Pending` identity
+sync or a failed network-rule entry therefore keeps the pipeline re-applying on every reconcile
 until whatever is wrong clears — which is exactly the retry-until-timeout behavior §4.3 needs, and the
 "report until the tenant fixes it" behavior §3.8/§3.9 need.
 
@@ -75,24 +103,19 @@ Appendix B) will make this state org-owned and tenant-unmodifiable, so a read-ba
 dead code. Only 014 and 015 prune, each naming its own prefix; baseline rules, account parameters and
 identity bindings are untouched.
 
-## Key Concept: PendingReason Is the Only Ready-Adjacent Logic Here
+## Key Concept: Ready Is Computed Here, and Latches
 
 Design.md §7.1 requires `Ready` to behave as a one-way latch: `False` until the account's first
-fully-`Done` run, `True` forever after, no matter what a later module reports. This package does not
-implement that latch itself — it has no access to whether the CRD's `Ready` condition is already
-`True`, and reaching for a proxy signal like `observedGeneration` to answer that question is exactly
-the indirection this design avoids. Instead this package exposes only the one genuine piece of
-business logic the latch's `False` branch needs: `Observation.PendingReason`/`Result.PendingReason`
-return the first `Pending` outcome's `Reason`, in outcome order, or `""` if none is `Pending`.
+fully-`Done` run, `True` forever after, no matter what a later module reports. The pipeline computes the
+finished `Ready` condition itself. At the start of each run it reads the `Ready` condition already
+persisted on the CR; if that is `True`, `Ready` stays `Available`. Otherwise `Ready` is `Available` only
+when the run is complete (`Apply`) and `Unavailable` with the first `Pending` outcome's reason as the
+message in every other case — so a user watching a provisioning that takes minutes learns *why* it is
+not ready. A `Failed` outcome never contributes a message; that belongs on `Synced`, through the error.
 
-The latch itself is the controller's (020) job: it reads the CRD's own already-persisted `Ready`
-condition directly (`cr.GetCondition(xpv1.TypeReady).Status == corev1.ConditionTrue`) and only
-consults `PendingReason` when that check is not yet `True`. Once `Ready` is `True`, later waits (e.g.
-a newly-added group still syncing) show up only on that module's own condition (`IdentitySynced`),
-not on `Ready` — `PendingReason` is simply never consulted again. `Rejected`/`Failed` outcomes never
-contribute a message here either way; that belongs on `Synced`, 020's concern, not this package's.
-Deletion needs no special-casing — the managed reconciler owns `Ready` during that window, and this
-package isn't called at all while a resource is being deleted.
+Once `Ready` is `True`, later waits (e.g. a newly-added group still syncing) show up only on that
+module's own condition (`IdentitySynced`). Deletion needs no special-casing — the managed reconciler
+owns `Ready` during that window, and this package isn't called at all while a resource is being deleted.
 
 ## Key Concept: Reverse-Order Teardown
 
@@ -114,20 +137,52 @@ may only start a grace period, during which the account and its platform credent
 ```go
 package pipeline
 
+// State is the fixed vocabulary every Outcome reports through.
+type State int
+
+const (
+    StateDone    State = iota // provisioned and matches the spec
+    StatePending              // not yet provisioned; Reason says why (Ready=False)
+    StateDrifted              // Observe only: provisioned, but differs from the spec
+    StateFailed               // Err is set; user vs system is decided by the error itself
+)
+
+// Outcome is everything one module reports from one Observe or Apply call.
+type Outcome struct {
+    Module    string          // set by the pipeline, never by the module
+    State     State
+    Reason    string          // Pending: why it is waiting; becomes Ready's message
+    Err       error           // Failed: errors.NewUserError(...) or a wrapped system error
+    Aborted   bool            // set via Abort(): Apply stops after this module on this pass
+    Condition *xpv1.Condition // optional: a condition this module owns
+    Events    []event.Event   // optional: zero or more events
+}
+
+func Done() Outcome
+func Pending(reason string) Outcome
+func Drifted() Outcome
+func Failed(err error) Outcome
+
+// Abort returns o with Aborted set; a no-op on a Done outcome, so a stopped
+// run is never complete. Observe ignores it.
+func (o Outcome) Abort() Outcome
+func (o Outcome) WithCondition(c xpv1.Condition) Outcome
+func (o Outcome) WithEvent(e event.Event) Outcome
+
 // Module is implemented by each pipeline stage (010, 011, 012, 013, 014, 015, 017, 018).
 type Module interface {
     Name() string
 
-    // Observe is read-back only; it must mutate nothing in Snowflake. Its
-    // Outcome is collected into Observation.Outcomes by Pipeline.Observe like
-    // any other module's; Outcome.Abort has no effect here — Observe never
-    // stops early, unlike Apply — since nothing here mutates and there is
-    // therefore nothing an abort would protect against.
-    Observe(ctx context.Context, mc *ModuleContext) (inSync bool, outcome Outcome)
+    // Observe is read-back only; it must mutate nothing in Snowflake (it may set
+    // status fields on the CR). Done: provisioned and matches the spec. Pending:
+    // not yet provisioned. Drifted: provisioned, but differs from the spec.
+    // Failed: could not read back — the exception; domain checks belong in Apply.
+    Observe(ctx context.Context, mc *ModuleContext) Outcome
 
     // Apply re-asserts this module's full desired state, pruning any object the
     // CRD no longer lists. It must be safe to call repeatedly with no other call
-    // in between (Key Concept: Overwrite Apply).
+    // in between (Key Concept: Overwrite Apply). Drifted from Apply counts as
+    // not Done.
     Apply(ctx context.Context, mc *ModuleContext) Outcome
 
     // Teardown removes the state this module leaves outside the tenant's own
@@ -142,18 +197,20 @@ type Module interface {
     Teardown(ctx context.Context, mc *ModuleContext) error
 }
 
-// AccountModuleName is the account module's (012) Name(). Pipeline.Observe
-// uses it to find which module's Observe result is Observation.Exists,
+// AccountModuleName is the account module's (012) Name(). Observation uses it
+// to find which module's outcome decides whether the resource exists,
 // regardless of that module's position in the registered list.
 const AccountModuleName = "account"
+
 
 // Pipeline runs an ordered list of modules against one ModuleContext per call.
 type Pipeline struct{ /* unexported */ }
 
-// New builds a pipeline from an ordered module list. Registration order is
+// New builds a pipeline from an ordered module list, e.g.
+// New(guardrailcheck, account, network, auth). Registration order is
 // execution order for Observe and Apply, and its reverse for Destroy. Exactly one module must be the
 // account module, identified by Name() == AccountModuleName: its Observe
-// result is the sole source of Observation.Exists, and every module that
+// outcome is the sole source of whether the resource exists, and every module that
 // calls ModuleContext.TenantDB must be registered after it, since TenantDB
 // requires the locator only its Apply sets. The account module need not be
 // registered first overall — a module needing no Snowflake connection (for
@@ -161,23 +218,16 @@ type Pipeline struct{ /* unexported */ }
 // abort before the account is ever created) may run earlier.
 func New(modules ...Module) *Pipeline
 
-// Observe calls every module's Observe in order and aggregates the result. It
-// performs no mutation of its own. Every module's Outcome is recorded in
-// Observation.Outcomes regardless of its content — an Outcome.Abort returned
-// here is ignored; only Apply honors Abort.
-//
-// It never returns an error: no module's Observe can produce one — every
-// failure a module reports already lives in its own Outcome (see Error
-// Classification).
+// Observe calls every module's Observe in order and collects the outcomes. It
+// performs no mutation of its own and never stops early. A module's failure
+// is in its Outcome; Observation.Err() returns the first one.
 func (p *Pipeline) Observe(ctx context.Context, mc *ModuleContext) Observation
 
-// Apply calls every module's Apply in order, unconditionally, stopping early
-// only if a module's Outcome has Abort set. It is idempotent by construction
-// (Key Concept: Overwrite Apply) — callers may call it from both a create and
-// an update path with identical behavior.
-//
-// It never returns an error: a module's own failure is already captured in
-// its Outcome, and Result.Outcomes carries every one of them.
+// Apply calls every module's Apply in order, stopping early only after an
+// outcome marked Abort. It sets status.observedGeneration (through
+// mc.CR()) iff the run completed. It is idempotent by construction (Key
+// Concept: Overwrite Apply) — callers may call it from both a create and an
+// update path with identical behavior.
 func (p *Pipeline) Apply(ctx context.Context, mc *ModuleContext) Result
 
 // Destroy calls every module's Teardown in reverse registration order, so
@@ -193,77 +243,50 @@ func (p *Pipeline) Apply(ctx context.Context, mc *ModuleContext) Result
 //     classified by the module that produced it. No later Teardown runs.
 func (p *Pipeline) Destroy(ctx context.Context, mc *ModuleContext) error
 
+// Outcomes is every module's Outcome from one run, in execution order. All
+// derived values are computed here, nowhere else.
+type Outcomes []Outcome
+
+func (o Outcomes) Err() error                   // first Failed outcome's Err, or nil
+func (o Outcomes) AllDone() bool                // non-empty and every entry is Done
+func (o Outcomes) Conditions() []xpv1.Condition // every module-owned condition, in order
+func (o Outcomes) Events() []event.Event        // every event, in order
+func (o Outcomes) PendingReason() string        // first Pending outcome's Reason, or ""; Failed never contributes
+
 // Observation is Pipeline.Observe's result.
 type Observation struct {
-    Exists   bool            // from the account module's Observe alone (Name() == AccountModuleName); no other module contributes to it
-    InSync   bool            // true iff every module's Observe reported inSync == true
-    Outcomes []ModuleOutcome // one entry per registered module, in registration order — always all of them, since Observe never stops early
+    Outcomes
+    /* unexported: generation applied and Ready already latched, both
+       snapshotted at the start of the run */
 }
 
-// PendingReason returns the first Pending outcome's Reason in this Observe
-// call's Outcomes, in outcome order, or "" if none is Pending (Key Concept:
-// PendingReason Is the Only Ready-Adjacent Logic Here).
-func (o Observation) PendingReason() string
-
-// State is the fixed vocabulary every Outcome reports through.
-type State int
-
-const (
-    StateDone     State = iota // fully applied; nothing pending, nothing wrong
-    StatePending               // not yet applied; expected to resolve on a later reconcile
-    StateRejected              // the tenant's own input was refused
-    StateFailed                // an unexpected failure calling out to Snowflake or another system
-)
-
-// Outcome is the only channel a module has to report what happened. Modules
-// return no separate error — each Outcome is a complete, self-classified
-// statement of what this module did on this call.
-type Outcome struct {
-    State     State
-    Reason    string          // Pending only: the operator-visible reason for the wait
-    Err       error           // Rejected/Failed only: the module's own classified error
-    Abort     bool            // if true, Apply stops after this module on this pass
-    Condition *xpv1.Condition // optional (Key Concept: Conditions and Events)
-    Event     *event.Event    // optional (Key Concept: Conditions and Events)
-}
-
-func Done() Outcome                // StateDone
-func Pending(reason string) Outcome // StatePending
-func Rejected(err error) Outcome    // StateRejected; err built with errors.NewUserError
-func Failed(err error) Outcome      // StateFailed; err wrapped with fmt.Errorf
-
-// Aborting returns o with Abort set true; every other field is unchanged. No
-// module is privileged to call this — today the account module (012),
-// quota-check (011), and guardrail-check (010) all do, each on any outcome
-// that is not Done.
-func (o Outcome) Aborting() Outcome
+// ExternalObservation is what the controller returns from Observe:
+// ResourceExists is true iff the account module's outcome is Done or Drifted;
+// ResourceUpToDate is true iff the generation was applied and no outcome is
+// Drifted. Errors affect neither (Err() is returned separately).
+func (o Observation) ExternalObservation() managed.ExternalObservation
+func (o Observation) Ready() xpv1.Condition // latched → Available(), else Unavailable(PendingReason)
 
 // Result is Pipeline.Apply's result.
 type Result struct {
-    Aborted  bool
-    Outcomes []ModuleOutcome // one entry per module that actually ran, in execution order
+    Outcomes
+    /* unexported: Ready already latched, snapshotted at the start of the run */
 }
 
-// ModuleOutcome pairs a module's name with the Outcome it returned.
-type ModuleOutcome struct {
-    Module  string
-    Outcome Outcome
+// Ready: latched, or every module Done → Available(); else Unavailable(PendingReason).
+func (r Result) Ready() xpv1.Condition
+
+// Report is what the controller renders onto the resource after any run.
+type Report interface {
+    Events() []event.Event
+    Conditions() []xpv1.Condition // module-owned conditions only
+    Ready() xpv1.Condition        // the resource's aggregate Ready condition
 }
 
-// AllDone reports whether every module ran and every one reported StateDone.
-func (r Result) AllDone() bool
-
-// PendingReason returns the first Pending outcome's Reason in this Apply
-// call's Outcomes, in outcome order, or "" if none is Pending (Key Concept:
-// PendingReason Is the Only Ready-Adjacent Logic Here).
-func (r Result) PendingReason() string
-
-// FirstError returns the first non-nil Err among this Apply call's
-// Outcomes, in outcome order, or nil if none is set. Only the first is
-// ever returned — the same first-wins precedent as PendingReason; a later
-// Rejected/Failed outcome's Err is surfaced only through its own Condition
-// or Event, if it set one.
-func (r Result) FirstError() error
+var (
+    _ Report = Observation{}
+    _ Report = Result{}
+)
 
 // DBPool is the subset of internal/snowflake/pool (004) that ModuleContext
 // depends on, declared here so a test can inject a fake. *pool.Pool satisfies
@@ -323,10 +346,8 @@ func (c *ModuleContext) EvictTenant()
 
 // Custom condition types this package defines for a module to attach to its
 // own Outcome (above); 020 collects and renders them as-is (design.md 7.1).
-// Neither gates the resource's aggregate Ready condition — see
-// Observation.PendingReason/Result.PendingReason above for the pending
-// message, and the controller's own check of the CR's persisted Ready
-// condition for the latch.
+// Neither gates the resource's aggregate Ready condition — that is
+// Report.Ready() above, including the latch.
 const (
     TypeQuotaAvailable xpv1.ConditionType = "QuotaAvailable" // design.md 3.10
     TypeIdentitySynced xpv1.ConditionType = "IdentitySynced" // design.md 4.3
@@ -337,8 +358,8 @@ const (
 
 ```
 internal/account/pipeline/
-├── module.go       # Module interface, Outcome (Condition/Event), State, Done/Pending/Rejected/Failed, Aborting
-├── pipeline.go     # Pipeline, New, Observe, Apply, Destroy, Observation, Result, ModuleOutcome, AllDone, PendingReason
+├── module.go       # Module interface, Outcome (Condition/Events), State, Done/Pending/Drifted/Failed, WithCondition/WithEvent
+├── pipeline.go     # Pipeline, New, Observe, Apply, Destroy, Outcomes (+ helpers), Observation, Result, Report
 ├── context.go      # ModuleContext, NewModuleContext, DBPool, OrgAdminDB/TenantDB/EvictTenant
 └── conditions.go   # TypeQuotaAvailable, TypeIdentitySynced
 ```
@@ -346,9 +367,9 @@ internal/account/pipeline/
 ## Error Classification
 
 **User Errors**: this package produces none of its own. Each module classifies its own user errors
-with `errors.NewUserError` before wrapping the result in `Rejected(err)` — a rejected network-rule
+with `errors.NewUserError` before wrapping the result in `Failed(err)` — a rejected network-rule
 entry (§3.8) or a rejected auth exception (§3.9) are both the module's own classification, never this
-package's.
+package's. There is no separate rejected state: the error itself carries the classification.
 
 **System Errors**: likewise none of this package's own, with one exception. Every module wraps its
 own system failures with `fmt.Errorf("...: %w", err)` before returning `Failed(err)`. The one system
@@ -372,12 +393,12 @@ classify. `Destroy` likewise returns a module's `Teardown` error exactly as that
   labels, a scoped logger, and a lazily-resolved account connection — so no module recomputes or
   disagrees with another about any of it. Static, binary-lifetime dependencies (e.g. backplane
   config) are not carried here; a module that needs one injects its own copy at construction.
-- A fixed outcome vocabulary (`Done`, `Pending`, `Rejected`, `Failed`) that every module reports
-  through, plus a generic signal any module's outcome can carry to stop the run early.
-- Collecting what ran into one `Result`, and surfacing the first `Pending` module's reason from it
-  (`PendingReason`) — the one piece of `Ready`'s logic that belongs here. Whether the resource is
-  *already* `Ready` is the controller's (020) call, keyed off the CRD's own already-persisted `Ready`
-  condition, not a table keyed by any module's own condition.
+- A fixed outcome vocabulary (`Done`, `Pending`, `Drifted`, `Failed`) that every module reports
+  through, and an abort signal an outcome can carry to end `Apply` early.
+- Collecting what ran into one `Outcomes` list per run, and deriving everything the controller needs
+  from it in one place: existence and up-to-dateness (`ExternalObservation`), the finished `Ready`
+  condition including the latch and the first pending reason, the first error, and every module
+  condition and event. `status.observedGeneration` is recorded here too.
 
 **Out of Scope**:
 - Executing any SQL itself. Every statement belongs to a module (012–015, 017, 018); this package only
@@ -401,34 +422,39 @@ classify. `Destroy` likewise returns a module's `Teardown` error exactly as that
 - **What does the reconciler do if it calls `Observe` without ever calling `Apply` afterward?** -
   Nothing breaks. `Observe` and `Apply` share no state (`ModuleContext` is rebuilt per call), and
   `Observe` performs no mutation, so the up-to-date path never touches Snowflake.
-- **Does an `Outcome.Abort == true` returned from a module's `Observe` stop later modules from
-  running?** - No. `Abort` only has meaning for `Apply` (Key Concept: Sequential Modules, One Abort
-  Signal); `Observe` always runs every registered module and records every `Outcome` in
-  `Observation.Outcomes`, regardless of any module's `Abort` field.
-- **`Apply` aborts after the first of six modules — what does `Result` say about the other five?** -
+- **Does an aborting outcome from a module's `Observe` stop later modules from running?** - No.
+  The signal only matters to `Apply` (Key Concept: Sequential Modules, One Abort Signal); `Observe` always runs every
+  registered module and records every `Outcome`.
+- **`Apply` stops after the first of six modules (it aborts) — what does `Result` say about the other five?** -
   They are absent from `Result.Outcomes` entirely, not recorded with any placeholder state. A
   condition owned by an absent module is left exactly as the previous reconcile set it.
-- **A module's `Rejected` outcome was already surfaced (on `Synced` or on the module's own `Condition`);
+- **A module's `Failed` outcome (a tenant error) was already surfaced (on `Synced` or on the module's own `Condition`);
   the tenant fixes the CRD and the next run succeeds — does the stale message linger?** - No. Every
   module that ran on this pass returns a fresh `Outcome`, including a fresh `Condition`; the previous
   rejection is overwritten the moment that module reports `Done` instead.
 - **The account has been `Ready` for months; a later CRD edit adds a group to
   `identityIntegration.groups` whose sync is still `Pending` — does `Ready` revert to `False`?** - No
-  (Key Concept: PendingReason Is the Only Ready-Adjacent Logic Here). The controller checks the CR's
-  own already-persisted `Ready` condition (`cr.GetCondition(xpv1.TypeReady).Status ==
-  corev1.ConditionTrue`) before ever consulting `PendingReason`, so a `Ready` account stays `Ready`
+  (Key Concept: Ready Is Computed Here, and Latches). The pipeline reads the CR's own
+  already-persisted `Ready` condition when the run starts, so a `Ready` account stays `Ready`
   regardless of this pass's outcomes. The wait is visible only on `IdentitySynced`, which the identity
   module (017) reports `Pending` until the new group is imported.
 - **What happens on the very first reconcile, before `CREATE ACCOUNT` has ever returned a locator?** -
   `cr.Status.AccountLocator` is `""`. Only the account module (012) can proceed without one; every
   module that calls `TenantDB` fails with a system error until 012 has set `cr.Status.AccountLocator`
-  directly, which is why 012 must run before any such module, and must abort on anything but `Done`. A
+  directly, which is why 012 must run before any such module, and aborts on anything but `Done`. A
   module that never calls `TenantDB` (guardrail-check, 010, or quota-check, 011) has no such constraint
   and may be registered ahead of 012.
+- **A module's `Observe` returns `Failed` — does the controller still create or update?** - No. The
+  controller returns the error; the managed reconciler sets `Synced=False`, persists the conditions set
+  before, retries with backoff and calls neither `Create` nor `Update`. Existence and up-to-dateness are
+  not evaluated. For that reason `Observe` errors are the exception (read-back failures); domain checks
+  such as "does the region exist" belong in `Apply`.
+- **A module's `Apply` returns `Drifted`?** - It counts as not `Done`: the generation is not recorded and
+  the next run tries again.
 - **A module returns `Pending` — who decides when the pipeline is retried?** - Nobody, at this layer.
   `Pending` carries only its reason string, no requeue hint; the controller's own poll interval governs
   when the next reconcile happens.
-- **A tenant leaves one module permanently `Rejected` — does the pipeline keep re-running forever?** -
+- **A tenant leaves one module permanently failing with a user error — does the pipeline keep re-running forever?** -
   Yes, by design: `observedGeneration` never advances past a run with any non-`Done` outcome (Key
   Concept: Overwrite Apply), so every poll re-applies every module until the tenant corrects the CRD.
   Each re-apply is a handful of idempotent statements plus one enumeration query per pruning module,
@@ -447,15 +473,15 @@ classify. `Destroy` likewise returns a module's `Teardown` error exactly as that
   and nothing here promises it. The resolved account name stays reserved for the account's grace period
   (012), so a re-create inside that window collides on the name. `Destroy`'s contract is ordering and
   idempotence, not erasure.
-- **Two modules report `Rejected`/`Failed` in the same `Apply` call — is every error incident-logged?** -
-  No. Only the first, in outcome order (`Result.FirstError()`), is ever passed to the caller's
+- **Two modules report `Failed` in the same run — is every error incident-logged?** -
+  No. Only the first, in outcome order (`Outcomes.Err()`), is ever passed to the caller's
   `log.Handle`. A later failing module's error is visible only through its own `Condition`/`Event`, if
   it set one — the same narrowing `PendingReason` already applies to simultaneous `Pending` outcomes.
 
 ## Dependencies
 
 - **`internal/errors` (001)** - Used APIs: `errors.NewUserError()` - Contract: each module calls this
-  itself before returning `Rejected`; this package never calls it.
+  itself before returning `Failed` for a tenant mistake; this package never calls it.
 - **`internal/logger` (001)** - Used APIs: `logger.New()`, `(*Logger).Handle()` - Contract:
   `ModuleContext` carries a `*Logger` for modules to log through; only the caller that built the
   context calls `Handle` on a carried error, once per error.
@@ -465,8 +491,8 @@ classify. `Destroy` likewise returns a module's `Teardown` error exactly as that
 - **`internal/account/tenant` (006)** - Used APIs: `tenant.ResolveName()`, `tenant.Department()`,
   `tenant.CostCenter()`, `tenant.CreditQuota()` - Contract: `NewModuleContext` resolves the account
   name once via `ResolveName`; modules read the label accessors from `NamespaceLabels()` themselves.
-- **`crossplane-runtime/v2` `pkg/event`** - Used APIs: the `event.Event` type - Contract: `Outcome.Event`
-  only carries a value of this type (Key Concept: Conditions and Events); this package never constructs
+- **`crossplane-runtime/v2` `pkg/event`, `pkg/reconciler/managed`** - Used APIs: the `event.Event` and
+  `managed.ExternalObservation` types - Contract: `Outcome.Events` only carries values of this type (Key Concept: One Result Type); this package never constructs
   one itself and never calls a `Recorder`.
 
 No dependency on 008 (guardrails): guardrail admission is resolved by its own pipeline module,
@@ -487,15 +513,13 @@ instead of reading it off `ModuleContext`. This package neither imports nor refe
   identical bodies — no separate guardrail gate runs before either call. Registers modules in the
   fixed order 010 → 011 → 012 → 013 → 014 → 015 → 017 → 018 — guardrail-check (010) first, quota-check
   (011) second, both ahead of the account module, since neither needs a Snowflake connection and both
-  must abort before `CREATE ACCOUNT` when their own check fails. Owns rendering
-  `Outcome.Condition` and `Outcome.Event` values, advancing `status.observedGeneration`, and
-  computing the aggregate `Ready` condition itself from the CR's own persisted `Ready` status plus
-  `Observation.PendingReason`/`Result.PendingReason` (Key Concept: PendingReason Is the Only
-  Ready-Adjacent Logic Here).
+  must abort before `CREATE ACCOUNT` when their own check fails. Renders
+  whatever the run's `Report` returns (events, module conditions, `Ready`) and persists the status;
+  it computes nothing itself.
   Calls `Pipeline.Destroy` from `Delete`, after the deletion request's gate (019) has authorized the
   destruction and before that request is marked consumed. - Key functions: `pipeline.New()`,
   `(*Pipeline).Observe`, `(*Pipeline).Apply`, `(*Pipeline).Destroy`, `pipeline.NewModuleContext()`,
-  `Observation.PendingReason()`, `Result.PendingReason()`, `Result.FirstError()`.
+  `Observation.ExternalObservation()`, `Report`, `Outcomes.Err()`.
 - **`internal/account/modules/{guardrailcheck,quotacheck,account,parameter,network,auth,identity,quotamonitor}`
   (010–015, 017–018)** - Each implements `Module` in full and is registered with `pipeline.New()` by
   020; none has any out-of-band entry point outside the `Module` contract. guardrail-check (010) and
@@ -507,19 +531,23 @@ instead of reading it off `ModuleContext`. This package neither imports nor refe
 
 1. **SC-001**: `New(modules...)` preserves registration order; `Pipeline.Apply` calls each module's
    `Apply` in that exact order.
-2. **SC-002**: `Observation.Exists` reflects only the account module's (`Name() == AccountModuleName`)
-   `Observe` result, regardless of its position in the registered list or what later modules report.
-3. **SC-003**: `Observation.InSync` is true iff every module's `Observe` returned `inSync == true`.
-4. **SC-004**: An `Outcome` with `Abort == true` stops `Pipeline.Apply` immediately after that module;
-   `Result.Aborted` is true and `Result.Outcomes` contains no entry for any later module.
-5. **SC-005**: A non-aborting `Outcome` (Rejected, Failed, or Pending) from any module does not prevent
-   later modules from running.
-6. **SC-006**: `Done()`, `Pending()`, `Rejected()`, `Failed()` construct an `Outcome` with the correct
-   `State` and only the fields documented for that state populated.
-7. **SC-007**: `Outcome.Aborting()` returns a copy with `Abort` set true and every other field
-   unchanged.
-8. **SC-008**: `Result.AllDone()` is true iff `Outcomes` is non-empty, `Aborted` is false, and every
-   entry's `State` is `StateDone`.
+2. **SC-002**: `ExternalObservation().ResourceExists` reflects only the account module's
+   (`Name() == AccountModuleName`) outcome (Done or Drifted), regardless of its position in the
+   registered list or what later modules report.
+3. **SC-003**: `ResourceUpToDate` is true iff the CR's `observedGeneration` equals its generation at the
+   start of the run and no outcome is `Drifted`; `Pending` does not make it false, errors do not affect it.
+4. **SC-004**: An outcome that is not `Done` and carries the abort signal stops `Pipeline.Apply` immediately
+   after it; `Result.Outcomes` contains no entry for any later module.
+5. **SC-005**: A non-`Done` outcome that does not carry the abort signal does not prevent later modules from
+   running.
+6. **SC-006**: `Done()`, `Pending()`, `Drifted()`, `Failed()` construct an `Outcome` with the correct
+   `State` and only the fields documented for that state populated; `WithCondition`/`WithEvent` return a
+   copy with that field added and everything else unchanged.
+7. **SC-007**: `Outcome.Abort()` returns a copy with `Aborted` set and every other field unchanged, except
+   on a `Done` outcome, which it returns as is. The pipeline sets `Outcome.Module` to the module's `Name()`
+   on every collected outcome.
+8. **SC-008**: `Outcomes.AllDone()` is true iff the list is non-empty and every entry's `State` is
+   `StateDone`.
 9. **SC-009**: `ModuleContext.TenantDB` returns a system error when `CR().Status.AccountLocator` is
    empty, and never calls the pool when it is.
 10. **SC-010**: `ModuleContext.TenantDB` resolves the connection once and returns the same `*sql.DB`
@@ -538,15 +566,17 @@ instead of reading it off `ModuleContext`. This package neither imports nor refe
     state having been erased.
 17. **SC-017**: `Observation.Outcomes` contains exactly one entry per registered module, in
     registration order, matching what each module's `Observe` returned.
-18. **SC-018**: An `Outcome.Abort == true` returned from any module's `Observe` has no effect on
-    `Pipeline.Observe`'s control flow — every later module still runs and is still recorded in
-    `Observation.Outcomes`.
-19. **SC-019**: An `Outcome.Event`, when set, survives unchanged through `Observation.Outcomes` and
-    `Result.Outcomes`, independent of `State` and of whether `Condition` is also set.
-20. **SC-020**: `Observation.PendingReason()` and `Result.PendingReason()` return the first `Pending`
-    outcome's `Reason` in outcome order, or `""` if no outcome is `Pending`.
-21. **SC-021**: `Result.FirstError()` returns the first non-nil `Err` among `Outcomes` in outcome
-    order, or `nil` if none is set.
+18. **SC-018**: An aborting outcome in `Observe` has no effect on `Pipeline.Observe`'s control flow —
+    every later module still runs and is still recorded.
+19. **SC-019**: A module's `Events` and `Condition` survive unchanged through `Events()`/`Conditions()` of
+    both `Observation` and `Result`, independent of `State`.
+20. **SC-020**: `PendingReason()` returns the first `Pending` outcome's `Reason` in outcome order, or `""`
+    if no outcome is `Pending`; a `Failed` outcome never contributes.
+21. **SC-021**: `Outcomes.Err()` returns the first `Failed` outcome's `Err` in outcome order, or `nil`.
+22. **SC-022**: `Ready()` is `Available` if the CR's persisted `Ready` was `True` at the start of the run
+    (or, for `Result`, if the run completed); otherwise `Unavailable` with `PendingReason()` as message.
+23. **SC-023**: `Pipeline.Apply` sets `status.observedGeneration` to the CR's generation iff every module
+    ran and was `Done`.
 
 ## Security Considerations
 
@@ -563,7 +593,7 @@ instead of reading it off `ModuleContext`. This package neither imports nor refe
 - Nothing here decides whether a destruction is allowed: `Destroy` runs whenever it is called. The
   authorization for that call is the deletion request's two-key gate (019), which the controller (020)
   clears before calling.
-- `Outcome.Event` is a value, not a live call (Key Concept: Conditions and Events) — no module ever holds
+- `Outcome.Events` are values, not live calls (Key Concept: One Result Type) — no module ever holds
   a `Recorder`, so a bug in a module can misreport an event but can never spam or forge one through the
   Kubernetes API directly.
 
@@ -580,13 +610,16 @@ instead of reading it off `ModuleContext`. This package neither imports nor refe
   `internal/account/tenant/` (`ResolveName`, `Department`, `CostCenter`, `CreditQuota`),
   `internal/logger/logger.go` (`New`, `Handle`),
   `apis/base/v1alpha1/snowflakeaccount_types.go` (`SnowflakeAccountStatus`).
-- **Vendored behavior**: `crossplane-runtime/v2@v2.0.0` `pkg/reconciler/managed/reconciler.go` — the
+- **Vendored behavior**: `crossplane-runtime/v2@v2.2.0` `pkg/reconciler/managed/reconciler.go` — the
   managed reconciler sets `Creating()`/`ReconcileSuccess()` after `Create` returns and after
   `Observe` returns on the up-to-date path, so 020 must recompute its own `Ready`-related state on
   every `Observe` rather than relying on what a prior `Apply` set. On a deleted resource it calls
   `Delete` only when the
   preceding `Observe` reported `ResourceExists: true`, and otherwise removes the finalizer straight
-  away (`reconciler.go:1163,1173,1230`).
+  away (`reconciler.go:1163,1173,1230`). When `Observe` returns an error, it records `CannotObserve`,
+  sets `Synced=False`, persists the conditions set so far and calls neither `Create` nor `Update`
+  (`reconciler.go:1118–1135`); after a successful `Create` it sets `Creating()`, which overwrites a
+  previously `True` `Ready` until the next `Observe` (`reconciler.go:1408`).
 - **Vendored behavior**: the same reconciler unconditionally calls
   `status.MarkConditions(xpv1.ReconcileSuccess())` on the managed resource immediately after
   `Create`/`Update` returns a **nil** error (`reconciler.go:1406,1437,1457,1507`) — this overwrites
@@ -600,19 +633,16 @@ instead of reading it off `ModuleContext`. This package neither imports nor refe
 
 ## Appendix: Usage Examples
 
-The Go examples below illustrate call shape and sequencing, not exact compilable code — the precise
-condition-rendering and `Ready`-condition logic belongs to 020, which is not yet written.
+The Go examples below illustrate call shape and sequencing, not exact compilable code.
 
 ### Example 1: The Controller's `Observe`
 
 ```go
-func (e *external) Observe(ctx context.Context, mg resource.Managed) (managed.ExternalObservation, error) {
-    cr := mg.(*v1alpha1.SnowflakeAccount)
+func (e *external) Observe(ctx context.Context, cr *v1alpha1.SnowflakeAccount) (managed.ExternalObservation, error) {
     log := logger.New(e.logger, cr.Namespace, "SnowflakeAccount", cr.Name, logger.OpObserve)
 
     // A deleting resource still has to report its account as existing, or the
-    // reconciler releases the finalizer without ever calling Delete. Only an
-    // account that was never created reports otherwise.
+    // reconciler releases the finalizer without ever calling Delete.
     if cr.GetDeletionTimestamp() != nil {
         return managed.ExternalObservation{
             ResourceExists:   cr.Status.AccountLocator != "",
@@ -620,98 +650,46 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (managed.Ex
         }, nil
     }
 
-    mc := pipeline.NewModuleContext(cr, e.namespaceLabels(cr.Namespace), log, e.pool)
-
+    mc := pipeline.NewModuleContext(cr, labels, log, e.pool)
     obs := e.pipeline.Observe(ctx, mc)
-    if !obs.Exists {
-        return managed.ExternalObservation{ResourceExists: false}, nil
-    }
+    e.report(cr, obs)
 
-    // Same per-outcome condition render as Create/Update (Example 2) — the
-    // managed reconciler re-derives Ready after every Observe on the
-    // up-to-date path, not only after Apply.
-    for _, mo := range obs.Outcomes {
-        if mo.Outcome.Event != nil {
-            e.record.Event(cr, *mo.Outcome.Event)
-        }
-        if mo.Outcome.Condition != nil {
-            cr.SetConditions(*mo.Outcome.Condition)
-        }
-    }
+    // log.Handle(nil) == nil. On an error Crossplane ignores the observation, sets
+    // Synced=False, persists the conditions above and calls neither Create nor Update.
+    return obs.ExternalObservation(), log.Handle(obs.Err())
+}
 
-    // Observe never flips Ready to True for the first time — only Apply's
-    // AllDone branch (Example 2) does that. Here we only preserve an
-    // already-True Ready, or explain what it's still waiting on (Key
-    // Concept: PendingReason Is the Only Ready-Adjacent Logic Here).
-    if cr.GetCondition(xpv1.TypeReady).Status != corev1.ConditionTrue {
-        cr.SetConditions(xpv1.Unavailable().WithMessage(obs.PendingReason()))
+// report renders any run — Observe or Apply — onto the resource.
+func (e *external) report(cr *v1alpha1.SnowflakeAccount, r pipeline.Report) {
+    for _, ev := range r.Events() {
+        e.record.Event(cr, ev)
     }
-
-    upToDate := cr.Status.GetObservedGeneration() == cr.Generation && obs.InSync
-    return managed.ExternalObservation{
-        ResourceExists:   true,
-        ResourceUpToDate: upToDate,
-    }, nil
+    cr.SetConditions(r.Conditions()...)
+    cr.SetConditions(r.Ready())
 }
 ```
 
-### Example 2: The Controller's `Create`/`Update`, and Mapping `Result`
+### Example 2: The Controller's `Create`/`Update`
 
 ```go
 // Create and Update share one body: Pipeline.Apply is idempotent by construction
 // (Key Concept: Overwrite Apply), so there is nothing for either method to do
 // differently.
-func (e *external) Create(ctx context.Context, mg resource.Managed) (managed.ExternalCreation, error) {
-    return managed.ExternalCreation{}, e.apply(ctx, mg)
-}
-
-func (e *external) Update(ctx context.Context, mg resource.Managed) (managed.ExternalUpdate, error) {
-    return managed.ExternalUpdate{}, e.apply(ctx, mg)
-}
-
-func (e *external) apply(ctx context.Context, mg resource.Managed) error {
-    cr := mg.(*v1alpha1.SnowflakeAccount)
+func (e *external) apply(ctx context.Context, cr *v1alpha1.SnowflakeAccount) error {
     log := logger.New(e.logger, cr.Namespace, "SnowflakeAccount", cr.Name, logger.OpUpdate)
+    mc := pipeline.NewModuleContext(cr, labels, log, e.pool)
 
-    mc := pipeline.NewModuleContext(cr, e.namespaceLabels(cr.Namespace), log, e.pool)
+    res := e.pipeline.Apply(ctx, mc)
+    e.report(cr, res)
+    err := log.Handle(res.Err())
 
-    result := e.pipeline.Apply(ctx, mc)
-
-    // Render each module's own condition/event; a module absent from
-    // result.Outcomes (because the run aborted before reaching it) leaves its
-    // condition untouched. Only the first error is ever handled — a later
-    // Rejected/Failed outcome is surfaced solely through its own
-    // Condition/Event, mirroring PendingReason's first-wins precedent (Edge
-    // Cases).
-    for _, mo := range result.Outcomes {
-        if mo.Outcome.Event != nil {
-            e.record.Event(cr, *mo.Outcome.Event)
-        }
-        if mo.Outcome.Condition != nil {
-            cr.SetConditions(*mo.Outcome.Condition)
-        }
+    // Persist status now (see 020), then return err: returning nil would let
+    // the reconciler overwrite Synced with ReconcileSuccess (see References,
+    // "Vendored behavior"); returning the handled error renders it on Synced.
+    if uerr := e.kube.Status().Update(ctx, cr); uerr != nil && err == nil {
+        err = log.Handle(uerr)
     }
-    firstErr := log.Handle(result.FirstError()) // firstErr becomes Synced's message below; log.Handle(nil) == nil
-
-    if result.AllDone() {
-        cr.Status.SetObservedGeneration(cr.Generation) // only an all-Done run advances the gate
-        cr.SetConditions(xpv1.Available())             // flips to Ready — usually the first time
-    }
-    // Self-referential, so there's no ordering hazard to get wrong: if the
-    // block above just flipped Ready to True, this sees that immediately: no
-    // separate field to keep in sync (Key Concept: PendingReason Is the Only
-    // Ready-Adjacent Logic Here).
-    if cr.GetCondition(xpv1.TypeReady).Status != corev1.ConditionTrue {
-        cr.SetConditions(xpv1.Unavailable().WithMessage(result.PendingReason()))
-    }
-
-    // Returning nil unconditionally here would drop firstErr on the floor:
-    // the managed reconciler calls status.MarkConditions(xpv1.ReconcileSuccess())
-    // right after Update returns nil (see References, "Vendored behavior"),
-    // overwriting Synced regardless of what this function set on cr beforehand.
-    // Returning firstErr is what makes the reconciler render
-    // xpv1.ReconcileError(firstErr) onto Synced instead (design.md §3.3/§7.1).
-    return firstErr
+    return err
 }
 ```
 
@@ -763,9 +741,10 @@ func New(bp *backplane.Config) *Module {
 func (m *Module) Name() string { return "parameter" }
 
 // Observe never reads parameters back — drift detection is deferred (Key
-// Concept: Overwrite Apply) — so this module is always reported in sync.
-func (m *Module) Observe(ctx context.Context, mc *pipeline.ModuleContext) (bool, pipeline.Outcome) {
-    return true, pipeline.Done()
+// Concept: Overwrite Apply) — so this module is always reported Done. Once a
+// module reads back, it reports pipeline.Drifted() instead.
+func (m *Module) Observe(ctx context.Context, mc *pipeline.ModuleContext) pipeline.Outcome {
+    return pipeline.Done()
 }
 
 // Apply re-asserts every global and regional parameter unconditionally: no
@@ -791,11 +770,11 @@ func (m *Module) Apply(ctx context.Context, mc *pipeline.ModuleContext) pipeline
         }
     }
 
-    // Contrast: the account module (012) calls outcome.Aborting() on any
-    // outcome that is not Done — Pending and Rejected included, not just
-    // Failed — because no later module can do anything useful without a live
-    // pipeline. This module never does that: a failed parameter must not block
-    // the network, auth, identity, or quota modules from still running.
+    // Contrast: the account module (012) aborts (outcome.Abort()) on any
+    // outcome that is not Done — no later module can do anything useful without
+    // a live account. This module never does that: a
+    // failed parameter must not block the network, auth, identity, or quota
+    // modules from still running.
     return pipeline.Done()
 }
 

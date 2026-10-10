@@ -53,11 +53,10 @@ import (
 // this copies (the type itself is unexported there, so it cannot be
 // imported).
 type fakeModule struct {
-	name          string
-	observeInSync bool
-	observeOut    pipeline.Outcome
-	applyOut      pipeline.Outcome
-	teardownErr   error
+	name        string
+	observeOut  pipeline.Outcome
+	applyOut    pipeline.Outcome
+	teardownErr error
 
 	forbidTeardown bool
 	forbidApply    bool
@@ -68,8 +67,8 @@ type fakeModule struct {
 
 func (f *fakeModule) Name() string { return f.name }
 
-func (f *fakeModule) Observe(_ context.Context, _ *pipeline.ModuleContext) (bool, pipeline.Outcome) {
-	return f.observeInSync, f.observeOut
+func (f *fakeModule) Observe(_ context.Context, _ *pipeline.ModuleContext) pipeline.Outcome {
+	return f.observeOut
 }
 
 func (f *fakeModule) Apply(_ context.Context, _ *pipeline.ModuleContext) pipeline.Outcome {
@@ -315,11 +314,11 @@ func TestObserve_NamespaceLabelsError_ReturnsHandledError(t *testing.T) {
 	}
 }
 
-// Account module reporting inSync == false is the sole source of
-// Observation.Exists (009); Observe must report ResourceExists: false without
-// rendering any outcome.
+// The account module's Pending outcome means the resource does not exist yet
+// (009); Observe reports ResourceExists: false and still renders Ready with the
+// pending reason.
 func TestObserve_AccountNotExists(t *testing.T) {
-	m := &fakeModule{name: pipeline.AccountModuleName, observeInSync: false, observeOut: pipeline.Pending("not created yet")}
+	m := &fakeModule{name: pipeline.AccountModuleName, observeOut: pipeline.Pending("not created yet")}
 	e, _ := newExternal(t, m, newTestNamespace("ns", nil))
 	cr := newTestCR("acct", "ns", "aws-eu-central-1")
 
@@ -330,18 +329,61 @@ func TestObserve_AccountNotExists(t *testing.T) {
 	if got.ResourceExists {
 		t.Fatalf("expected ResourceExists=false, got %+v", got)
 	}
+	if ready := cr.GetCondition(xpv1.TypeReady); ready.Status == corev1.ConditionTrue || ready.Message != "not created yet" {
+		t.Fatalf("expected Unavailable with the pending reason, got %+v", ready)
+	}
 }
 
-// SC-012 (Observe half) / SC-013: outcomes are rendered in order, status is
-// computed from ModuleContext/AccountLocator, and Observe never flips Ready
-// to True itself.
-func TestObserve_RendersOutcomesAndStatus(t *testing.T) {
+// An error from a module's Observe is returned (handled), so the managed
+// reconciler sets Synced=False and calls neither Create nor Update; the
+// conditions set before still render.
+func TestObserve_FailedModule_ReturnsHandledError(t *testing.T) {
+	m := &fakeModule{name: pipeline.AccountModuleName, observeOut: pipeline.Failed(assertNewSystemError())}
+	e, _ := newExternal(t, m, newTestNamespace("ns", nil))
+	cr := newTestCR("acct", "ns", "aws-eu-central-1")
+
+	_, err := e.Observe(context.Background(), cr)
+	if err == nil {
+		t.Fatal("expected a non-nil error, got nil")
+	}
+	if ready := cr.GetCondition(xpv1.TypeReady); ready.Status == corev1.ConditionTrue {
+		t.Fatalf("expected Ready != True, got %+v", ready)
+	}
+}
+
+// ResourceUpToDate comes straight from the pipeline: generation applied and
+// no drift.
+func TestObserve_UpToDate_FromPipeline(t *testing.T) {
+	m := &fakeModule{name: pipeline.AccountModuleName, observeOut: pipeline.Done()}
+	e, _ := newExternal(t, m, newTestNamespace("ns", nil))
+
+	cr := newTestCR("acct", "ns", "aws-eu-central-1")
+	cr.Generation = 4
+	cr.Status.SetObservedGeneration(4)
+	if got, _ := e.Observe(context.Background(), cr); !got.ResourceExists || !got.ResourceUpToDate {
+		t.Fatalf("expected exists and up to date, got %+v", got)
+	}
+
+	cr.Generation = 5
+	if got, _ := e.Observe(context.Background(), cr); !got.ResourceExists || got.ResourceUpToDate {
+		t.Fatalf("expected exists but not up to date after a spec change, got %+v", got)
+	}
+
+	m.observeOut = pipeline.Drifted()
+	cr.Generation = 4
+	if got, _ := e.Observe(context.Background(), cr); !got.ResourceExists || got.ResourceUpToDate {
+		t.Fatalf("expected exists but not up to date on drift, got %+v", got)
+	}
+}
+
+// SC-012 (Observe half) / SC-013: the run's events and conditions are rendered,
+// and Observe never flips Ready to True itself.
+func TestObserve_RendersOutcomes(t *testing.T) {
 	cond := xpv1.Unavailable().WithMessage("module says so")
 	evt := event.Normal("SomeReason", "something happened")
 	m := &fakeModule{
-		name:          pipeline.AccountModuleName,
-		observeInSync: true,
-		observeOut:    pipeline.Outcome{State: pipeline.StateDone, Condition: &cond, Event: &evt},
+		name:       pipeline.AccountModuleName,
+		observeOut: pipeline.Done().WithCondition(cond).WithEvent(evt),
 	}
 	e, _ := newExternal(t, m, newTestNamespace("ns", map[string]string{"department": "acme"}))
 	cr := newTestCR("acct", "ns", "aws-eu-central-1")
@@ -355,12 +397,6 @@ func TestObserve_RendersOutcomesAndStatus(t *testing.T) {
 	if !got.ResourceExists {
 		t.Fatalf("unexpected observation: %+v", got)
 	}
-	if cr.Status.AccountName == "" {
-		t.Fatal("expected AccountName to be set")
-	}
-	if cr.Status.AccountURL == "" {
-		t.Fatal("expected AccountURL to be set once AccountLocator is non-empty")
-	}
 	if got := cr.GetCondition(xpv1.TypeReady); got.Status == corev1.ConditionTrue {
 		t.Fatalf("Observe must never flip Ready to True itself, got %+v", got)
 	}
@@ -373,8 +409,8 @@ func TestObserve_RendersOutcomesAndStatus(t *testing.T) {
 // SC-013: once Ready is already True, a later Pending outcome from some
 // other module must not revert it.
 func TestObserve_ReadyLatch_AlreadyTrueNotReverted(t *testing.T) {
-	accountModule := &fakeModule{name: pipeline.AccountModuleName, observeInSync: true, observeOut: pipeline.Done()}
-	other := &fakeModule{name: "other", observeInSync: false, observeOut: pipeline.Pending("waiting on other")}
+	accountModule := &fakeModule{name: pipeline.AccountModuleName, observeOut: pipeline.Done()}
+	other := &fakeModule{name: "other", observeOut: pipeline.Pending("waiting on other")}
 
 	e, _ := newExternal(t, accountModule, newTestNamespace("ns", nil))
 	e.pipeline = pipeline.New(accountModule, other)
@@ -390,8 +426,8 @@ func TestObserve_ReadyLatch_AlreadyTrueNotReverted(t *testing.T) {
 }
 
 func TestObserve_NotReady_SetsUnavailableWithPendingReason(t *testing.T) {
-	accountModule := &fakeModule{name: pipeline.AccountModuleName, observeInSync: true, observeOut: pipeline.Done()}
-	other := &fakeModule{name: "other", observeInSync: false, observeOut: pipeline.Pending("waiting on other")}
+	accountModule := &fakeModule{name: pipeline.AccountModuleName, observeOut: pipeline.Done()}
+	other := &fakeModule{name: "other", observeOut: pipeline.Pending("waiting on other")}
 
 	e, _ := newExternal(t, accountModule, newTestNamespace("ns", nil))
 	e.pipeline = pipeline.New(accountModule, other)
@@ -424,9 +460,9 @@ func TestCreateUpdate_BothDelegateToApply(t *testing.T) {
 	}
 }
 
-// SC-009/SC-010: observedGeneration only advances, and status is populated,
-// once Result.AllDone() is true.
-func TestApply_AllDone_AdvancesGenerationAndSetsStatus(t *testing.T) {
+// SC-009: the pipeline advances observedGeneration, and Ready becomes
+// Available, once every module is Done.
+func TestApply_AllDone_AdvancesGenerationAndSetsReady(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1")
 	cr.Status.AccountLocator = "xy12345"
 	cr.Generation = 7
@@ -442,14 +478,11 @@ func TestApply_AllDone_AdvancesGenerationAndSetsStatus(t *testing.T) {
 	if got := cr.GetCondition(xpv1.TypeReady); got.Status != corev1.ConditionTrue {
 		t.Fatalf("expected Ready=True, got %+v", got)
 	}
-	if cr.Status.AccountName == "" || cr.Status.AccountURL == "" {
-		t.Fatalf("expected accountName/accountUrl to be set, got %+v", cr.Status)
-	}
 }
 
-// SC-011: an aborted Apply leaves observedGeneration untouched.
-func TestApply_Aborted_DoesNotAdvanceGeneration(t *testing.T) {
-	m := &fakeModule{name: pipeline.AccountModuleName, applyOut: pipeline.Failed(assertNewSystemError()).Aborting()}
+// SC-011: an Apply stopped by an aborting outcome leaves observedGeneration untouched.
+func TestApply_Stopped_DoesNotAdvanceGeneration(t *testing.T) {
+	m := &fakeModule{name: pipeline.AccountModuleName, applyOut: pipeline.Failed(assertNewSystemError()).Abort()}
 	e, _ := newExternal(t, m, newTestNamespace("ns", nil))
 	cr := newTestCR("acct", "ns", "aws-eu-central-1")
 	cr.Generation = 7
@@ -462,10 +495,10 @@ func TestApply_Aborted_DoesNotAdvanceGeneration(t *testing.T) {
 	}
 }
 
-// SC-008: whenever Result.FirstError() is non-nil, apply (and therefore
+// SC-008: whenever Result.Err() is non-nil, apply (and therefore
 // Create/Update) must return the handled error, never nil.
-func TestApply_RejectedModule_ReturnsHandledError(t *testing.T) {
-	m := &fakeModule{name: pipeline.AccountModuleName, applyOut: pipeline.Rejected(assertNewUserError())}
+func TestApply_UserErrorModule_ReturnsHandledError(t *testing.T) {
+	m := &fakeModule{name: pipeline.AccountModuleName, applyOut: pipeline.Failed(assertNewUserError())}
 	e, _ := newExternal(t, m, newTestNamespace("ns", nil))
 	cr := newTestCR("acct", "ns", "aws-eu-central-1")
 
@@ -602,8 +635,8 @@ type orderedModule struct {
 }
 
 func (o *orderedModule) Name() string { return o.name }
-func (o *orderedModule) Observe(_ context.Context, _ *pipeline.ModuleContext) (bool, pipeline.Outcome) {
-	return true, pipeline.Done()
+func (o *orderedModule) Observe(_ context.Context, _ *pipeline.ModuleContext) pipeline.Outcome {
+	return pipeline.Done()
 }
 func (o *orderedModule) Apply(_ context.Context, _ *pipeline.ModuleContext) pipeline.Outcome {
 	return pipeline.Done()
@@ -615,22 +648,6 @@ func (o *orderedModule) Teardown(_ context.Context, _ *pipeline.ModuleContext) e
 
 func assertNewUserError() error   { return internalerrors.NewUserError("bad input") }
 func assertNewSystemError() error { return stderrors.New("boom") }
-
-// updateAccountStatus's tenant.AccountURL error path is logged and
-// swallowed, never failing the caller (Edge Cases).
-func TestApply_AccountURLError_LoggedAndSwallowed(t *testing.T) {
-	cr := newTestCR("acct", "ns", "not a region")
-	cr.Status.AccountLocator = "xy12345"
-	m := &fakeModule{name: pipeline.AccountModuleName, applyOut: pipeline.Done()}
-	e, _ := newExternal(t, m, newTestNamespace("ns", nil), cr)
-
-	if err := e.apply(context.Background(), cr); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cr.Status.AccountURL != "" {
-		t.Fatalf("expected AccountURL to stay unset on a region-format error, got %q", cr.Status.AccountURL)
-	}
-}
 
 // erroringListClient wraps a client.Client and fails every List call, to
 // exercise Delete's FindActiveRequest system-error path.

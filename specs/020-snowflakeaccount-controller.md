@@ -41,24 +41,24 @@ idempotent by construction and there is nothing for the two methods to do differ
 into the next — a fresh context is built every time, from the CRD and namespace labels as they stand at
 that moment, and it carries no live connection until a module first asks for one.
 
-## Key Concept: The Ready Latch Lives on the Persisted Condition
+## Key Concept: The Controller Renders, the Pipeline Decides
 
-Whether an account has ever finished provisioning is not something this controller recomputes from
-scratch — it reads the resource's own already-persisted `Ready` condition and treats `True` as
-permanent. Only while `Ready` is not yet `True` does a pending module's reason become the message this
-controller reports; once `Ready` is `True`, a later module still waiting on something (a newly added
-identity group syncing, for instance) is visible only on that module's own condition. This is what stops
-a healthy, long-`Ready` account from reverting to unavailable just because some later edit is still
-being applied.
+The controller computes nothing about a run. After each `Observe` and each `Create`/`Update`, the
+pipeline (009) hands back everything it needs: whether the account exists and is up to date, the module
+conditions and events, the finished `Ready` condition and the first error. The controller only records
+the events, sets the conditions, and returns the observation and the handled error. In particular the
+`Ready` latch — once `True`, always `True` — and the pending reason shown while it is `False` live in
+the pipeline, which reads the resource's already-persisted `Ready` condition at the start of each run;
+and `status.observedGeneration` is recorded there as well.
 
 **Important**: crossplane-runtime's managed reconciler overwrites `Ready`/`Synced` again right after
 `Observe` and after `Create`/`Update` return, on every call — not only the first time. So this controller
-recomputes its own view of `Ready` and `Synced` on every single `Observe`, never relying on what a prior
-`Apply` already set to still be showing.
+renders `Ready` on every single `Observe`, never relying on what a prior `Apply` already set to still be
+showing.
 
-## Key Concept: Surfacing a Rejected or Failed Module on `Synced`
+## Key Concept: Surfacing a Failed Module on `Synced`
 
-A module's own rejection or failure has nowhere to go once the run for that reconcile ends, unless
+A module's own failure (a tenant mistake or a system fault) has nowhere to go once the run for that reconcile ends, unless
 `Create`/`Update` explicitly returns it. Returning `nil` from either method — even after recording every
 module's condition and event correctly — makes the managed reconciler mark the reconcile a success
 immediately afterward, overwriting whatever this controller just set. So `Create`/`Update` must return
@@ -100,6 +100,7 @@ package snowflakeaccount // internal/controller/snowflakeaccount
 //	    cfg.Snowflake.Org,
 //	    cfg.Snowflake.AccountCreationGracePeriod,
 //	    cfg.Deletion.GracePeriodDays,
+//	    cfg.Snowflake.UsePrivateLink,
 //	    bpConfig,
 //	))
 //
@@ -158,15 +159,15 @@ internal/controller/yukimi.go   # SetupGated gains cfg/pool/keyManager/bpConfig 
 **User Errors** (use `errors.NewUserError()`):
 - No `Active` `SnowflakeDeletionRequest` authorizes a `SnowflakeAccount`'s deletion — the tenant can fix
   this by creating one.
-- A module's own rejection, already classified by that module and surfaced unchanged via
-  `Result.FirstError()`.
+- A module's own tenant mistake, already classified by that module and surfaced unchanged via
+  `Outcomes.Err()`.
 
 **System Errors** (use `fmt.Errorf("context: %w", err)` or pass through unchanged):
 - A Kubernetes API failure reading the target namespace's labels.
 - `deletion.FindActiveRequest`/`deletion.MarkConsumed` (019) failures against the Kubernetes API.
 - A module's own failure, already classified by that module and surfaced unchanged via
-  `Result.FirstError()` or `Pipeline.Destroy`'s returned error.
-- `tenant.AccountURL`'s region-format error, on the rare occasion it fires despite `CREATE ACCOUNT`
+  `Outcomes.Err()` or `Pipeline.Destroy`'s returned error.
+- `tenant.AccountURL`'s region-format error (logged by the account module, 012), on the rare occasion it fires despite `CREATE ACCOUNT`
   having already succeeded with that same region string (see Edge Cases) — logged via `log.Handle`, but
   never allowed to fail the reconcile on its own.
 
@@ -196,13 +197,14 @@ This specification defines the `internal/controller/snowflakeaccount` package th
 - Builds one `pipeline.ModuleContext` per reconcile call, passing the target namespace's labels, read
   fresh from the Kubernetes API on every call — `NewModuleContext` takes no backplane config; a module
   that needs one injects its own copy at construction instead.
-- Computes and persists `status.accountName`/`status.accountUrl` itself, directly from the
-  `ModuleContext` and the CRD's own already-set `status.accountLocator` — never from a module's
-  `Outcome`.
-- Renders every module's `Outcome.Condition`/`Outcome.Event` onto the resource, advances
-  `status.observedGeneration` only once a run's `Result.AllDone()` is true, and returns the pipeline's
-  first handled module error from `Create`/`Update` so a rejection or failure lands on `Synced` instead
-  of being silently overwritten.
+- Persists the status; it does not compute any of it. `status.accountName`/`status.accountUrl` are
+  written by the account module (012) through the `ModuleContext`, and `status.observedGeneration` by the
+  pipeline (009).
+- Renders what each run's `pipeline.Report` returns — events, module conditions and the finished `Ready`
+  condition — onto the resource through one small `report` function, used by `Observe` and
+  `Create`/`Update` alike. Returns `obs.ExternalObservation()` from `Observe`, and the pipeline's first
+  handled error from `Observe` and from `Create`/`Update`, so a failure lands on `Synced` instead of
+  being silently overwritten (an error from `Observe` also stops `Create`/`Update` from being called).
 - Implements the deletion gate (design.md §6.3 Phases 2–3): looks up an `Active`
   `SnowflakeDeletionRequest` (019) before honoring a `SnowflakeAccount` deletion, blocks and emits
   `Warning: DeletionBlocked` when none is found, and marks the request `Consumed` once `Pipeline.Destroy`
@@ -257,7 +259,7 @@ This specification defines the `internal/controller/snowflakeaccount` package th
   guard. The obligation this places on every future module's `Observe` is real, though: it must be able
   to tell "never applied" apart from "already correct."
 - **`tenant.AccountURL` returns an error even though the account clearly exists (`status.accountLocator`
-  is already set)** — possible only because this cut runs no independent region-format check of its own
+  is already set)** — the account module (012) logs it and leaves the URL unset; possible only because this cut runs no independent region-format check of its own
   (007's gate is gone) and `CREATE ACCOUNT`'s own region transform tolerates strings `AccountURL`'s
   stricter format check does not. When it happens, `status.accountUrl` simply stays unset while
   `accountName`/`accountLocator` and `Ready` are unaffected — a logged system error, not a blocking one.
@@ -306,9 +308,10 @@ This specification defines the `internal/controller/snowflakeaccount` package th
 - **`apis/base/v1alpha1` (006, 019)** — Used APIs: the `SnowflakeAccount`/`SnowflakeDeletionRequest`
   types, `SnowflakeAccountKind`, `SnowflakeAccountGroupVersionKind` — Contract: this package registers
   the former with `managed.NewReconciler` and reads/writes its `Status` directly.
-- **`internal/account/pipeline` (009)** — Used APIs: `pipeline.New()`, `Pipeline.Observe()`,
-  `.Apply()`, `.Destroy()`, `pipeline.NewModuleContext()`, `Observation.PendingReason()`,
-  `Result.AllDone()`, `.PendingReason()`, `.FirstError()` — Contract: exactly one `*pipeline.Pipeline`
+- **`internal/account/pipeline` (009)** — Used APIs: `pipeline.New()`,
+  `Pipeline.Observe()`, `.Apply()`, `.Destroy()`, `pipeline.NewModuleContext()`,
+  `Observation.ExternalObservation()`, `pipeline.Report` (`Events()`, `Conditions()`, `Ready()`),
+  `Outcomes.Err()` — Contract: exactly one `*pipeline.Pipeline`
   built once, at `Setup` time, from the module list this spec's Public API section fixes.
 - **`internal/account/modules/account` (012)** — Used APIs: `accountmodule.New()` — Contract: the sole
   module registered in this cut; this controller never calls it directly beyond registration.
@@ -363,22 +366,20 @@ of `internal/account/modules/{guardrailcheck,quotacheck,parameter,network,auth,i
   calling any pipeline method.
 - **SC-007**: `Create` and `Update` both delegate to the same internal function, which calls
   `Pipeline.Apply` exactly once per call.
-- **SC-008**: whenever `Result.FirstError()` is non-nil, `Create`/`Update` returns the handled error —
+- **SC-008**: whenever `Result.Err()` is non-nil, `Create`/`Update` returns the handled error —
   never `nil` — so the managed reconciler renders `ReconcileError` onto `Synced` instead of overwriting it
   with `ReconcileSuccess`.
-- **SC-009**: `status.observedGeneration` advances via `SetObservedGeneration` only on a call where
-  `Result.AllDone()` is true.
-- **SC-010**: a successful `Apply` sets `status.accountName` from `ModuleContext.ResolvedAccountName()`;
-  once `status.accountLocator` is non-empty, it also sets `status.accountUrl` from `tenant.AccountURL`
-  using `Config.Snowflake.UsePrivateLink`.
+- **SC-009**: the controller never reads or writes `status.observedGeneration`; the pipeline (009) does.
+- **SC-010**: the controller never sets `status.accountName`/`status.accountUrl`; the account module
+  (012) does, using `Config.Snowflake.UsePrivateLink` passed to its constructor.
 - **SC-011**: an aborted or partially-failed `Observe`/`Apply` leaves every status field and condition
   untouched by that run's `Outcomes` exactly as the previous reconcile left it — no blanking, no
   defaulting.
-- **SC-012**: every `Outcome.Event`/`Outcome.Condition` present in `Observation.Outcomes`/
-  `Result.Outcomes` is rendered onto the resource, in outcome order, on both `Observe` and
-  `Create`/`Update`.
-- **SC-013**: `Ready` is set `True` for the first time only from the `Create`/`Update` path's
-  `Result.AllDone()` branch; `Observe` never performs that transition itself.
+- **SC-012**: on both `Observe` and `Create`/`Update`, the controller renders exactly the events,
+  conditions and `Ready` that the run's `Report` returns — also on `Observe` when the account does not
+  exist yet — and computes none of them.
+- **SC-013**: `Observe` returns `obs.ExternalObservation()` and the handled `obs.Err()`; the controller
+  contains no generation comparison and no `Ready`-latch check.
 - **SC-014**: `Delete` returns a user error and records a `Warning: DeletionBlocked` event when
   `deletion.FindActiveRequest` returns `nil`, and does not release the finalizer.
 - **SC-015**: `Delete` calls `Pipeline.Destroy` only once `FindActiveRequest` has returned a non-nil
@@ -490,36 +491,19 @@ func (e *external) Observe(ctx context.Context, cr *v1alpha1.SnowflakeAccount) (
     // module (012) that needs one already has its own copy from construction time.
     mc := pipeline.NewModuleContext(cr, labels, log, e.pool)
     obs := e.pipeline.Observe(ctx, mc)
-    if !obs.Exists {
-        return managed.ExternalObservation{ResourceExists: false}, nil
-    }
+    e.report(cr, obs)
 
-    for _, mo := range obs.Outcomes {
-        if mo.Outcome.Event != nil {
-            e.record.Event(cr, *mo.Outcome.Event)
-        }
-        if mo.Outcome.Condition != nil {
-            cr.SetConditions(*mo.Outcome.Condition)
-        }
-    }
+    // log.Handle(nil) == nil. On an error Crossplane ignores the observation, sets
+    // Synced=False, persists the conditions above and calls neither Create nor Update.
+    return obs.ExternalObservation(), log.Handle(obs.Err())
+}
 
-    cr.Status.AccountName = mc.ResolvedAccountName()
-    if cr.Status.AccountLocator != "" {
-        if url, err := tenant.AccountURL(cr.Status.AccountLocator, cr.Spec.Region, e.cfg.Snowflake.UsePrivateLink); err == nil {
-            cr.Status.AccountURL = url
-        } else {
-            log.Handle(err) // logged, never fails Observe (Edge Cases)
-        }
+func (e *external) report(cr *v1alpha1.SnowflakeAccount, r pipeline.Report) {
+    for _, ev := range r.Events() {
+        e.record.Event(cr, ev)
     }
-
-    // Observe never flips Ready to True for the first time — only apply()'s
-    // AllDone branch (Example 2) does that.
-    if cr.GetCondition(xpv1.TypeReady).Status != corev1.ConditionTrue {
-        cr.SetConditions(xpv1.Unavailable().WithMessage(obs.PendingReason()))
-    }
-
-    upToDate := cr.Status.GetObservedGeneration() == cr.Generation && obs.InSync
-    return managed.ExternalObservation{ResourceExists: true, ResourceUpToDate: upToDate}, nil
+    cr.SetConditions(r.Conditions()...)
+    cr.SetConditions(r.Ready())
 }
 ```
 
@@ -543,33 +527,14 @@ func (e *external) apply(ctx context.Context, cr *v1alpha1.SnowflakeAccount) err
     }
 
     mc := pipeline.NewModuleContext(cr, labels, log, e.pool)
-    result := e.pipeline.Apply(ctx, mc)
+    res := e.pipeline.Apply(ctx, mc)
+    e.report(cr, res)
+    firstErr := log.Handle(res.Err()) // becomes Synced's message; log.Handle(nil) == nil
 
-    for _, mo := range result.Outcomes {
-        if mo.Outcome.Event != nil {
-            e.record.Event(cr, *mo.Outcome.Event)
-        }
-        if mo.Outcome.Condition != nil {
-            cr.SetConditions(*mo.Outcome.Condition)
-        }
-    }
-    firstErr := log.Handle(result.FirstError()) // becomes Synced's message below; log.Handle(nil) == nil
-
-    cr.Status.AccountName = mc.ResolvedAccountName()
-    if cr.Status.AccountLocator != "" {
-        if url, err := tenant.AccountURL(cr.Status.AccountLocator, cr.Spec.Region, e.cfg.Snowflake.UsePrivateLink); err == nil {
-            cr.Status.AccountURL = url
-        } else {
-            log.Handle(err)
-        }
-    }
-
-    if result.AllDone() {
-        cr.Status.SetObservedGeneration(cr.Generation)
-        cr.SetConditions(xpv1.Available())
-    }
-    if cr.GetCondition(xpv1.TypeReady).Status != corev1.ConditionTrue {
-        cr.SetConditions(xpv1.Unavailable().WithMessage(result.PendingReason()))
+    // Persist status now (the managed reconciler's own write comes after
+    // UpdateCriticalAnnotations, which would overwrite the new locator).
+    if err := e.kube.Status().Update(ctx, cr); err != nil && firstErr == nil {
+        firstErr = log.Handle(err)
     }
 
     // Returning nil here would drop firstErr: the managed reconciler calls
