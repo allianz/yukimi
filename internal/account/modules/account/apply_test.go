@@ -28,6 +28,7 @@ import (
 	"github.com/snowflakedb/gosnowflake/v2"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	v1alpha1 "github.com/allianz/yukimi/apis/base/v1alpha1"
 	"github.com/allianz/yukimi/internal/account/pipeline"
 	"github.com/allianz/yukimi/internal/config/backplane"
 	internalerrors "github.com/allianz/yukimi/internal/errors"
@@ -729,7 +730,8 @@ func TestApply_FreshCreate_AccountNameTooLong_Rejected(t *testing.T) {
 
 // A fresh create aborts with a user error, issuing no SQL, when the
 // configured organization name contains a repeated '-'/'_' — such a value
-// would make the secret identifier (003) built from it ambiguous.
+// would make the secret identifier built from it ambiguous, so
+// secrets.NewTenantIdentifier (003) rejects it.
 func TestApply_FreshCreate_OrgWithRepeatedSeparator_Rejected(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
 	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
@@ -750,7 +752,7 @@ func TestApply_FreshCreate_OrgWithRepeatedSeparator_Rejected(t *testing.T) {
 
 // A fresh create aborts with a user error, issuing no SQL, when the CR's
 // namespace contains a repeated '-'/'_' — same reasoning as the organization
-// name check above, but for the one input the CRD itself can't validate.
+// name check above.
 func TestApply_FreshCreate_NamespaceWithRepeatedSeparator_Rejected(t *testing.T) {
 	cr := newTestCR("acct", "my--ns", "aws-eu-central-1", "", "a@b.com", "")
 	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
@@ -771,7 +773,7 @@ func TestApply_FreshCreate_NamespaceWithRepeatedSeparator_Rejected(t *testing.T)
 
 // A fresh create aborts with a user error, and no side effects, when the
 // resolved region exists but is not available and the tenant's namespace is
-// not labeled as an alpha tester (Key Concept: Alpha-Tester Region Bypass).
+// not labeled as an alpha tester (Key Concept: Region Validation).
 func TestApply_FreshCreate_UnavailableRegion_Rejected(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
 	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
@@ -801,7 +803,7 @@ func TestApply_FreshCreate_UnavailableRegion_Rejected(t *testing.T) {
 // A fresh create proceeds past the availability gate when the resolved
 // region is unavailable but the tenant's namespace is labeled as an alpha
 // tester, reaching CREATE ACCOUNT exactly as an available region would (Key
-// Concept: Alpha-Tester Region Bypass).
+// Concept: Region Validation).
 func TestApply_FreshCreate_UnavailableRegion_AlphaTesterBypass(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
 	orgAdminDB, mock := newOrgAdminMock(t)
@@ -856,7 +858,7 @@ func TestApply_FreshCreate_AlphaTesterLabelMalformed_Failed(t *testing.T) {
 // quotes, semicolons and comment markers it contains, the statement text is
 // the fixed bound template (specs/005, Key Concept: Bind First). The exact
 // text is matched, so any interpolation would fail the expectation.
-func TestRunCreateAccount_DescriptionIsBoundNeverInterpolated(t *testing.T) {
+func TestExecCreateAccount_DescriptionIsBoundNeverInterpolated(t *testing.T) {
 	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual))
 	if err != nil {
 		t.Fatalf("sqlmock.New() error: %v", err)
@@ -867,16 +869,10 @@ func TestRunCreateAccount_DescriptionIsBoundNeverInterpolated(t *testing.T) {
 	mock.ExpectExec("CREATE ACCOUNT IDENTIFIER(?) ADMIN_NAME=? ADMIN_RSA_PUBLIC_KEY=? ADMIN_USER_TYPE=SERVICE EMAIL=? EDITION=ENTERPRISE REGION=? COMMENT=?").
 		WithArgs("acct_ns", "platform", "KEY", "a@b.com", "AWS_EU_CENTRAL_1", description).
 		WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectQuery("SHOW ACCOUNTS LIKE ?").WithArgs("acct_ns").
-		WillReturnRows(sqlmock.NewRows([]string{"account_name", "account_locator"}).AddRow("acct_ns", "AB12345"))
 
-	locator, outcome := runCreateAccount(context.Background(), statement.New(db), "acct_ns", "aws-eu-central-1", "a@b.com", description, "KEY")
-
-	if outcome.State != pipeline.StateDone {
-		t.Fatalf("outcome = %+v, want Done", outcome)
-	}
-	if locator != "AB12345" {
-		t.Errorf("locator = %q, want AB12345", locator)
+	spec := v1alpha1.SnowflakeAccountSpec{Region: "aws-eu-central-1", Contact: "a@b.com", Description: description}
+	if err := execCreateAccount(context.Background(), statement.New(db), "acct_ns", spec, "KEY"); err != nil {
+		t.Fatalf("execCreateAccount() error: %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet sqlmock expectations: %v", err)

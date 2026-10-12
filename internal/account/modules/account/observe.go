@@ -18,7 +18,6 @@ package account
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/allianz/yukimi/internal/account/pipeline"
 )
@@ -38,12 +37,11 @@ func (m *module) Observe(ctx context.Context, mc *pipeline.ModuleContext) pipeli
 	m.syncStatus(mc)
 
 	if withinGracePeriod(cr, m.gracePeriod) {
-		return pipeline.Pending("waiting for the account to finish provisioning before attempting to connect")
+		return pipeline.Pending(provisioningMessage)
 	}
 
-	if _, err := mc.TenantDB(ctx); err != nil {
-		return pipeline.Failed(fmt.Errorf(
-			"platform connection failed for existing account locator %s: %w", cr.Status.AccountLocator, err))
+	if _, err := connectTenant(ctx, mc); err != nil {
+		return pipeline.Failed(err)
 	}
 
 	return pipeline.Done()

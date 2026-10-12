@@ -139,9 +139,9 @@ an operator has to restore the credential by hand.
 // Parameters:
 //   - keyManager: the *secrets.KeyManager (003) the platform keypair is stored through, via
 //     KeyManager.CreateCredentials and, on teardown, KeyManager.DeleteCredentials — this module never calls
-//     Update. On the fresh-create path, if CreateCredentials fails because the identifier is already
-//     occupied by a live secret, KeyManager.GetCredentials is called once, read-only, to decide whether
-//     that secret is this resource's own crashed attempt (Key Concept: Resuming a Crashed Create).
+//     Update. On the fresh-create path, if CreateCredentials fails for any reason other than
+//     ErrPendingDeletion, KeyManager.GetCredentials is called once, read-only, to decide whether a secret
+//     found there is this resource's own crashed attempt (Key Concept: Resuming a Crashed Create).
 //   - org: Config.Snowflake.Org (002), used to build the tenant secret identifier (003) exactly as
 //     internal/snowflake/pool does.
 //   - gracePeriod: Config.Snowflake.AccountCreationGracePeriod (002) — how long a fresh account is
@@ -342,9 +342,9 @@ This specification defines the account module that:
   exactly.
 - **The account, or the secret identifier, is already gone — does `Teardown` fail?** No. Both count as
   success, so a destruction retried after a partial failure — or after an operator cleaned up by
-  hand — converges instead of stalling. The backends do not agree on this themselves (AWS's `Delete`
-  errors on an identifier that does not exist, 003.a), so this module swallows the case rather than relying on
-  the backend to.
+  hand — converges instead of stalling. For the credential this is `KeyStore.Delete`'s own idempotency
+  (003), so this module never pre-checks presence and never swallows a credential-deletion error: an
+  unreachable store must not pass for an absent credential.
 
 ## Dependencies
 

@@ -103,7 +103,8 @@ type KeyStore interface {
     // Delete schedules the removal of id, never deleting it immediately, with
     // a recovery window within the account grace period it was constructed
     // with (002). While pending, id stays occupied and Get, Create, and Update
-    // all fail on it.
+    // all fail on it. Delete is idempotent: on an id nothing is stored at, or
+    // one already pending, it succeeds and changes nothing.
     Delete(ctx context.Context, id Identifier) error
 }
 
@@ -277,7 +278,7 @@ This specification defines the `internal/secrets/` package that:
 - **Why is a missing credential a system error rather than a user error, when identifier validation failures are user errors?** - A malformed identifier segment is fixed by editing the CRD or config value that produced it; a well-formed identifier with nothing stored at it is not. No tenant field makes a credential appear, and the org-admin identifier has no owning CRD at all. Whether the cause is a controller sequencing bug, an unexpected deletion, or an org-admin credential ops never provisioned, all three need an incident ID rather than a Debug-level message.
 - **What happens to a tenant secret after `DROP ACCOUNT` (012)?** - `KeyManager.DeleteCredentials` is called on the tenant identifier, which schedules its removal. The credential stays recoverable for the store's recovery window, never longer than the account grace period. Nothing in this package reads a deleted identifier afterwards.
 - **What if a store's shortest recovery window is longer than the account grace period?** - That store cannot implement `KeyStore`: every store must be able to schedule a window within the grace period, and none deletes immediately. AWS Secrets Manager's 7-day minimum matches 002's grace-period floor (003.a).
-- **What happens on a `Delete` of an identifier whose removal is already pending?** - It succeeds and changes nothing: the store scheduled the removal once and does not restart its clock, so a retried teardown neither fails nor silently extends the blockade. (AWS Secrets Manager is the exception among the operations here in not being idempotent on an *absent* identifier — see 003.a.)
+- **What happens on a `Delete` of an identifier whose removal is already pending?** - It succeeds and changes nothing: the store scheduled the removal once and does not restart its clock, so a retried teardown neither fails nor silently extends the blockade. A `Delete` of an *absent* identifier succeeds too. Every key store must honor both, even where its backend refuses them (003.a), so a caller can treat any `Delete` error as a real failure.
 - **What can be done with an identifier whose removal is pending?** - Only waiting it out or, where the store offers it, restoring. `Get` and `Update` fail because the value is not readable, and `Create` fails because the name has not been released — this is the blockade the invariant above exists to bound. `FakeKeyStore.Restore` models the restore for tests. `Create`'s failure also wraps `ErrPendingDeletion`, so a caller with more context can catch it and classify it itself.
 - **What if a stored credential's JSON is well-formed but has a truncated or otherwise invalid PEM private key?** - Out of scope for this package's validation. `KeyManager.GetCredentials` checks only that the three fields are non-empty strings; whether `PrivateKey` parses as an actual RSA key is the first consumer's (the connection pool, 004) problem to detect when it tries to use it.
 - **What happens if a cache entry expires while a request is in flight?** - Lazy eviction: the next `Get` after expiry is a plain cache miss. It fetches from the underlying `KeyStore` and repopulates the entry with a fresh TTL — there is no special-cased mid-flight behavior.

@@ -184,42 +184,27 @@ func TestTeardown_CredentialIdentifierBuildFails_ReturnsError(t *testing.T) {
 	}
 }
 
-// SC-024: an already-absent credential identifier is treated as success, and
-// Delete is never called.
-func TestTeardown_CredentialAlreadyAbsent_DeleteNeverCalled(t *testing.T) {
+// SC-024: an already-absent credential identifier is treated as success.
+func TestTeardown_CredentialAlreadyAbsent_Succeeds(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
 	fake := &fakeDBPool{t: t, forbidCalls: true}
-	store := secrets.NewFakeKeyStore()
-	deleteCalls := 0
-	store.OnDelete = func(secrets.Identifier) error {
-		deleteCalls++
-		return nil
-	}
 
-	m := &module{keyManager: secrets.NewKeyManager(store, time.Hour), org: "myorg"}
+	m := &module{keyManager: secrets.NewKeyManager(secrets.NewFakeKeyStore(), time.Hour), org: "myorg"}
 	mc := pipeline.NewModuleContext(cr, nil, nil, fake)
 
 	if err := m.Teardown(context.Background(), mc); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if deleteCalls != 0 {
-		t.Errorf("KeyManager.DeleteCredentials called %d times, want 0", deleteCalls)
-	}
 }
 
-// A credential present at GetCredentials time but failing on DeleteCredentials
-// is a real system error.
-func TestTeardown_CredentialGetSucceeds_DeleteFails_ReturnsError(t *testing.T) {
+// A DeleteCredentials failure is a real system error and is never swallowed,
+// even when the credential could not be read either — an unreachable store
+// must not be mistaken for an absent credential.
+func TestTeardown_StoreUnreachable_ReturnsError(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
 	fake := &fakeDBPool{t: t, forbidCalls: true}
 	store := secrets.NewFakeKeyStore()
-	id, err := secrets.NewTenantIdentifier("myorg", cr.Namespace, cr.Name)
-	if err != nil {
-		t.Fatalf("secrets.NewTenantIdentifier: %v", err)
-	}
-	if err := store.Create(context.Background(), id, `{"username":"platform","public_key":"pub","private_key":"priv"}`); err != nil {
-		t.Fatalf("store.Create: %v", err)
-	}
+	store.OnGet = func(secrets.Identifier) error { return errors.New("store unreachable") }
 	store.OnDelete = func(secrets.Identifier) error { return errors.New("store unreachable") }
 
 	m := &module{keyManager: secrets.NewKeyManager(store, time.Hour), org: "myorg"}

@@ -29,9 +29,9 @@ import (
 // connection to it, and deletes the platform credential — in that fixed
 // order, stopping at the first real failure. Every step is safe to re-run:
 // DROP ACCOUNT IF EXISTS makes a missing account a no-op, EvictTenant is a
-// no-op on a key never dialed, and an already-absent credential identifier is
-// detected by this module itself (see deleteCredential) rather than trusted
-// to the backend (Key Concept: Two Restore Windows, specs/012-account-module.md).
+// no-op on a key never dialed, and KeyStore.Delete is idempotent on an
+// absent or already-pending credential (003) (Key Concept: Two Restore
+// Windows, specs/012-account-module.md).
 func (m *module) Teardown(ctx context.Context, mc *pipeline.ModuleContext) error {
 	cr := mc.CR()
 
@@ -69,26 +69,17 @@ func (m *module) dropAccount(ctx context.Context, mc *pipeline.ModuleContext) er
 	return nil
 }
 
-// deleteCredential removes the platform credential. secrets.KeyStore's
-// contract is that no caller branches on an error's identity, and the
-// reference AWS key store is not itself idempotent on an already-absent
-// identifier (internal/secrets/aws/keystore.go) — so instead of inspecting
-// Delete's error, this checks presence with GetCredentials first: an
-// unreadable identifier is either genuinely absent, already scheduled for
-// deletion by an earlier Teardown attempt, or stored but no longer a valid
-// credential, and in every one of those cases there is nothing left to
-// delete.
+// deleteCredential schedules the platform credential's removal. An absent or
+// already-pending credential is success (KeyStore.Delete is idempotent, 003),
+// so any error returned here is a real failure — never swallowed, since a
+// leftover credential keeps the tenant's name blocked after the account is
+// gone.
 func (m *module) deleteCredential(ctx context.Context, mc *pipeline.ModuleContext) error {
 	cr := mc.CR()
 
 	id, err := secrets.NewTenantIdentifier(m.org, cr.Namespace, cr.Name)
 	if err != nil {
 		return err
-	}
-
-	if _, err := m.keyManager.GetCredentials(ctx, id); err != nil {
-		//nolint:nilerr // Intentional: an unreadable identifier is nothing left to delete. See the doc comment above.
-		return nil
 	}
 
 	if err := m.keyManager.DeleteCredentials(ctx, id); err != nil {

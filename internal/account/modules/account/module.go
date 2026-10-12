@@ -22,8 +22,12 @@ limitations under the License.
 package account
 
 import (
+	"context"
+	"database/sql"
+	"fmt"
 	"time"
 
+	v1alpha1 "github.com/allianz/yukimi/apis/base/v1alpha1"
 	"github.com/allianz/yukimi/internal/account/pipeline"
 	"github.com/allianz/yukimi/internal/account/tenant"
 	"github.com/allianz/yukimi/internal/config/backplane"
@@ -48,10 +52,10 @@ type module struct {
 //   - keyManager: the *secrets.KeyManager (003) the platform keypair is stored
 //     through, via KeyManager.CreateCredentials and, on teardown,
 //     KeyManager.DeleteCredentials — this module never calls Update. On the
-//     fresh-create path, if CreateCredentials fails because the identifier is
-//     already occupied by a live secret, KeyManager.GetCredentials is called
-//     once, read-only, to decide whether that secret is this resource's own
-//     crashed attempt (Key Concept: Resuming a Crashed Create).
+//     fresh-create path, if CreateCredentials fails for any reason other than
+//     ErrPendingDeletion, KeyManager.GetCredentials is called once, read-only,
+//     to decide whether a secret found there is this resource's own crashed
+//     attempt (Key Concept: Resuming a Crashed Create).
 //   - org: Config.Snowflake.Org (002), used to build the tenant secret
 //     identifier (003) exactly as internal/snowflake/pool does.
 //   - gracePeriod: Config.Snowflake.AccountCreationGracePeriod (002); how
@@ -68,8 +72,7 @@ type module struct {
 //   - bpConfig: the loaded Backplane Config (007), consulted on the
 //     fresh-create path for region existence via Region(), and — combined
 //     with the tenant's alpha-tester namespace label — for region
-//     availability via Region.Available (Key Concept: Alpha-Tester Region
-//     Bypass).
+//     availability via Region.Available (Key Concept: Region Validation).
 //
 // Returns:
 //   - pipeline.Module: never nil.
@@ -78,6 +81,34 @@ func New(keyManager *secrets.KeyManager, org string, gracePeriod time.Duration, 
 }
 
 func (m *module) Name() string { return pipeline.AccountModuleName }
+
+// provisioningMessage is the Pending message Observe and Apply share while
+// the account is within its post-create grace period.
+const provisioningMessage = "waiting for the account to finish provisioning before attempting to connect"
+
+// withinGracePeriod reports whether cr's account was created recently enough
+// that a connection attempt should be skipped rather than tried and left to
+// fail — Snowflake accounts take minutes to become reachable after CREATE
+// ACCOUNT returns. A nil AccountCreatedAt (an account that already existed
+// before this field was introduced) is treated as "the grace period has
+// already elapsed", so nothing changes for pre-existing accounts.
+func withinGracePeriod(cr *v1alpha1.SnowflakeAccount, gracePeriod time.Duration) bool {
+	createdAt := cr.Status.AccountCreatedAt
+	return createdAt != nil && time.Since(createdAt.Time) < gracePeriod
+}
+
+// connectTenant opens the platform connection to an account whose locator is
+// already known. A failure here means the account exists but is currently
+// unreachable — a system error, never a reason to create it again (Key
+// Concept: Create-Then-Verify Lifecycle).
+func connectTenant(ctx context.Context, mc *pipeline.ModuleContext) (*sql.DB, error) {
+	db, err := mc.TenantDB(ctx)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"platform connection failed for existing account locator %s: %w", mc.CR().Status.AccountLocator, err)
+	}
+	return db, nil
+}
 
 // syncStatus sets status.accountName and, once a locator is known,
 // status.accountUrl on the CRD. A tenant.AccountURL error is logged and
