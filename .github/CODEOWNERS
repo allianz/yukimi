@@ -10,7 +10,7 @@
 /specs/                 @cheld @leticat
 
 # Install manifests, RBAC and the provider's own security posture.
-/deploy/                 @cheld @leticat
+/package/manifests/      @cheld @leticat
 /cluster/                @cheld @leticat
 
 # Supply chain: workflows, dependency policy, vulnerability suppressions.
