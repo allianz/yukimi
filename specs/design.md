@@ -7,7 +7,7 @@
 - [3. SnowflakeAccount Resource](#3-snowflakeaccount-resource)
 - [4. IdentitySyncRequest Resource](#4-identitysyncrequest-resource)
 - [5. SnowflakeReplication Resource](#5-snowflakereplication-resource)
-- [6. SnowflakeDeletionRequest Resource](#6-snowflakedeletionrequest-resource)
+- [6. DeletionPermit Resource](#6-deletionpermit-resource)
 - [7. Global Error Handling & Observability](#7-global-error-handling--observability)
 - [Appendix A: Open TODOs](#appendix-a-open-todos)
 - [Appendix B: Organization Policy Requirements](#appendix-b-organization-policy-requirements)
@@ -726,13 +726,13 @@ The Kubernetes controller does not actively manage the ongoing replication sync.
 
 
 
-## 6. SnowflakeDeletionRequest Resource
+## 6. DeletionPermit Resource
 
 ### 6.1 Example
 
 ```yaml
 apiVersion: base.snowflake.yukimi.io/v1alpha1
-kind: SnowflakeDeletionRequest
+kind: DeletionPermit
 metadata:
   name: decommission-analytics-prod
 spec:
@@ -748,10 +748,10 @@ spec:
 
 #### Positive Control (The "Two-Key" System)
 
-To prevent catastrophic data loss via accidental Git operations, the platform enforces a Positive Control model. A resource cannot be destroyed simply by removing its definition file. Instead, deletion is treated as a privileged operation that requires a dedicated "Deletion Request."
+To prevent catastrophic data loss via accidental Git operations, the platform enforces a Positive Control model. A resource cannot be destroyed simply by removing its definition file. Instead, deletion is treated as a privileged operation that requires a dedicated "Deletion Permit."
 
   * **The Lock:** Every critical resource is protected by the finalizer Crossplane's managed-resource reconciler already places on it; the controller's `Delete()` blocks by default and the finalizer is not removed until deletion is authorized.
-  * **The Key:** The `SnowflakeDeletionRequest` acts as the temporary key that authorizes the controller to unlock and destroy the specific target resource.
+  * **The Key:** The `DeletionPermit` acts as the temporary key that authorizes the controller to unlock and destroy the specific target resource.
 
 #### Time-Boxed Maintenance Windows
 
@@ -759,14 +759,14 @@ Deletion permissions are ephemeral. By defining a `duration` (max 8 hours), the 
 
 #### Durable Audit Trail
 
-While the target resource disappears after deletion, the `SnowflakeDeletionRequest` (or its logs) remains. This creates a permanent audit trail linking the destruction of infrastructure to a specific reason (e.g., a ticket number) and a specific timeframe, satisfying compliance requirements for data destruction.
+While the target resource disappears after deletion, the `DeletionPermit` (or its logs) remains. This creates a permanent audit trail linking the destruction of infrastructure to a specific reason (e.g., a ticket number) and a specific timeframe, satisfying compliance requirements for data destruction.
 
 ### 6.3 Controller Behavior
 
-The controller logic focuses on the interaction between the target `SnowflakeAccount` and the `SnowflakeDeletionRequest`.
+The controller logic focuses on the interaction between the target `SnowflakeAccount` and the `DeletionPermit`.
 
 **Phase 1: Request Validation**
-Upon creation of a `SnowflakeDeletionRequest`:
+Upon creation of a `DeletionPermit`:
 
 1.  **Validation:** The controller verifies the `duration` does not exceed 8 hours.
 2.  **Window Calculation:** It calculates `status.validUntil` based on the creation timestamp.
@@ -777,18 +777,18 @@ Upon creation of a `SnowflakeDeletionRequest`:
 When a user deletes a `SnowflakeAccount` (sets `deletionTimestamp`):
 
 1.  The controller intercepts the delete request via the Finalizer.
-2.  It queries for an **Active** `SnowflakeDeletionRequest` in the same namespace targeting this specific resource.
+2.  It queries for an **Active** `DeletionPermit` in the same namespace targeting this specific resource.
 
 **Phase 3: Resolution**
 
   * **If Valid Request Found:**
     1.  **Execute:** The controller runs the SQL destruction logic (`DROP ACCOUNT`).
     2.  **Unlock:** The controller removes the Finalizer, allowing the Kubernetes object to be garbage collected.
-    3.  **Close:** The `SnowflakeDeletionRequest` status is updated to `Consumed`.
+    3.  **Close:** The `DeletionPermit` status is updated to `Consumed`.
   * **If No Request / Expired:**
     1.  **Block:** The controller refuses to drop the resource.
     2.  **Stall:** The resource remains in a `Terminating` state.
-    3.  **Alert:** A Kubernetes Event (`Warning: DeletionBlocked`) is emitted, and `Ready=False` is set, causing ArgoCD to report a failure. This forces the user to either restore the file or create a valid Deletion Request.
+    3.  **Alert:** A Kubernetes Event (`Warning: DeletionBlocked`) is emitted, and `Ready=False` is set, causing ArgoCD to report a failure. This forces the user to either restore the file or create a valid Deletion Permit.
 
 
 

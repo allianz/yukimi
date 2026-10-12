@@ -14,8 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package snowflakedeletionrequest reconciles SnowflakeDeletionRequest
+// Package deletionpermit reconciles DeletionPermit
 // objects, advancing their own time-boxed Active/Expired/Consumed
 // lifecycle independently of every other reconcile loop in this platform.
-// See specs/019-deletion-request.md for the full specification.
-package snowflakedeletionrequest
+// See specs/019-deletion-permit.md for the full specification.
+package deletionpermit

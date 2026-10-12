@@ -17,7 +17,7 @@ limitations under the License.
 
 // Package v1alpha1 contains the base.snowflake.yukimi.io/v1alpha1 resources:
 // SnowflakeAccount and its future siblings (SnowflakeReplication,
-// SnowflakeDeletionRequest). See specs/006-snowflake-account-crd.md.
+// DeletionPermit). See specs/006-snowflake-account-crd.md.
 // +kubebuilder:object:generate=true
 // +groupName=base.snowflake.yukimi.io
 // +versionName=v1alpha1

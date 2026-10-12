@@ -71,7 +71,7 @@ type SecretsSettings struct {
 // never outlives the account it belongs to.
 type DeletionSettings struct {
     GracePeriodDays int  // days a dropped account and its credential stay restorable (003, 012)
-    Protection      bool // when true, SnowflakeAccount's Delete (020) requires an Active SnowflakeDeletionRequest (019) before it will destroy an account
+    Protection      bool // when true, SnowflakeAccount's Delete (020) requires an Active DeletionPermit (019) before it will destroy an account
 }
 
 // Load reads, parses, and validates "<configDir>/base.yaml".
@@ -116,7 +116,7 @@ func Load(configDir string) (*Config, error)
 | `secrets.cacheTtl` | string (duration) | No | TTL for the in-memory secrets cache (003), applied by whichever code wraps a `KeyStore` in `secrets.NewKeyManager`. Positive Go duration string if set. Default: `5m` when omitted. |
 | `secrets.rotationInterval` | string (duration) | No | Age past which 004 rotates a stored Snowflake credential inline. Positive Go duration string if set (e.g. `1s` for tests). Default: `4320h` (~6 months) when omitted. |
 | `deletion.gracePeriodDays` | int | No | Days a dropped tenant account and its stored credential stay restorable (003, 012). Must be `7`–`90` inclusive if set — `90` is Snowflake's own documented ceiling for `DROP ACCOUNT`'s `GRACE_PERIOD_IN_DAYS`, and `7` is raised above Snowflake's own floor to match AWS Secrets Manager's minimum representable recovery window (003.a), so a credential is always scheduled for deletion rather than force-deleted. Default: `30` when omitted. Not overridable per request; see 019. |
-| `deletion.protection` | bool | No | Whether 020's `SnowflakeAccount` `Delete` requires an `Active` `SnowflakeDeletionRequest` (019) before destroying an account. When `false`, that gate is skipped platform-wide and deletion proceeds unconditionally. Default: `true` when omitted. |
+| `deletion.protection` | bool | No | Whether 020's `SnowflakeAccount` `Delete` requires an `Active` `DeletionPermit` (019) before destroying an account. When `false`, that gate is skipped platform-wide and deletion proceeds unconditionally. Default: `true` when omitted. |
 
 Every field is freely editable and the whole file is reloaded wholesale on the next pod restart, so there is no per-field mutability rule to enforce.
 
@@ -288,7 +288,7 @@ aws:
 
 # deletion:
 #   gracePeriodDays: 30             # optional, default shown (003, 012); allowed range 7-90
-#   protection: true                # optional, default shown; false disables 020's deletion-request gate (019)
+#   protection: true                # optional, default shown; false disables 020's deletion-permit gate (019)
 ```
 
 The `aws:` section is the only cloud section here, so `CloudProvider()` returns `"aws"` — nothing else in the file states the provider. The same file and the same `Load` call serve production (a mounted ConfigMap volume) and local development (materialized by the Makefile, out of scope here); neither can tell the difference.

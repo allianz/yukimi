@@ -14,8 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package deletion looks up and consumes SnowflakeDeletionRequest deletion
-// requests: the only point of contact between spec 019 and the
+// Package deletion looks up and consumes DeletionPermit
+// objects: the only point of contact between spec 019 and the
 // SnowflakeAccount controller's deletion gate (020). See
-// specs/019-deletion-request.md for the full specification.
+// specs/019-deletion-permit.md for the full specification.
 package deletion

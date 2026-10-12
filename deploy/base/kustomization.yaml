@@ -50,7 +50,7 @@ resources:
   # CRD silently missing from install.yaml is an outage that would otherwise
   # render as a green build.
   - ../../package/crds/base.snowflake.yukimi.io_snowflakeaccounts.yaml
-  - ../../package/crds/base.snowflake.yukimi.io_snowflakedeletionrequests.yaml
+  - ../../package/crds/base.snowflake.yukimi.io_deletionpermits.yaml
 
   - namespace.yaml
   - serviceaccount.yaml

@@ -27,7 +27,7 @@ import (
 
 const stateActive = "Active"
 
-// FindActiveRequest returns the Active SnowflakeDeletionRequest in
+// FindActivePermit returns the Active DeletionPermit in
 // namespace whose spec.targetRef matches targetKind/targetName, or nil if
 // none exists. Trusts status.state as authoritative — performs no
 // independent validUntil check. When more than one Active candidate
@@ -36,23 +36,23 @@ const stateActive = "Active"
 // Returns: system error if the list call against the Kubernetes API fails.
 // Never a user error — there is nothing about the caller's input a tenant
 // could fix here.
-func FindActiveRequest(ctx context.Context, c client.Client, namespace, targetKind, targetName string) (*v1alpha1.SnowflakeDeletionRequest, error) {
-	var list v1alpha1.SnowflakeDeletionRequestList
+func FindActivePermit(ctx context.Context, c client.Client, namespace, targetKind, targetName string) (*v1alpha1.DeletionPermit, error) {
+	var list v1alpha1.DeletionPermitList
 	if err := c.List(ctx, &list, client.InNamespace(namespace)); err != nil {
-		return nil, fmt.Errorf("failed to list SnowflakeDeletionRequest objects: %w", err)
+		return nil, fmt.Errorf("failed to list DeletionPermit objects: %w", err)
 	}
 
-	var earliest *v1alpha1.SnowflakeDeletionRequest
+	var earliest *v1alpha1.DeletionPermit
 	for i := range list.Items {
-		req := &list.Items[i]
-		if req.Status.State != stateActive {
+		permit := &list.Items[i]
+		if permit.Status.State != stateActive {
 			continue
 		}
-		if req.Spec.TargetRef.Kind != targetKind || req.Spec.TargetRef.Name != targetName {
+		if permit.Spec.TargetRef.Kind != targetKind || permit.Spec.TargetRef.Name != targetName {
 			continue
 		}
-		if earliest == nil || req.CreationTimestamp.Before(&earliest.CreationTimestamp) {
-			earliest = req
+		if earliest == nil || permit.CreationTimestamp.Before(&earliest.CreationTimestamp) {
+			earliest = permit
 		}
 	}
 

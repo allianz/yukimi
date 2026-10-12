@@ -16,6 +16,6 @@ limitations under the License.
 
 // Package snowflakeaccount reconciles SnowflakeAccount objects: it wires the
 // account pipeline (009) into the four managed-resource entry points and
-// implements the deletion gate that requires an Active SnowflakeDeletionRequest
+// implements the deletion gate that requires an Active DeletionPermit
 // (019) before dropping a live account. See specs/020-snowflakeaccount-controller.md.
 package snowflakeaccount

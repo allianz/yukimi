@@ -109,7 +109,7 @@ func Setup(mgr ctrl.Manager, o controller.Options, cfg *base.Config, p *pool.Poo
 
 // connector produces an external client sharing one pipeline and pool across
 // every SnowflakeAccount this controller reconciles. Unlike
-// snowflakedeletionrequest's connector, Connect here has real fields to carry
+// deletionpermit's connector, Connect here has real fields to carry
 // forward — but still performs no I/O of its own, since the account module's
 // connections are all lazy and pooled (004).
 type connector struct {
@@ -253,16 +253,16 @@ func (e *external) Delete(ctx context.Context, cr *v1alpha1.SnowflakeAccount) (m
 
 	// Phase 2: no active request, no destruction — unless deletion protection
 	// is disabled platform-wide (deletion.protection: false, 002), in which
-	// case this gate is skipped entirely and req stays nil.
-	var req *v1alpha1.SnowflakeDeletionRequest
+	// case this gate is skipped entirely and permit stays nil.
+	var permit *v1alpha1.DeletionPermit
 	if e.cfg.Deletion.Protection {
 		var err error
-		req, err = deletion.FindActiveRequest(ctx, e.kube, cr.Namespace, v1alpha1.SnowflakeAccountKind, cr.Name)
+		permit, err = deletion.FindActivePermit(ctx, e.kube, cr.Namespace, v1alpha1.SnowflakeAccountKind, cr.Name)
 		if err != nil {
 			return managed.ExternalDelete{}, log.Handle(err)
 		}
-		if req == nil {
-			blockedErr := internalerrors.NewUserError("deletion blocked: no active SnowflakeDeletionRequest authorizes this account")
+		if permit == nil {
+			blockedErr := internalerrors.NewUserError("deletion blocked: no active DeletionPermit authorizes this account")
 			e.record.Event(cr, event.Warning("DeletionBlocked", blockedErr))
 			cr.SetConditions(xpv1.Unavailable().WithMessage(blockedErr.Error()))
 			return managed.ExternalDelete{}, log.Handle(blockedErr)
@@ -281,8 +281,8 @@ func (e *external) Delete(ctx context.Context, cr *v1alpha1.SnowflakeAccount) (m
 		return managed.ExternalDelete{}, log.Handle(err)
 	}
 
-	if req != nil {
-		return managed.ExternalDelete{}, deletion.MarkConsumed(ctx, e.kube, req)
+	if permit != nil {
+		return managed.ExternalDelete{}, deletion.MarkConsumed(ctx, e.kube, permit)
 	}
 	return managed.ExternalDelete{}, nil
 }

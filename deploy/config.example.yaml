@@ -28,7 +28,7 @@
 #    hostname does not resolve, so set it to false for local testing.
 #
 #  * deletion.protection defaults to TRUE, meaning a SnowflakeAccount cannot be
-#    deleted without also creating a SnowflakeDeletionRequest naming it.
+#    deleted without also creating a DeletionPermit naming it.
 #    Convenient safety in production, awkward while testing.
 #
 #  * The keys under `data:` must be exactly `base.yaml` and `backplane.yaml`.
@@ -133,8 +133,8 @@ data:
       gracePeriodDays: 30
 
       # When true, deleting a SnowflakeAccount also requires an active
-      # SnowflakeDeletionRequest naming it -- the "positive control" in
-      # specs/019-deletion-request.md. DEFAULTS TO TRUE. Set it to false while
+      # DeletionPermit naming it -- the "positive control" in
+      # specs/019-deletion-permit.md. DEFAULTS TO TRUE. Set it to false while
       # testing so `kubectl delete` is a single step.
       protection: true
 

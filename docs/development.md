@@ -84,7 +84,7 @@ make provider.addtype provider=Snowflake group=base kind=${type}
 ```
 
 Per `specs/design.md`, resource kinds fall into two API groups, not a single `infra` group:
-- `base.snowflake.yukimi.io` — the platform's own managed resources: `SnowflakeAccount`, `SnowflakeReplication`, `SnowflakeDeletionRequest` (use `group=base` as above)
+- `base.snowflake.yukimi.io` — the platform's own managed resources: `SnowflakeAccount`, `SnowflakeReplication`, `DeletionPermit` (use `group=base` as above)
 - `base.identity.yukimi.io` — `IdentitySyncRequest` only. This one is *emitted* by this platform's controller but *fulfilled* by a company-specific controller outside this repo, so scaffold it as its own group (`group=identity`) and expect no reconciler logic for the fulfilling side.
 
 ### Post-Scaffolding Tasks

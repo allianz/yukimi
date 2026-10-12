@@ -27,18 +27,18 @@ import (
 
 const stateConsumed = "Consumed"
 
-// MarkConsumed transitions req's status.state to Consumed. Its
+// MarkConsumed transitions permit's status.state to Consumed. Its
 // status.validUntil is left untouched: once state is terminal, the
-// SnowflakeDeletionRequest controller stops recomputing it from
+// DeletionPermit controller stops recomputing it from
 // spec.duration, so it freezes at whatever value was already there. Called
 // by 020 after a successful DROP ACCOUNT.
 //
 // Returns: system error if the status update against the Kubernetes API
 // fails.
-func MarkConsumed(ctx context.Context, c client.Client, req *v1alpha1.SnowflakeDeletionRequest) error {
-	req.Status.State = stateConsumed
-	if err := c.Status().Update(ctx, req); err != nil {
-		return fmt.Errorf("failed to mark SnowflakeDeletionRequest %s/%s as consumed: %w", req.Namespace, req.Name, err)
+func MarkConsumed(ctx context.Context, c client.Client, permit *v1alpha1.DeletionPermit) error {
+	permit.Status.State = stateConsumed
+	if err := c.Status().Update(ctx, permit); err != nil {
+		return fmt.Errorf("failed to mark DeletionPermit %s/%s as consumed: %w", permit.Namespace, permit.Name, err)
 	}
 	return nil
 }

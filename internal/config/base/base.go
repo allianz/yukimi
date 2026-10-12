@@ -143,7 +143,7 @@ type SecretsSettings struct {
 // creation and is a Duration; this one is about deletion and is a count of days.
 type DeletionSettings struct {
 	GracePeriodDays int  // days a dropped account and its credential stay restorable (003, 012); defaults to 30 when omitted, allowed range 7-90
-	Protection      bool // when true, SnowflakeAccount's Delete (020) requires an Active SnowflakeDeletionRequest (019) before it will destroy an account; defaults to true when omitted
+	Protection      bool // when true, SnowflakeAccount's Delete (020) requires an Active DeletionPermit (019) before it will destroy an account; defaults to true when omitted
 }
 
 // AWSSettings holds AWS-specific settings, consumed only by 003.a.

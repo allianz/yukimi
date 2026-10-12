@@ -504,7 +504,7 @@ This specification defines the account module that:
 - The org-admin connection is opened only inside this module, and only on the fresh-create and teardown
   paths — no other module, and no other path through this one, ever requests it.
 - This module does not check whether a destruction is authorized: it drops whenever `Teardown` is called.
-  The deletion request's two-key gate (019) is what stands between a tenant's `kubectl delete` and that
+  The deletion permit's two-key gate (019) is what stands between a tenant's `kubectl delete` and that
   call.
 - The secret store's create-only write is the sole safeguard against overwriting a live account's
   credential on a retried request. The module does read a stored credential back exactly once — only after
@@ -636,7 +636,7 @@ outcome3 := module.Apply(ctx, mc3)     // reconnects again; SHOW USERS LIKE 'pla
                                         // already matches spec.Contact, so no ALTER USER is issued;
                                         // returns Done()
 
-// Deletion, reached through Pipeline.Destroy once a deletion request (019) has authorized it:
+// Deletion, reached through Pipeline.Destroy once a deletion permit (019) has authorized it:
 err := module.Teardown(ctx, mc3)       // DROP ACCOUNT ... GRACE_PERIOD_IN_DAYS = 30, evicts the
                                         // pooled connection, deletes the stored credential — which
                                         // the store keeps restorable for 30 days too, never longer
