@@ -31,6 +31,3 @@
 # diffs, which is the whole point: nobody reviews deepcopy methods by hand.
 **/zz_generated.*.go linguist-generated=true
 
-# Generated Kubernetes manifests. Still reviewed (a CRD change matters), so they
-# are not marked generated -- but they are committed artifacts, see the Makefile.
-deploy/install.yaml linguist-generated=true

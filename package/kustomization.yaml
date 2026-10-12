@@ -1,0 +1,28 @@
+# Rendered by `make manifests` into _output/install.yaml, which also sets the
+# image below via `kustomize edit set image`.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: yukimi-system
+labels:
+- pairs:
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: yukimi
+    app.kubernetes.io/part-of: yukimi
+# legacy puts Namespace and CRDs first, so a single-file apply works.
+sortOptions:
+  order: legacy
+# kustomize does not expand globs: list every file in crds/ by hand.
+resources:
+- crds/base.snowflake.yukimi.io_snowflakeaccounts.yaml
+- crds/base.snowflake.yukimi.io_snowflakedeletionrequests.yaml
+- manifests/namespace.yaml
+- manifests/serviceaccount.yaml
+- manifests/clusterrole.yaml
+- manifests/clusterrolebinding.yaml
+- manifests/role-leaderelection.yaml
+- manifests/rolebinding-leaderelection.yaml
+- manifests/deployment.yaml
+images:
+- name: localhost/yukimi
+  newName: localhost/yukimi
+  newTag: latest
