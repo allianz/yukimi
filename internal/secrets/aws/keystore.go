@@ -151,16 +151,24 @@ func (b *KeyStore) Create(ctx context.Context, id secrets.Identifier, value stri
 // naming a secret already scheduled for deletion. AWS gives this cause no
 // distinct error code — InvalidRequestException also covers two unrelated
 // causes (rotation misconfigured, a service-linked secret) — so a message
-// substring is the only signal the SDK exposes. This is the one narrow
-// exception to this package's own "no error inspection" rule (see doc.go):
-// it changes nothing about Create's classification, only whether the
-// returned error also wraps secrets.ErrPendingDeletion.
+// substring is the only signal the SDK exposes. CreateSecret words it
+// "scheduled for deletion", other calls "marked for deletion". Together with
+// isNotFound, this is one of the two narrow exceptions to this package's own
+// "no error inspection" rule (see doc.go).
 func isPendingDeletion(err error) bool {
 	var invalidReq *smtypes.InvalidRequestException
 	if !errors.As(err, &invalidReq) {
 		return false
 	}
-	return strings.Contains(strings.ToLower(invalidReq.ErrorMessage()), "scheduled for deletion")
+	msg := strings.ToLower(invalidReq.ErrorMessage())
+	return strings.Contains(msg, "scheduled for deletion") || strings.Contains(msg, "marked for deletion")
+}
+
+// isNotFound reports whether err is AWS's ResourceNotFoundException, which
+// DeleteSecret returns for a name nothing is stored at.
+func isNotFound(err error) bool {
+	var notFound *smtypes.ResourceNotFoundException
+	return errors.As(err, &notFound)
 }
 
 // Update overwrites the value at id via PutSecretValue. Never calls
@@ -184,16 +192,18 @@ func (b *KeyStore) Update(ctx context.Context, id secrets.Identifier, value stri
 // period. It always sets RecoveryWindowInDays and never ForceDeleteWithoutRecovery — 002's grace
 // period floor (7) already matches Secrets Manager's own minimum, so there is no grace period
 // this key store cannot schedule a window for. Never calls RestoreSecret.
+// Idempotent as 003 requires: AWS's refusal on an absent id
+// (ResourceNotFoundException) or on one already scheduled for deletion is
+// success, and the pending removal's clock is not restarted.
 //
 // Returns:
-//   - System error if the call fails, including on an already-absent id
-//     (AWS's ResourceNotFoundException) — unlike 003's FakeKeyStore.Delete,
-//     this is not idempotent (see Edge Cases)
+//   - System error if the call otherwise fails
 func (b *KeyStore) Delete(ctx context.Context, id secrets.Identifier) error {
-	if _, err := b.client.DeleteSecret(ctx, &secretsmanager.DeleteSecretInput{
+	_, err := b.client.DeleteSecret(ctx, &secretsmanager.DeleteSecretInput{
 		SecretId:             aws.String(id.String()),
 		RecoveryWindowInDays: aws.Int64(int64(b.recoveryWindowDays)),
-	}); err != nil {
+	})
+	if err != nil && !isNotFound(err) && !isPendingDeletion(err) {
 		return fmt.Errorf("failed to delete secret at %s: %w", id, err)
 	}
 	return nil

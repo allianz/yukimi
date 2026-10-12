@@ -408,14 +408,30 @@ func TestDelete(t *testing.T) {
 		}
 	})
 
-	t.Run("failure on an already-absent id is wrapped, not swallowed", func(t *testing.T) {
-		underlying := errors.New("ResourceNotFoundException: secret not found")
+	// SC-023: Delete is idempotent on an absent or already-pending id.
+	for name, awsErr := range map[string]error{
+		"absent id": &smtypes.ResourceNotFoundException{Message: aws.String(
+			"Secrets Manager can't find the specified secret.")},
+		"id already scheduled for deletion": &smtypes.InvalidRequestException{Message: aws.String(
+			"You can't perform this operation on the secret because it was marked for deletion.")},
+	} {
+		t.Run("succeeds on an "+name, func(t *testing.T) {
+			store := newTestKeyStore(&fakeClient{deleteErr: awsErr}, 30)
+			if err := store.Delete(context.Background(), id); err != nil {
+				t.Fatalf("Delete: %v", err)
+			}
+		})
+	}
+
+	t.Run("any other failure is wrapped, not swallowed", func(t *testing.T) {
+		underlying := &smtypes.InvalidRequestException{Message: aws.String(
+			"You can't delete a secret that is managed by another service.")}
 		fake := &fakeClient{deleteErr: underlying}
 		store := newTestKeyStore(fake, 30)
 
 		err := store.Delete(context.Background(), id)
 		if err == nil {
-			t.Fatal("expected Delete on an already-absent id to fail (not idempotent)")
+			t.Fatal("expected Delete to fail")
 		}
 		wantPrefix := "failed to delete secret at " + id.String() + ": "
 		if !strings.HasPrefix(err.Error(), wantPrefix) {

@@ -108,4 +108,20 @@ func TestIntegration_CreateGetDelete(t *testing.T) {
 	if err := backend.Delete(ctx, id); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
+	// Delete is idempotent (003): a second Delete on the now-pending id, and a
+	// Delete of an id nothing was ever stored at, both succeed.
+	if err := backend.Delete(ctx, id); err != nil {
+		t.Fatalf("Delete of a pending id: %v", err)
+	}
+	absent, err := secrets.NewTenantIdentifier(
+		os.Getenv("SNOWFLAKE_ORG"),
+		os.Getenv("SAMPLE_CUSTOMER_NAMESPACE"),
+		fmt.Sprintf("integration-test-absent-%d", time.Now().UnixNano()),
+	)
+	if err != nil {
+		t.Fatalf("NewTenantIdentifier: %v", err)
+	}
+	if err := backend.Delete(ctx, absent); err != nil {
+		t.Fatalf("Delete of an absent id: %v", err)
+	}
 }

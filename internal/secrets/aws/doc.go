@@ -16,6 +16,7 @@ limitations under the License.
 
 // Package secretsaws implements secrets.KeyStore (003) against AWS Secrets
 // Manager: one AWS API call per method; Create additionally recognizes a
-// secret scheduled for deletion to wrap secrets.ErrPendingDeletion. See
+// secret scheduled for deletion to wrap secrets.ErrPendingDeletion, and
+// Delete treats an absent or already-pending secret as success. See
 // specs/003.a-aws-secrets-backend.md for the full specification.
 package secretsaws

@@ -342,9 +342,9 @@ This specification defines the account module that:
   exactly.
 - **The account, or the secret identifier, is already gone — does `Teardown` fail?** No. Both count as
   success, so a destruction retried after a partial failure — or after an operator cleaned up by
-  hand — converges instead of stalling. The backends do not agree on this themselves (AWS's `Delete`
-  errors on an identifier that does not exist, 003.a), so this module swallows the case rather than relying on
-  the backend to.
+  hand — converges instead of stalling. For the credential this is `KeyStore.Delete`'s own idempotency
+  (003), so this module never pre-checks presence and never swallows a credential-deletion error: an
+  unreachable store must not pass for an absent credential.
 
 ## Dependencies
 

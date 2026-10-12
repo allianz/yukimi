@@ -57,6 +57,7 @@ type KeyStore interface {
 	// Delete schedules the removal of id, never deleting it immediately, with
 	// a recovery window within the account grace period it was constructed
 	// with (002). While pending, id stays occupied and Get, Create, and Update
-	// all fail on it.
+	// all fail on it. Delete is idempotent: on an id nothing is stored at, or
+	// one already pending, it succeeds and changes nothing.
 	Delete(ctx context.Context, id Identifier) error
 }
