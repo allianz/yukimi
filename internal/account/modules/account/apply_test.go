@@ -82,7 +82,7 @@ func seedResumableCredential(t *testing.T, store *secrets.FakeKeyStore, id secre
 
 // SC-006/SC-015: a fresh create issues CREATE ACCOUNT, captures the locator
 // and creation time directly on the CRD's status, and defers verification —
-// it returns Pending(...).Aborting(), not Done(), so the pipeline stops
+// it returns Pending(...), not Done(), so the pipeline stops
 // before any later module tries to connect to a not-yet-reachable account.
 func TestApply_FreshCreate_Success(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
@@ -106,9 +106,6 @@ func TestApply_FreshCreate_Success(t *testing.T) {
 
 	if outcome.State != pipeline.StatePending {
 		t.Errorf("outcome.State = %v, want StatePending", outcome.State)
-	}
-	if !outcome.Abort {
-		t.Error("outcome.Abort = false, want true")
 	}
 	if cr.Status.AccountLocator != "AB12345" {
 		t.Errorf("cr.Status.AccountLocator = %q, want %q", cr.Status.AccountLocator, "AB12345")
@@ -162,9 +159,6 @@ func TestApply_KnownLocator_PastGracePeriod_ConnectionFails(t *testing.T) {
 	if outcome.State != pipeline.StateFailed {
 		t.Errorf("outcome.State = %v, want StateFailed", outcome.State)
 	}
-	if !outcome.Abort {
-		t.Error("outcome.Abort = false, want true")
-	}
 	if internalerrors.IsUserError(outcome.Err) {
 		t.Errorf("expected a system error, got a user error: %v", outcome.Err)
 	}
@@ -185,9 +179,6 @@ func TestApply_KnownLocator_WithinGracePeriod_NoConnectionAttempt(t *testing.T) 
 
 	if outcome.State != pipeline.StatePending {
 		t.Errorf("outcome.State = %v, want StatePending", outcome.State)
-	}
-	if !outcome.Abort {
-		t.Error("outcome.Abort = false, want true")
 	}
 	if outcome.Err != nil {
 		t.Errorf("outcome.Err = %v, want nil — waiting out the grace period is not a failure", outcome.Err)
@@ -276,9 +267,6 @@ func TestApply_KnownLocator_EmailLookupFails_SystemError(t *testing.T) {
 	if outcome.State != pipeline.StateFailed {
 		t.Errorf("outcome.State = %v, want StateFailed", outcome.State)
 	}
-	if !outcome.Abort {
-		t.Error("outcome.Abort = false, want true")
-	}
 	if internalerrors.IsUserError(outcome.Err) {
 		t.Errorf("expected a system error, got a user error: %v", outcome.Err)
 	}
@@ -302,9 +290,6 @@ func TestApply_KnownLocator_EmailUpdateFails_SystemError(t *testing.T) {
 	if outcome.State != pipeline.StateFailed {
 		t.Errorf("outcome.State = %v, want StateFailed", outcome.State)
 	}
-	if !outcome.Abort {
-		t.Error("outcome.Abort = false, want true")
-	}
 	if internalerrors.IsUserError(outcome.Err) {
 		t.Errorf("expected a system error, got a user error: %v", outcome.Err)
 	}
@@ -326,8 +311,8 @@ func TestApply_FreshCreate_DuplicateAccountName_Rejected(t *testing.T) {
 	m := &module{keyManager: secrets.NewKeyManager(secrets.NewFakeKeyStore(), time.Hour), org: "myorg", gracePeriod: 5 * time.Minute, backplane: testBackplaneConfig("aws-eu-central-1")}
 	outcome := m.Apply(context.Background(), mc)
 
-	if outcome.State != pipeline.StateRejected {
-		t.Errorf("outcome.State = %v, want StateRejected", outcome.State)
+	if outcome.State != pipeline.StateFailed {
+		t.Errorf("outcome.State = %v, want StateFailed", outcome.State)
 	}
 	if !internalerrors.IsUserError(outcome.Err) {
 		t.Errorf("expected a user error, got: %v", outcome.Err)
@@ -367,9 +352,6 @@ func TestApply_FreshCreate_OrgAdminConnectionFails(t *testing.T) {
 
 	if outcome.State != pipeline.StateFailed {
 		t.Errorf("outcome.State = %v, want StateFailed", outcome.State)
-	}
-	if !outcome.Abort {
-		t.Error("outcome.Abort = false, want true")
 	}
 }
 
@@ -438,9 +420,6 @@ func TestApply_FreshCreate_SecretIdentifierOccupied(t *testing.T) {
 
 	if outcome.State != pipeline.StateFailed {
 		t.Errorf("outcome.State = %v, want StateFailed", outcome.State)
-	}
-	if !outcome.Abort {
-		t.Error("outcome.Abort = false, want true")
 	}
 	if cr.Status.AccountLocator != "" {
 		t.Errorf("cr.Status.AccountLocator = %q, want empty", cr.Status.AccountLocator)
@@ -519,9 +498,6 @@ func TestApply_FreshCreate_ResumeCrashedCreate_AccountAlreadyExists(t *testing.T
 	if outcome.State != pipeline.StatePending {
 		t.Errorf("outcome.State = %v, want StatePending", outcome.State)
 	}
-	if !outcome.Abort {
-		t.Error("outcome.Abort = false, want true")
-	}
 	if cr.Status.AccountLocator != "AB12345" {
 		t.Errorf("cr.Status.AccountLocator = %q, want %q", cr.Status.AccountLocator, "AB12345")
 	}
@@ -552,9 +528,6 @@ func TestApply_FreshCreate_SecretIdentifierOccupiedByOrphan_SystemError(t *testi
 
 	if outcome.State != pipeline.StateFailed {
 		t.Errorf("outcome.State = %v, want StateFailed", outcome.State)
-	}
-	if !outcome.Abort {
-		t.Error("outcome.Abort = false, want true")
 	}
 	if internalerrors.IsUserError(outcome.Err) {
 		t.Errorf("expected a system error, got a user error: %v", outcome.Err)
@@ -622,9 +595,6 @@ func TestApply_FreshCreate_ResumeCrashedCreate_ExistenceCheckFails_SystemError(t
 	if outcome.State != pipeline.StateFailed {
 		t.Errorf("outcome.State = %v, want StateFailed", outcome.State)
 	}
-	if !outcome.Abort {
-		t.Error("outcome.Abort = false, want true")
-	}
 	if internalerrors.IsUserError(outcome.Err) {
 		t.Errorf("expected a system error, got a user error: %v", outcome.Err)
 	}
@@ -684,11 +654,8 @@ func TestApply_FreshCreate_SecretIdentifierPendingDeletion_Rejected(t *testing.T
 	m := &module{keyManager: secrets.NewKeyManager(store, time.Hour), org: "myorg", gracePeriod: 5 * time.Minute, backplane: testBackplaneConfig("aws-eu-central-1")}
 	outcome := m.Apply(context.Background(), mc)
 
-	if outcome.State != pipeline.StateRejected {
-		t.Errorf("outcome.State = %v, want StateRejected", outcome.State)
-	}
-	if !outcome.Abort {
-		t.Error("outcome.Abort = false, want true")
+	if outcome.State != pipeline.StateFailed {
+		t.Errorf("outcome.State = %v, want StateFailed", outcome.State)
 	}
 	if !internalerrors.IsUserError(outcome.Err) {
 		t.Errorf("expected a user error, got: %v", outcome.Err)
@@ -716,11 +683,8 @@ func TestApply_FreshCreate_UnknownRegion_Rejected(t *testing.T) {
 	m := &module{keyManager: secrets.NewKeyManager(secrets.NewFakeKeyStore(), time.Hour), org: "myorg", gracePeriod: 5 * time.Minute, backplane: testBackplaneConfig("aws-ap-southeast-1")}
 	outcome := m.Apply(context.Background(), mc)
 
-	if outcome.State != pipeline.StateRejected {
-		t.Errorf("outcome.State = %v, want StateRejected", outcome.State)
-	}
-	if !outcome.Abort {
-		t.Error("outcome.Abort = false, want true")
+	if outcome.State != pipeline.StateFailed {
+		t.Errorf("outcome.State = %v, want StateFailed", outcome.State)
 	}
 	if !internalerrors.IsUserError(outcome.Err) {
 		t.Errorf("expected a user error, got: %v", outcome.Err)
@@ -748,11 +712,8 @@ func TestApply_FreshCreate_AccountNameTooLong_Rejected(t *testing.T) {
 	m := &module{keyManager: secrets.NewKeyManager(secrets.NewFakeKeyStore(), time.Hour), org: "orgname", gracePeriod: 5 * time.Minute, backplane: testBackplaneConfig("aws-eu-central-1")}
 	outcome := m.Apply(context.Background(), mc)
 
-	if outcome.State != pipeline.StateRejected {
-		t.Errorf("outcome.State = %v, want StateRejected", outcome.State)
-	}
-	if !outcome.Abort {
-		t.Error("outcome.Abort = false, want true")
+	if outcome.State != pipeline.StateFailed {
+		t.Errorf("outcome.State = %v, want StateFailed", outcome.State)
 	}
 	if !internalerrors.IsUserError(outcome.Err) {
 		t.Errorf("expected a user error, got: %v", outcome.Err)
@@ -776,11 +737,8 @@ func TestApply_FreshCreate_OrgWithRepeatedSeparator_Rejected(t *testing.T) {
 	m := &module{keyManager: secrets.NewKeyManager(secrets.NewFakeKeyStore(), time.Hour), org: "my__org", gracePeriod: 5 * time.Minute, backplane: testBackplaneConfig("aws-eu-central-1")}
 	outcome := m.Apply(context.Background(), mc)
 
-	if outcome.State != pipeline.StateRejected {
-		t.Errorf("outcome.State = %v, want StateRejected", outcome.State)
-	}
-	if !outcome.Abort {
-		t.Error("outcome.Abort = false, want true")
+	if outcome.State != pipeline.StateFailed {
+		t.Errorf("outcome.State = %v, want StateFailed", outcome.State)
 	}
 	if !internalerrors.IsUserError(outcome.Err) {
 		t.Errorf("expected a user error, got: %v", outcome.Err)
@@ -800,11 +758,8 @@ func TestApply_FreshCreate_NamespaceWithRepeatedSeparator_Rejected(t *testing.T)
 	m := &module{keyManager: secrets.NewKeyManager(secrets.NewFakeKeyStore(), time.Hour), org: "myorg", gracePeriod: 5 * time.Minute, backplane: testBackplaneConfig("aws-eu-central-1")}
 	outcome := m.Apply(context.Background(), mc)
 
-	if outcome.State != pipeline.StateRejected {
-		t.Errorf("outcome.State = %v, want StateRejected", outcome.State)
-	}
-	if !outcome.Abort {
-		t.Error("outcome.Abort = false, want true")
+	if outcome.State != pipeline.StateFailed {
+		t.Errorf("outcome.State = %v, want StateFailed", outcome.State)
 	}
 	if !internalerrors.IsUserError(outcome.Err) {
 		t.Errorf("expected a user error, got: %v", outcome.Err)
@@ -829,11 +784,8 @@ func TestApply_FreshCreate_UnavailableRegion_Rejected(t *testing.T) {
 	}
 	outcome := m.Apply(context.Background(), mc)
 
-	if outcome.State != pipeline.StateRejected {
-		t.Errorf("outcome.State = %v, want StateRejected", outcome.State)
-	}
-	if !outcome.Abort {
-		t.Error("outcome.Abort = false, want true")
+	if outcome.State != pipeline.StateFailed {
+		t.Errorf("outcome.State = %v, want StateFailed", outcome.State)
 	}
 	if !internalerrors.IsUserError(outcome.Err) {
 		t.Errorf("expected a user error, got: %v", outcome.Err)
@@ -895,9 +847,6 @@ func TestApply_FreshCreate_AlphaTesterLabelMalformed_Failed(t *testing.T) {
 	if outcome.State != pipeline.StateFailed {
 		t.Errorf("outcome.State = %v, want StateFailed", outcome.State)
 	}
-	if !outcome.Abort {
-		t.Error("outcome.Abort = false, want true")
-	}
 	if outcome.Err == nil || internalerrors.IsUserError(outcome.Err) {
 		t.Errorf("expected a system error, got: %v", outcome.Err)
 	}
@@ -931,5 +880,36 @@ func TestRunCreateAccount_DescriptionIsBoundNeverInterpolated(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet sqlmock expectations: %v", err)
+	}
+}
+
+// SC-016: every Apply outcome other than Done carries Aborted, so nothing runs
+// after a module that has no live account; Done does not stop the run.
+func TestApply_NonDoneOutcomesAbort(t *testing.T) {
+	m := &module{gracePeriod: 5 * time.Minute, backplane: testBackplaneConfig("aws-eu-central-1")}
+
+	// Pending: locator known, still inside the post-create grace period.
+	pending := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345", "a@b.com", "")
+	pending.Status.AccountCreatedAt = &metav1.Time{Time: time.Now()}
+	out := m.Apply(context.Background(), pipeline.NewModuleContext(pending, nil, nil, &fakeDBPool{t: t, forbidCalls: true}))
+	if out.State != pipeline.StatePending || !out.Aborted {
+		t.Errorf("grace-period Apply = %+v, want an aborting Pending", out)
+	}
+
+	// Failed: fresh create in a region the Backplane Config does not know.
+	unknown := newTestCR("acct", "ns", "aws-us-nowhere-1", "", "a@b.com", "")
+	out = m.Apply(context.Background(), pipeline.NewModuleContext(unknown, nil, nil, &fakeDBPool{t: t, forbidCalls: true}))
+	if out.State != pipeline.StateFailed || !out.Aborted {
+		t.Errorf("unknown-region Apply = %+v, want an aborting Failed", out)
+	}
+
+	// Done does not stop the run.
+	done := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345", "a@b.com", "")
+	done.Status.AccountCreatedAt = &metav1.Time{Time: time.Now().Add(-10 * time.Minute)}
+	db, mock := newOrgAdminMock(t)
+	mock.ExpectQuery("SHOW USERS").WillReturnRows(sqlmock.NewRows([]string{"name", "email"}).AddRow("platform", "a@b.com"))
+	out = m.Apply(context.Background(), pipeline.NewModuleContext(done, nil, nil, &fakeDBPool{tenantDB: db}))
+	if out.State != pipeline.StateDone || out.Aborted {
+		t.Errorf("healthy Apply = %+v, want a non-aborting Done", out)
 	}
 }

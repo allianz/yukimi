@@ -31,47 +31,62 @@ import (
 type State int
 
 const (
-	StateDone     State = iota // fully applied; nothing pending, nothing wrong
-	StatePending               // not yet applied; expected to resolve on a later reconcile
-	StateRejected              // the tenant's own input was refused
-	StateFailed                // an unexpected failure calling out to Snowflake or another system
+	StateDone    State = iota // provisioned and matches the spec
+	StatePending              // not yet provisioned; Reason says why (Ready=False)
+	StateDrifted              // Observe only: provisioned, but differs from the spec
+	StateFailed               // Err is set; user vs system is decided by the error itself
 )
 
-// Outcome is the only channel a module has to report what happened on one
-// Observe or Apply call. Each Outcome is a complete, self-classified
-// statement — modules never return a separate error.
+// Outcome is everything one module reports from one Observe or Apply call.
 type Outcome struct {
+	Module    string // set by the pipeline, never by the module
 	State     State
-	Reason    string          // Pending only: the operator-visible reason for the wait
-	Err       error           // Rejected/Failed only: the module's own classified error
-	Abort     bool            // if true, Apply stops after this module on this pass
-	Condition *xpv1.Condition // optional: a condition this module owns (see Key Concept: Conditions and Events)
-	Event     *event.Event    // optional: an event this module wants recorded (see Key Concept: Conditions and Events)
+	Reason    string          // Pending: why it is waiting; becomes Ready's message
+	Err       error           // Failed: errors.NewUserError(...) or a wrapped system error
+	Aborted   bool            // set via Abort(): Apply stops after this module on this pass
+	Condition *xpv1.Condition // optional: a condition this module owns
+	Events    []event.Event   // optional: zero or more events
 }
 
-// Done reports that this module's desired state is fully applied.
+// Done reports that this module's state is provisioned and matches the spec.
 func Done() Outcome { return Outcome{State: StateDone} }
 
-// Pending reports that this module's work is not yet applied but is expected
-// to resolve on a later reconcile. reason is operator-visible.
+// Pending reports that this module's work is not yet provisioned but is
+// expected to resolve on a later reconcile. reason is operator-visible.
 func Pending(reason string) Outcome { return Outcome{State: StatePending, Reason: reason} }
 
-// Rejected reports that the tenant's own input was refused. err must already
-// be classified by the calling module with errors.NewUserError — this
-// package never classifies it itself.
-func Rejected(err error) Outcome { return Outcome{State: StateRejected, Err: err} }
+// Drifted reports (from Observe) that this module's state is provisioned but
+// differs from the spec. A module that wants the drift to be visible attaches
+// an event itself.
+func Drifted() Outcome { return Outcome{State: StateDrifted} }
 
-// Failed reports an unexpected failure calling out to Snowflake or another
-// system. err must already be wrapped by the calling module with
-// fmt.Errorf — this package never wraps it itself.
+// Failed reports a failure. err must already be classified by the calling
+// module — errors.NewUserError for a tenant mistake, fmt.Errorf wrapping for a
+// system failure; this package never classifies or wraps it.
 func Failed(err error) Outcome { return Outcome{State: StateFailed, Err: err} }
 
-// Aborting returns a copy of o with Abort set true; every other field is
-// unchanged. No module is privileged to call this — today the account
-// module (012) is the only one implemented that does, on any outcome that
-// is not Done.
-func (o Outcome) Aborting() Outcome {
-	o.Abort = true
+// Abort returns a copy of o that stops Apply after this module on this pass.
+// It is for the module whose own non-Done result makes the rest of the run
+// pointless — the account module (nothing else can connect without it),
+// admission checks (the run should not happen at all). Observe ignores it. On
+// a Done outcome it does nothing, so a stopped run is never complete and a
+// module may call it unconditionally on its way out.
+func (o Outcome) Abort() Outcome {
+	if o.State != StateDone {
+		o.Aborted = true
+	}
+	return o
+}
+
+// WithCondition returns a copy of o carrying c as the condition this module owns.
+func (o Outcome) WithCondition(c xpv1.Condition) Outcome {
+	o.Condition = &c
+	return o
+}
+
+// WithEvent returns a copy of o with e appended to its events.
+func (o Outcome) WithEvent(e event.Event) Outcome {
+	o.Events = append(append([]event.Event(nil), o.Events...), e)
 	return o
 }
 
@@ -79,16 +94,16 @@ func (o Outcome) Aborting() Outcome {
 type Module interface {
 	Name() string
 
-	// Observe is read-back only; it must mutate nothing in Snowflake. Its
-	// Outcome is collected into Observation.Outcomes by Pipeline.Observe like
-	// any other module's; Outcome.Abort has no effect here — Observe never
-	// stops early, unlike Apply — since nothing here mutates and there is
-	// therefore nothing an abort would protect against.
-	Observe(ctx context.Context, mc *ModuleContext) (inSync bool, outcome Outcome)
+	// Observe is read-back only; it must mutate nothing in Snowflake (it may
+	// set status fields on the CR). Done: provisioned and matches the spec.
+	// Pending: not yet provisioned. Drifted: provisioned, but differs from the
+	// spec. Failed: could not read back — the exception; domain checks belong
+	// in Apply.
+	Observe(ctx context.Context, mc *ModuleContext) Outcome
 
 	// Apply re-asserts this module's full desired state, pruning any object
 	// the CRD no longer lists. It must be safe to call repeatedly with no
-	// other call in between.
+	// other call in between. Drifted counts as not Done.
 	Apply(ctx context.Context, mc *ModuleContext) Outcome
 
 	// Teardown removes the state this module leaves outside the tenant's own
@@ -98,9 +113,9 @@ type Module interface {
 	Teardown(ctx context.Context, mc *ModuleContext) error
 }
 
-// AccountModuleName is the account module's (012) Name(). Pipeline.Observe
-// uses it to find which registered module's Observe result is
-// Observation.Exists, regardless of that module's position in the
+// AccountModuleName is the account module's (012) Name(). Observation uses it
+// to find which registered module's outcome decides whether the resource
+// exists, regardless of that module's position in the
 // registered list — a module needing no Snowflake connection (guardrail-check,
 // 010, or quota-check, 011) may be registered ahead of the account module.
 const AccountModuleName = "account"

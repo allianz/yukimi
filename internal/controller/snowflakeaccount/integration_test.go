@@ -158,7 +158,7 @@ func TestIntegration_CreateThenDestroy(t *testing.T) {
 	}
 
 	bpConfig := &backplane.Config{Regions: map[string]backplane.Region{region: {Available: true}}}
-	pl := pipeline.New(accountmodule.New(keyManager, org, cfg.Snowflake.AccountCreationGracePeriod, cfg.Deletion.GracePeriodDays, bpConfig))
+	pl := pipeline.New(accountmodule.New(keyManager, org, cfg.Snowflake.AccountCreationGracePeriod, cfg.Deletion.GracePeriodDays, cfg.Snowflake.UsePrivateLink, bpConfig))
 	e := &external{
 		kube:     kube,
 		pool:     p,

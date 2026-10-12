@@ -98,17 +98,14 @@ func TestObserve_NoLocator_NoConnectionAttempt(t *testing.T) {
 	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
 
 	m := &module{}
-	inSync, outcome := m.Observe(context.Background(), mc)
+	outcome := m.Observe(context.Background(), mc)
 
-	if inSync {
-		t.Error("inSync = true, want false")
-	}
-	if outcome != (pipeline.Outcome{}) {
-		t.Errorf("outcome = %+v, want the zero-value Outcome", outcome)
+	if outcome.State != pipeline.StatePending || outcome.Reason != "account not created yet" {
+		t.Errorf("outcome = %+v, want Pending(\"account not created yet\")", outcome)
 	}
 }
 
-// SC-002: Observe returns in-sync once a known locator's platform connection
+// SC-002: Observe returns Done once a known locator's platform connection
 // succeeds.
 func TestObserve_KnownLocator_ConnectionSucceeds(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345", "a@b.com", "")
@@ -116,11 +113,8 @@ func TestObserve_KnownLocator_ConnectionSucceeds(t *testing.T) {
 	mc := pipeline.NewModuleContext(cr, nil, nil, fake)
 
 	m := &module{}
-	inSync, outcome := m.Observe(context.Background(), mc)
+	outcome := m.Observe(context.Background(), mc)
 
-	if !inSync {
-		t.Error("inSync = false, want true")
-	}
 	if outcome.State != pipeline.StateDone {
 		t.Errorf("outcome.State = %v, want StateDone", outcome.State)
 	}
@@ -129,7 +123,7 @@ func TestObserve_KnownLocator_ConnectionSucceeds(t *testing.T) {
 	}
 }
 
-// SC-003: Observe returns not-in-sync, with a system error, when a known
+// SC-003: Observe returns Failed, with a system error, when a known
 // locator's platform connection fails.
 func TestObserve_KnownLocator_ConnectionFails(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345", "a@b.com", "")
@@ -137,11 +131,8 @@ func TestObserve_KnownLocator_ConnectionFails(t *testing.T) {
 	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{tenantErr: wantErr})
 
 	m := &module{}
-	inSync, outcome := m.Observe(context.Background(), mc)
+	outcome := m.Observe(context.Background(), mc)
 
-	if inSync {
-		t.Error("inSync = true, want false")
-	}
 	if outcome.State != pipeline.StateFailed {
 		t.Errorf("outcome.State = %v, want StateFailed", outcome.State)
 	}
@@ -161,11 +152,8 @@ func TestObserve_WithinGracePeriod_NoConnectionAttempt(t *testing.T) {
 	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
 
 	m := &module{gracePeriod: 5 * time.Minute}
-	inSync, outcome := m.Observe(context.Background(), mc)
+	outcome := m.Observe(context.Background(), mc)
 
-	if inSync {
-		t.Error("inSync = true, want false")
-	}
 	if outcome.State != pipeline.StatePending {
 		t.Errorf("outcome.State = %v, want StatePending", outcome.State)
 	}
@@ -179,11 +167,8 @@ func TestObserve_PastGracePeriod_ConnectionAttempted(t *testing.T) {
 	mc := pipeline.NewModuleContext(cr, nil, nil, fake)
 
 	m := &module{gracePeriod: 5 * time.Minute}
-	inSync, outcome := m.Observe(context.Background(), mc)
+	outcome := m.Observe(context.Background(), mc)
 
-	if !inSync {
-		t.Error("inSync = false, want true")
-	}
 	if outcome.State != pipeline.StateDone {
 		t.Errorf("outcome.State = %v, want StateDone", outcome.State)
 	}

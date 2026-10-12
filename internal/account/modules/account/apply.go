@@ -91,18 +91,26 @@ func withinGracePeriod(cr *v1alpha1.SnowflakeAccount, gracePeriod time.Duration)
 // one. It never repeats a create once a locator is known — see Key Concept:
 // Create-Then-Verify Lifecycle, specs/012-account-module.md.
 func (m *module) Apply(ctx context.Context, mc *pipeline.ModuleContext) pipeline.Outcome {
+	out := m.apply(ctx, mc)
+	m.syncStatus(mc) // after apply: a fresh create has just set the locator
+	// Nothing after this module can run without a live account, so every
+	// result but Done stops the pipeline (Abort is a no-op on Done).
+	return out.Abort()
+}
+
+func (m *module) apply(ctx context.Context, mc *pipeline.ModuleContext) pipeline.Outcome {
 	cr := mc.CR()
 	if cr.Status.AccountLocator != "" {
 		if withinGracePeriod(cr, m.gracePeriod) {
-			return pipeline.Pending("waiting for the account to finish provisioning before attempting to connect").Aborting()
+			return pipeline.Pending("waiting for the account to finish provisioning before attempting to connect")
 		}
 		db, err := mc.TenantDB(ctx)
 		if err != nil {
 			return pipeline.Failed(fmt.Errorf(
-				"platform connection failed for existing account locator %s: %w", cr.Status.AccountLocator, err)).Aborting()
+				"platform connection failed for existing account locator %s: %w", cr.Status.AccountLocator, err))
 		}
 		if err := syncPlatformEmail(ctx, statement.New(db), cr.Spec.Contact); err != nil {
-			return pipeline.Failed(err).Aborting()
+			return pipeline.Failed(err)
 		}
 		return pipeline.Done()
 	}
@@ -149,16 +157,16 @@ func (m *module) createAccount(ctx context.Context, mc *pipeline.ModuleContext) 
 
 	region, err := m.backplane.Region(cr.Spec.Region)
 	if err != nil {
-		return pipeline.Rejected(err).Aborting()
+		return pipeline.Failed(err)
 	}
 
 	isAlphaTester, err := tenant.AlphaTester(mc.NamespaceLabels())
 	if err != nil {
-		return pipeline.Failed(err).Aborting()
+		return pipeline.Failed(err)
 	}
 	if !region.Available && !isAlphaTester {
-		return pipeline.Rejected(errors.NewUserError(fmt.Sprintf(
-			"region '%s' is not yet available; choose a different one", cr.Spec.Region))).Aborting()
+		return pipeline.Failed(errors.NewUserError(fmt.Sprintf(
+			"region '%s' is not yet available; choose a different one", cr.Spec.Region)))
 	}
 
 	resolvedName := mc.ResolvedAccountName()
@@ -168,37 +176,37 @@ func (m *module) createAccount(ctx context.Context, mc *pipeline.ModuleContext) 
 	// tenant can act on (specs/012-account-module.md, Key Concept: Account
 	// Name Length Limit).
 	if maxNameLen := maxAccountLabelLen - 1 - resolvedNameSuffixLen - len(m.org); len(cr.Name) > maxNameLen {
-		return pipeline.Rejected(errors.NewUserError(fmt.Sprintf(
-			"account name must be %d characters or fewer", maxNameLen))).Aborting()
+		return pipeline.Failed(errors.NewUserError(fmt.Sprintf(
+			"account name must be %d characters or fewer", maxNameLen)))
 	}
 
 	if hasRepeatedSeparator(m.org) {
-		return pipeline.Rejected(errors.NewUserError(
-			"the configured Snowflake organization name contains a repeated '-' or '_'; fix snowflake.org in base.yaml")).Aborting()
+		return pipeline.Failed(errors.NewUserError(
+			"the configured Snowflake organization name contains a repeated '-' or '_'; fix snowflake.org in base.yaml"))
 	}
 	if hasRepeatedSeparator(cr.Namespace) {
-		return pipeline.Rejected(errors.NewUserError(fmt.Sprintf(
+		return pipeline.Failed(errors.NewUserError(fmt.Sprintf(
 			"namespace %q contains a repeated '-' or '_', which is not allowed for a SnowflakeAccount's namespace",
-			cr.Namespace))).Aborting()
+			cr.Namespace)))
 	}
 
 	id, err := secrets.NewTenantIdentifier(m.org, cr.Namespace, cr.Name)
 	if err != nil {
-		return pipeline.Failed(err).Aborting()
+		return pipeline.Failed(err)
 	}
 
 	creds, err := m.keyManager.CreateCredentials(ctx, id, "platform")
 	resumed := false
 	if err != nil {
 		if errors.Is(err, secrets.ErrPendingDeletion) {
-			return pipeline.Rejected(errors.NewUserError(fmt.Sprintf(
+			return pipeline.Failed(errors.NewUserError(fmt.Sprintf(
 				"account %q was deleted recently and is still within its deletion recovery "+
-					"window; wait for the recovery window to elapse, then try again", cr.Name))).Aborting()
+					"window; wait for the recovery window to elapse, then try again", cr.Name)))
 		}
 
 		resumedCreds, resumeErr := m.resumeCrashedCreate(ctx, id, cr.CreationTimestamp.Time, err)
 		if resumeErr != nil {
-			return pipeline.Failed(resumeErr).Aborting()
+			return pipeline.Failed(resumeErr)
 		}
 		creds = resumedCreds
 		resumed = true
@@ -206,14 +214,14 @@ func (m *module) createAccount(ctx context.Context, mc *pipeline.ModuleContext) 
 
 	orgAdminDB, err := mc.OrgAdminDB(ctx)
 	if err != nil {
-		return pipeline.Failed(err).Aborting()
+		return pipeline.Failed(err)
 	}
 	runner := statement.New(orgAdminDB)
 
 	if resumed {
 		locator, found, err := findAccountLocator(ctx, runner, "check for existing account before resuming create", resolvedName)
 		if err != nil {
-			return pipeline.Failed(err).Aborting()
+			return pipeline.Failed(err)
 		}
 		if found {
 			return finishCreate(cr, locator)
@@ -256,14 +264,14 @@ func (m *module) resumeCrashedCreate(ctx context.Context, id secrets.Identifier,
 
 // finishCreate records locator and the current time directly on cr's
 // status — the only two status fields this module ever sets — and returns
-// the Pending(...).Aborting() outcome every successful create path shares,
+// the Pending(...) outcome every successful create path shares,
 // whether the account was just created by this call or found already
 // existing by the resume pre-check (specs/012-account-module.md, Key
 // Concept: Resuming a Crashed Create).
 func finishCreate(cr *v1alpha1.SnowflakeAccount, locator string) pipeline.Outcome {
 	cr.Status.AccountLocator = locator
 	cr.Status.AccountCreatedAt = &metav1.Time{Time: time.Now()}
-	return pipeline.Pending("account created; waiting for it to become reachable before continuing").Aborting()
+	return pipeline.Pending("account created; waiting for it to become reachable before continuing")
 }
 
 // runCreateAccount renders and executes CREATE ACCOUNT over runner, then
@@ -288,15 +296,15 @@ func runCreateAccount(ctx context.Context, runner *statement.Runner, resolvedNam
 	if err := runner.Exec(ctx, "create account", sql, args...); err != nil {
 		var stmtErr *statement.Error
 		if errors.As(err, &stmtErr) && stmtErr.SQLState == duplicateAccountSQLState {
-			return "", pipeline.Rejected(errors.NewUserError(fmt.Sprintf(
-				"account name '%s' is already in use by another account in the organization; rename this resource and try again", resolvedName))).Aborting()
+			return "", pipeline.Failed(errors.NewUserError(fmt.Sprintf(
+				"account name '%s' is already in use by another account in the organization; rename this resource and try again", resolvedName)))
 		}
-		return "", pipeline.Failed(fmt.Errorf("failed to create account: %w", err)).Aborting()
+		return "", pipeline.Failed(fmt.Errorf("failed to create account: %w", err))
 	}
 
 	locator, err := locateCreatedAccount(ctx, runner, resolvedName)
 	if err != nil {
-		return "", pipeline.Failed(err).Aborting()
+		return "", pipeline.Failed(err)
 	}
 	return locator, pipeline.Done()
 }
