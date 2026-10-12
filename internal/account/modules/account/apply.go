@@ -60,31 +60,31 @@ const platformUser = "platform"
 // keep the platform user's EMAIL in sync with spec.Contact — on every later
 // one. It never repeats a create once a locator is known — see Key Concept:
 // Create-Then-Verify Lifecycle, specs/012-account-module.md.
-func (m *module) Apply(ctx context.Context, mc *pipeline.ModuleContext) pipeline.Outcome {
-	out := m.apply(ctx, mc)
-	m.syncStatus(mc) // after apply: a fresh create has just set the locator
+func (m *module) Apply(ctx context.Context, data *pipeline.ResourceData) pipeline.Outcome {
+	out := m.apply(ctx, data)
+	m.syncStatus(data) // after apply: a fresh create has just set the locator
 	// Nothing after this module can run without a live account, so every
 	// result but Done stops the pipeline (Abort is a no-op on Done).
 	return out.Abort()
 }
 
-func (m *module) apply(ctx context.Context, mc *pipeline.ModuleContext) pipeline.Outcome {
-	if mc.CR().Status.AccountLocator != "" {
-		return m.reconcileExisting(ctx, mc)
+func (m *module) apply(ctx context.Context, data *pipeline.ResourceData) pipeline.Outcome {
+	if data.CR().Status.AccountLocator != "" {
+		return m.reconcileExisting(ctx, data)
 	}
-	return m.createAccount(ctx, mc)
+	return m.createAccount(ctx, data)
 }
 
 // reconcileExisting re-confirms the platform can reach an account whose
 // locator is already known, then keeps the platform user's EMAIL in sync with
 // spec.Contact. Within the post-create grace period it attempts no
 // connection at all (Key Concept: Post-Create Grace Period).
-func (m *module) reconcileExisting(ctx context.Context, mc *pipeline.ModuleContext) pipeline.Outcome {
-	cr := mc.CR()
+func (m *module) reconcileExisting(ctx context.Context, data *pipeline.ResourceData) pipeline.Outcome {
+	cr := data.CR()
 	if withinGracePeriod(cr, m.gracePeriod) {
 		return pipeline.Pending(provisioningMessage)
 	}
-	db, err := connectTenant(ctx, mc)
+	db, err := connectTenant(ctx, data)
 	if err != nil {
 		return pipeline.Failed(err)
 	}
@@ -127,11 +127,11 @@ func syncPlatformEmail(ctx context.Context, runner *statement.Runner, contact st
 // never verifies reachability itself — that is deferred to a later
 // reconcile, once the grace period has elapsed (Key Concept: Create-Then-Verify
 // Lifecycle).
-func (m *module) createAccount(ctx context.Context, mc *pipeline.ModuleContext) pipeline.Outcome {
-	cr := mc.CR()
-	resolvedName := mc.ResolvedAccountName()
+func (m *module) createAccount(ctx context.Context, data *pipeline.ResourceData) pipeline.Outcome {
+	cr := data.CR()
+	resolvedName := data.ResolvedAccountName()
 
-	if err := m.checkCreatable(cr, resolvedName, mc.NamespaceLabels()); err != nil {
+	if err := m.checkCreatable(cr, resolvedName, data.NamespaceLabels()); err != nil {
 		return pipeline.Failed(err)
 	}
 
@@ -140,7 +140,7 @@ func (m *module) createAccount(ctx context.Context, mc *pipeline.ModuleContext) 
 		return pipeline.Failed(err)
 	}
 
-	orgAdminDB, err := mc.OrgAdminDB(ctx)
+	orgAdminDB, err := data.OrgAdminDB(ctx)
 	if err != nil {
 		return pipeline.Failed(err)
 	}

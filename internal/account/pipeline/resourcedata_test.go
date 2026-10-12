@@ -89,14 +89,14 @@ func newTestCR(name, namespace, region, locator string) *v1alpha1.SnowflakeAccou
 	}
 }
 
-// SC-009: ModuleContext.TenantDB returns a system error when
+// SC-009: ResourceData.TenantDB returns a system error when
 // CR().Status.AccountLocator is empty, and never calls the pool when it is.
 func TestTenantDB_EmptyLocator_NeverCallsPool(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "")
 	fake := &fakeDBPool{t: t, forbidCalls: true}
-	mc := NewModuleContext(cr, nil, nil, fake)
+	data := NewResourceData(cr, nil, nil, fake)
 
-	_, err := mc.TenantDB(context.Background())
+	_, err := data.TenantDB(context.Background())
 	if err == nil {
 		t.Fatal("expected an error, got nil")
 	}
@@ -105,7 +105,7 @@ func TestTenantDB_EmptyLocator_NeverCallsPool(t *testing.T) {
 	}
 }
 
-// SC-010: ModuleContext.TenantDB resolves the connection once and returns
+// SC-010: ResourceData.TenantDB resolves the connection once and returns
 // the same *sql.DB on every subsequent call within the same context.
 func TestTenantDB_MemoizesSameDB(t *testing.T) {
 	db1, _, err := sqlmock.New()
@@ -116,13 +116,13 @@ func TestTenantDB_MemoizesSameDB(t *testing.T) {
 
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345")
 	fake := &fakeDBPool{tenantDB: db1}
-	mc := NewModuleContext(cr, nil, nil, fake)
+	data := NewResourceData(cr, nil, nil, fake)
 
-	got1, err := mc.TenantDB(context.Background())
+	got1, err := data.TenantDB(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	got2, err := mc.TenantDB(context.Background())
+	got2, err := data.TenantDB(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -146,9 +146,9 @@ func TestTenantDB_PassesRawCRNameNotResolvedName(t *testing.T) {
 
 	cr := newTestCR("analytics-team", "finance", "aws-eu-central-1", "AB12345")
 	fake := &fakeDBPool{tenantDB: db1}
-	mc := NewModuleContext(cr, nil, nil, fake)
+	data := NewResourceData(cr, nil, nil, fake)
 
-	if _, err := mc.TenantDB(context.Background()); err != nil {
+	if _, err := data.TenantDB(context.Background()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -159,7 +159,7 @@ func TestTenantDB_PassesRawCRNameNotResolvedName(t *testing.T) {
 	if got.accountName != cr.Name {
 		t.Errorf("accountName = %q, want cr.Name %q", got.accountName, cr.Name)
 	}
-	if got.accountName == mc.ResolvedAccountName() {
+	if got.accountName == data.ResolvedAccountName() {
 		t.Errorf("accountName must not equal ResolvedAccountName(): both were %q", got.accountName)
 	}
 	if got.namespace != "finance" {
@@ -184,9 +184,9 @@ func TestTenantDB_FailureNotCached(t *testing.T) {
 
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "")
 	fake := &fakeDBPool{tenantDB: db1}
-	mc := NewModuleContext(cr, nil, nil, fake)
+	data := NewResourceData(cr, nil, nil, fake)
 
-	if _, err := mc.TenantDB(context.Background()); err == nil {
+	if _, err := data.TenantDB(context.Background()); err == nil {
 		t.Fatal("expected an error on first call with empty locator")
 	}
 	if fake.tenantCalls != 0 {
@@ -194,7 +194,7 @@ func TestTenantDB_FailureNotCached(t *testing.T) {
 	}
 
 	cr.Status.AccountLocator = "AB12345"
-	got, err := mc.TenantDB(context.Background())
+	got, err := data.TenantDB(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error after the locator was set: %v", err)
 	}
@@ -211,9 +211,9 @@ func TestTenantDB_PoolError(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345")
 	wantErr := errors.New("dial failed")
 	fake := &fakeDBPool{tenantErr: wantErr}
-	mc := NewModuleContext(cr, nil, nil, fake)
+	data := NewResourceData(cr, nil, nil, fake)
 
-	_, err := mc.TenantDB(context.Background())
+	_, err := data.TenantDB(context.Background())
 	if !errors.Is(err, wantErr) {
 		t.Errorf("err = %v, want %v", err, wantErr)
 	}
@@ -232,9 +232,9 @@ func TestOrgAdminDB_PassesThrough(t *testing.T) {
 
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "")
 	fake := &fakeDBPool{orgAdminDB: db1}
-	mc := NewModuleContext(cr, nil, nil, fake)
+	data := NewResourceData(cr, nil, nil, fake)
 
-	got, err := mc.OrgAdminDB(context.Background())
+	got, err := data.OrgAdminDB(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -244,56 +244,56 @@ func TestOrgAdminDB_PassesThrough(t *testing.T) {
 
 	wantErr := errors.New("dial failed")
 	fake2 := &fakeDBPool{orgAdminErr: wantErr}
-	mc2 := NewModuleContext(cr, nil, nil, fake2)
-	if _, err := mc2.OrgAdminDB(context.Background()); err != wantErr {
+	data2 := NewResourceData(cr, nil, nil, fake2)
+	if _, err := data2.OrgAdminDB(context.Background()); err != wantErr {
 		t.Errorf("err = %v, want %v", err, wantErr)
 	}
 }
 
-// SC-011: ModuleContext.ResolvedAccountName returns the same value
+// SC-011: ResourceData.ResolvedAccountName returns the same value
 // tenant.ResolveName would compute directly from the same CRD name and
 // namespace.
-func TestNewModuleContext_ResolvedAccountName(t *testing.T) {
+func TestNewResourceData_ResolvedAccountName(t *testing.T) {
 	cr := newTestCR("analytics-team", "finance", "aws-eu-central-1", "")
-	mc := NewModuleContext(cr, nil, nil, nil)
+	data := NewResourceData(cr, nil, nil, nil)
 
 	want := tenant.ResolveName(cr.Name, "finance")
-	if got := mc.ResolvedAccountName(); got != want {
+	if got := data.ResolvedAccountName(); got != want {
 		t.Errorf("ResolvedAccountName() = %q, want %q", got, want)
 	}
 }
 
-// Plain accessors return exactly what was passed to NewModuleContext.
-func TestModuleContext_Accessors(t *testing.T) {
+// Plain accessors return exactly what was passed to NewResourceData.
+func TestResourceData_Accessors(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "")
 	labels := map[string]string{"department": "analytics"}
 
-	mc := NewModuleContext(cr, labels, nil, &fakeDBPool{t: t, forbidCalls: true})
+	data := NewResourceData(cr, labels, nil, &fakeDBPool{t: t, forbidCalls: true})
 
-	if mc.CR() != cr {
+	if data.CR() != cr {
 		t.Error("CR() did not return the exact CRD pointer passed in")
 	}
-	if got := mc.NamespaceLabels(); got["department"] != "analytics" {
+	if got := data.NamespaceLabels(); got["department"] != "analytics" {
 		t.Errorf("NamespaceLabels() = %v, want department=analytics", got)
 	}
-	if mc.Logger() != nil {
+	if data.Logger() != nil {
 		t.Error("Logger() should be nil when nil was passed in")
 	}
 }
 
-// SC-014: ModuleContext.EvictTenant calls the pool with the same namespace
+// SC-014: ResourceData.EvictTenant calls the pool with the same namespace
 // and account name TenantDB resolves its connection under.
-func TestModuleContext_EvictTenant_UsesSameKeyAsTenantDB(t *testing.T) {
+func TestResourceData_EvictTenant_UsesSameKeyAsTenantDB(t *testing.T) {
 	cr := newTestCR("analytics-team", "finance", "aws-eu-central-1", "AB12345")
 	fake := &fakeDBPool{t: t}
-	mc := NewModuleContext(cr, nil, nil, fake)
+	data := NewResourceData(cr, nil, nil, fake)
 
-	if _, err := mc.TenantDB(context.Background()); err != nil {
+	if _, err := data.TenantDB(context.Background()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	wantNamespace, wantAccountName := fake.tenantArgs[0].namespace, fake.tenantArgs[0].accountName
 
-	mc.EvictTenant()
+	data.EvictTenant()
 
 	if fake.evictCalls != 1 {
 		t.Fatalf("EvictTenant called %d times, want 1", fake.evictCalls)

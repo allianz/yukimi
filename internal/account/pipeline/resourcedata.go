@@ -27,7 +27,7 @@ import (
 	"github.com/allianz/yukimi/internal/snowflake/pool"
 )
 
-// DBPool is the subset of *pool.Pool's API ModuleContext depends on, defined
+// DBPool is the subset of *pool.Pool's API ResourceData depends on, defined
 // here (rather than imported from internal/snowflake/pool) so any package —
 // including a module under internal/account/modules/ — can inject a fake
 // without reaching into pool's own unexported dial-function test seam.
@@ -40,10 +40,13 @@ type DBPool interface {
 
 var _ DBPool = (*pool.Pool)(nil)
 
-// ModuleContext is built once per reconcile and handed unchanged to every
-// module. Everything on it is immutable for the run — the account locator
-// lives on the CRD's own status, reached via CR(), not cached here.
-type ModuleContext struct {
+// ResourceData is the resource a module works on: the SnowflakeAccount CR
+// (whose status modules write directly), facts derived from it, the logger
+// and access to the Snowflake connections. It is built once per pipeline call
+// (Observe, Apply or Destroy) and handed to every module in it. Its identity
+// fields are immutable for the call — the account locator lives on the CRD's
+// own status, reached via CR(), not cached here.
+type ResourceData struct {
 	cr              *v1alpha1.SnowflakeAccount
 	namespace       string
 	resolvedName    string
@@ -55,7 +58,7 @@ type ModuleContext struct {
 	tenantDB *sql.DB
 }
 
-// NewModuleContext builds the shared context for one reconcile.
+// NewResourceData builds the shared resource data for one pipeline call.
 //
 // namespace is derived from cr.Namespace, the trust anchor the resolved
 // account name is derived from — so ResolvedAccountName() is computed once,
@@ -63,19 +66,19 @@ type ModuleContext struct {
 // raw namespace labels set at onboarding; Department/CostCenter/CreditQuota
 // are read from them by each module itself, not by this constructor. The
 // account locator lives on cr.Status.AccountLocator directly — every module
-// reads and writes it through CR(), not through a ModuleContext accessor. p
+// reads and writes it through CR(), not through a ResourceData accessor. p
 // is DBPool, not the concrete *pool.Pool, so a module package's own tests
 // can pass a fake. Static, binary-lifetime dependencies (e.g. backplane
-// config) are not carried here — ModuleContext is rebuilt per reconcile, so
+// config) are not carried here — ResourceData is rebuilt per pipeline call, so
 // a module that needs one injects its own copy at construction instead.
-func NewModuleContext(
+func NewResourceData(
 	cr *v1alpha1.SnowflakeAccount,
 	namespaceLabels map[string]string,
 	log *logger.Logger,
 	p DBPool,
-) *ModuleContext {
+) *ResourceData {
 	namespace := cr.Namespace
-	return &ModuleContext{
+	return &ResourceData{
 		cr:              cr,
 		namespace:       namespace,
 		resolvedName:    tenant.ResolveName(cr.Name, namespace),
@@ -85,18 +88,18 @@ func NewModuleContext(
 	}
 }
 
-func (c *ModuleContext) CR() *v1alpha1.SnowflakeAccount { return c.cr }
+func (c *ResourceData) CR() *v1alpha1.SnowflakeAccount { return c.cr }
 
 // ResolvedAccountName returns tenant.ResolveName(cr.Name, namespace), resolved once.
-func (c *ModuleContext) ResolvedAccountName() string { return c.resolvedName }
+func (c *ResourceData) ResolvedAccountName() string { return c.resolvedName }
 
-func (c *ModuleContext) NamespaceLabels() map[string]string { return c.namespaceLabels }
+func (c *ResourceData) NamespaceLabels() map[string]string { return c.namespaceLabels }
 
-func (c *ModuleContext) Logger() *logger.Logger { return c.log }
+func (c *ResourceData) Logger() *logger.Logger { return c.log }
 
 // OrgAdminDB returns an org-admin-scoped connection. Only the account module
 // (012) needs this scope.
-func (c *ModuleContext) OrgAdminDB(ctx context.Context) (*sql.DB, error) {
+func (c *ResourceData) OrgAdminDB(ctx context.Context) (*sql.DB, error) {
 	return c.pool.OrgAdminDB(ctx)
 }
 
@@ -107,7 +110,7 @@ func (c *ModuleContext) OrgAdminDB(ctx context.Context) (*sql.DB, error) {
 //   - System error if CR().Status.AccountLocator is still empty — every
 //     module calling TenantDB needs a locator, and getting one is the whole
 //     point of running the account module (012) before any such module.
-func (c *ModuleContext) TenantDB(ctx context.Context) (*sql.DB, error) {
+func (c *ResourceData) TenantDB(ctx context.Context) (*sql.DB, error) {
 	if c.tenantDB != nil {
 		return c.tenantDB, nil
 	}
@@ -126,6 +129,6 @@ func (c *ModuleContext) TenantDB(ctx context.Context) (*sql.DB, error) {
 
 // EvictTenant closes and forgets the pooled connection to this tenant's own
 // account, keyed exactly as TenantDB resolves it.
-func (c *ModuleContext) EvictTenant() {
+func (c *ResourceData) EvictTenant() {
 	c.pool.EvictTenant(c.namespace, c.cr.Name)
 }

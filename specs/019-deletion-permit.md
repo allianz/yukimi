@@ -381,7 +381,7 @@ if permit == nil {
 ```go
 // Pipeline.Destroy (009) runs every module's Teardown in reverse, ending with 012's DROP ACCOUNT
 // and platform-credential delete.
-if err := pl.Destroy(ctx, mc); err != nil {
+if err := pl.Destroy(ctx, data); err != nil {
     return managed.ExternalDelete{}, log.Handle(err)
 }
 if err := deletion.MarkConsumed(ctx, kube, permit); err != nil {

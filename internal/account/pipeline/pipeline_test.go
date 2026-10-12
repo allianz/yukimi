@@ -31,7 +31,7 @@ import (
 )
 
 // fakeModule records call order and returns scripted Observe, Apply and
-// Teardown results. It never touches mc.
+// Teardown results. It never touches data.
 type fakeModule struct {
 	name          string
 	observeOut    Outcome
@@ -44,32 +44,32 @@ type fakeModule struct {
 
 func (f *fakeModule) Name() string { return f.name }
 
-func (f *fakeModule) Observe(ctx context.Context, mc *ModuleContext) Outcome {
+func (f *fakeModule) Observe(ctx context.Context, data *ResourceData) Outcome {
 	*f.order = append(*f.order, "observe:"+f.name)
 	return f.observeOut
 }
 
-func (f *fakeModule) Apply(ctx context.Context, mc *ModuleContext) Outcome {
+func (f *fakeModule) Apply(ctx context.Context, data *ResourceData) Outcome {
 	*f.order = append(*f.order, "apply:"+f.name)
 	f.applyCalled++
 	return f.applyOut
 }
 
-func (f *fakeModule) Teardown(ctx context.Context, mc *ModuleContext) error {
+func (f *fakeModule) Teardown(ctx context.Context, data *ResourceData) error {
 	*f.order = append(*f.order, "teardown:"+f.name)
 	f.teardownCalls++
 	return f.teardownErr
 }
 
-// newMC builds a ModuleContext around a CR at the given generation, with
+// newResourceData builds a ResourceData around a CR at the given generation, with
 // observedGeneration and Ready as scripted.
-func newMC(generation, observed int64, ready bool) *ModuleContext {
+func newResourceData(generation, observed int64, ready bool) *ResourceData {
 	cr := &v1alpha1.SnowflakeAccount{ObjectMeta: metav1.ObjectMeta{Name: "acc", Namespace: "ns", Generation: generation}}
 	cr.Status.SetObservedGeneration(observed)
 	if ready {
 		cr.SetConditions(xpv1.Available())
 	}
-	return NewModuleContext(cr, nil, nil, nil)
+	return NewResourceData(cr, nil, nil, nil)
 }
 
 // SC-001: New preserves registration order; Apply calls each module's Apply
@@ -80,7 +80,7 @@ func TestApply_PreservesOrder(t *testing.T) {
 	m2 := &fakeModule{name: "m2", order: &order, applyOut: Done()}
 	m3 := &fakeModule{name: "m3", order: &order, applyOut: Done()}
 
-	result := New(m1, m2, m3).Apply(context.Background(), newMC(1, 0, false))
+	result := New(m1, m2, m3).Apply(context.Background(), newResourceData(1, 0, false))
 
 	wantOrder := []string{"apply:m1", "apply:m2", "apply:m3"}
 	if !reflect.DeepEqual(order, wantOrder) {
@@ -124,7 +124,7 @@ func TestObserve_ExistsFromAccountModuleByName(t *testing.T) {
 				}
 				modules = append(modules, &fakeModule{name: name, observeOut: out, order: &order})
 			}
-			obs := New(modules...).Observe(context.Background(), newMC(1, 1, false))
+			obs := New(modules...).Observe(context.Background(), newResourceData(1, 1, false))
 			if got := obs.ExternalObservation().ResourceExists; got != tc.wantExists {
 				t.Errorf("ResourceExists = %v, want %v", got, tc.wantExists)
 			}
@@ -159,7 +159,7 @@ func TestObserve_UpToDate(t *testing.T) {
 				}
 				modules = append(modules, &fakeModule{name: name, observeOut: out, order: &order})
 			}
-			obs := New(modules...).Observe(context.Background(), newMC(tc.generation, tc.observed, false))
+			obs := New(modules...).Observe(context.Background(), newResourceData(tc.generation, tc.observed, false))
 			if got := obs.ExternalObservation().ResourceUpToDate; got != tc.want {
 				t.Errorf("ResourceUpToDate = %v, want %v", got, tc.want)
 			}
@@ -177,7 +177,7 @@ func TestObserve_PopulatesOutcomesInOrder(t *testing.T) {
 	m2 := &fakeModule{name: "m2", order: &order, observeOut: Failed(wantErr)}
 	m3 := &fakeModule{name: "m3", order: &order, observeOut: Done()}
 
-	obs := New(m1, m2, m3).Observe(context.Background(), newMC(1, 1, false))
+	obs := New(m1, m2, m3).Observe(context.Background(), newResourceData(1, 1, false))
 
 	if len(obs.Outcomes) != 3 {
 		t.Fatalf("len(Outcomes) = %d, want 3", len(obs.Outcomes))
@@ -206,7 +206,7 @@ func TestObserve_AbortDoesNotStopEarly(t *testing.T) {
 	m2 := &fakeModule{name: "m2", order: &order, observeOut: Failed(errors.New("bad")).Abort()}
 	m3 := &fakeModule{name: "m3", order: &order, observeOut: Done()}
 
-	obs := New(m1, m2, m3).Observe(context.Background(), newMC(1, 1, false))
+	obs := New(m1, m2, m3).Observe(context.Background(), newResourceData(1, 1, false))
 
 	want := []string{"observe:m1", "observe:m2", "observe:m3"}
 	if !reflect.DeepEqual(order, want) {
@@ -231,8 +231,8 @@ func TestApply_AbortStopsEarly(t *testing.T) {
 			m2 := &fakeModule{name: "m2", order: &order, applyOut: out}
 			m3 := &fakeModule{name: "m3", order: &order, applyOut: Done()}
 
-			mc := newMC(2, 1, false)
-			result := New(m1, m2, m3).Apply(context.Background(), mc)
+			data := newResourceData(2, 1, false)
+			result := New(m1, m2, m3).Apply(context.Background(), data)
 
 			if len(result.Outcomes) != 2 {
 				t.Fatalf("len(Outcomes) = %d, want 2", len(result.Outcomes))
@@ -240,7 +240,7 @@ func TestApply_AbortStopsEarly(t *testing.T) {
 			if m3.applyCalled != 0 {
 				t.Errorf("m3.Apply was called %d times, want 0", m3.applyCalled)
 			}
-			if got := mc.CR().Status.GetObservedGeneration(); got != 1 {
+			if got := data.CR().Status.GetObservedGeneration(); got != 1 {
 				t.Errorf("observedGeneration = %d, want 1 (unchanged)", got)
 			}
 		})
@@ -253,12 +253,12 @@ func TestApply_AbortOnDoneContinues(t *testing.T) {
 	m1 := &fakeModule{name: "m1", order: &order, applyOut: Done().Abort()}
 	m2 := &fakeModule{name: "m2", order: &order, applyOut: Done()}
 
-	mc := newMC(1, 0, false)
-	result := New(m1, m2).Apply(context.Background(), mc)
+	data := newResourceData(1, 0, false)
+	result := New(m1, m2).Apply(context.Background(), data)
 	if len(result.Outcomes) != 2 || m2.applyCalled != 1 {
 		t.Errorf("outcomes = %d, m2.applyCalled = %d, want 2 and 1", len(result.Outcomes), m2.applyCalled)
 	}
-	if got := mc.CR().Status.GetObservedGeneration(); got != 1 {
+	if got := data.CR().Status.GetObservedGeneration(); got != 1 {
 		t.Errorf("observedGeneration = %d, want 1", got)
 	}
 }
@@ -272,7 +272,7 @@ func TestApply_NonAbortingOutcomesDontStopLaterModules(t *testing.T) {
 	m3 := &fakeModule{name: "m3", order: &order, applyOut: Failed(errors.New("failed"))}
 	m4 := &fakeModule{name: "m4", order: &order, applyOut: Pending("waiting")}
 
-	result := New(m1, m2, m3, m4).Apply(context.Background(), newMC(1, 0, false))
+	result := New(m1, m2, m3, m4).Apply(context.Background(), newResourceData(1, 0, false))
 
 	if len(result.Outcomes) != 4 {
 		t.Fatalf("len(Outcomes) = %d, want 4", len(result.Outcomes))
@@ -304,9 +304,9 @@ func TestApply_ObservedGeneration(t *testing.T) {
 			for i, out := range tc.outs {
 				modules = append(modules, &fakeModule{name: string(rune('a' + i)), applyOut: out, order: &order})
 			}
-			mc := newMC(5, 4, false)
-			New(modules...).Apply(context.Background(), mc)
-			if got := mc.CR().Status.GetObservedGeneration(); got != tc.want {
+			data := newResourceData(5, 4, false)
+			New(modules...).Apply(context.Background(), data)
+			if got := data.CR().Status.GetObservedGeneration(); got != tc.want {
 				t.Errorf("observedGeneration = %d, want %d", got, tc.want)
 			}
 		})
@@ -337,8 +337,8 @@ func TestReady(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			p := New(tc.modules...)
 			for _, c := range []xpv1.Condition{
-				p.Observe(context.Background(), newMC(1, 1, tc.latched)).Ready(),
-				p.Apply(context.Background(), newMC(1, 0, tc.latched)).Ready(),
+				p.Observe(context.Background(), newResourceData(1, 1, tc.latched)).Ready(),
+				p.Apply(context.Background(), newResourceData(1, 0, tc.latched)).Ready(),
 			} {
 				gotReady := c.Status == corev1.ConditionTrue
 				if gotReady != tc.wantReady || (!gotReady && c.Message != tc.wantMsg) {
@@ -350,10 +350,10 @@ func TestReady(t *testing.T) {
 
 	// A complete Apply flips Ready for the first time; Observe never does.
 	p := New(done)
-	if c := p.Apply(context.Background(), newMC(1, 0, false)).Ready(); c.Status != corev1.ConditionTrue {
+	if c := p.Apply(context.Background(), newResourceData(1, 0, false)).Ready(); c.Status != corev1.ConditionTrue {
 		t.Errorf("complete Apply Ready = %+v, want Available", c)
 	}
-	if c := p.Observe(context.Background(), newMC(1, 1, false)).Ready(); c.Status == corev1.ConditionTrue {
+	if c := p.Observe(context.Background(), newResourceData(1, 1, false)).Ready(); c.Status == corev1.ConditionTrue {
 		t.Errorf("Observe Ready = %+v, want not Available while unlatched", c)
 	}
 }

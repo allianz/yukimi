@@ -101,11 +101,11 @@ func withinGracePeriod(cr *v1alpha1.SnowflakeAccount, gracePeriod time.Duration)
 // already known. A failure here means the account exists but is currently
 // unreachable — a system error, never a reason to create it again (Key
 // Concept: Create-Then-Verify Lifecycle).
-func connectTenant(ctx context.Context, mc *pipeline.ModuleContext) (*sql.DB, error) {
-	db, err := mc.TenantDB(ctx)
+func connectTenant(ctx context.Context, data *pipeline.ResourceData) (*sql.DB, error) {
+	db, err := data.TenantDB(ctx)
 	if err != nil {
 		return nil, fmt.Errorf(
-			"platform connection failed for existing account locator %s: %w", mc.CR().Status.AccountLocator, err)
+			"platform connection failed for existing account locator %s: %w", data.CR().Status.AccountLocator, err)
 	}
 	return db, nil
 }
@@ -115,15 +115,15 @@ func connectTenant(ctx context.Context, mc *pipeline.ModuleContext) (*sql.DB, er
 // swallowed, never failing the caller: it can only fire despite CREATE ACCOUNT
 // having already succeeded with that same region string
 // (specs/012-account-module.md, Integration Points).
-func (m *module) syncStatus(mc *pipeline.ModuleContext) {
-	cr := mc.CR()
-	cr.Status.AccountName = mc.ResolvedAccountName()
+func (m *module) syncStatus(data *pipeline.ResourceData) {
+	cr := data.CR()
+	cr.Status.AccountName = data.ResolvedAccountName()
 	if cr.Status.AccountLocator == "" {
 		return
 	}
 	url, err := tenant.AccountURL(cr.Status.AccountLocator, cr.Spec.Region, m.usePrivateLink)
 	if err != nil {
-		_ = mc.Logger().Handle(err)
+		_ = data.Logger().Handle(err)
 		return
 	}
 	cr.Status.AccountURL = url

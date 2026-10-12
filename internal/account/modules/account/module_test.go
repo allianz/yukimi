@@ -47,10 +47,10 @@ func TestSyncStatus(t *testing.T) {
 
 	t.Run("no locator: name only", func(t *testing.T) {
 		cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
-		mc := pipeline.NewModuleContext(cr, nil, log, nil)
-		(&module{}).syncStatus(mc)
-		if cr.Status.AccountName != mc.ResolvedAccountName() || cr.Status.AccountName == "" {
-			t.Errorf("AccountName = %q, want %q", cr.Status.AccountName, mc.ResolvedAccountName())
+		data := pipeline.NewResourceData(cr, nil, log, nil)
+		(&module{}).syncStatus(data)
+		if cr.Status.AccountName != data.ResolvedAccountName() || cr.Status.AccountName == "" {
+			t.Errorf("AccountName = %q, want %q", cr.Status.AccountName, data.ResolvedAccountName())
 		}
 		if cr.Status.AccountURL != "" {
 			t.Errorf("AccountURL = %q, want empty without a locator", cr.Status.AccountURL)
@@ -61,7 +61,7 @@ func TestSyncStatus(t *testing.T) {
 		urls := map[bool]string{}
 		for _, privateLink := range []bool{false, true} {
 			cr := newTestCR("acct", "ns", "aws-eu-central-1", "xy12345", "a@b.com", "")
-			(&module{usePrivateLink: privateLink}).syncStatus(pipeline.NewModuleContext(cr, nil, log, nil))
+			(&module{usePrivateLink: privateLink}).syncStatus(pipeline.NewResourceData(cr, nil, log, nil))
 			if cr.Status.AccountURL == "" {
 				t.Fatalf("AccountURL empty with usePrivateLink=%v", privateLink)
 			}
@@ -74,7 +74,7 @@ func TestSyncStatus(t *testing.T) {
 
 	t.Run("URL error is logged and swallowed", func(t *testing.T) {
 		cr := newTestCR("acct", "ns", "not a region", "xy12345", "a@b.com", "")
-		(&module{}).syncStatus(pipeline.NewModuleContext(cr, nil, log, nil))
+		(&module{}).syncStatus(pipeline.NewResourceData(cr, nil, log, nil))
 		if cr.Status.AccountName == "" {
 			t.Error("AccountName should still be set")
 		}
@@ -90,14 +90,14 @@ func TestObserveAndApply_SetStatus(t *testing.T) {
 	log := logger.New(logging.NewNopLogger(), "ns", "SnowflakeAccount", "acct", logger.OpObserve)
 	m := &module{gracePeriod: 5 * time.Minute}
 
-	for name, run := range map[string]func(*pipeline.ModuleContext) pipeline.Outcome{
-		"Observe": func(mc *pipeline.ModuleContext) pipeline.Outcome { return m.Observe(context.Background(), mc) },
-		"Apply":   func(mc *pipeline.ModuleContext) pipeline.Outcome { return m.Apply(context.Background(), mc) },
+	for name, run := range map[string]func(*pipeline.ResourceData) pipeline.Outcome{
+		"Observe": func(data *pipeline.ResourceData) pipeline.Outcome { return m.Observe(context.Background(), data) },
+		"Apply":   func(data *pipeline.ResourceData) pipeline.Outcome { return m.Apply(context.Background(), data) },
 	} {
 		t.Run(name, func(t *testing.T) {
 			cr := newTestCR("acct", "ns", "aws-eu-central-1", "xy12345", "a@b.com", "")
 			cr.Status.AccountCreatedAt = &metav1.Time{Time: time.Now()} // within the grace period: Pending, no connection
-			out := run(pipeline.NewModuleContext(cr, nil, log, &fakeDBPool{t: t, forbidCalls: true}))
+			out := run(pipeline.NewResourceData(cr, nil, log, &fakeDBPool{t: t, forbidCalls: true}))
 			if out.State != pipeline.StatePending {
 				t.Fatalf("State = %v, want StatePending", out.State)
 			}

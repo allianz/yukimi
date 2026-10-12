@@ -137,7 +137,7 @@ func (c *connector) Connect(_ context.Context, _ *v1alpha1.SnowflakeAccount) (ma
 
 // external implements the Standard Controller with External State pattern
 // (CLAUDE.md): Observe/Create/Update/Delete each build one
-// pipeline.ModuleContext, fresh from the CRD and namespace labels as they
+// pipeline.ResourceData, fresh from the CRD and namespace labels as they
 // stand at that moment, and hand it unchanged to whichever pipeline entry
 // point that method needs.
 type external struct {
@@ -190,10 +190,10 @@ func (e *external) Observe(ctx context.Context, cr *v1alpha1.SnowflakeAccount) (
 		return managed.ExternalObservation{}, log.Handle(err)
 	}
 
-	// NewModuleContext itself takes no backplane config — the account module
+	// NewResourceData itself takes no backplane config — the account module
 	// (012) that needs one already has its own copy from construction time.
-	mc := pipeline.NewModuleContext(cr, labels, log, e.pool)
-	obs := e.pipeline.Observe(ctx, mc)
+	data := pipeline.NewResourceData(cr, labels, log, e.pool)
+	obs := e.pipeline.Observe(ctx, data)
 	e.report(cr, obs)
 
 	// log.Handle(nil) == nil. On an error Crossplane ignores the observation,
@@ -220,8 +220,8 @@ func (e *external) apply(ctx context.Context, cr *v1alpha1.SnowflakeAccount) err
 		return log.Handle(err)
 	}
 
-	mc := pipeline.NewModuleContext(cr, labels, log, e.pool)
-	res := e.pipeline.Apply(ctx, mc)
+	data := pipeline.NewResourceData(cr, labels, log, e.pool)
+	res := e.pipeline.Apply(ctx, data)
 	e.report(cr, res)
 	// firstErr becomes Synced's message below; log.Handle(nil) == nil.
 	firstErr := log.Handle(res.Err())
@@ -273,11 +273,11 @@ func (e *external) Delete(ctx context.Context, cr *v1alpha1.SnowflakeAccount) (m
 	if err != nil {
 		return managed.ExternalDelete{}, log.Handle(err)
 	}
-	mc := pipeline.NewModuleContext(cr, labels, log, e.pool)
+	data := pipeline.NewResourceData(cr, labels, log, e.pool)
 
 	// Phase 3: every module's Teardown, in reverse — today, just the account
 	// module's DROP ACCOUNT and credential cleanup.
-	if err := e.pipeline.Destroy(ctx, mc); err != nil {
+	if err := e.pipeline.Destroy(ctx, data); err != nil {
 		return managed.ExternalDelete{}, log.Handle(err)
 	}
 

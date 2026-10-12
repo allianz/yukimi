@@ -99,18 +99,18 @@ type Module interface {
 	// Pending: not yet provisioned. Drifted: provisioned, but differs from the
 	// spec. Failed: could not read back — the exception; domain checks belong
 	// in Apply.
-	Observe(ctx context.Context, mc *ModuleContext) Outcome
+	Observe(ctx context.Context, data *ResourceData) Outcome
 
 	// Apply re-asserts this module's full desired state, pruning any object
 	// the CRD no longer lists. It must be safe to call repeatedly with no
 	// other call in between. Drifted counts as not Done.
-	Apply(ctx context.Context, mc *ModuleContext) Outcome
+	Apply(ctx context.Context, data *ResourceData) Outcome
 
 	// Teardown removes the state this module leaves outside the tenant's own
 	// account, which dropping that account would not take with it. Most
 	// modules have none and return nil. It uses OrgAdminDB or no connection
 	// at all — never TenantDB — and must be safe to call repeatedly.
-	Teardown(ctx context.Context, mc *ModuleContext) error
+	Teardown(ctx context.Context, data *ResourceData) error
 }
 
 // AccountModuleName is the account module's (012) Name(). Observation uses it

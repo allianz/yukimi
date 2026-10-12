@@ -166,11 +166,11 @@ func New(keyManager *secrets.KeyManager, org string, gracePeriod time.Duration, 
 outside this module's own tests calls them directly, so their behavior is documented under Key Concept:
 Create-Then-Verify Lifecycle, Key Concept: Post-Create Grace Period, and Key Concept: Contact Email Kept
 In Sync above rather than here. All three
-read `status.accountLocator`/`status.accountCreatedAt` directly through `ModuleContext.CR()`, not through
-any `ModuleContext` accessor — `internal/account/pipeline` (009) defines none for either field.
+read `status.accountLocator`/`status.accountCreatedAt` directly through `ResourceData.CR()`, not through
+any `ResourceData` accessor — `internal/account/pipeline` (009) defines none for either field.
 
 `Teardown` runs three steps in a fixed order: `DROP ACCOUNT ... GRACE_PERIOD_IN_DAYS = <configured>` over
-the org-admin connection, then `ModuleContext.EvictTenant()` so no stale pooled connection to a dropped
+the org-admin connection, then `ResourceData.EvictTenant()` so no stale pooled connection to a dropped
 account survives, then `KeyManager.DeleteCredentials` on the tenant secret identifier. Each step runs only once the one before
 it succeeded, and a step whose object is already absent counts as success, so the whole sequence is safe to
 re-run.
@@ -246,7 +246,7 @@ This specification defines the account module that:
 - Generates and stores the `platform` service user's RSA keypair, create-only.
 - Issues `CREATE ACCOUNT` over the org-admin connection and captures the returned account locator.
 - Detects, on every reconcile, whether the account already exists — the pipeline's sole existence signal.
-- Publishes the resolved account name and locator onto the shared `ModuleContext` for every later module.
+- Publishes the resolved account name and locator onto the shared `ResourceData` for every later module.
 - Tears the account down: `DROP ACCOUNT` over the org-admin connection, eviction of the pooled
   connection to it, and deletion of the stored credential.
 - Keeps the `platform` user's `EMAIL` in sync with `spec.contact` on every `Apply` against an existing
@@ -370,8 +370,8 @@ This specification defines the account module that:
   the key store's own business — this module passes no window and cannot choose one. Matches
   `CreateCredentials`'s error against `ErrPendingDeletion` via `errors.Is` and decides its own classification and message for
   that case.
-- **Connection Pooling (004)** — Used APIs: `ModuleContext.OrgAdminDB()`, `ModuleContext.TenantDB()`,
-  `ModuleContext.EvictTenant()` — Contract: reached only through `ModuleContext`; this module never
+- **Connection Pooling (004)** — Used APIs: `ResourceData.OrgAdminDB()`, `ResourceData.TenantDB()`,
+  `ResourceData.EvictTenant()` — Contract: reached only through `ResourceData`; this module never
   imports `internal/snowflake/pool` or `internal/snowflake/host` directly.
 - **Statement Execution (005)** — Used APIs: `statement.New()`, `Runner.Exec()`, `Runner.Query()`,
   `*statement.Error` — Contract: every tenant-influenced value is passed as a bind argument, never
@@ -379,12 +379,12 @@ This specification defines the account module that:
 - **SnowflakeAccount CRD (006)** — Used APIs: `SnowflakeAccountSpec.Description`, `.Contact`, `.Region`,
   `SnowflakeAccountStatus.AccountLocator`, `.AccountCreatedAt`, `internal/account/tenant.AlphaTester()`
   — Contract: reads the spec fields read-only; writes `AccountLocator`/`AccountCreatedAt` directly on
-  `ModuleContext.CR().Status`, plus `AccountName`/`AccountURL` (Integration Points). Calls
-  `tenant.AlphaTester()` once on the fresh-create path against `ModuleContext.NamespaceLabels()`,
+  `ResourceData.CR().Status`, plus `AccountName`/`AccountURL` (Integration Points). Calls
+  `tenant.AlphaTester()` once on the fresh-create path against `ResourceData.NamespaceLabels()`,
   before any side effect, and passes its returned error (a malformed label value, a system error) straight into
   `Failed` unmodified.
 - **Account Pipeline (009)** — Used APIs: `account.Module`, `Done()`/`Pending()`/`Failed()`,
-  `ModuleContext.CR()`, `.Logger()`, `.ResolvedAccountName()`, `.OrgAdminDB()`, `.TenantDB()`,
+  `ResourceData.CR()`, `.Logger()`, `.ResolvedAccountName()`, `.OrgAdminDB()`, `.TenantDB()`,
   `.EvictTenant()` — Contract: `Name()` returns `pipeline.AccountModuleName`, which is how
   `Pipeline.Observe` finds the outcome that decides existence regardless of registration position; calls `.Abort()` on every
   outcome that is not `Done`; a tenant mistake is `Failed(errors.NewUserError(...))`; `Teardown` returns a plain classified error, not an `Outcome`, and
@@ -397,9 +397,9 @@ This specification defines the account module that:
   baseConfig.Deletion.GracePeriodDays, baseConfig.Snowflake.UsePrivateLink, bpConfig))`,
   after the guardrail-check (010) and quota-check (011) modules. This module itself writes all four
   account status fields on the CRD: `status.accountLocator` and `status.accountCreatedAt` on create,
-  and `status.accountName` (from `ModuleContext.ResolvedAccountName()`) and `status.accountUrl` (via
+  and `status.accountName` (from `ResourceData.ResolvedAccountName()`) and `status.accountUrl` (via
   `internal/account/tenant.AccountURL`, using `usePrivateLink`) on every `Observe` once a locator is known and
-  on every `Apply`. A `tenant.AccountURL` error is logged through `ModuleContext.Logger()` and never fails the
+  on every `Apply`. A `tenant.AccountURL` error is logged through `ResourceData.Logger()` and never fails the
   run; the URL then simply stays unset. None of the four needs a separate persist step: this module writes
   them straight onto the same `*v1alpha1.SnowflakeAccount` the controller already holds and will persist
   when the reconcile returns. Minimizing how long that persist is deferred is still 020's responsibility,
@@ -556,8 +556,8 @@ This specification defines the account module that:
 
 - **Product design**: `specs/design.md` §3.2, §3.6, §3.11, §3.11.1, §3.12, §6.1–§6.3 (the deletion
   flow this module's teardown is the last phase of), Appendix B (X1).
-- **Account Pipeline**: `internal/account/pipeline/module.go`, `context.go`, `pipeline.go` — the `Module`
-  interface, `Outcome` vocabulary, and shared `ModuleContext` this module implements against.
+- **Account Pipeline**: `internal/account/pipeline/module.go`, `resourcedata.go`, `pipeline.go` — the `Module`
+  interface, `Outcome` vocabulary, and shared `ResourceData` this module implements against.
 - **Secrets Handling**: `internal/secrets/keystore.go`, `manager.go`, `identifier.go`, `credentials.go`.
 - **Statement Execution**: `internal/snowflake/statement/statement.go`, `render.go`, `errors.go`.
 - **Snowflake `CREATE ACCOUNT` reference**: https://docs.snowflake.com/en/sql-reference/sql/create-account
@@ -615,29 +615,29 @@ pl := pipeline.New(
 ### Example 2: Create, wait out the grace period, then reconnect
 
 ```go
-mc := pipeline.NewModuleContext(cr, nsLabels, log, pool)
+data := pipeline.NewResourceData(cr, nsLabels, log, pool)
 
 // First reconcile: no locator yet.
-o := module.Observe(ctx, mc)           // Pending("account not created yet"), nothing has been touched yet
-outcome := module.Apply(ctx, mc)       // generates keypair, stores it, issues CREATE ACCOUNT,
+o := module.Observe(ctx, data)           // Pending("account not created yet"), nothing has been touched yet
+outcome := module.Apply(ctx, data)       // generates keypair, stores it, issues CREATE ACCOUNT,
                                         // sets cr.Status.AccountLocator/.AccountCreatedAt directly,
                                         // returns Pending(...).Abort() — the pipeline stops here
 
 // A reconcile landing inside the grace period, against the same cr (status.accountLocator and
 // status.accountCreatedAt already set by the pass above):
-mc2 := pipeline.NewModuleContext(cr, nsLabels, log, pool)
-outcome2 := module.Observe(ctx, mc2) // StatePending — no connection attempted
-_ = module.Apply(ctx, mc2)                    // same skip; Pending(...).Abort(), no connection attempted
+data2 := pipeline.NewResourceData(cr, nsLabels, log, pool)
+outcome2 := module.Observe(ctx, data2) // StatePending — no connection attempted
+_ = module.Apply(ctx, data2)                    // same skip; Pending(...).Abort(), no connection attempted
 
 // A later reconcile, once the grace period has elapsed:
-mc3 := pipeline.NewModuleContext(cr, nsLabels, log, pool)
-o3 := module.Observe(ctx, mc3) // reconnects as platform; Done
-outcome3 := module.Apply(ctx, mc3)     // reconnects again; SHOW USERS LIKE 'platform' finds the email
+data3 := pipeline.NewResourceData(cr, nsLabels, log, pool)
+o3 := module.Observe(ctx, data3) // reconnects as platform; Done
+outcome3 := module.Apply(ctx, data3)     // reconnects again; SHOW USERS LIKE 'platform' finds the email
                                         // already matches spec.Contact, so no ALTER USER is issued;
                                         // returns Done()
 
 // Deletion, reached through Pipeline.Destroy once a deletion permit (019) has authorized it:
-err := module.Teardown(ctx, mc3)       // DROP ACCOUNT ... GRACE_PERIOD_IN_DAYS = 30, evicts the
+err := module.Teardown(ctx, data3)       // DROP ACCOUNT ... GRACE_PERIOD_IN_DAYS = 30, evicts the
                                         // pooled connection, deletes the stored credential — which
                                         // the store keeps restorable for 30 days too, never longer
 ```

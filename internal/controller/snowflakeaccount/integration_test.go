@@ -77,7 +77,7 @@ func forceDeleteForTest(ctx context.Context, t *testing.T, id secrets.Identifier
 // never depends on a tenant login, only the org-admin connection), then an
 // authorizing DeletionPermit plus Delete together remove it. This
 // deliberately does not wait for the Ready condition, which additionally
-// requires a successful tenant login (mc.TenantDB) once the account's
+// requires a successful tenant login (data.TenantDB) once the account's
 // post-create grace period elapses — not exercised here. Skipped whenever
 // tests run with -short; run via `make test-integration`.
 //
@@ -183,8 +183,8 @@ func TestIntegration_CreateThenDestroy(t *testing.T) {
 		if cr.Status.AccountLocator == "" {
 			return
 		}
-		mc := pipeline.NewModuleContext(cr, nil, nil, p)
-		if err := pl.Destroy(context.Background(), mc); err != nil {
+		data := pipeline.NewResourceData(cr, nil, nil, p)
+		if err := pl.Destroy(context.Background(), data); err != nil {
 			t.Errorf("cleanup: Destroy: %v", err)
 		}
 	})
@@ -235,8 +235,8 @@ func TestIntegration_CreateThenDestroy(t *testing.T) {
 
 	// The account itself is gone: a fresh connection attempt against the
 	// same locator must now fail.
-	mc := pipeline.NewModuleContext(cr, nil, nil, p)
-	if _, err := mc.TenantDB(context.Background()); err == nil {
+	data := pipeline.NewResourceData(cr, nil, nil, p)
+	if _, err := data.TenantDB(context.Background()); err == nil {
 		t.Error("expected the tenant connection to fail after Delete dropped the account")
 	}
 

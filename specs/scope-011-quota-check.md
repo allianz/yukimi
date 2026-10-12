@@ -54,10 +54,10 @@ directly after the pipeline spec (009) they depend on.
 
 ## Open question to raise when writing this spec
 
-Summing sibling `SnowflakeAccount` CRs needs a Kubernetes list capability that `ModuleContext` doesn't
-provide today (`internal/account/pipeline/context.go` only wraps `DBPool`). Options to weigh at
+Summing sibling `SnowflakeAccount` CRs needs a Kubernetes list capability that `ResourceData` doesn't
+provide today (`internal/account/pipeline/resourcedata.go` only wraps `DBPool`). Options to weigh at
 spec-writing time:
-- Add a small lister interface to `ModuleContext` alongside `DBPool`, mirroring how `DBPool` is defined
+- Add a small lister interface to `ResourceData` alongside `DBPool`, mirroring how `DBPool` is defined
   narrowly in `pipeline` rather than imported wholesale from `internal/snowflake/pool`.
 - Give this module's own constructor a k8s client directly, the way the account module's constructor
   takes `*secrets.KeyManager` and `Config.Snowflake.Org` (012) — keeping the pipeline package itself free of

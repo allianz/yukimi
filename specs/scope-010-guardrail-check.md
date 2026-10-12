@@ -41,7 +41,7 @@ the pipeline spec they depend on.
 - **`Observe` is a no-op**: always `true, Done()`. No read-back, no drift detection — 008's evaluation
   is a pure function of the CRD, the loaded config/exceptions, and the namespace's `department` label;
   there is nothing Snowflake-side to observe and nothing that can drift.
-- Needs no k8s lister and no `OrgAdminDB`/`TenantDB` — only `ModuleContext.CR()` and
+- Needs no k8s lister and no `OrgAdminDB`/`TenantDB` — only `ResourceData.CR()` and
   `NamespaceLabels()`, plus the loaded 008 config/exceptions instance injected into this module's own
   constructor (the same pattern the account module's constructor uses for `*secrets.KeyManager` and
   `Config.Snowflake.Org`).

@@ -31,7 +31,7 @@ import (
 )
 
 // fakeDBPool implements pipeline.DBPool for this package's own tests,
-// letting Observe/Apply be exercised through a real *pipeline.ModuleContext
+// letting Observe/Apply be exercised through a real *pipeline.ResourceData
 // without a live Snowflake connection.
 type fakeDBPool struct {
 	t           *testing.T
@@ -95,10 +95,10 @@ func newTestCR(name, namespace, region, locator, contact, description string) *v
 // locator is known.
 func TestObserve_NoLocator_NoConnectionAttempt(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
-	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
+	data := pipeline.NewResourceData(cr, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
 
 	m := &module{}
-	outcome := m.Observe(context.Background(), mc)
+	outcome := m.Observe(context.Background(), data)
 
 	if outcome.State != pipeline.StatePending || outcome.Reason != "account not created yet" {
 		t.Errorf("outcome = %+v, want Pending(\"account not created yet\")", outcome)
@@ -110,10 +110,10 @@ func TestObserve_NoLocator_NoConnectionAttempt(t *testing.T) {
 func TestObserve_KnownLocator_ConnectionSucceeds(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345", "a@b.com", "")
 	fake := &fakeDBPool{}
-	mc := pipeline.NewModuleContext(cr, nil, nil, fake)
+	data := pipeline.NewResourceData(cr, nil, nil, fake)
 
 	m := &module{}
-	outcome := m.Observe(context.Background(), mc)
+	outcome := m.Observe(context.Background(), data)
 
 	if outcome.State != pipeline.StateDone {
 		t.Errorf("outcome.State = %v, want StateDone", outcome.State)
@@ -128,10 +128,10 @@ func TestObserve_KnownLocator_ConnectionSucceeds(t *testing.T) {
 func TestObserve_KnownLocator_ConnectionFails(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345", "a@b.com", "")
 	wantErr := errors.New("dial failed")
-	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{tenantErr: wantErr})
+	data := pipeline.NewResourceData(cr, nil, nil, &fakeDBPool{tenantErr: wantErr})
 
 	m := &module{}
-	outcome := m.Observe(context.Background(), mc)
+	outcome := m.Observe(context.Background(), data)
 
 	if outcome.State != pipeline.StateFailed {
 		t.Errorf("outcome.State = %v, want StateFailed", outcome.State)
@@ -149,10 +149,10 @@ func TestObserve_KnownLocator_ConnectionFails(t *testing.T) {
 func TestObserve_WithinGracePeriod_NoConnectionAttempt(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345", "a@b.com", "")
 	cr.Status.AccountCreatedAt = &metav1.Time{Time: time.Now()}
-	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
+	data := pipeline.NewResourceData(cr, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
 
 	m := &module{gracePeriod: 5 * time.Minute}
-	outcome := m.Observe(context.Background(), mc)
+	outcome := m.Observe(context.Background(), data)
 
 	if outcome.State != pipeline.StatePending {
 		t.Errorf("outcome.State = %v, want StatePending", outcome.State)
@@ -164,10 +164,10 @@ func TestObserve_PastGracePeriod_ConnectionAttempted(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345", "a@b.com", "")
 	cr.Status.AccountCreatedAt = &metav1.Time{Time: time.Now().Add(-10 * time.Minute)}
 	fake := &fakeDBPool{}
-	mc := pipeline.NewModuleContext(cr, nil, nil, fake)
+	data := pipeline.NewResourceData(cr, nil, nil, fake)
 
 	m := &module{gracePeriod: 5 * time.Minute}
-	outcome := m.Observe(context.Background(), mc)
+	outcome := m.Observe(context.Background(), data)
 
 	if outcome.State != pipeline.StateDone {
 		t.Errorf("outcome.State = %v, want StateDone", outcome.State)
