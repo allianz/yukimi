@@ -11,7 +11,7 @@ This project builds a self-service platform for provisioning and managing Snowfl
 ### Directory Structure
 ```
 apis/
-├── base/v1alpha1/       # SnowflakeAccount and SnowflakeDeletionRequest types
+├── base/v1alpha1/       # SnowflakeAccount and DeletionPermit types
 ├── v1alpha1/            # Group metadata for snowflake.yukimi.io (registers no API types)
 └── yukimi.go            # API group registration
 
@@ -25,8 +25,8 @@ internal/
 │   └── base/            # Platform-wide settings from a mounted ConfigMap
 ├── controller/          # Controller registration (yukimi.go), one subpackage per resource
 │   ├── snowflakeaccount/
-│   └── snowflakedeletionrequest/
-├── deletion/            # Deletion request lookup and consumption (positive control)
+│   └── deletionpermit/
+├── deletion/            # Deletion permit lookup and consumption (positive control)
 ├── errors/              # User error types (NewUserError, IsUserError)
 ├── logger/              # Operation-scoped logging and error handling (Handle, incident IDs)
 ├── secrets/             # Backend interface, secret paths, RSA keypairs, TTL cache
@@ -80,7 +80,7 @@ The two transient documents are deleted at different points:
 | `016-identity-sync-request.md` | `apis/identity/v1alpha1/` + `internal/identitysync/` | IdentitySyncRequest contract and emitter |
 | `017-identity-module.md` | `internal/account/modules/identity/` | Group import and system role bindings |
 | `018-quota-monitor.md` | `internal/account/modules/quotamonitor/` | Resource monitor/budget enforcement, credit-exhaustion condition |
-| `019-deletion-request.md` | `apis/base/v1alpha1/` + `internal/deletion/` | Deletion requests (positive control) |
+| `019-deletion-permit.md` | `apis/base/v1alpha1/` + `internal/deletion/` | Deletion permits (positive control) |
 | `020-snowflakeaccount-controller.md` | `internal/controller/snowflakeaccount/` | Module wiring, validation phase, deletion gate, reporting |
 | `021-replication.md` | `apis/base/v1alpha1/` + `internal/replication/` | SnowflakeReplication setup, auto-repair, manual failover |
 

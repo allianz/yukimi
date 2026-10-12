@@ -33,23 +33,23 @@ import (
 // SC-015: MarkConsumed sets state to Consumed and leaves validUntil as-is.
 func TestMarkConsumed_SetsState(t *testing.T) {
 	frozen := metav1.NewTime(time.Now().Truncate(time.Second))
-	req := newRequest("req", "ns", "SnowflakeAccount", "acct", stateActive, time.Now())
-	req.Status.ValidUntil = &frozen
+	permit := newPermit("permit", "ns", "SnowflakeAccount", "acct", stateActive, time.Now())
+	permit.Status.ValidUntil = &frozen
 
-	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(req).WithStatusSubresource(req).Build()
+	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(permit).WithStatusSubresource(permit).Build()
 
-	if err := MarkConsumed(context.Background(), c, req); err != nil {
+	if err := MarkConsumed(context.Background(), c, permit); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if req.Status.State != stateConsumed {
-		t.Fatalf("expected state %q, got %q", stateConsumed, req.Status.State)
+	if permit.Status.State != stateConsumed {
+		t.Fatalf("expected state %q, got %q", stateConsumed, permit.Status.State)
 	}
-	if req.Status.ValidUntil == nil || !req.Status.ValidUntil.Equal(&frozen) {
-		t.Fatalf("expected validUntil to remain %v, got %v", frozen, req.Status.ValidUntil)
+	if permit.Status.ValidUntil == nil || !permit.Status.ValidUntil.Equal(&frozen) {
+		t.Fatalf("expected validUntil to remain %v, got %v", frozen, permit.Status.ValidUntil)
 	}
 
-	var persisted v1alpha1.SnowflakeDeletionRequest
-	if err := c.Get(context.Background(), client.ObjectKeyFromObject(req), &persisted); err != nil {
+	var persisted v1alpha1.DeletionPermit
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(permit), &persisted); err != nil {
 		t.Fatalf("unexpected error fetching persisted object: %v", err)
 	}
 	if persisted.Status.State != stateConsumed {
@@ -87,10 +87,10 @@ func (erroringSubResourceWriter) Apply(_ context.Context, _ runtime.ApplyConfigu
 
 // SC-016: a Kubernetes API failure is wrapped as a system error.
 func TestMarkConsumed_UpdateError(t *testing.T) {
-	req := newRequest("req", "ns", "SnowflakeAccount", "acct", stateActive, time.Now())
-	c := &erroringStatusClient{Client: fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(req).Build()}
+	permit := newPermit("permit", "ns", "SnowflakeAccount", "acct", stateActive, time.Now())
+	c := &erroringStatusClient{Client: fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(permit).Build()}
 
-	if err := MarkConsumed(context.Background(), c, req); err == nil {
+	if err := MarkConsumed(context.Background(), c, permit); err == nil {
 		t.Fatal("expected an error, got nil")
 	}
 }

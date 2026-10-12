@@ -1,5 +1,5 @@
 apiVersion: base.snowflake.yukimi.io/v1alpha1
-kind: SnowflakeDeletionRequest
+kind: DeletionPermit
 metadata:
   name: manual-test-2
 spec:

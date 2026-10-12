@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package snowflakedeletionrequest
+package deletionpermit
 
 import (
 	"testing"
@@ -99,7 +99,7 @@ func (g *fakeGate) Set(_ schema.GroupVersionKind, _ bool) bool {
 	return false
 }
 
-// SC-009 support: SetupGated registers against the SnowflakeDeletionRequest
+// SC-009 support: SetupGated registers against the DeletionPermit
 // GVK and its callback successfully runs Setup.
 func TestSetupGated_RegistersAndRuns(t *testing.T) {
 	mgr := newTestManager(t)
@@ -113,8 +113,8 @@ func TestSetupGated_RegistersAndRuns(t *testing.T) {
 	if err := SetupGated(mgr, o); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(gate.registered) != 1 || gate.registered[0] != v1alpha1.SnowflakeDeletionRequestGroupVersionKind {
-		t.Fatalf("expected registration for %v, got %v", v1alpha1.SnowflakeDeletionRequestGroupVersionKind, gate.registered)
+	if len(gate.registered) != 1 || gate.registered[0] != v1alpha1.DeletionPermitGroupVersionKind {
+		t.Fatalf("expected registration for %v, got %v", v1alpha1.DeletionPermitGroupVersionKind, gate.registered)
 	}
 	if gate.callback == nil {
 		t.Fatal("expected a callback to be registered")

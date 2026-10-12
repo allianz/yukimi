@@ -122,24 +122,24 @@ func newTestNamespace(name string, labels map[string]string) *corev1.Namespace {
 	return &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name, Labels: labels}}
 }
 
-func newTestDeletionRequest(name, namespace, targetName, state string, createdAt time.Time) *v1alpha1.SnowflakeDeletionRequest {
-	return &v1alpha1.SnowflakeDeletionRequest{
+func newTestDeletionPermit(name, namespace, targetName, state string, createdAt time.Time) *v1alpha1.DeletionPermit {
+	return &v1alpha1.DeletionPermit{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:              name,
 			Namespace:         namespace,
 			CreationTimestamp: metav1.NewTime(createdAt),
 		},
-		Spec: v1alpha1.SnowflakeDeletionRequestSpec{
+		Spec: v1alpha1.DeletionPermitSpec{
 			TargetRef: v1alpha1.TargetRef{Kind: v1alpha1.SnowflakeAccountKind, Name: targetName},
 			Reason:    "test",
 		},
-		Status: v1alpha1.SnowflakeDeletionRequestStatus{State: state},
+		Status: v1alpha1.DeletionPermitStatus{State: state},
 	}
 }
 
 func newExternal(t *testing.T, m pipeline.Module, objs ...client.Object) (*external, client.Client) {
 	t.Helper()
-	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(objs...).WithStatusSubresource(&v1alpha1.SnowflakeDeletionRequest{}, &v1alpha1.SnowflakeAccount{}).Build()
+	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(objs...).WithStatusSubresource(&v1alpha1.DeletionPermit{}, &v1alpha1.SnowflakeAccount{}).Build()
 	e := &external{
 		kube:     c,
 		pool:     nil, // fakeModule never touches the ModuleContext's pool
@@ -543,8 +543,8 @@ func TestApply_NamespaceLabelsError_ReturnsHandledError(t *testing.T) {
 
 // --- Delete: the deletion gate ----------------------------------------------
 
-// SC-014: no Active SnowflakeDeletionRequest blocks the destruction outright.
-func TestDelete_NoActiveRequest_Blocks(t *testing.T) {
+// SC-014: no Active DeletionPermit blocks the destruction outright.
+func TestDelete_NoActivePermit_Blocks(t *testing.T) {
 	m := &fakeModule{name: pipeline.AccountModuleName, forbidTeardown: true}
 	e, _ := newExternal(t, m, newTestNamespace("ns", nil))
 	cr := newTestCR("acct", "ns", "aws-eu-central-1")
@@ -564,7 +564,7 @@ func TestDelete_NoActiveRequest_Blocks(t *testing.T) {
 
 // SC-016: a Pipeline.Destroy failure leaves the matched request Active.
 func TestDelete_DestroyFails_LeavesRequestActive(t *testing.T) {
-	req := newTestDeletionRequest("req", "ns", "acct", "Active", time.Now())
+	req := newTestDeletionPermit("req", "ns", "acct", "Active", time.Now())
 	m := &fakeModule{name: pipeline.AccountModuleName, teardownErr: assertNewSystemError()}
 	e, kube := newExternal(t, m, newTestNamespace("ns", nil), req)
 	cr := newTestCR("acct", "ns", "aws-eu-central-1")
@@ -574,7 +574,7 @@ func TestDelete_DestroyFails_LeavesRequestActive(t *testing.T) {
 		t.Fatal("expected an error, got nil")
 	}
 
-	var persisted v1alpha1.SnowflakeDeletionRequest
+	var persisted v1alpha1.DeletionPermit
 	if getErr := kube.Get(context.Background(), client.ObjectKeyFromObject(req), &persisted); getErr != nil {
 		t.Fatalf("unexpected error fetching persisted request: %v", getErr)
 	}
@@ -585,7 +585,7 @@ func TestDelete_DestroyFails_LeavesRequestActive(t *testing.T) {
 
 // SC-015: a successful Destroy marks the matched request Consumed.
 func TestDelete_Success_MarksConsumed(t *testing.T) {
-	req := newTestDeletionRequest("req", "ns", "acct", "Active", time.Now())
+	req := newTestDeletionPermit("req", "ns", "acct", "Active", time.Now())
 	m := &fakeModule{name: pipeline.AccountModuleName}
 	e, kube := newExternal(t, m, newTestNamespace("ns", nil), req)
 	cr := newTestCR("acct", "ns", "aws-eu-central-1")
@@ -597,7 +597,7 @@ func TestDelete_Success_MarksConsumed(t *testing.T) {
 		t.Fatalf("expected Teardown to be called once, got %d", m.teardownCalled)
 	}
 
-	var persisted v1alpha1.SnowflakeDeletionRequest
+	var persisted v1alpha1.DeletionPermit
 	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(req), &persisted); err != nil {
 		t.Fatalf("unexpected error fetching persisted request: %v", err)
 	}
@@ -614,7 +614,7 @@ func TestDelete_TearsDownInReverseOrder(t *testing.T) {
 	first := &orderedModule{name: pipeline.AccountModuleName, order: &order}
 	second := &orderedModule{name: "other", order: &order}
 
-	req := newTestDeletionRequest("req", "ns", "acct", "Active", time.Now())
+	req := newTestDeletionPermit("req", "ns", "acct", "Active", time.Now())
 	e, _ := newExternal(t, first, newTestNamespace("ns", nil), req)
 	e.pipeline = pipeline.New(first, second)
 	cr := newTestCR("acct", "ns", "aws-eu-central-1")
@@ -650,7 +650,7 @@ func assertNewUserError() error   { return internalerrors.NewUserError("bad inpu
 func assertNewSystemError() error { return stderrors.New("boom") }
 
 // erroringListClient wraps a client.Client and fails every List call, to
-// exercise Delete's FindActiveRequest system-error path.
+// exercise Delete's FindActivePermit system-error path.
 type erroringListClient struct {
 	client.Client
 }
@@ -659,7 +659,7 @@ func (c *erroringListClient) List(_ context.Context, _ client.ObjectList, _ ...c
 	return stderrors.New("simulated API failure")
 }
 
-func TestDelete_FindActiveRequestError_ReturnsHandledError(t *testing.T) {
+func TestDelete_FindActivePermitError_ReturnsHandledError(t *testing.T) {
 	m := &fakeModule{name: pipeline.AccountModuleName, forbidTeardown: true}
 	e, kube := newExternal(t, m, newTestNamespace("ns", nil))
 	e.kube = &erroringListClient{Client: kube}
@@ -680,8 +680,8 @@ func (c *erroringGetClient) Get(_ context.Context, _ client.ObjectKey, _ client.
 	return stderrors.New("simulated API failure")
 }
 
-func TestDelete_NamespaceLabelsError_AfterActiveRequest(t *testing.T) {
-	req := newTestDeletionRequest("req", "ns", "acct", "Active", time.Now())
+func TestDelete_NamespaceLabelsError_AfterActivePermit(t *testing.T) {
+	req := newTestDeletionPermit("req", "ns", "acct", "Active", time.Now())
 	m := &fakeModule{name: pipeline.AccountModuleName, forbidTeardown: true}
 	e, kube := newExternal(t, m, req) // no namespace object: Get fails naturally, but wrap anyway for clarity
 	e.kube = &erroringGetClient{Client: kube}
@@ -713,8 +713,8 @@ func TestDelete_ProtectionDisabled_SkipsGate(t *testing.T) {
 
 // Even when an Active request happens to exist, a disabled gate ignores it:
 // destruction proceeds without consulting or consuming it.
-func TestDelete_ProtectionDisabled_IgnoresExistingActiveRequest(t *testing.T) {
-	req := newTestDeletionRequest("req", "ns", "acct", "Active", time.Now())
+func TestDelete_ProtectionDisabled_IgnoresExistingActivePermit(t *testing.T) {
+	req := newTestDeletionPermit("req", "ns", "acct", "Active", time.Now())
 	m := &fakeModule{name: pipeline.AccountModuleName}
 	e, kube := newExternal(t, m, newTestNamespace("ns", nil), req)
 	e.cfg = &base.Config{Deletion: base.DeletionSettings{Protection: false}}
@@ -724,7 +724,7 @@ func TestDelete_ProtectionDisabled_IgnoresExistingActiveRequest(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	var persisted v1alpha1.SnowflakeDeletionRequest
+	var persisted v1alpha1.DeletionPermit
 	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(req), &persisted); err != nil {
 		t.Fatalf("unexpected error fetching persisted request: %v", err)
 	}

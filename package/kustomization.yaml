@@ -14,7 +14,7 @@ sortOptions:
 # kustomize does not expand globs: list every file in crds/ by hand.
 resources:
 - crds/base.snowflake.yukimi.io_snowflakeaccounts.yaml
-- crds/base.snowflake.yukimi.io_snowflakedeletionrequests.yaml
+- crds/base.snowflake.yukimi.io_deletionpermits.yaml
 - manifests/namespace.yaml
 - manifests/serviceaccount.yaml
 - manifests/clusterrole.yaml

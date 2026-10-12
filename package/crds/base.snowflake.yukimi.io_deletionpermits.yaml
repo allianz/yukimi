@@ -4,14 +4,14 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.20.0
-  name: snowflakedeletionrequests.base.snowflake.yukimi.io
+  name: deletionpermits.base.snowflake.yukimi.io
 spec:
   group: base.snowflake.yukimi.io
   names:
-    kind: SnowflakeDeletionRequest
-    listKind: SnowflakeDeletionRequestList
-    plural: snowflakedeletionrequests
-    singular: snowflakedeletionrequest
+    kind: DeletionPermit
+    listKind: DeletionPermitList
+    plural: deletionpermits
+    singular: deletionpermit
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
@@ -34,7 +34,7 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          A SnowflakeDeletionRequest is the one way to authorize destroying a
+          A DeletionPermit is the one way to authorize destroying a
           SnowflakeAccount (design.md 6.1-6.3).
         properties:
           apiVersion:
@@ -56,10 +56,10 @@ spec:
             type: object
           spec:
             description: |-
-              SnowflakeDeletionRequestSpec is the deletion request a tenant creates to
+              DeletionPermitSpec is the deletion permit a tenant creates to
               authorize destroying one specific target (design.md 6.1). Nothing here is
               immutable after creation (see Security Considerations in
-              specs/019-deletion-request.md).
+              specs/019-deletion-permit.md).
             properties:
               duration:
                 description: Maintenance window length, capped at 8h on every write.
@@ -114,8 +114,8 @@ spec:
             type: object
           status:
             description: |-
-              SnowflakeDeletionRequestStatus reports this request's time-boxed
-              lifecycle. Written only by internal/controller/snowflakedeletionrequest
+              DeletionPermitStatus reports this request's time-boxed
+              lifecycle. Written only by internal/controller/deletionpermit
               and internal/deletion.MarkConsumed.
             properties:
               conditions:

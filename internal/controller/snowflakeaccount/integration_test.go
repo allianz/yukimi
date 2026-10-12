@@ -75,7 +75,7 @@ func forceDeleteForTest(ctx context.Context, t *testing.T, id secrets.Identifier
 // a real Kubernetes API: a single apply() call is enough to run CREATE
 // ACCOUNT and populate status.accountLocator/accountName/accountUrl (Teardown
 // never depends on a tenant login, only the org-admin connection), then an
-// authorizing SnowflakeDeletionRequest plus Delete together remove it. This
+// authorizing DeletionPermit plus Delete together remove it. This
 // deliberately does not wait for the Ready condition, which additionally
 // requires a successful tenant login (mc.TenantDB) once the account's
 // post-create grace period elapses — not exercised here. Skipped whenever
@@ -84,7 +84,7 @@ func forceDeleteForTest(ctx context.Context, t *testing.T, id secrets.Identifier
 // Requires everything internal/account/modules/account's own integration
 // test requires (see that file), plus a reachable Kubernetes API — this test
 // uses whatever context kubectl's current context/KUBECONFIG points at, and
-// expects the SnowflakeAccount/SnowflakeDeletionRequest CRDs already
+// expects the SnowflakeAccount/DeletionPermit CRDs already
 // installed there (e.g. via `make dev`).
 func TestIntegration_CreateThenDestroy(t *testing.T) {
 	if testing.Short() {
@@ -136,7 +136,7 @@ func TestIntegration_CreateThenDestroy(t *testing.T) {
 		// rather than through base.Load(), so Go's own zero value (false)
 		// applies here, not the loader's "defaults to true when omitted" —
 		// and this test's whole deletion half (SC-020) depends on the
-		// Active-SnowflakeDeletionRequest gate actually being enforced.
+		// Active-DeletionPermit gate actually being enforced.
 		Deletion: base.DeletionSettings{GracePeriodDays: 30, Protection: true},
 	}
 	p := pool.New(keyManager, cfg)
@@ -200,37 +200,37 @@ func TestIntegration_CreateThenDestroy(t *testing.T) {
 		t.Fatalf("expected accountName/accountUrl to be set, got %+v", cr.Status)
 	}
 
-	// SC-020's deletion half: an Active SnowflakeDeletionRequest, created
+	// SC-020's deletion half: an Active DeletionPermit, created
 	// against the real Kubernetes API, authorizes Delete's teardown.
-	req := &v1alpha1.SnowflakeDeletionRequest{
+	req := &v1alpha1.DeletionPermit{
 		ObjectMeta: metav1.ObjectMeta{Name: name + "-deletion", Namespace: namespace},
-		Spec: v1alpha1.SnowflakeDeletionRequestSpec{
+		Spec: v1alpha1.DeletionPermitSpec{
 			TargetRef: v1alpha1.TargetRef{Kind: v1alpha1.SnowflakeAccountKind, Name: name},
 			Duration:  metav1.Duration{Duration: time.Hour},
 			Reason:    "yukimi 020 integration test",
 		},
 	}
 	if err := kube.Create(context.Background(), req); err != nil {
-		t.Fatalf("failed to create SnowflakeDeletionRequest: %v", err)
+		t.Fatalf("failed to create DeletionPermit: %v", err)
 	}
 	t.Cleanup(func() {
 		_ = kube.Delete(context.Background(), req)
 	})
 	req.Status.State = "Active"
 	if err := kube.Status().Update(context.Background(), req); err != nil {
-		t.Fatalf("failed to activate SnowflakeDeletionRequest: %v", err)
+		t.Fatalf("failed to activate DeletionPermit: %v", err)
 	}
 
 	if _, err := e.Delete(context.Background(), cr); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 
-	var persisted v1alpha1.SnowflakeDeletionRequest
+	var persisted v1alpha1.DeletionPermit
 	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(req), &persisted); err != nil {
-		t.Fatalf("failed to fetch persisted SnowflakeDeletionRequest: %v", err)
+		t.Fatalf("failed to fetch persisted DeletionPermit: %v", err)
 	}
 	if persisted.Status.State != "Consumed" {
-		t.Fatalf("expected the deletion request to become Consumed, got %q", persisted.Status.State)
+		t.Fatalf("expected the deletion permit to become Consumed, got %q", persisted.Status.State)
 	}
 
 	// The account itself is gone: a fresh connection attempt against the

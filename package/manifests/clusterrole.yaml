@@ -15,7 +15,7 @@ rules:
       - base.snowflake.yukimi.io
     resources:
       - snowflakeaccounts
-      - snowflakedeletionrequests
+      - deletionpermits
     verbs:
       - get
       - list
@@ -28,7 +28,7 @@ rules:
       - base.snowflake.yukimi.io
     resources:
       - snowflakeaccounts/status
-      - snowflakedeletionrequests/status
+      - deletionpermits/status
     verbs:
       - get
       - update

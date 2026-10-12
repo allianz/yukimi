@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package snowflakedeletionrequest
+package deletionpermit
 
 import (
 	"context"
@@ -28,14 +28,14 @@ import (
 	"github.com/allianz/yukimi/apis/base/v1alpha1"
 )
 
-func newRequest(createdAt time.Time, duration time.Duration) *v1alpha1.SnowflakeDeletionRequest {
-	return &v1alpha1.SnowflakeDeletionRequest{
+func newPermit(createdAt time.Time, duration time.Duration) *v1alpha1.DeletionPermit {
+	return &v1alpha1.DeletionPermit{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:              "req",
+			Name:              "permit",
 			Namespace:         "ns",
 			CreationTimestamp: metav1.NewTime(createdAt),
 		},
-		Spec: v1alpha1.SnowflakeDeletionRequestSpec{
+		Spec: v1alpha1.DeletionPermitSpec{
 			TargetRef: v1alpha1.TargetRef{Kind: "SnowflakeAccount", Name: "acct"},
 			Duration:  metav1.Duration{Duration: duration},
 			Reason:    "test",
@@ -43,11 +43,11 @@ func newRequest(createdAt time.Time, duration time.Duration) *v1alpha1.Snowflake
 	}
 }
 
-// SC-011: a fresh request with a valid duration reaches Active with the
+// SC-011: a fresh permit with a valid duration reaches Active with the
 // correct validUntil within one reconcile.
-func TestObserve_NewRequestBecomesActive(t *testing.T) {
+func TestObserve_NewPermitBecomesActive(t *testing.T) {
 	now := time.Now()
-	cr := newRequest(now, time.Hour)
+	cr := newPermit(now, time.Hour)
 
 	e := external{}
 	got, err := e.Observe(context.Background(), cr)
@@ -69,10 +69,10 @@ func TestObserve_NewRequestBecomesActive(t *testing.T) {
 	}
 }
 
-// SC-010: a request whose window has passed flips to Expired on the next
+// SC-010: a permit whose window has passed flips to Expired on the next
 // Observe with no spec change required.
 func TestObserve_PastWindowBecomesExpired(t *testing.T) {
-	cr := newRequest(time.Now().Add(-2*time.Hour), time.Hour)
+	cr := newPermit(time.Now().Add(-2*time.Hour), time.Hour)
 
 	e := external{}
 	if _, err := e.Observe(context.Background(), cr); err != nil {
@@ -88,7 +88,7 @@ func TestObserve_PastWindowBecomesExpired(t *testing.T) {
 func TestObserve_TerminalStateFreezes(t *testing.T) {
 	now := time.Now()
 	frozenValidUntil := metav1.NewTime(now.Add(-30 * time.Minute))
-	cr := newRequest(now.Add(-time.Hour), time.Hour)
+	cr := newPermit(now.Add(-time.Hour), time.Hour)
 	cr.Status.State = stateExpired
 	cr.Status.ValidUntil = &frozenValidUntil
 
@@ -116,10 +116,10 @@ func TestObserve_TerminalStateFreezes(t *testing.T) {
 	}
 }
 
-// SC-017: a deleted request releases the finalizer via ResourceExists: false.
+// SC-017: a deleted permit releases the finalizer via ResourceExists: false.
 func TestObserve_Deleted(t *testing.T) {
 	now := metav1.NewTime(time.Now())
-	cr := newRequest(time.Now(), time.Hour)
+	cr := newPermit(time.Now(), time.Hour)
 	cr.DeletionTimestamp = &now
 
 	e := external{}
@@ -133,7 +133,7 @@ func TestObserve_Deleted(t *testing.T) {
 }
 
 func TestCreateUpdateDeleteDisconnect_AreNoOps(t *testing.T) {
-	cr := newRequest(time.Now(), time.Hour)
+	cr := newPermit(time.Now(), time.Hour)
 	e := external{}
 
 	if _, err := e.Create(context.Background(), cr); err != nil {
@@ -152,7 +152,7 @@ func TestCreateUpdateDeleteDisconnect_AreNoOps(t *testing.T) {
 
 func TestConnector_Connect(t *testing.T) {
 	c := &connector{}
-	client, err := c.Connect(context.Background(), newRequest(time.Now(), time.Hour))
+	client, err := c.Connect(context.Background(), newPermit(time.Now(), time.Hour))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

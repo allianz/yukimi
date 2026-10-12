@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package snowflakedeletionrequest
+package deletionpermit
 
 import (
 	"context"
@@ -43,22 +43,22 @@ const (
 	stateConsumed = "Consumed"
 )
 
-// SetupGated adds a controller that reconciles SnowflakeDeletionRequest
+// SetupGated adds a controller that reconciles DeletionPermit
 // objects with safe-start support.
 func SetupGated(mgr ctrl.Manager, o controller.Options) error {
 	o.Gate.Register(func() {
 		if err := Setup(mgr, o); err != nil {
-			panic(errors.Wrap(err, "cannot setup SnowflakeDeletionRequest controller"))
+			panic(errors.Wrap(err, "cannot setup DeletionPermit controller"))
 		}
-	}, v1alpha1.SnowflakeDeletionRequestGroupVersionKind)
+	}, v1alpha1.DeletionPermitGroupVersionKind)
 	return nil
 }
 
 func Setup(mgr ctrl.Manager, o controller.Options) error {
-	name := managed.ControllerName(v1alpha1.SnowflakeDeletionRequestGroupKind)
+	name := managed.ControllerName(v1alpha1.DeletionPermitGroupKind)
 
 	opts := []managed.ReconcilerOption{
-		managed.WithTypedExternalConnector[*v1alpha1.SnowflakeDeletionRequest](&connector{}),
+		managed.WithTypedExternalConnector[*v1alpha1.DeletionPermit](&connector{}),
 		managed.WithLogger(o.Logger.WithValues("controller", name)),
 		managed.WithPollInterval(o.PollInterval),
 		managed.WithRecorder(event.NewAPIRecorder(mgr.GetEventRecorderFor(name))), //nolint:staticcheck // event.NewAPIRecorder only accepts the old record.EventRecorder GetEventRecorderFor returns; no migration path until crossplane-runtime supports the new events API
@@ -83,13 +83,13 @@ func Setup(mgr ctrl.Manager, o controller.Options) error {
 	// resource.Managed instead of relying on angryjet (see the type's own
 	// doc comment).
 
-	r := managed.NewReconciler(mgr, resource.ManagedKind(v1alpha1.SnowflakeDeletionRequestGroupVersionKind), opts...)
+	r := managed.NewReconciler(mgr, resource.ManagedKind(v1alpha1.DeletionPermitGroupVersionKind), opts...)
 
 	return ctrl.NewControllerManagedBy(mgr).
 		Named(name).
 		WithOptions(o.ForControllerRuntime()).
 		WithEventFilter(resource.DesiredStateChanged()).
-		For(&v1alpha1.SnowflakeDeletionRequest{}).
+		For(&v1alpha1.DeletionPermit{}).
 		Complete(ratelimiter.NewReconciler(name, r, o.GlobalRateLimiter))
 }
 
@@ -99,7 +99,7 @@ func Setup(mgr ctrl.Manager, o controller.Options) error {
 // already present on the object handed to them.
 type connector struct{}
 
-func (c *connector) Connect(_ context.Context, _ *v1alpha1.SnowflakeDeletionRequest) (managed.TypedExternalClient[*v1alpha1.SnowflakeDeletionRequest], error) {
+func (c *connector) Connect(_ context.Context, _ *v1alpha1.DeletionPermit) (managed.TypedExternalClient[*v1alpha1.DeletionPermit], error) {
 	return &external{}, nil
 }
 
@@ -113,7 +113,7 @@ type external struct{}
 // time-driven rather than spec-driven. Once state reaches a terminal value
 // (Expired or Consumed) it stops recomputing validUntil/state from
 // spec.duration, freezing them at their terminal values.
-func (c *external) Observe(_ context.Context, cr *v1alpha1.SnowflakeDeletionRequest) (managed.ExternalObservation, error) {
+func (c *external) Observe(_ context.Context, cr *v1alpha1.DeletionPermit) (managed.ExternalObservation, error) {
 	if cr.GetDeletionTimestamp() != nil {
 		return managed.ExternalObservation{ResourceExists: false}, nil
 	}
@@ -139,15 +139,15 @@ func (c *external) Observe(_ context.Context, cr *v1alpha1.SnowflakeDeletionRequ
 	}, nil
 }
 
-func (c *external) Create(_ context.Context, _ *v1alpha1.SnowflakeDeletionRequest) (managed.ExternalCreation, error) {
+func (c *external) Create(_ context.Context, _ *v1alpha1.DeletionPermit) (managed.ExternalCreation, error) {
 	return managed.ExternalCreation{}, nil
 }
 
-func (c *external) Update(_ context.Context, _ *v1alpha1.SnowflakeDeletionRequest) (managed.ExternalUpdate, error) {
+func (c *external) Update(_ context.Context, _ *v1alpha1.DeletionPermit) (managed.ExternalUpdate, error) {
 	return managed.ExternalUpdate{}, nil
 }
 
-func (c *external) Delete(_ context.Context, _ *v1alpha1.SnowflakeDeletionRequest) (managed.ExternalDelete, error) {
+func (c *external) Delete(_ context.Context, _ *v1alpha1.DeletionPermit) (managed.ExternalDelete, error) {
 	return managed.ExternalDelete{}, nil
 }
 

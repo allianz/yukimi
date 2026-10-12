@@ -516,7 +516,7 @@ instead of reading it off `ModuleContext`. This package neither imports nor refe
   must abort before `CREATE ACCOUNT` when their own check fails. Renders
   whatever the run's `Report` returns (events, module conditions, `Ready`) and persists the status;
   it computes nothing itself.
-  Calls `Pipeline.Destroy` from `Delete`, after the deletion request's gate (019) has authorized the
+  Calls `Pipeline.Destroy` from `Delete`, after the deletion permit's gate (019) has authorized the
   destruction and before that request is marked consumed. - Key functions: `pipeline.New()`,
   `(*Pipeline).Observe`, `(*Pipeline).Apply`, `(*Pipeline).Destroy`, `pipeline.NewModuleContext()`,
   `Observation.ExternalObservation()`, `Report`, `Outcomes.Err()`.
@@ -591,7 +591,7 @@ instead of reading it off `ModuleContext`. This package neither imports nor refe
   the tenant names freely and binds by hand is neither enumerated nor dropped. Organization Policies
   close that residue by making the state org-owned.
 - Nothing here decides whether a destruction is allowed: `Destroy` runs whenever it is called. The
-  authorization for that call is the deletion request's two-key gate (019), which the controller (020)
+  authorization for that call is the deletion permit's two-key gate (019), which the controller (020)
   clears before calling.
 - `Outcome.Events` are values, not live calls (Key Concept: One Result Type) — no module ever holds
   a `Recorder`, so a bug in a module can misreport an event but can never spam or forge one through the
@@ -702,13 +702,13 @@ func (e *external) Delete(ctx context.Context, mg resource.Managed) (managed.Ext
 
     // Phase 2: no active request, no destruction — the finalizer stays and the
     // resource stalls in Terminating.
-    req, err := deletion.FindActiveRequest(ctx, e.kube, cr.Namespace, "SnowflakeAccount", cr.Name)
+    req, err := deletion.FindActivePermit(ctx, e.kube, cr.Namespace, "SnowflakeAccount", cr.Name)
     if err != nil {
         return managed.ExternalDelete{}, log.Handle(err)
     }
     if req == nil {
-        e.record.Event(cr, event.Warning("DeletionBlocked", errNoActiveRequest))
-        return managed.ExternalDelete{}, errNoActiveRequest
+        e.record.Event(cr, event.Warning("DeletionBlocked", errNoActivePermit))
+        return managed.ExternalDelete{}, errNoActivePermit
     }
 
     mc := pipeline.NewModuleContext(cr, e.namespaceLabels(cr.Namespace), log, e.pool)

@@ -74,7 +74,7 @@ being dropped. The first belongs to crossplane-runtime itself, not this controll
 invoked when the immediately preceding `Observe` reported the account as existing; a resource whose
 account was never created has its finalizer released directly, with `Delete` never called at all. The
 second is this controller's own, and is what design.md §6.3 means by positive control: whenever `Delete`
-*is* invoked, it looks for an `Active` `SnowflakeDeletionRequest` (019) naming this specific resource
+*is* invoked, it looks for an `Active` `DeletionPermit` (019) naming this specific resource
 before doing anything else. Finding none — because none was ever created, or because the one that
 existed expired unused — blocks the destruction outright: the resource stalls in `Terminating`, a
 `Warning: DeletionBlocked` event is recorded, and `Ready` is set to `False` so that automated deployment
@@ -151,20 +151,20 @@ cmd/provider/main.go            # --configDir flag; base.Load (002); backplane.L
                                  # loaded *backplane.Config into internal/controller/yukimi.SetupGated
 internal/controller/yukimi.go   # SetupGated gains cfg/pool/keyManager/bpConfig parameters and
                                  # forwards them into snowflakeaccount.SetupGated, alongside the
-                                 # unchanged call to snowflakedeletionrequest.SetupGated
+                                 # unchanged call to deletionpermit.SetupGated
 ```
 
 ## Error Classification
 
 **User Errors** (use `errors.NewUserError()`):
-- No `Active` `SnowflakeDeletionRequest` authorizes a `SnowflakeAccount`'s deletion — the tenant can fix
+- No `Active` `DeletionPermit` authorizes a `SnowflakeAccount`'s deletion — the tenant can fix
   this by creating one.
 - A module's own tenant mistake, already classified by that module and surfaced unchanged via
   `Outcomes.Err()`.
 
 **System Errors** (use `fmt.Errorf("context: %w", err)` or pass through unchanged):
 - A Kubernetes API failure reading the target namespace's labels.
-- `deletion.FindActiveRequest`/`deletion.MarkConsumed` (019) failures against the Kubernetes API.
+- `deletion.FindActivePermit`/`deletion.MarkConsumed` (019) failures against the Kubernetes API.
 - A module's own failure, already classified by that module and surfaced unchanged via
   `Outcomes.Err()` or `Pipeline.Destroy`'s returned error.
 - `tenant.AccountURL`'s region-format error (logged by the account module, 012), on the rare occasion it fires despite `CREATE ACCOUNT`
@@ -206,7 +206,7 @@ This specification defines the `internal/controller/snowflakeaccount` package th
   handled error from `Observe` and from `Create`/`Update`, so a failure lands on `Synced` instead of
   being silently overwritten (an error from `Observe` also stops `Create`/`Update` from being called).
 - Implements the deletion gate (design.md §6.3 Phases 2–3): looks up an `Active`
-  `SnowflakeDeletionRequest` (019) before honoring a `SnowflakeAccount` deletion, blocks and emits
+  `DeletionPermit` (019) before honoring a `SnowflakeAccount` deletion, blocks and emits
   `Warning: DeletionBlocked` when none is found, and marks the request `Consumed` once `Pipeline.Destroy`
   succeeds.
 - Finishes `cmd/provider/main.go`'s startup wiring: a `--configDir` flag, `base.Load` (002),
@@ -271,14 +271,14 @@ This specification defines the `internal/controller/snowflakeaccount` package th
   cr.Status.AccountLocator != ""` and returns immediately, without building a `ModuleContext` or calling
   the pipeline at all; only a resource whose account was never created reports `false` here, releasing
   the finalizer without ever reaching `Delete`.
-- **More than one `Active` `SnowflakeDeletionRequest` targets the same resource** — this controller does
-  not resolve that itself; `deletion.FindActiveRequest` (019) already returns a single, deterministic
+- **More than one `Active` `DeletionPermit` targets the same resource** — this controller does
+  not resolve that itself; `deletion.FindActivePermit` (019) already returns a single, deterministic
   candidate (earliest `creationTimestamp`), so `Delete` only ever sees one request or `nil`.
-- **`Pipeline.Destroy` fails partway through** — the deletion request is left `Active` (never marked
+- **`Pipeline.Destroy` fails partway through** — the deletion permit is left `Active` (never marked
   `Consumed`), so the next reconcile retries the same teardown from the top; every module's `Teardown` is
   safe to re-run (009).
-- **`cfg.Deletion.Protection` is `false` (002)** — `Delete` skips the `FindActiveRequest` lookup entirely
-  and goes straight to Phase 3, so no `SnowflakeDeletionRequest` is required, looked up, or consumed. Any
+- **`cfg.Deletion.Protection` is `false` (002)** — `Delete` skips the `FindActivePermit` lookup entirely
+  and goes straight to Phase 3, so no `DeletionPermit` is required, looked up, or consumed. Any
   `Active` request that happens to exist for that resource is simply left alone — untouched, unconsumed —
   and either expires on its own or sits unused; this is a dev/ops opt-out, not a per-resource exception.
 - **The managed reconciler overwrites `Ready`/`Synced` again right after `Observe`, `Create`, and
@@ -305,7 +305,7 @@ This specification defines the `internal/controller/snowflakeaccount` package th
 - **`internal/account/tenant` (006)** — Used APIs: `tenant.AccountURL()` — Contract: called directly by
   this controller once `status.accountLocator` is non-empty; `tenant.ResolveName` is reached only
   indirectly, via `ModuleContext.ResolvedAccountName()`.
-- **`apis/base/v1alpha1` (006, 019)** — Used APIs: the `SnowflakeAccount`/`SnowflakeDeletionRequest`
+- **`apis/base/v1alpha1` (006, 019)** — Used APIs: the `SnowflakeAccount`/`DeletionPermit`
   types, `SnowflakeAccountKind`, `SnowflakeAccountGroupVersionKind` — Contract: this package registers
   the former with `managed.NewReconciler` and reads/writes its `Status` directly.
 - **`internal/account/pipeline` (009)** — Used APIs: `pipeline.New()`,
@@ -315,7 +315,7 @@ This specification defines the `internal/controller/snowflakeaccount` package th
   built once, at `Setup` time, from the module list this spec's Public API section fixes.
 - **`internal/account/modules/account` (012)** — Used APIs: `accountmodule.New()` — Contract: the sole
   module registered in this cut; this controller never calls it directly beyond registration.
-- **`internal/deletion` (019)** — Used APIs: `deletion.FindActiveRequest()`, `deletion.MarkConsumed()` —
+- **`internal/deletion` (019)** — Used APIs: `deletion.FindActivePermit()`, `deletion.MarkConsumed()` —
   Contract: called from `Delete` only, around `Pipeline.Destroy`.
 - **`crossplane-runtime/v2`** — Used APIs: `managed.NewReconciler`, `managed.TypedExternalClient`,
   `xpv1.Available()`/`Unavailable()`, `event.Recorder` — Contract: standard managed-resource wiring, per
@@ -340,17 +340,17 @@ of `internal/account/modules/{guardrailcheck,quotacheck,parameter,network,auth,i
   functions: `base.Load()`, `backplane.Load()`, `secretsaws.New()`, `secrets.NewKeyManager()`,
   `pool.New()`, `Pool.Close()`.
 - **`internal/controller/yukimi.go`** — `SetupGated`'s signature gains the same four parameters and
-  forwards them into `snowflakeaccount.SetupGated`, while `snowflakedeletionrequest.SetupGated` keeps its
+  forwards them into `snowflakeaccount.SetupGated`, while `deletionpermit.SetupGated` keeps its
   existing two-parameter call — Key functions: `SetupGated()`.
 - **`internal/account/pipeline` (009) and `internal/account/modules/account` (012)** — This controller is
   their sole caller in the running provider today; nothing else in the codebase constructs a
   `*pipeline.Pipeline` or an `accountmodule.Module`.
-- **`internal/deletion` (019)** — This controller is `FindActiveRequest`/`MarkConsumed`'s only caller.
+- **`internal/deletion` (019)** — This controller is `FindActivePermit`/`MarkConsumed`'s only caller.
 
 ## Success Criteria
 
 - **SC-001**: `internal/controller/yukimi.go`'s `SetupGated` forwards `cfg`, `p`, `keyManager`, and
-  `bpConfig` into `snowflakeaccount.SetupGated`, while `snowflakedeletionrequest.SetupGated`'s call
+  `bpConfig` into `snowflakeaccount.SetupGated`, while `deletionpermit.SetupGated`'s call
   keeps its existing two-parameter signature.
 - **SC-002**: `cmd/provider/main.go` gains a `--configDir` flag defaulting to `/etc/yukimi/config`, calls
   `base.Load`, and exits fatally — listing the cloud providers actually compiled in — when
@@ -381,10 +381,10 @@ of `internal/account/modules/{guardrailcheck,quotacheck,parameter,network,auth,i
 - **SC-013**: `Observe` returns `obs.ExternalObservation()` and the handled `obs.Err()`; the controller
   contains no generation comparison and no `Ready`-latch check.
 - **SC-014**: `Delete` returns a user error and records a `Warning: DeletionBlocked` event when
-  `deletion.FindActiveRequest` returns `nil`, and does not release the finalizer.
-- **SC-015**: `Delete` calls `Pipeline.Destroy` only once `FindActiveRequest` has returned a non-nil
+  `deletion.FindActivePermit` returns `nil`, and does not release the finalizer.
+- **SC-015**: `Delete` calls `Pipeline.Destroy` only once `FindActivePermit` has returned a non-nil
   request, and calls `deletion.MarkConsumed` only once `Pipeline.Destroy` has returned `nil`.
-- **SC-016**: a `Pipeline.Destroy` failure leaves the matched `SnowflakeDeletionRequest` `Active` (never
+- **SC-016**: a `Pipeline.Destroy` failure leaves the matched `DeletionPermit` `Active` (never
   calls `MarkConsumed`) and returns a handled error.
 - **SC-017**: `internal/controller/snowflakeaccount` imports none of
   `internal/account/modules/{guardrailcheck,quotacheck,parameter,network,auth,identity,quotamonitor}`
@@ -394,9 +394,9 @@ of `internal/account/modules/{guardrailcheck,quotacheck,parameter,network,auth,i
 - **SC-019**: `make generate` and `make reviewable` both pass with no CRD schema change introduced by this
   spec.
 - **SC-020**: `integration_test.go` proves a full create-then-destroy round trip: a `SnowflakeAccount`
-  reaches `Ready`, then an authorizing `SnowflakeDeletionRequest` plus its deletion together remove it —
+  reaches `Ready`, then an authorizing `DeletionPermit` plus its deletion together remove it —
   against a live Snowflake organization, a live AWS Secrets Manager, and a real Kubernetes API.
-- **SC-021**: when `cfg.Deletion.Protection` is `false`, `Delete` never calls `deletion.FindActiveRequest`
+- **SC-021**: when `cfg.Deletion.Protection` is `false`, `Delete` never calls `deletion.FindActivePermit`
   or `deletion.MarkConsumed`, never emits `DeletionBlocked`, and still calls `Pipeline.Destroy` exactly
   once; when `true` (including the zero-config default), behavior is unchanged from SC-014–SC-016.
 
@@ -446,13 +446,13 @@ of `internal/account/modules/{guardrailcheck,quotacheck,parameter,network,auth,i
   `specs/003.a-aws-secrets-backend.md`, `specs/004-connection-pooling.md`,
   `specs/006-snowflake-account-crd.md`, `specs/007-backplane-config.md` (loaded and forwarded, never
   called directly by this package), `specs/009-account-pipeline.md` (Appendix Examples 1–3, adapted
-  below), `specs/012-account-module.md`, `specs/019-deletion-request.md`.
+  below), `specs/012-account-module.md`, `specs/019-deletion-permit.md`.
 - **Vendored behavior**: `crossplane-runtime/v2@v2.0.0` `pkg/reconciler/managed/reconciler.go` — the
   managed reconciler sets `Creating()`/`ReconcileSuccess()` after `Create`/`Update` return and after
   `Observe` returns on the up-to-date path (lines 1406,1437,1457,1507,1428), and calls `Delete` only when
   the preceding `Observe` reported `ResourceExists: true` (lines 1163,1173,1230).
 - **Current code**: `cmd/provider/main.go`, `internal/controller/yukimi.go`,
-  `internal/controller/snowflakedeletionrequest/reconciler.go` — the wiring and validation-only-controller
+  `internal/controller/deletionpermit/reconciler.go` — the wiring and validation-only-controller
   patterns this spec's controller extends and diverges from (it manages real external state, unlike
   019's controller).
 
@@ -553,15 +553,15 @@ func (e *external) Delete(ctx context.Context, cr *v1alpha1.SnowflakeAccount) (m
     // Phase 2: no active request, no destruction — unless deletion protection
     // is disabled platform-wide (cfg.Deletion.Protection, 002), in which case
     // this gate is skipped entirely and req stays nil.
-    var req *v1alpha1.SnowflakeDeletionRequest
+    var req *v1alpha1.DeletionPermit
     if e.cfg.Deletion.Protection {
         var err error
-        req, err = deletion.FindActiveRequest(ctx, e.kube, cr.Namespace, v1alpha1.SnowflakeAccountKind, cr.Name)
+        req, err = deletion.FindActivePermit(ctx, e.kube, cr.Namespace, v1alpha1.SnowflakeAccountKind, cr.Name)
         if err != nil {
             return managed.ExternalDelete{}, log.Handle(err)
         }
         if req == nil {
-            blockedErr := errors.NewUserError("deletion blocked: no active SnowflakeDeletionRequest authorizes this account")
+            blockedErr := errors.NewUserError("deletion blocked: no active DeletionPermit authorizes this account")
             e.record.Event(cr, event.Warning("DeletionBlocked", blockedErr))
             cr.SetConditions(xpv1.Unavailable().WithMessage(blockedErr.Error()))
             return managed.ExternalDelete{}, log.Handle(blockedErr)

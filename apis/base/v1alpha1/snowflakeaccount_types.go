@@ -208,7 +208,7 @@ func (a *SnowflakeAccount) SetManagementPolicies(p common.ManagementPolicies) {
 // ("managed resource does not implement connection details"), which pins
 // the Synced condition to False forever. Implementing the interface routes
 // PublishConnection/UnpublishConnection into APILocalSecretPublisher's own
-// nil-ref no-op instead. Identical to SnowflakeDeletionRequest (019).
+// nil-ref no-op instead. Identical to DeletionPermit (019).
 func (a *SnowflakeAccount) GetWriteConnectionSecretToReference() *xpv1.LocalSecretReference {
 	return nil
 }

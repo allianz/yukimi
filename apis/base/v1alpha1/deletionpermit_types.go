@@ -29,11 +29,11 @@ import (
 	"github.com/crossplane/crossplane-runtime/v2/pkg/resource"
 )
 
-// SnowflakeDeletionRequestSpec is the deletion request a tenant creates to
+// DeletionPermitSpec is the deletion permit a tenant creates to
 // authorize destroying one specific target (design.md 6.1). Nothing here is
 // immutable after creation (see Security Considerations in
-// specs/019-deletion-request.md).
-type SnowflakeDeletionRequestSpec struct {
+// specs/019-deletion-permit.md).
+type DeletionPermitSpec struct {
 	TargetRef TargetRef `json:"targetRef"`
 
 	// Maintenance window length, capped at 8h on every write.
@@ -60,10 +60,10 @@ type TargetRef struct {
 	Name string `json:"name"`
 }
 
-// SnowflakeDeletionRequestStatus reports this request's time-boxed
-// lifecycle. Written only by internal/controller/snowflakedeletionrequest
+// DeletionPermitStatus reports this request's time-boxed
+// lifecycle. Written only by internal/controller/deletionpermit
 // and internal/deletion.MarkConsumed.
-type SnowflakeDeletionRequestStatus struct {
+type DeletionPermitStatus struct {
 	xpv1.ResourceStatus `json:",inline"`
 
 	// +optional
@@ -76,7 +76,7 @@ type SnowflakeDeletionRequestStatus struct {
 
 // +kubebuilder:object:root=true
 
-// A SnowflakeDeletionRequest is the one way to authorize destroying a
+// A DeletionPermit is the one way to authorize destroying a
 // SnowflakeAccount (design.md 6.1-6.3).
 // +kubebuilder:printcolumn:name="STATE",type="string",JSONPath=".status.state"
 // +kubebuilder:printcolumn:name="VALID-UNTIL",type="string",JSONPath=".status.validUntil"
@@ -85,12 +85,12 @@ type SnowflakeDeletionRequestStatus struct {
 // +kubebuilder:printcolumn:name="AGE",type="date",JSONPath=".metadata.creationTimestamp"
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Namespaced
-type SnowflakeDeletionRequest struct {
+type DeletionPermit struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   SnowflakeDeletionRequestSpec   `json:"spec"`
-	Status SnowflakeDeletionRequestStatus `json:"status,omitempty"`
+	Spec   DeletionPermitSpec   `json:"spec"`
+	Status DeletionPermitStatus `json:"status,omitempty"`
 }
 
 // The methods below satisfy resource.Managed's Manageable and Conditioned
@@ -100,11 +100,11 @@ type SnowflakeDeletionRequest struct {
 // to SnowflakeAccount (006) — so these are hand-written rather than
 // generated into a zz_generated.managed.go.
 
-func (r *SnowflakeDeletionRequest) GetManagementPolicies() common.ManagementPolicies {
+func (r *DeletionPermit) GetManagementPolicies() common.ManagementPolicies {
 	return r.Spec.ManagementPolicies
 }
 
-func (r *SnowflakeDeletionRequest) SetManagementPolicies(p common.ManagementPolicies) {
+func (r *DeletionPermit) SetManagementPolicies(p common.ManagementPolicies) {
 	r.Spec.ManagementPolicies = p
 }
 
@@ -119,43 +119,43 @@ func (r *SnowflakeDeletionRequest) SetManagementPolicies(p common.ManagementPoli
 // the Synced condition to False forever. Implementing the interface routes
 // PublishConnection/UnpublishConnection into APILocalSecretPublisher's own
 // nil-ref no-op instead.
-func (r *SnowflakeDeletionRequest) GetWriteConnectionSecretToReference() *xpv1.LocalSecretReference {
+func (r *DeletionPermit) GetWriteConnectionSecretToReference() *xpv1.LocalSecretReference {
 	return nil
 }
 
-func (r *SnowflakeDeletionRequest) SetWriteConnectionSecretToReference(_ *xpv1.LocalSecretReference) {
+func (r *DeletionPermit) SetWriteConnectionSecretToReference(_ *xpv1.LocalSecretReference) {
 }
 
-func (r *SnowflakeDeletionRequest) GetCondition(ct xpv1.ConditionType) xpv1.Condition {
+func (r *DeletionPermit) GetCondition(ct xpv1.ConditionType) xpv1.Condition {
 	return r.Status.GetCondition(ct)
 }
 
-func (r *SnowflakeDeletionRequest) SetConditions(c ...xpv1.Condition) {
+func (r *DeletionPermit) SetConditions(c ...xpv1.Condition) {
 	r.Status.SetConditions(c...)
 }
 
-var _ resource.Managed = &SnowflakeDeletionRequest{}
+var _ resource.Managed = &DeletionPermit{}
 
 // +kubebuilder:object:root=true
 
-// SnowflakeDeletionRequestList contains a list of SnowflakeDeletionRequest
-type SnowflakeDeletionRequestList struct {
+// DeletionPermitList contains a list of DeletionPermit
+type DeletionPermitList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []SnowflakeDeletionRequest `json:"items"`
+	Items           []DeletionPermit `json:"items"`
 }
 
-// SnowflakeDeletionRequest type metadata.
+// DeletionPermit type metadata.
 var (
-	SnowflakeDeletionRequestKind             = reflect.TypeOf(SnowflakeDeletionRequest{}).Name()
-	SnowflakeDeletionRequestGroupKind        = schema.GroupKind{Group: Group, Kind: SnowflakeDeletionRequestKind}.String()
-	SnowflakeDeletionRequestKindAPIVersion   = SnowflakeDeletionRequestKind + "." + SchemeGroupVersion.String()
-	SnowflakeDeletionRequestGroupVersionKind = SchemeGroupVersion.WithKind(SnowflakeDeletionRequestKind)
+	DeletionPermitKind             = reflect.TypeOf(DeletionPermit{}).Name()
+	DeletionPermitGroupKind        = schema.GroupKind{Group: Group, Kind: DeletionPermitKind}.String()
+	DeletionPermitKindAPIVersion   = DeletionPermitKind + "." + SchemeGroupVersion.String()
+	DeletionPermitGroupVersionKind = SchemeGroupVersion.WithKind(DeletionPermitKind)
 )
 
 func init() {
 	SchemeBuilder.Register(func(s *runtime.Scheme) error {
-		s.AddKnownTypes(SchemeGroupVersion, &SnowflakeDeletionRequest{}, &SnowflakeDeletionRequestList{})
+		s.AddKnownTypes(SchemeGroupVersion, &DeletionPermit{}, &DeletionPermitList{})
 		metav1.AddToGroupVersion(s, SchemeGroupVersion)
 		return nil
 	})

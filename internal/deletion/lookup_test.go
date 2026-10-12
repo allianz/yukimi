@@ -39,28 +39,28 @@ func testScheme(t *testing.T) *runtime.Scheme {
 	return scheme
 }
 
-func newRequest(name, namespace, targetKind, targetName, state string, createdAt time.Time) *v1alpha1.SnowflakeDeletionRequest {
-	return &v1alpha1.SnowflakeDeletionRequest{
+func newPermit(name, namespace, targetKind, targetName, state string, createdAt time.Time) *v1alpha1.DeletionPermit {
+	return &v1alpha1.DeletionPermit{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:              name,
 			Namespace:         namespace,
 			CreationTimestamp: metav1.NewTime(createdAt),
 		},
-		Spec: v1alpha1.SnowflakeDeletionRequestSpec{
+		Spec: v1alpha1.DeletionPermitSpec{
 			TargetRef: v1alpha1.TargetRef{Kind: targetKind, Name: targetName},
 			Reason:    "test",
 		},
-		Status: v1alpha1.SnowflakeDeletionRequestStatus{
+		Status: v1alpha1.DeletionPermitStatus{
 			State: state,
 		},
 	}
 }
 
 // SC-013: no match returns nil, nil.
-func TestFindActiveRequest_NoMatch(t *testing.T) {
+func TestFindActivePermit_NoMatch(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).Build()
 
-	got, err := FindActiveRequest(context.Background(), c, "ns", "SnowflakeAccount", "acct")
+	got, err := FindActivePermit(context.Background(), c, "ns", "SnowflakeAccount", "acct")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -69,18 +69,18 @@ func TestFindActiveRequest_NoMatch(t *testing.T) {
 	}
 }
 
-// SC-013: only Active requests matching kind/name are returned.
-func TestFindActiveRequest_FiltersStateAndTarget(t *testing.T) {
+// SC-013: only Active permits matching kind/name are returned.
+func TestFindActivePermit_FiltersStateAndTarget(t *testing.T) {
 	now := time.Now()
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(
-		newRequest("expired", "ns", "SnowflakeAccount", "acct", "Expired", now),
-		newRequest("consumed", "ns", "SnowflakeAccount", "acct", "Consumed", now),
-		newRequest("other-target", "ns", "SnowflakeAccount", "other-acct", "Active", now),
-		newRequest("other-ns", "ns2", "SnowflakeAccount", "acct", "Active", now),
-		newRequest("match", "ns", "SnowflakeAccount", "acct", "Active", now),
+		newPermit("expired", "ns", "SnowflakeAccount", "acct", "Expired", now),
+		newPermit("consumed", "ns", "SnowflakeAccount", "acct", "Consumed", now),
+		newPermit("other-target", "ns", "SnowflakeAccount", "other-acct", "Active", now),
+		newPermit("other-ns", "ns2", "SnowflakeAccount", "acct", "Active", now),
+		newPermit("match", "ns", "SnowflakeAccount", "acct", "Active", now),
 	).Build()
 
-	got, err := FindActiveRequest(context.Background(), c, "ns", "SnowflakeAccount", "acct")
+	got, err := FindActivePermit(context.Background(), c, "ns", "SnowflakeAccount", "acct")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -90,14 +90,14 @@ func TestFindActiveRequest_FiltersStateAndTarget(t *testing.T) {
 }
 
 // SC-014: multiple Active candidates resolve to the earliest creationTimestamp.
-func TestFindActiveRequest_EarliestWins(t *testing.T) {
+func TestFindActivePermit_EarliestWins(t *testing.T) {
 	now := time.Now()
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(
-		newRequest("later", "ns", "SnowflakeAccount", "acct", "Active", now),
-		newRequest("earlier", "ns", "SnowflakeAccount", "acct", "Active", now.Add(-time.Hour)),
+		newPermit("later", "ns", "SnowflakeAccount", "acct", "Active", now),
+		newPermit("earlier", "ns", "SnowflakeAccount", "acct", "Active", now.Add(-time.Hour)),
 	).Build()
 
-	got, err := FindActiveRequest(context.Background(), c, "ns", "SnowflakeAccount", "acct")
+	got, err := FindActivePermit(context.Background(), c, "ns", "SnowflakeAccount", "acct")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestFindActiveRequest_EarliestWins(t *testing.T) {
 }
 
 // erroringClient wraps a client.Client and fails every List call, to
-// exercise FindActiveRequest's system-error wrapping (SC-016) — the fake
+// exercise FindActivePermit's system-error wrapping (SC-016) — the fake
 // client itself never fails.
 type erroringClient struct {
 	client.Client
@@ -118,10 +118,10 @@ func (e *erroringClient) List(_ context.Context, _ client.ObjectList, _ ...clien
 }
 
 // SC-016: a Kubernetes API failure is wrapped as a system error.
-func TestFindActiveRequest_ListError(t *testing.T) {
+func TestFindActivePermit_ListError(t *testing.T) {
 	c := &erroringClient{Client: fake.NewClientBuilder().WithScheme(testScheme(t)).Build()}
 
-	_, err := FindActiveRequest(context.Background(), c, "ns", "SnowflakeAccount", "acct")
+	_, err := FindActivePermit(context.Background(), c, "ns", "SnowflakeAccount", "acct")
 	if err == nil {
 		t.Fatal("expected an error, got nil")
 	}

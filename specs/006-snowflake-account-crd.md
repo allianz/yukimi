@@ -377,7 +377,7 @@ caller (020) already has the namespace object from its own reconcile and passes 
   007, 012, 014, 015.
 - Controller reconciliation: `Observe`/`Create`/`Update`/`Delete`, condition-setting, finalizers —
   spec 020.
-- Quota admission math (011), quota enforcement (018), identity sync (016/017), deletion requests
+- Quota admission math (011), quota enforcement (018), identity sync (016/017), deletion permits
   (019), replication (021).
 - Duplicate-connection detection within `customNetworkRules` (§3.8). Expressing "no repeated
   connection name in this list" in CEL is disproportionately complex for a check that's simple to
