@@ -1,0 +1,25 @@
+# Configures the notes GitHub auto-generates for a release: PRs are grouped by
+# the labels set by .github/workflows/label.yml, and Dependabot is left out.
+changelog:
+  exclude:
+    authors:
+      - dependabot
+      - dependabot[bot]
+    labels:
+      - dependencies
+  categories:
+    - title: "🚀 Features"
+      labels:
+        - enhancement
+    - title: "🐛 Bug fixes"
+      labels:
+        - bug
+    - title: "🧹 Maintenance"
+      labels:
+        - maintenance
+    - title: "📚 Documentation"
+      labels:
+        - documentation
+    - title: "📦 Other changes"
+      labels:
+        - "*"
