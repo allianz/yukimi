@@ -59,18 +59,16 @@ spec:
           type: RuntimeDefault
       containers:
         - name: yukimi
-          # Hand-edited literal, bumped as part of cutting a release.
+          # The base is the local-build manifest: `make build` tags its image
+          # localhost/yukimi:latest; load that into the cluster
+          # (`kind load docker-image localhost/yukimi:latest`). The localhost/
+          # prefix is not cosmetic: without a registry component Docker resolves
+          # the name to docker.io/library/yukimi. The release workflow retargets
+          # it with `kustomize edit set image`.
           #
-          # Deliberately NOT $(VERSION) or any build-time substitution. VERSION
-          # comes from `git describe`, so every commit would change this line,
-          # every commit would show a diff in the generated install.yaml, and
-          # `make check-diff` would be permanently red. A committed rendered
-          # manifest has to be a function of the source tree only.
-          #
-          # Fully qualified: a bare `yukimi` resolves to docker.io/library/yukimi,
-          # which is a name anyone could claim. Pinned tag, never :latest, so a
-          # pod rescheduled onto a new node runs the same code as its neighbours.
-          image: ghcr.io/allianz/yukimi:v0.1.0
+          # :latest is explicit about the pull policy below: IfNotPresent keeps
+          # the locally loaded image rather than trying to pull it.
+          image: localhost/yukimi:latest
           imagePullPolicy: IfNotPresent
           args:
             # Required as an argument, not merely wished for: the flag defaults
@@ -161,8 +159,8 @@ spec:
             - name: tmp
               mountPath: /tmp
       volumes:
-        # yukimi-config is NOT part of install.yaml -- it is applied separately
-        # from deploy/config.yaml, so re-applying install.yaml during an upgrade
+        # yukimi-config is NOT part of install.yaml -- it is applied separately,
+        # so re-applying install.yaml during an upgrade
         # can never overwrite the operator's real values with placeholders.
         #
         # Until it exists the pod stays in ContainerCreating with a FailedMount

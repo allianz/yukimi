@@ -34,8 +34,8 @@ jobs:
 
       - run: make reviewable
 
-      # `make generate` regenerates package/crds and deploy/install.yaml, so this
-      # fails the build if either committed copy is stale. Cheap here: reviewable
+      # `make generate` regenerates package/crds, so this
+      # fails the build if the committed copy is stale. Cheap here: reviewable
       # has already warmed the tool and module caches.
       - run: make check-diff
 
@@ -54,11 +54,11 @@ jobs:
       # this step is the seven hand-written objects.
       # Disabled: the pinned kubeconform image cannot currently be pulled.
       # TODO: reimplement.
-      # - name: Validate deploy/install.yaml
+      # - name: Validate _output/install.yaml
       #   uses: docker://ghcr.io/yannh/kubeconform:v0.8.0@sha256:faffaf43f95aa6425306e1ab8d6fcad72acb9049158f38e574c085ea1ec0f64e
       #   with:
       #     entrypoint: /kubeconform
-      #     args: -strict -summary -skip CustomResourceDefinition deploy/install.yaml
+      #     args: -strict -summary -skip CustomResourceDefinition _output/install.yaml
 
       
       # Coverage is computed by `make test` and would otherwise be written into

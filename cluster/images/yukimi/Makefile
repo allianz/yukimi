@@ -16,10 +16,12 @@ img.build:
 	@$(MAKE) BUILD_ARGS="--load" img.build.shared
 	@$(OK) docker build $(IMAGE)
 
+# The default docker builder cannot build several platforms in one call.
 img.publish:
-	@$(INFO) Skipping image publish for $(IMAGE)
-	@echo Publish is deferred to xpkg machinery
-	@$(OK) Image publish skipped for $(IMAGE)
+	@$(INFO) docker push $(IMAGE)
+	@docker buildx inspect yukimi >/dev/null 2>&1 || docker buildx create --name yukimi >/dev/null || $(FAIL)
+	@$(MAKE) BUILD_ARGS="--push --builder yukimi" img.build.shared
+	@$(OK) docker push $(IMAGE)
 
 img.build.shared:
 	@cp Dockerfile $(IMAGE_TEMP_DIR) || $(FAIL)

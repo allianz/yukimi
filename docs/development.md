@@ -25,7 +25,7 @@ Makefile, so treat those as authoritative rather than the numbers below:
 - **kubectl**: Kubernetes command-line tool
 - **Helm**: Kubernetes package manager (installed when needed)
 - **golangci-lint** (v2.13.2, pinned in the `Makefile`): Go linting tool
-- **kustomize**: renders `deploy/base` into `deploy/install.yaml`
+- **kustomize**: renders `package/` into `_output/install.yaml`
 - **gomplate** (v3.10.0, pinned in the `Makefile`): template rendering, used by `provider.addtype`
 - **istioctl**, **kcl**: pulled in by the submodule; unused by this project
 
@@ -54,20 +54,17 @@ These tools are downloaded to `.cache/tools/`.
 - **`make generate`**: Regenerate all auto-generated code
   - Required after API changes
   - Generates deepcopy methods, managed resource interfaces, etc.
-  - Also regenerates `deploy/install.yaml` from `deploy/base`, so `check-diff` fails if the committed
-    copy is stale
+  - Also renders `_output/install.yaml` (untracked) from `package/`
 
 #### Manifests
 
-- **`make manifests`**: Render `deploy/base` into the committed `deploy/install.yaml`
-- **`make manifests.check`**: Fail if `deploy/install.yaml` is stale. Runs as part of `check-diff`
-- **`make manifests.overlays`**: Verify the kustomize overlays under `deploy/overlays` still build
+- **`make manifests`**: Render `package/` into `_output/install.yaml` (local image `localhost/yukimi:latest`)
 
 #### Release & Publishing
 
 - **`make build`**: Build provider binary for host platform
 - **`make build.all`**: Build for all supported platforms (linux_amd64, linux_arm64)
-- **`make publish`**: Build and publish releasable artifacts (currently disabled)
+- **`make publish`**: Push the multi-arch image `ghcr.io/allianz/yukimi:$(VERSION)`; run `make build.all` first
 - **`make tag`**: Tag a release (currently disabled)
 - **`make promote`**: Promote release to a channel (currently disabled)
 

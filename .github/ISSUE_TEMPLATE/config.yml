@@ -9,6 +9,3 @@ contact_links:
     url: https://github.com/allianz/yukimi/blob/main/CONTRIBUTING.md
     about: >-
       Yukimi is built spec-first. Read this before proposing a design change.
-  - name: Installing and configuring the provider
-    url: https://github.com/allianz/yukimi/blob/main/deploy/README.md
-    about: Prerequisites, IAM requirements and the config ConfigMap.
