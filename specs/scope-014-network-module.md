@@ -96,7 +96,7 @@ a run.
   its baseline and the remaining modules still execute — design 3.8/3.9's "a rejected entry leaves the
   account on its baseline" only holds if the modules after the rejecting one still get to run. Only 012
   ever aborts the run; 014 never calls `.Aborting()` on its own outcome.
-- 014 implements `Observe(ctx, mc) (bool, Outcome)` returning `true, Done()` today, for the same reason
+- 014 implements `Observe(ctx, data) (bool, Outcome)` returning `true, Done()` today, for the same reason
   013 does: the method exists so a real read-back can be added later without reopening the interface.
 
 ## Raised by the 020 clarification

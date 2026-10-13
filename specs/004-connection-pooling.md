@@ -393,7 +393,7 @@ func main() {
 
 ```go
 // The pool-side sequence the account module's teardown (012, not yet written) performs immediately
-// after DROP ACCOUNT succeeds. 012 reaches both calls through pipeline.ModuleContext (009), which
+// after DROP ACCOUNT succeeds. 012 reaches both calls through pipeline.ResourceData (009), which
 // wraps OrgAdminDB and EvictTenant; the order and effect are the same either way.
 import "github.com/allianz/yukimi/internal/snowflake/pool"
 

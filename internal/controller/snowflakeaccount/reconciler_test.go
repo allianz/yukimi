@@ -48,7 +48,7 @@ import (
 )
 
 // fakeModule scripts single-shot Observe/Apply/Teardown outcomes and, unlike
-// the account module, never touches mc — see
+// the account module, never touches data — see
 // internal/account/pipeline/pipeline_test.go's own fakeModule, whose shape
 // this copies (the type itself is unexported there, so it cannot be
 // imported).
@@ -67,11 +67,11 @@ type fakeModule struct {
 
 func (f *fakeModule) Name() string { return f.name }
 
-func (f *fakeModule) Observe(_ context.Context, _ *pipeline.ModuleContext) pipeline.Outcome {
+func (f *fakeModule) Observe(_ context.Context, _ *pipeline.ResourceData) pipeline.Outcome {
 	return f.observeOut
 }
 
-func (f *fakeModule) Apply(_ context.Context, _ *pipeline.ModuleContext) pipeline.Outcome {
+func (f *fakeModule) Apply(_ context.Context, _ *pipeline.ResourceData) pipeline.Outcome {
 	if f.forbidApply {
 		panic("Apply must not be called")
 	}
@@ -79,7 +79,7 @@ func (f *fakeModule) Apply(_ context.Context, _ *pipeline.ModuleContext) pipelin
 	return f.applyOut
 }
 
-func (f *fakeModule) Teardown(_ context.Context, _ *pipeline.ModuleContext) error {
+func (f *fakeModule) Teardown(_ context.Context, _ *pipeline.ResourceData) error {
 	if f.forbidTeardown {
 		panic("Teardown must not be called")
 	}
@@ -142,7 +142,7 @@ func newExternal(t *testing.T, m pipeline.Module, objs ...client.Object) (*exter
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(objs...).WithStatusSubresource(&v1alpha1.DeletionPermit{}, &v1alpha1.SnowflakeAccount{}).Build()
 	e := &external{
 		kube:     c,
-		pool:     nil, // fakeModule never touches the ModuleContext's pool
+		pool:     nil, // fakeModule never touches the ResourceData's pool
 		pipeline: pipeline.New(m),
 		cfg:      &base.Config{Snowflake: base.SnowflakeSettings{UsePrivateLink: true}, Deletion: base.DeletionSettings{Protection: true}},
 		logger:   logging.NewNopLogger(),
@@ -635,13 +635,13 @@ type orderedModule struct {
 }
 
 func (o *orderedModule) Name() string { return o.name }
-func (o *orderedModule) Observe(_ context.Context, _ *pipeline.ModuleContext) pipeline.Outcome {
+func (o *orderedModule) Observe(_ context.Context, _ *pipeline.ResourceData) pipeline.Outcome {
 	return pipeline.Done()
 }
-func (o *orderedModule) Apply(_ context.Context, _ *pipeline.ModuleContext) pipeline.Outcome {
+func (o *orderedModule) Apply(_ context.Context, _ *pipeline.ResourceData) pipeline.Outcome {
 	return pipeline.Done()
 }
-func (o *orderedModule) Teardown(_ context.Context, _ *pipeline.ModuleContext) error {
+func (o *orderedModule) Teardown(_ context.Context, _ *pipeline.ResourceData) error {
 	*o.order = append(*o.order, o.name)
 	return nil
 }

@@ -29,18 +29,18 @@ import (
 // this one already needs the same platform-authenticated connection. While
 // the account is within its post-create grace period, it skips the
 // connection attempt entirely rather than trying and failing.
-func (m *module) Observe(ctx context.Context, mc *pipeline.ModuleContext) pipeline.Outcome {
-	cr := mc.CR()
+func (m *module) Observe(ctx context.Context, data *pipeline.ResourceData) pipeline.Outcome {
+	cr := data.CR()
 	if cr.Status.AccountLocator == "" {
 		return pipeline.Pending("account not created yet")
 	}
-	m.syncStatus(mc)
+	m.syncStatus(data)
 
 	if withinGracePeriod(cr, m.gracePeriod) {
 		return pipeline.Pending(provisioningMessage)
 	}
 
-	if _, err := connectTenant(ctx, mc); err != nil {
+	if _, err := connectTenant(ctx, data); err != nil {
 		return pipeline.Failed(err)
 	}
 

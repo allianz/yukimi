@@ -89,21 +89,21 @@ func TestApply_FreshCreate_Success(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
 	orgAdminDB, mock := newOrgAdminMock(t)
 	fake := &fakeDBPool{orgAdminDB: orgAdminDB}
-	mc := pipeline.NewModuleContext(cr, nil, nil, fake)
+	data := pipeline.NewResourceData(cr, nil, nil, fake)
 
 	// Every CREATE ACCOUNT position is bound (specs/005, Verified Bind
 	// Positions): name, admin name, key, email, region (upper-cased, "_"
 	// separated).
 	mock.ExpectExec("CREATE ACCOUNT").
-		WithArgs(mc.ResolvedAccountName(), "platform", sqlmock.AnyArg(), "a@b.com", "AWS_EU_CENTRAL_1").
+		WithArgs(data.ResolvedAccountName(), "platform", sqlmock.AnyArg(), "a@b.com", "AWS_EU_CENTRAL_1").
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	rows := sqlmock.NewRows([]string{"account_name", "account_locator"}).
-		AddRow(mc.ResolvedAccountName(), "AB12345")
-	mock.ExpectQuery("SHOW ACCOUNTS").WithArgs(mc.ResolvedAccountName()).WillReturnRows(rows)
+		AddRow(data.ResolvedAccountName(), "AB12345")
+	mock.ExpectQuery("SHOW ACCOUNTS").WithArgs(data.ResolvedAccountName()).WillReturnRows(rows)
 
 	m := &module{keyManager: secrets.NewKeyManager(secrets.NewFakeKeyStore(), time.Hour), org: "myorg", gracePeriod: 5 * time.Minute, backplane: testBackplaneConfig("aws-eu-central-1")}
 	before := time.Now()
-	outcome := m.Apply(context.Background(), mc)
+	outcome := m.Apply(context.Background(), data)
 
 	if outcome.State != pipeline.StatePending {
 		t.Errorf("outcome.State = %v, want StatePending", outcome.State)
@@ -133,10 +133,10 @@ func TestApply_KnownLocator_NilCreatedAt_ConnectionSucceeds(t *testing.T) {
 	mock.ExpectQuery("SHOW USERS").WillReturnRows(
 		sqlmock.NewRows([]string{"name", "email"}).AddRow("platform", "a@b.com"))
 	fake := &fakeDBPool{tenantDB: tenantDB}
-	mc := pipeline.NewModuleContext(cr, nil, nil, fake)
+	data := pipeline.NewResourceData(cr, nil, nil, fake)
 
 	m := &module{gracePeriod: 5 * time.Minute}
-	outcome := m.Apply(context.Background(), mc)
+	outcome := m.Apply(context.Background(), data)
 
 	if outcome.State != pipeline.StateDone {
 		t.Errorf("outcome.State = %v, want StateDone", outcome.State)
@@ -152,10 +152,10 @@ func TestApply_KnownLocator_PastGracePeriod_ConnectionFails(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345", "a@b.com", "")
 	cr.Status.AccountCreatedAt = &metav1.Time{Time: time.Now().Add(-10 * time.Minute)}
 	wantErr := errors.New("dial failed")
-	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{tenantErr: wantErr})
+	data := pipeline.NewResourceData(cr, nil, nil, &fakeDBPool{tenantErr: wantErr})
 
 	m := &module{gracePeriod: 5 * time.Minute}
-	outcome := m.Apply(context.Background(), mc)
+	outcome := m.Apply(context.Background(), data)
 
 	if outcome.State != pipeline.StateFailed {
 		t.Errorf("outcome.State = %v, want StateFailed", outcome.State)
@@ -173,10 +173,10 @@ func TestApply_KnownLocator_PastGracePeriod_ConnectionFails(t *testing.T) {
 func TestApply_KnownLocator_WithinGracePeriod_NoConnectionAttempt(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345", "a@b.com", "")
 	cr.Status.AccountCreatedAt = &metav1.Time{Time: time.Now()}
-	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
+	data := pipeline.NewResourceData(cr, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
 
 	m := &module{gracePeriod: 5 * time.Minute}
-	outcome := m.Apply(context.Background(), mc)
+	outcome := m.Apply(context.Background(), data)
 
 	if outcome.State != pipeline.StatePending {
 		t.Errorf("outcome.State = %v, want StatePending", outcome.State)
@@ -194,10 +194,10 @@ func TestApply_KnownLocator_PastGracePeriod_ConnectionSucceeds(t *testing.T) {
 	mock.ExpectQuery("SHOW USERS").WillReturnRows(
 		sqlmock.NewRows([]string{"name", "email"}).AddRow("platform", "a@b.com"))
 	fake := &fakeDBPool{tenantDB: tenantDB}
-	mc := pipeline.NewModuleContext(cr, nil, nil, fake)
+	data := pipeline.NewResourceData(cr, nil, nil, fake)
 
 	m := &module{gracePeriod: 5 * time.Minute}
-	outcome := m.Apply(context.Background(), mc)
+	outcome := m.Apply(context.Background(), data)
 
 	if outcome.State != pipeline.StateDone {
 		t.Errorf("outcome.State = %v, want StateDone", outcome.State)
@@ -217,10 +217,10 @@ func TestApply_KnownLocator_EmailDrifted_AltersEmail(t *testing.T) {
 		sqlmock.NewRows([]string{"name", "email"}).AddRow("platform", "old@b.com"))
 	mock.ExpectExec("ALTER USER").WithArgs("platform", "a@b.com").WillReturnResult(sqlmock.NewResult(0, 0))
 	fake := &fakeDBPool{tenantDB: tenantDB}
-	mc := pipeline.NewModuleContext(cr, nil, nil, fake)
+	data := pipeline.NewResourceData(cr, nil, nil, fake)
 
 	m := &module{gracePeriod: 5 * time.Minute}
-	outcome := m.Apply(context.Background(), mc)
+	outcome := m.Apply(context.Background(), data)
 
 	if outcome.State != pipeline.StateDone {
 		t.Errorf("outcome.State = %v, want StateDone", outcome.State)
@@ -239,10 +239,10 @@ func TestApply_KnownLocator_NoPlatformUserRow_AltersEmail(t *testing.T) {
 	mock.ExpectQuery("SHOW USERS").WillReturnRows(sqlmock.NewRows([]string{"name", "email"}))
 	mock.ExpectExec("ALTER USER").WillReturnResult(sqlmock.NewResult(0, 0))
 	fake := &fakeDBPool{tenantDB: tenantDB}
-	mc := pipeline.NewModuleContext(cr, nil, nil, fake)
+	data := pipeline.NewResourceData(cr, nil, nil, fake)
 
 	m := &module{gracePeriod: 5 * time.Minute}
-	outcome := m.Apply(context.Background(), mc)
+	outcome := m.Apply(context.Background(), data)
 
 	if outcome.State != pipeline.StateDone {
 		t.Errorf("outcome.State = %v, want StateDone", outcome.State)
@@ -260,10 +260,10 @@ func TestApply_KnownLocator_EmailLookupFails_SystemError(t *testing.T) {
 	tenantDB, mock := newOrgAdminMock(t)
 	mock.ExpectQuery("SHOW USERS").WillReturnError(errors.New("connection reset"))
 	fake := &fakeDBPool{tenantDB: tenantDB}
-	mc := pipeline.NewModuleContext(cr, nil, nil, fake)
+	data := pipeline.NewResourceData(cr, nil, nil, fake)
 
 	m := &module{gracePeriod: 5 * time.Minute}
-	outcome := m.Apply(context.Background(), mc)
+	outcome := m.Apply(context.Background(), data)
 
 	if outcome.State != pipeline.StateFailed {
 		t.Errorf("outcome.State = %v, want StateFailed", outcome.State)
@@ -283,10 +283,10 @@ func TestApply_KnownLocator_EmailUpdateFails_SystemError(t *testing.T) {
 		sqlmock.NewRows([]string{"name", "email"}).AddRow("platform", "old@b.com"))
 	mock.ExpectExec("ALTER USER").WillReturnError(errors.New("connection reset"))
 	fake := &fakeDBPool{tenantDB: tenantDB}
-	mc := pipeline.NewModuleContext(cr, nil, nil, fake)
+	data := pipeline.NewResourceData(cr, nil, nil, fake)
 
 	m := &module{gracePeriod: 5 * time.Minute}
-	outcome := m.Apply(context.Background(), mc)
+	outcome := m.Apply(context.Background(), data)
 
 	if outcome.State != pipeline.StateFailed {
 		t.Errorf("outcome.State = %v, want StateFailed", outcome.State)
@@ -301,7 +301,7 @@ func TestApply_KnownLocator_EmailUpdateFails_SystemError(t *testing.T) {
 func TestApply_FreshCreate_DuplicateAccountName_Rejected(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
 	orgAdminDB, mock := newOrgAdminMock(t)
-	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{orgAdminDB: orgAdminDB})
+	data := pipeline.NewResourceData(cr, nil, nil, &fakeDBPool{orgAdminDB: orgAdminDB})
 
 	mock.ExpectExec("CREATE ACCOUNT").WillReturnError(&gosnowflake.SnowflakeError{
 		Number:   2003,
@@ -310,7 +310,7 @@ func TestApply_FreshCreate_DuplicateAccountName_Rejected(t *testing.T) {
 	})
 
 	m := &module{keyManager: secrets.NewKeyManager(secrets.NewFakeKeyStore(), time.Hour), org: "myorg", gracePeriod: 5 * time.Minute, backplane: testBackplaneConfig("aws-eu-central-1")}
-	outcome := m.Apply(context.Background(), mc)
+	outcome := m.Apply(context.Background(), data)
 
 	if outcome.State != pipeline.StateFailed {
 		t.Errorf("outcome.State = %v, want StateFailed", outcome.State)
@@ -327,12 +327,12 @@ func TestApply_FreshCreate_DuplicateAccountName_Rejected(t *testing.T) {
 func TestApply_FreshCreate_CreateAccountFails_SystemError(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
 	orgAdminDB, mock := newOrgAdminMock(t)
-	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{orgAdminDB: orgAdminDB})
+	data := pipeline.NewResourceData(cr, nil, nil, &fakeDBPool{orgAdminDB: orgAdminDB})
 
 	mock.ExpectExec("CREATE ACCOUNT").WillReturnError(errors.New("connection reset"))
 
 	m := &module{keyManager: secrets.NewKeyManager(secrets.NewFakeKeyStore(), time.Hour), org: "myorg", gracePeriod: 5 * time.Minute, backplane: testBackplaneConfig("aws-eu-central-1")}
-	outcome := m.Apply(context.Background(), mc)
+	outcome := m.Apply(context.Background(), data)
 
 	if outcome.State != pipeline.StateFailed {
 		t.Errorf("outcome.State = %v, want StateFailed", outcome.State)
@@ -346,10 +346,10 @@ func TestApply_FreshCreate_CreateAccountFails_SystemError(t *testing.T) {
 func TestApply_FreshCreate_OrgAdminConnectionFails(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
 	wantErr := errors.New("dial failed")
-	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{orgAdminErr: wantErr})
+	data := pipeline.NewResourceData(cr, nil, nil, &fakeDBPool{orgAdminErr: wantErr})
 
 	m := &module{keyManager: secrets.NewKeyManager(secrets.NewFakeKeyStore(), time.Hour), org: "myorg", gracePeriod: 5 * time.Minute, backplane: testBackplaneConfig("aws-eu-central-1")}
-	outcome := m.Apply(context.Background(), mc)
+	outcome := m.Apply(context.Background(), data)
 
 	if outcome.State != pipeline.StateFailed {
 		t.Errorf("outcome.State = %v, want StateFailed", outcome.State)
@@ -361,13 +361,13 @@ func TestApply_FreshCreate_OrgAdminConnectionFails(t *testing.T) {
 func TestApply_FreshCreate_LocateAccount_NoMatch(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
 	orgAdminDB, mock := newOrgAdminMock(t)
-	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{orgAdminDB: orgAdminDB})
+	data := pipeline.NewResourceData(cr, nil, nil, &fakeDBPool{orgAdminDB: orgAdminDB})
 
 	mock.ExpectExec("CREATE ACCOUNT").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SHOW ACCOUNTS").WillReturnRows(sqlmock.NewRows([]string{"account_name", "account_locator"}))
 
 	m := &module{keyManager: secrets.NewKeyManager(secrets.NewFakeKeyStore(), time.Hour), org: "myorg", gracePeriod: 5 * time.Minute, backplane: testBackplaneConfig("aws-eu-central-1")}
-	outcome := m.Apply(context.Background(), mc)
+	outcome := m.Apply(context.Background(), data)
 
 	if outcome.State != pipeline.StateFailed {
 		t.Errorf("outcome.State = %v, want StateFailed", outcome.State)
@@ -382,16 +382,16 @@ func TestApply_FreshCreate_LocateAccount_NoMatch(t *testing.T) {
 func TestApply_FreshCreate_LocateAccount_DiscardsNonExactMatch(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
 	orgAdminDB, mock := newOrgAdminMock(t)
-	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{orgAdminDB: orgAdminDB})
+	data := pipeline.NewResourceData(cr, nil, nil, &fakeDBPool{orgAdminDB: orgAdminDB})
 
 	mock.ExpectExec("CREATE ACCOUNT").WillReturnResult(sqlmock.NewResult(0, 0))
 	rows := sqlmock.NewRows([]string{"account_name", "account_locator"}).
 		AddRow("some_other_account", "ZZ00000").
-		AddRow(mc.ResolvedAccountName(), "AB12345")
+		AddRow(data.ResolvedAccountName(), "AB12345")
 	mock.ExpectQuery("SHOW ACCOUNTS").WillReturnRows(rows)
 
 	m := &module{keyManager: secrets.NewKeyManager(secrets.NewFakeKeyStore(), time.Hour), org: "myorg", gracePeriod: 5 * time.Minute, backplane: testBackplaneConfig("aws-eu-central-1")}
-	outcome := m.Apply(context.Background(), mc)
+	outcome := m.Apply(context.Background(), data)
 
 	if outcome.State != pipeline.StatePending {
 		t.Fatalf("outcome.State = %v, want StatePending", outcome.State)
@@ -406,7 +406,7 @@ func TestApply_FreshCreate_LocateAccount_DiscardsNonExactMatch(t *testing.T) {
 func TestApply_FreshCreate_SecretIdentifierOccupied(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
 	store := secrets.NewFakeKeyStore()
-	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
+	data := pipeline.NewResourceData(cr, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
 
 	id, err := secrets.NewTenantIdentifier("myorg", cr.Namespace, cr.Name)
 	if err != nil {
@@ -417,7 +417,7 @@ func TestApply_FreshCreate_SecretIdentifierOccupied(t *testing.T) {
 	}
 
 	m := &module{keyManager: secrets.NewKeyManager(store, time.Hour), org: "myorg", gracePeriod: 5 * time.Minute, backplane: testBackplaneConfig("aws-eu-central-1")}
-	outcome := m.Apply(context.Background(), mc)
+	outcome := m.Apply(context.Background(), data)
 
 	if outcome.State != pipeline.StateFailed {
 		t.Errorf("outcome.State = %v, want StateFailed", outcome.State)
@@ -445,18 +445,18 @@ func TestApply_FreshCreate_ResumeCrashedCreate_AccountNotYetCreated(t *testing.T
 	seeded := seedResumableCredential(t, store, id, cr.CreationTimestamp.Add(time.Minute))
 
 	orgAdminDB, mock := newOrgAdminMock(t)
-	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{orgAdminDB: orgAdminDB})
+	data := pipeline.NewResourceData(cr, nil, nil, &fakeDBPool{orgAdminDB: orgAdminDB})
 
 	mock.ExpectQuery("SHOW ACCOUNTS").WillReturnRows(sqlmock.NewRows([]string{"account_name", "account_locator"}))
 	mock.ExpectExec("CREATE ACCOUNT").
-		WithArgs(mc.ResolvedAccountName(), "platform", seeded.PublicKey, "a@b.com", "AWS_EU_CENTRAL_1").
+		WithArgs(data.ResolvedAccountName(), "platform", seeded.PublicKey, "a@b.com", "AWS_EU_CENTRAL_1").
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	rows := sqlmock.NewRows([]string{"account_name", "account_locator"}).
-		AddRow(mc.ResolvedAccountName(), "AB12345")
+		AddRow(data.ResolvedAccountName(), "AB12345")
 	mock.ExpectQuery("SHOW ACCOUNTS").WillReturnRows(rows)
 
 	m := &module{keyManager: secrets.NewKeyManager(store, time.Hour), org: "myorg", gracePeriod: 5 * time.Minute, backplane: testBackplaneConfig("aws-eu-central-1")}
-	outcome := m.Apply(context.Background(), mc)
+	outcome := m.Apply(context.Background(), data)
 
 	if outcome.State != pipeline.StatePending {
 		t.Errorf("outcome.State = %v, want StatePending", outcome.State)
@@ -486,15 +486,15 @@ func TestApply_FreshCreate_ResumeCrashedCreate_AccountAlreadyExists(t *testing.T
 	seedResumableCredential(t, store, id, cr.CreationTimestamp.Add(time.Minute))
 
 	orgAdminDB, mock := newOrgAdminMock(t)
-	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{orgAdminDB: orgAdminDB})
+	data := pipeline.NewResourceData(cr, nil, nil, &fakeDBPool{orgAdminDB: orgAdminDB})
 
 	rows := sqlmock.NewRows([]string{"account_name", "account_locator"}).
-		AddRow(mc.ResolvedAccountName(), "AB12345")
+		AddRow(data.ResolvedAccountName(), "AB12345")
 	mock.ExpectQuery("SHOW ACCOUNTS").WillReturnRows(rows)
 	// Deliberately no ExpectExec("CREATE ACCOUNT").
 
 	m := &module{keyManager: secrets.NewKeyManager(store, time.Hour), org: "myorg", gracePeriod: 5 * time.Minute, backplane: testBackplaneConfig("aws-eu-central-1")}
-	outcome := m.Apply(context.Background(), mc)
+	outcome := m.Apply(context.Background(), data)
 
 	if outcome.State != pipeline.StatePending {
 		t.Errorf("outcome.State = %v, want StatePending", outcome.State)
@@ -522,10 +522,10 @@ func TestApply_FreshCreate_SecretIdentifierOccupiedByOrphan_SystemError(t *testi
 	}
 	seedResumableCredential(t, store, id, cr.CreationTimestamp.Add(-time.Hour))
 
-	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
+	data := pipeline.NewResourceData(cr, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
 
 	m := &module{keyManager: secrets.NewKeyManager(store, time.Hour), org: "myorg", gracePeriod: 5 * time.Minute, backplane: testBackplaneConfig("aws-eu-central-1")}
-	outcome := m.Apply(context.Background(), mc)
+	outcome := m.Apply(context.Background(), data)
 
 	if outcome.State != pipeline.StateFailed {
 		t.Errorf("outcome.State = %v, want StateFailed", outcome.State)
@@ -554,15 +554,15 @@ func TestApply_FreshCreate_ResumeCrashedCreate_AtClockSkewBoundary_Resumes(t *te
 	seedResumableCredential(t, store, id, cr.CreationTimestamp.Add(-resumeClockSkewBuffer))
 
 	orgAdminDB, mock := newOrgAdminMock(t)
-	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{orgAdminDB: orgAdminDB})
+	data := pipeline.NewResourceData(cr, nil, nil, &fakeDBPool{orgAdminDB: orgAdminDB})
 	mock.ExpectQuery("SHOW ACCOUNTS").WillReturnRows(sqlmock.NewRows([]string{"account_name", "account_locator"}))
 	mock.ExpectExec("CREATE ACCOUNT").WillReturnResult(sqlmock.NewResult(0, 0))
 	rows := sqlmock.NewRows([]string{"account_name", "account_locator"}).
-		AddRow(mc.ResolvedAccountName(), "AB12345")
+		AddRow(data.ResolvedAccountName(), "AB12345")
 	mock.ExpectQuery("SHOW ACCOUNTS").WillReturnRows(rows)
 
 	m := &module{keyManager: secrets.NewKeyManager(store, time.Hour), org: "myorg", gracePeriod: 5 * time.Minute, backplane: testBackplaneConfig("aws-eu-central-1")}
-	outcome := m.Apply(context.Background(), mc)
+	outcome := m.Apply(context.Background(), data)
 
 	if outcome.State != pipeline.StatePending {
 		t.Errorf("outcome.State = %v, want StatePending", outcome.State)
@@ -587,11 +587,11 @@ func TestApply_FreshCreate_ResumeCrashedCreate_ExistenceCheckFails_SystemError(t
 	seedResumableCredential(t, store, id, cr.CreationTimestamp.Add(time.Minute))
 
 	orgAdminDB, mock := newOrgAdminMock(t)
-	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{orgAdminDB: orgAdminDB})
+	data := pipeline.NewResourceData(cr, nil, nil, &fakeDBPool{orgAdminDB: orgAdminDB})
 	mock.ExpectQuery("SHOW ACCOUNTS").WillReturnError(errors.New("connection reset"))
 
 	m := &module{keyManager: secrets.NewKeyManager(store, time.Hour), org: "myorg", gracePeriod: 5 * time.Minute, backplane: testBackplaneConfig("aws-eu-central-1")}
-	outcome := m.Apply(context.Background(), mc)
+	outcome := m.Apply(context.Background(), data)
 
 	if outcome.State != pipeline.StateFailed {
 		t.Errorf("outcome.State = %v, want StateFailed", outcome.State)
@@ -619,10 +619,10 @@ func TestApply_FreshCreate_ResumeCrashedCreate_JustPastClockSkewBoundary_SystemE
 	}
 	seedResumableCredential(t, store, id, cr.CreationTimestamp.Add(-resumeClockSkewBuffer-time.Second))
 
-	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
+	data := pipeline.NewResourceData(cr, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
 
 	m := &module{keyManager: secrets.NewKeyManager(store, time.Hour), org: "myorg", gracePeriod: 5 * time.Minute, backplane: testBackplaneConfig("aws-eu-central-1")}
-	outcome := m.Apply(context.Background(), mc)
+	outcome := m.Apply(context.Background(), data)
 
 	if outcome.State != pipeline.StateFailed {
 		t.Errorf("outcome.State = %v, want StateFailed", outcome.State)
@@ -639,7 +639,7 @@ func TestApply_FreshCreate_SecretIdentifierPendingDeletion_Rejected(t *testing.T
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
 	store := secrets.NewFakeKeyStore()
 	store.SchedulesDeletion = true
-	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
+	data := pipeline.NewResourceData(cr, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
 
 	id, err := secrets.NewTenantIdentifier("myorg", cr.Namespace, cr.Name)
 	if err != nil {
@@ -653,7 +653,7 @@ func TestApply_FreshCreate_SecretIdentifierPendingDeletion_Rejected(t *testing.T
 	}
 
 	m := &module{keyManager: secrets.NewKeyManager(store, time.Hour), org: "myorg", gracePeriod: 5 * time.Minute, backplane: testBackplaneConfig("aws-eu-central-1")}
-	outcome := m.Apply(context.Background(), mc)
+	outcome := m.Apply(context.Background(), data)
 
 	if outcome.State != pipeline.StateFailed {
 		t.Errorf("outcome.State = %v, want StateFailed", outcome.State)
@@ -679,10 +679,10 @@ func TestApply_FreshCreate_SecretIdentifierPendingDeletion_Rejected(t *testing.T
 // it (see TestApply_FreshCreate_UnavailableRegion_Rejected).
 func TestApply_FreshCreate_UnknownRegion_Rejected(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
-	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
+	data := pipeline.NewResourceData(cr, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
 
 	m := &module{keyManager: secrets.NewKeyManager(secrets.NewFakeKeyStore(), time.Hour), org: "myorg", gracePeriod: 5 * time.Minute, backplane: testBackplaneConfig("aws-ap-southeast-1")}
-	outcome := m.Apply(context.Background(), mc)
+	outcome := m.Apply(context.Background(), data)
 
 	if outcome.State != pipeline.StateFailed {
 		t.Errorf("outcome.State = %v, want StateFailed", outcome.State)
@@ -706,12 +706,12 @@ func TestApply_FreshCreate_UnknownRegion_Rejected(t *testing.T) {
 func TestApply_FreshCreate_AccountNameTooLong_Rejected(t *testing.T) {
 	longName := strings.Repeat("a", 55) // the CRD's own 55-character ceiling (006)
 	cr := newTestCR(longName, "ns", "aws-eu-central-1", "", "a@b.com", "")
-	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
+	data := pipeline.NewResourceData(cr, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
 
 	// org is 7 characters, so maxNameLen = 63 - 1 - 6 - 7 = 49, below the
 	// 55-character name above.
 	m := &module{keyManager: secrets.NewKeyManager(secrets.NewFakeKeyStore(), time.Hour), org: "orgname", gracePeriod: 5 * time.Minute, backplane: testBackplaneConfig("aws-eu-central-1")}
-	outcome := m.Apply(context.Background(), mc)
+	outcome := m.Apply(context.Background(), data)
 
 	if outcome.State != pipeline.StateFailed {
 		t.Errorf("outcome.State = %v, want StateFailed", outcome.State)
@@ -734,10 +734,10 @@ func TestApply_FreshCreate_AccountNameTooLong_Rejected(t *testing.T) {
 // secrets.NewTenantIdentifier (003) rejects it.
 func TestApply_FreshCreate_OrgWithRepeatedSeparator_Rejected(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
-	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
+	data := pipeline.NewResourceData(cr, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
 
 	m := &module{keyManager: secrets.NewKeyManager(secrets.NewFakeKeyStore(), time.Hour), org: "my__org", gracePeriod: 5 * time.Minute, backplane: testBackplaneConfig("aws-eu-central-1")}
-	outcome := m.Apply(context.Background(), mc)
+	outcome := m.Apply(context.Background(), data)
 
 	if outcome.State != pipeline.StateFailed {
 		t.Errorf("outcome.State = %v, want StateFailed", outcome.State)
@@ -755,10 +755,10 @@ func TestApply_FreshCreate_OrgWithRepeatedSeparator_Rejected(t *testing.T) {
 // name check above.
 func TestApply_FreshCreate_NamespaceWithRepeatedSeparator_Rejected(t *testing.T) {
 	cr := newTestCR("acct", "my--ns", "aws-eu-central-1", "", "a@b.com", "")
-	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
+	data := pipeline.NewResourceData(cr, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
 
 	m := &module{keyManager: secrets.NewKeyManager(secrets.NewFakeKeyStore(), time.Hour), org: "myorg", gracePeriod: 5 * time.Minute, backplane: testBackplaneConfig("aws-eu-central-1")}
-	outcome := m.Apply(context.Background(), mc)
+	outcome := m.Apply(context.Background(), data)
 
 	if outcome.State != pipeline.StateFailed {
 		t.Errorf("outcome.State = %v, want StateFailed", outcome.State)
@@ -776,7 +776,7 @@ func TestApply_FreshCreate_NamespaceWithRepeatedSeparator_Rejected(t *testing.T)
 // not labeled as an alpha tester (Key Concept: Region Validation).
 func TestApply_FreshCreate_UnavailableRegion_Rejected(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
-	mc := pipeline.NewModuleContext(cr, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
+	data := pipeline.NewResourceData(cr, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
 
 	m := &module{
 		keyManager:  secrets.NewKeyManager(secrets.NewFakeKeyStore(), time.Hour),
@@ -784,7 +784,7 @@ func TestApply_FreshCreate_UnavailableRegion_Rejected(t *testing.T) {
 		gracePeriod: 5 * time.Minute,
 		backplane:   &backplane.Config{Regions: map[string]backplane.Region{"aws-eu-central-1": {Available: false}}},
 	}
-	outcome := m.Apply(context.Background(), mc)
+	outcome := m.Apply(context.Background(), data)
 
 	if outcome.State != pipeline.StateFailed {
 		t.Errorf("outcome.State = %v, want StateFailed", outcome.State)
@@ -808,11 +808,11 @@ func TestApply_FreshCreate_UnavailableRegion_AlphaTesterBypass(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
 	orgAdminDB, mock := newOrgAdminMock(t)
 	fake := &fakeDBPool{orgAdminDB: orgAdminDB}
-	mc := pipeline.NewModuleContext(cr, map[string]string{"alpha-tester": "true"}, nil, fake)
+	data := pipeline.NewResourceData(cr, map[string]string{"alpha-tester": "true"}, nil, fake)
 
 	mock.ExpectExec("CREATE ACCOUNT").WillReturnResult(sqlmock.NewResult(0, 0))
 	rows := sqlmock.NewRows([]string{"account_name", "account_locator"}).
-		AddRow(mc.ResolvedAccountName(), "AB12345")
+		AddRow(data.ResolvedAccountName(), "AB12345")
 	mock.ExpectQuery("SHOW ACCOUNTS").WillReturnRows(rows)
 
 	m := &module{
@@ -821,7 +821,7 @@ func TestApply_FreshCreate_UnavailableRegion_AlphaTesterBypass(t *testing.T) {
 		gracePeriod: 5 * time.Minute,
 		backplane:   &backplane.Config{Regions: map[string]backplane.Region{"aws-eu-central-1": {Available: false}}},
 	}
-	outcome := m.Apply(context.Background(), mc)
+	outcome := m.Apply(context.Background(), data)
 
 	if outcome.State != pipeline.StatePending {
 		t.Errorf("outcome.State = %v, want StatePending", outcome.State)
@@ -836,7 +836,7 @@ func TestApply_FreshCreate_UnavailableRegion_AlphaTesterBypass(t *testing.T) {
 // valid boolean.
 func TestApply_FreshCreate_AlphaTesterLabelMalformed_Failed(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
-	mc := pipeline.NewModuleContext(cr, map[string]string{"alpha-tester": "yes"}, nil, &fakeDBPool{t: t, forbidCalls: true})
+	data := pipeline.NewResourceData(cr, map[string]string{"alpha-tester": "yes"}, nil, &fakeDBPool{t: t, forbidCalls: true})
 
 	m := &module{
 		keyManager:  secrets.NewKeyManager(secrets.NewFakeKeyStore(), time.Hour),
@@ -844,7 +844,7 @@ func TestApply_FreshCreate_AlphaTesterLabelMalformed_Failed(t *testing.T) {
 		gracePeriod: 5 * time.Minute,
 		backplane:   &backplane.Config{Regions: map[string]backplane.Region{"aws-eu-central-1": {Available: false}}},
 	}
-	outcome := m.Apply(context.Background(), mc)
+	outcome := m.Apply(context.Background(), data)
 
 	if outcome.State != pipeline.StateFailed {
 		t.Errorf("outcome.State = %v, want StateFailed", outcome.State)
@@ -887,14 +887,14 @@ func TestApply_NonDoneOutcomesAbort(t *testing.T) {
 	// Pending: locator known, still inside the post-create grace period.
 	pending := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345", "a@b.com", "")
 	pending.Status.AccountCreatedAt = &metav1.Time{Time: time.Now()}
-	out := m.Apply(context.Background(), pipeline.NewModuleContext(pending, nil, nil, &fakeDBPool{t: t, forbidCalls: true}))
+	out := m.Apply(context.Background(), pipeline.NewResourceData(pending, nil, nil, &fakeDBPool{t: t, forbidCalls: true}))
 	if out.State != pipeline.StatePending || !out.Aborted {
 		t.Errorf("grace-period Apply = %+v, want an aborting Pending", out)
 	}
 
 	// Failed: fresh create in a region the Backplane Config does not know.
 	unknown := newTestCR("acct", "ns", "aws-us-nowhere-1", "", "a@b.com", "")
-	out = m.Apply(context.Background(), pipeline.NewModuleContext(unknown, nil, nil, &fakeDBPool{t: t, forbidCalls: true}))
+	out = m.Apply(context.Background(), pipeline.NewResourceData(unknown, nil, nil, &fakeDBPool{t: t, forbidCalls: true}))
 	if out.State != pipeline.StateFailed || !out.Aborted {
 		t.Errorf("unknown-region Apply = %+v, want an aborting Failed", out)
 	}
@@ -904,7 +904,7 @@ func TestApply_NonDoneOutcomesAbort(t *testing.T) {
 	done.Status.AccountCreatedAt = &metav1.Time{Time: time.Now().Add(-10 * time.Minute)}
 	db, mock := newOrgAdminMock(t)
 	mock.ExpectQuery("SHOW USERS").WillReturnRows(sqlmock.NewRows([]string{"name", "email"}).AddRow("platform", "a@b.com"))
-	out = m.Apply(context.Background(), pipeline.NewModuleContext(done, nil, nil, &fakeDBPool{tenantDB: db}))
+	out = m.Apply(context.Background(), pipeline.NewResourceData(done, nil, nil, &fakeDBPool{tenantDB: db}))
 	if out.State != pipeline.StateDone || out.Aborted {
 		t.Errorf("healthy Apply = %+v, want a non-aborting Done", out)
 	}

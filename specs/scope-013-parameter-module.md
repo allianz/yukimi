@@ -44,7 +44,7 @@ these points rest on — see its "Key Concept: Overwrite Apply, Generation-Gated
   Appendix B), because that will make this state org-owned and tenant-unchangeable, and any read-back
   built now becomes dead code. For now: **re-apply all global and regional parameters unconditionally
   on every `Apply`**, with no `SHOW PARAMETERS` and no comparison.
-- **013 still implements the full module contract**, including `Observe(ctx, mc) (bool, Outcome)`,
+- **013 still implements the full module contract**, including `Observe(ctx, data) (bool, Outcome)`,
   which returns `true, Done()` today. The method exists so the real read-back can be filled in later
   without reopening the interface — this spec should say so explicitly rather than leaving the inert
   body looking like an oversight.

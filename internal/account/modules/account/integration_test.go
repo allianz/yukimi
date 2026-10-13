@@ -82,7 +82,7 @@ func forceDeleteForTest(ctx context.Context, t *testing.T, id secrets.Identifier
 // create-then-destroy round trip.
 //
 // It deliberately does not also reconnect to the new account on a second
-// ModuleContext before destroying it: a freshly created account was observed
+// ResourceData before destroying it: a freshly created account was observed
 // taking well over two minutes to become reachable even over an
 // already-healthy PrivateLink path (confirmed separately against the
 // pre-existing sample account), which is Snowflake's own backend
@@ -163,7 +163,7 @@ func TestIntegration_CreateThenDestroy(t *testing.T) {
 	t.Cleanup(func() { forceDeleteForTest(ctx, t, secretIdentifier) })
 
 	pl := pipeline.New(m)
-	mc1 := pipeline.NewModuleContext(cr, nil, nil, p)
+	data1 := pipeline.NewResourceData(cr, nil, nil, p)
 
 	// Real Destroy, not a hand-rolled cleanup: registered so it still runs
 	// even if an assertion below fails early, and doubling as an idempotence
@@ -173,16 +173,16 @@ func TestIntegration_CreateThenDestroy(t *testing.T) {
 		if cr.Status.AccountLocator == "" {
 			return
 		}
-		if err := pl.Destroy(ctx, mc1); err != nil {
+		if err := pl.Destroy(ctx, data1); err != nil {
 			t.Errorf("cleanup: Destroy: %v", err)
 		}
 	})
 
-	if o := m.Observe(ctx, mc1); o.State != pipeline.StatePending {
+	if o := m.Observe(ctx, data1); o.State != pipeline.StatePending {
 		t.Fatalf("Observe before the account was ever created = %+v, want Pending", o)
 	}
 
-	outcome := m.Apply(ctx, mc1)
+	outcome := m.Apply(ctx, data1)
 	if outcome.State != pipeline.StatePending {
 		t.Fatalf("Apply (fresh create) = %+v, want Pending()", outcome)
 	}
@@ -195,7 +195,7 @@ func TestIntegration_CreateThenDestroy(t *testing.T) {
 	// SC-018's destroy half: tear the freshly created account down through
 	// the real Pipeline.Destroy -> Module.Teardown path against the live org
 	// and secret store.
-	if err := pl.Destroy(ctx, mc1); err != nil {
+	if err := pl.Destroy(ctx, data1); err != nil {
 		t.Fatalf("Destroy: %v", err)
 	}
 
@@ -209,8 +209,8 @@ func TestIntegration_CreateThenDestroy(t *testing.T) {
 
 	// The account itself is gone (restorable, not connectable): a fresh
 	// connection attempt against the same locator must now fail.
-	mc2 := pipeline.NewModuleContext(cr, nil, nil, p)
-	if _, err := mc2.TenantDB(ctx); err == nil {
+	data2 := pipeline.NewResourceData(cr, nil, nil, p)
+	if _, err := data2.TenantDB(ctx); err == nil {
 		t.Error("expected the tenant connection to fail after Destroy dropped the account")
 	}
 }
@@ -327,18 +327,18 @@ func TestIntegration_CreateWithFuzzedFields(t *testing.T) {
 	t.Cleanup(func() { forceDeleteForTest(ctx, t, secretIdentifier) })
 
 	pl := pipeline.New(m)
-	mc := pipeline.NewModuleContext(cr, nil, nil, p)
+	data := pipeline.NewResourceData(cr, nil, nil, p)
 
 	t.Cleanup(func() {
 		if cr.Status.AccountLocator == "" {
 			return
 		}
-		if err := pl.Destroy(ctx, mc); err != nil {
+		if err := pl.Destroy(ctx, data); err != nil {
 			t.Errorf("cleanup: Destroy: %v", err)
 		}
 	})
 
-	outcome := m.Apply(ctx, mc)
+	outcome := m.Apply(ctx, data)
 	if outcome.State != pipeline.StatePending {
 		t.Fatalf("Apply (fresh create with fuzzed fields) = %+v, want Pending()", outcome)
 	}
@@ -346,12 +346,12 @@ func TestIntegration_CreateWithFuzzedFields(t *testing.T) {
 		t.Fatal("Apply succeeded but cr.Status.AccountLocator is still empty")
 	}
 
-	orgAdminDB, err := mc.OrgAdminDB(ctx)
+	orgAdminDB, err := data.OrgAdminDB(ctx)
 	if err != nil {
 		t.Fatalf("OrgAdminDB: %v", err)
 	}
 	result, err := statement.New(orgAdminDB).Query(ctx, "read back created account",
-		"SHOW ACCOUNTS LIKE "+statement.QuoteLiteral(mc.ResolvedAccountName()))
+		"SHOW ACCOUNTS LIKE "+statement.QuoteLiteral(data.ResolvedAccountName()))
 	if err != nil {
 		t.Fatalf("SHOW ACCOUNTS: %v", err)
 	}
@@ -366,7 +366,7 @@ func TestIntegration_CreateWithFuzzedFields(t *testing.T) {
 		t.Fatalf("stored comment = %q, want %q — the fuzzed payload was corrupted or truncated in storage", comment, fuzzedDescription)
 	}
 
-	if err := pl.Destroy(ctx, mc); err != nil {
+	if err := pl.Destroy(ctx, data); err != nil {
 		t.Fatalf("Destroy: %v", err)
 	}
 }

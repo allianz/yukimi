@@ -69,7 +69,7 @@ a run.
 - **015 has no guardrail dependency.** Design.md's guardrails section (3.3) does not constrain
   `customAuthRules`, so exceptions are validated only against 006's CRD schema and design 3.9's own
   rule (an entry naming neither method is a validation error).
-- 015 implements `Observe(ctx, mc) (bool, Outcome)` returning `true, Done()` today, for the same reason
+- 015 implements `Observe(ctx, data) (bool, Outcome)` returning `true, Done()` today, for the same reason
   013 does: the method exists so a real read-back can be added later without reopening the interface.
 
 ## Raised by the 020 clarification

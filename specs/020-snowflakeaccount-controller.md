@@ -33,7 +33,7 @@ extension point for it.
 
 ## Key Concept: One Shared Context, Three Uniform Entry Points
 
-Every reconcile builds exactly one `pipeline.ModuleContext` and hands it, unchanged, to whichever of the
+Every reconcile builds exactly one `pipeline.ResourceData` and hands it, unchanged, to whichever of the
 pipeline's three entry points that reconcile method needs: `Observe` calls `Pipeline.Observe`;
 `Create` and `Update` share one internal function that calls `Pipeline.Apply`, since `Apply` is
 idempotent by construction and there is nothing for the two methods to do differently; `Delete` calls
@@ -194,11 +194,11 @@ This specification defines the `internal/controller/snowflakeaccount` package th
   ever invokes when the preceding `Observe` reported the account as existing; if none was ever created,
   the reconciler releases the finalizer on its own, without calling `Delete` at all — and only once this
   controller's own deletion gate (below) has separately authorized the destruction.
-- Builds one `pipeline.ModuleContext` per reconcile call, passing the target namespace's labels, read
-  fresh from the Kubernetes API on every call — `NewModuleContext` takes no backplane config; a module
+- Builds one `pipeline.ResourceData` per reconcile call, passing the target namespace's labels, read
+  fresh from the Kubernetes API on every call — `NewResourceData` takes no backplane config; a module
   that needs one injects its own copy at construction instead.
 - Persists the status; it does not compute any of it. `status.accountName`/`status.accountUrl` are
-  written by the account module (012) through the `ModuleContext`, and `status.observedGeneration` by the
+  written by the account module (012) through the `ResourceData`, and `status.observedGeneration` by the
   pipeline (009).
 - Renders what each run's `pipeline.Report` returns — events, module conditions and the finished `Ready`
   condition — onto the resource through one small `report` function, used by `Observe` and
@@ -268,7 +268,7 @@ This specification defines the `internal/controller/snowflakeaccount` package th
   `accountLocator`, or a condition owned by a module that never ran) is left exactly as the previous
   reconcile set it; nothing here blanks or defaults it.
 - **`Observe` runs on a resource that is being deleted** — it reports `ResourceExists:
-  cr.Status.AccountLocator != ""` and returns immediately, without building a `ModuleContext` or calling
+  cr.Status.AccountLocator != ""` and returns immediately, without building a `ResourceData` or calling
   the pipeline at all; only a resource whose account was never created reports `false` here, releasing
   the finalizer without ever reaching `Delete`.
 - **More than one `Active` `DeletionPermit` targets the same resource** — this controller does
@@ -300,16 +300,16 @@ This specification defines the `internal/controller/snowflakeaccount` package th
   `secrets.NewKeyManager()`, `secretsaws.New()` — Contract: `main.go` constructs exactly one key store and
   wraps it in a `*secrets.KeyManager`, passing that into both `pool.New` and `SetupGated`.
 - **`internal/snowflake/pool` (004)** — Used APIs: `pool.New()`, `Pool.Close()`, and, indirectly through
-  `pipeline.ModuleContext`, `OrgAdminDB()`/`TenantDB()`/`EvictTenant()` — Contract: one `*pool.Pool`
+  `pipeline.ResourceData`, `OrgAdminDB()`/`TenantDB()`/`EvictTenant()` — Contract: one `*pool.Pool`
   constructed in `main.go`, shared by every controller that needs one; closed exactly once, on shutdown.
 - **`internal/account/tenant` (006)** — Used APIs: `tenant.AccountURL()` — Contract: called directly by
   this controller once `status.accountLocator` is non-empty; `tenant.ResolveName` is reached only
-  indirectly, via `ModuleContext.ResolvedAccountName()`.
+  indirectly, via `ResourceData.ResolvedAccountName()`.
 - **`apis/base/v1alpha1` (006, 019)** — Used APIs: the `SnowflakeAccount`/`DeletionPermit`
   types, `SnowflakeAccountKind`, `SnowflakeAccountGroupVersionKind` — Contract: this package registers
   the former with `managed.NewReconciler` and reads/writes its `Status` directly.
 - **`internal/account/pipeline` (009)** — Used APIs: `pipeline.New()`,
-  `Pipeline.Observe()`, `.Apply()`, `.Destroy()`, `pipeline.NewModuleContext()`,
+  `Pipeline.Observe()`, `.Apply()`, `.Destroy()`, `pipeline.NewResourceData()`,
   `Observation.ExternalObservation()`, `pipeline.Report` (`Events()`, `Conditions()`, `Ready()`),
   `Outcomes.Err()` — Contract: exactly one `*pipeline.Pipeline`
   built once, at `Setup` time, from the module list this spec's Public API section fixes.
@@ -359,10 +359,10 @@ of `internal/account/modules/{guardrailcheck,quotacheck,parameter,network,auth,i
   forwards the result unchanged into `SetupGated` — never calling `Region()`/`Connection()` itself.
 - **SC-004**: the pipeline `SetupGated` builds contains exactly one module, identified by
   `Name() == pipeline.AccountModuleName`.
-- **SC-005**: every `pipeline.NewModuleContext` call this controller makes passes no backplane
+- **SC-005**: every `pipeline.NewResourceData` call this controller makes passes no backplane
   config — the constructor itself accepts none.
 - **SC-006**: `Observe` on a resource with a non-nil `GetDeletionTimestamp()` reports `ResourceExists:
-  cr.Status.AccountLocator != ""` and `ResourceUpToDate: true` without building a `ModuleContext` or
+  cr.Status.AccountLocator != ""` and `ResourceUpToDate: true` without building a `ResourceData` or
   calling any pipeline method.
 - **SC-007**: `Create` and `Update` both delegate to the same internal function, which calls
   `Pipeline.Apply` exactly once per call.
@@ -416,7 +416,7 @@ of `internal/account/modules/{guardrailcheck,quotacheck,parameter,network,auth,i
   every `SnowflakeAccount` in the deployment loses the deletion gate at once, with no way to re-enable it
   for a single resource while it's off for the rest.
 - **The org-admin connection is only ever reached from inside the account module (012), through
-  `ModuleContext`** — this controller itself never calls `OrgAdminDB` or holds an org-admin-scoped
+  `ResourceData`** — this controller itself never calls `OrgAdminDB` or holds an org-admin-scoped
   connection.
 - **No tenant-controllable value ever reaches `DROP ACCOUNT`'s grace period** — `cfg.Deletion.GracePeriodDays`
   is ops-owned configuration (002), passed into `accountmodule.New` unchanged; nothing here lets a request
@@ -487,10 +487,10 @@ func (e *external) Observe(ctx context.Context, cr *v1alpha1.SnowflakeAccount) (
         return managed.ExternalObservation{}, retryErr
     }
 
-    // NewModuleContext itself takes no backplane config — the account
+    // NewResourceData itself takes no backplane config — the account
     // module (012) that needs one already has its own copy from construction time.
-    mc := pipeline.NewModuleContext(cr, labels, log, e.pool)
-    obs := e.pipeline.Observe(ctx, mc)
+    data := pipeline.NewResourceData(cr, labels, log, e.pool)
+    obs := e.pipeline.Observe(ctx, data)
     e.report(cr, obs)
 
     // log.Handle(nil) == nil. On an error Crossplane ignores the observation, sets
@@ -526,8 +526,8 @@ func (e *external) apply(ctx context.Context, cr *v1alpha1.SnowflakeAccount) err
         return log.Handle(err)
     }
 
-    mc := pipeline.NewModuleContext(cr, labels, log, e.pool)
-    res := e.pipeline.Apply(ctx, mc)
+    data := pipeline.NewResourceData(cr, labels, log, e.pool)
+    res := e.pipeline.Apply(ctx, data)
     e.report(cr, res)
     firstErr := log.Handle(res.Err()) // becomes Synced's message; log.Handle(nil) == nil
 
@@ -572,11 +572,11 @@ func (e *external) Delete(ctx context.Context, cr *v1alpha1.SnowflakeAccount) (m
     if err != nil {
         return managed.ExternalDelete{}, log.Handle(err)
     }
-    mc := pipeline.NewModuleContext(cr, labels, log, e.pool)
+    data := pipeline.NewResourceData(cr, labels, log, e.pool)
 
     // Phase 3: every module's Teardown, in reverse — today, just the account
     // module's DROP ACCOUNT and credential cleanup.
-    if err := e.pipeline.Destroy(ctx, mc); err != nil {
+    if err := e.pipeline.Destroy(ctx, data); err != nil {
         return managed.ExternalDelete{}, log.Handle(err)
     }
 

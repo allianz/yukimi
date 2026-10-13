@@ -32,21 +32,21 @@ import (
 // no-op on a key never dialed, and KeyStore.Delete is idempotent on an
 // absent or already-pending credential (003) (Key Concept: Two Restore
 // Windows, specs/012-account-module.md).
-func (m *module) Teardown(ctx context.Context, mc *pipeline.ModuleContext) error {
-	cr := mc.CR()
+func (m *module) Teardown(ctx context.Context, data *pipeline.ResourceData) error {
+	cr := data.CR()
 
 	if cr.Status.AccountLocator != "" {
-		if err := m.dropAccount(ctx, mc); err != nil {
+		if err := m.dropAccount(ctx, data); err != nil {
 			return err
 		}
-		mc.EvictTenant()
+		data.EvictTenant()
 		// Observe's deletion check (020) reports ResourceExists solely from
 		// this field, so leaving it set would make the account look
 		// permanently undeleted and the finalizer would never clear.
 		cr.Status.AccountLocator = ""
 	}
 
-	return m.deleteCredential(ctx, mc)
+	return m.deleteCredential(ctx, data)
 }
 
 // dropAccount issues DROP ACCOUNT over the org-admin connection, reserved in
@@ -54,8 +54,8 @@ func (m *module) Teardown(ctx context.Context, mc *pipeline.ModuleContext) error
 // Only Module With Organization-Wide Privileges). IF EXISTS makes a
 // concurrently- or already-dropped account a success rather than an error,
 // so no SQLSTATE needs classifying here.
-func (m *module) dropAccount(ctx context.Context, mc *pipeline.ModuleContext) error {
-	db, err := mc.OrgAdminDB(ctx)
+func (m *module) dropAccount(ctx context.Context, data *pipeline.ResourceData) error {
+	db, err := data.OrgAdminDB(ctx)
 	if err != nil {
 		return err
 	}
@@ -63,7 +63,7 @@ func (m *module) dropAccount(ctx context.Context, mc *pipeline.ModuleContext) er
 	// The name binds; GRACE_PERIOD_IN_DAYS does not (specs/005, Verified Bind
 	// Positions), so the integer from config is formatted into the text.
 	sql := fmt.Sprintf("DROP ACCOUNT IF EXISTS IDENTIFIER(?) GRACE_PERIOD_IN_DAYS = %d", m.deletionGracePeriodDays)
-	if err := statement.New(db).Exec(ctx, "drop account", sql, mc.ResolvedAccountName()); err != nil {
+	if err := statement.New(db).Exec(ctx, "drop account", sql, data.ResolvedAccountName()); err != nil {
 		return fmt.Errorf("failed to drop account: %w", err)
 	}
 	return nil
@@ -74,8 +74,8 @@ func (m *module) dropAccount(ctx context.Context, mc *pipeline.ModuleContext) er
 // so any error returned here is a real failure — never swallowed, since a
 // leftover credential keeps the tenant's name blocked after the account is
 // gone.
-func (m *module) deleteCredential(ctx context.Context, mc *pipeline.ModuleContext) error {
-	cr := mc.CR()
+func (m *module) deleteCredential(ctx context.Context, data *pipeline.ResourceData) error {
+	cr := data.CR()
 
 	id, err := secrets.NewTenantIdentifier(m.org, cr.Namespace, cr.Name)
 	if err != nil {

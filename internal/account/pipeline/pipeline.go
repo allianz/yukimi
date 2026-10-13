@@ -25,7 +25,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-// Pipeline runs an ordered list of modules against one ModuleContext per call.
+// Pipeline runs an ordered list of modules against one ResourceData per call.
 type Pipeline struct {
 	modules []Module
 }
@@ -35,7 +35,7 @@ type Pipeline struct {
 // is execution order for Observe and Apply, and its reverse for Destroy.
 // Exactly one module must be the account module, identified by
 // Name() == AccountModuleName: its Observe outcome alone decides whether the
-// resource exists, and every module that calls ModuleContext.TenantDB must be
+// resource exists, and every module that calls ResourceData.TenantDB must be
 // registered after it, since TenantDB requires the locator only its Apply
 // sets. The account module need not be registered first overall — a module
 // needing no Snowflake connection (for example, a quota-check admission gate
@@ -117,8 +117,8 @@ var (
 )
 
 // readyLatched reports whether the CR's persisted Ready condition is True.
-func readyLatched(mc *ModuleContext) bool {
-	return mc.CR().GetCondition(xpv1.TypeReady).Status == corev1.ConditionTrue
+func readyLatched(data *ResourceData) bool {
+	return data.CR().GetCondition(xpv1.TypeReady).Status == corev1.ConditionTrue
 }
 
 // ready is the one place the aggregate Ready condition is built: Available
@@ -189,14 +189,14 @@ func (r Result) complete() bool { return r.AllDone() }
 
 // Observe calls every module's Observe in order and collects the outcomes. It
 // performs no mutation of its own and never stops early.
-func (p *Pipeline) Observe(ctx context.Context, mc *ModuleContext) Observation {
-	cr := mc.CR()
+func (p *Pipeline) Observe(ctx context.Context, data *ResourceData) Observation {
+	cr := data.CR()
 	obs := Observation{
 		generationApplied: cr.Status.GetObservedGeneration() == cr.Generation,
-		readyLatched:      readyLatched(mc),
+		readyLatched:      readyLatched(data),
 	}
 	for _, m := range p.modules {
-		out := m.Observe(ctx, mc)
+		out := m.Observe(ctx, data)
 		out.Module = m.Name()
 		obs.Outcomes = append(obs.Outcomes, out)
 	}
@@ -207,10 +207,10 @@ func (p *Pipeline) Observe(ctx context.Context, mc *ModuleContext) Observation {
 // non-Done outcome marked Abort. It sets status.observedGeneration iff the run
 // completed. It is idempotent by construction — callers may call it from both
 // a create and an update path with identical behavior.
-func (p *Pipeline) Apply(ctx context.Context, mc *ModuleContext) Result {
-	result := Result{readyLatched: readyLatched(mc)}
+func (p *Pipeline) Apply(ctx context.Context, data *ResourceData) Result {
+	result := Result{readyLatched: readyLatched(data)}
 	for _, m := range p.modules {
-		out := m.Apply(ctx, mc)
+		out := m.Apply(ctx, data)
 		out.Module = m.Name()
 		result.Outcomes = append(result.Outcomes, out)
 		if out.Aborted {
@@ -218,7 +218,7 @@ func (p *Pipeline) Apply(ctx context.Context, mc *ModuleContext) Result {
 		}
 	}
 	if result.complete() {
-		cr := mc.CR()
+		cr := data.CR()
 		cr.Status.SetObservedGeneration(cr.Generation)
 	}
 	return result
@@ -235,9 +235,9 @@ func (p *Pipeline) Apply(ctx context.Context, mc *ModuleContext) Result {
 // Returns:
 //   - error: the first Teardown error, returned unchanged and already
 //     classified by the module that produced it. No later Teardown runs.
-func (p *Pipeline) Destroy(ctx context.Context, mc *ModuleContext) error {
+func (p *Pipeline) Destroy(ctx context.Context, data *ResourceData) error {
 	for i := len(p.modules) - 1; i >= 0; i-- {
-		if err := p.modules[i].Teardown(ctx, mc); err != nil {
+		if err := p.modules[i].Teardown(ctx, data); err != nil {
 			return err
 		}
 	}

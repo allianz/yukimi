@@ -51,7 +51,7 @@ calls helpers and calculates nothing itself.
 The states keep three concerns apart. *Pending* affects only `Ready` and carries the reason. *Drifted*
 (only meaningful from `Observe`) affects only whether the resource is up to date. *Failed* affects only
 `Synced`, through the error; whether the error is the tenant's or the platform's is carried by the error
-itself. Modules write their status fields directly on the CR through the module context, because later
+itself. Modules write their status fields directly on the CR through the resource data, because later
 modules in the same run may need them (the account locator), and the pipeline records
 `status.observedGeneration` once a run completed.
 
@@ -177,13 +177,13 @@ type Module interface {
     // status fields on the CR). Done: provisioned and matches the spec. Pending:
     // not yet provisioned. Drifted: provisioned, but differs from the spec.
     // Failed: could not read back — the exception; domain checks belong in Apply.
-    Observe(ctx context.Context, mc *ModuleContext) Outcome
+    Observe(ctx context.Context, data *ResourceData) Outcome
 
     // Apply re-asserts this module's full desired state, pruning any object the
     // CRD no longer lists. It must be safe to call repeatedly with no other call
     // in between (Key Concept: Overwrite Apply). Drifted from Apply counts as
     // not Done.
-    Apply(ctx context.Context, mc *ModuleContext) Outcome
+    Apply(ctx context.Context, data *ResourceData) Outcome
 
     // Teardown removes the state this module leaves outside the tenant's own
     // account, which dropping that account would not take with it. Most
@@ -194,7 +194,7 @@ type Module interface {
     // A nil error means the removal was accepted, not necessarily that the
     // object is gone: a vendor may keep it restorable, and its name reserved,
     // for a grace period. Nothing here reports such a deadline, deliberately.
-    Teardown(ctx context.Context, mc *ModuleContext) error
+    Teardown(ctx context.Context, data *ResourceData) error
 }
 
 // AccountModuleName is the account module's (012) Name(). Observation uses it
@@ -203,7 +203,7 @@ type Module interface {
 const AccountModuleName = "account"
 
 
-// Pipeline runs an ordered list of modules against one ModuleContext per call.
+// Pipeline runs an ordered list of modules against one ResourceData per call.
 type Pipeline struct{ /* unexported */ }
 
 // New builds a pipeline from an ordered module list, e.g.
@@ -211,7 +211,7 @@ type Pipeline struct{ /* unexported */ }
 // execution order for Observe and Apply, and its reverse for Destroy. Exactly one module must be the
 // account module, identified by Name() == AccountModuleName: its Observe
 // outcome is the sole source of whether the resource exists, and every module that
-// calls ModuleContext.TenantDB must be registered after it, since TenantDB
+// calls ResourceData.TenantDB must be registered after it, since TenantDB
 // requires the locator only its Apply sets. The account module need not be
 // registered first overall — a module needing no Snowflake connection (for
 // example, an admission gate like guardrail-check or quota-check that must
@@ -221,14 +221,14 @@ func New(modules ...Module) *Pipeline
 // Observe calls every module's Observe in order and collects the outcomes. It
 // performs no mutation of its own and never stops early. A module's failure
 // is in its Outcome; Observation.Err() returns the first one.
-func (p *Pipeline) Observe(ctx context.Context, mc *ModuleContext) Observation
+func (p *Pipeline) Observe(ctx context.Context, data *ResourceData) Observation
 
 // Apply calls every module's Apply in order, stopping early only after an
 // outcome marked Abort. It sets status.observedGeneration (through
-// mc.CR()) iff the run completed. It is idempotent by construction (Key
+// data.CR()) iff the run completed. It is idempotent by construction (Key
 // Concept: Overwrite Apply) — callers may call it from both a create and an
 // update path with identical behavior.
-func (p *Pipeline) Apply(ctx context.Context, mc *ModuleContext) Result
+func (p *Pipeline) Apply(ctx context.Context, data *ResourceData) Result
 
 // Destroy calls every module's Teardown in reverse registration order, so
 // every module registered after the account module tears down before the
@@ -241,7 +241,7 @@ func (p *Pipeline) Apply(ctx context.Context, mc *ModuleContext) Result
 // Returns:
 //   - error: the first Teardown error, returned unchanged and already
 //     classified by the module that produced it. No later Teardown runs.
-func (p *Pipeline) Destroy(ctx context.Context, mc *ModuleContext) error
+func (p *Pipeline) Destroy(ctx context.Context, data *ResourceData) error
 
 // Outcomes is every module's Outcome from one run, in execution order. All
 // derived values are computed here, nowhere else.
@@ -288,7 +288,7 @@ var (
     _ Report = Result{}
 )
 
-// DBPool is the subset of internal/snowflake/pool (004) that ModuleContext
+// DBPool is the subset of internal/snowflake/pool (004) that ResourceData
 // depends on, declared here so a test can inject a fake. *pool.Pool satisfies
 // it implicitly.
 type DBPool interface {
@@ -297,12 +297,15 @@ type DBPool interface {
     EvictTenant(namespace, accountName string)
 }
 
-// ModuleContext is built once per reconcile and handed unchanged to every
-// module. Everything on it is either immutable for the run or, in the case of
-// the account locator, mutated by exactly one module (012).
-type ModuleContext struct{ /* unexported */ }
+// ResourceData is the resource a module works on: the SnowflakeAccount CR
+// (whose status modules write directly), facts derived from it, the logger
+// and access to the Snowflake connections. It is built once per pipeline call
+// (Observe, Apply or Destroy) and handed to every module in it. Everything on
+// it is either immutable for the call or, in the case of the account locator,
+// mutated by exactly one module (012).
+type ResourceData struct{ /* unexported */ }
 
-// NewModuleContext builds the shared context for one reconcile.
+// NewResourceData builds the shared resource data for one pipeline call.
 //
 // namespace is derived from cr.Namespace (design.md 3.11.1) — the trust
 // anchor the resolved account name is derived from — so
@@ -311,24 +314,24 @@ type ModuleContext struct{ /* unexported */ }
 // onboarding (design.md 2); Department/CostCenter/CreditQuota are read from
 // them the same way (internal/account/tenant, 006). The account locator
 // lives on cr.Status.AccountLocator directly — every module reads and
-// writes it through CR(), not through a ModuleContext accessor. Static,
+// writes it through CR(), not through a ResourceData accessor. Static,
 // binary-lifetime dependencies (e.g. backplane config) are not accepted
 // here — a module that needs one injects its own copy at construction.
-func NewModuleContext(
+func NewResourceData(
     cr *v1alpha1.SnowflakeAccount,
     namespaceLabels map[string]string,
     log *logger.Logger,
     p DBPool,
-) *ModuleContext
+) *ResourceData
 
-func (c *ModuleContext) CR() *v1alpha1.SnowflakeAccount
-func (c *ModuleContext) ResolvedAccountName() string // tenant.ResolveName(cr.Name, namespace), resolved once
-func (c *ModuleContext) NamespaceLabels() map[string]string
-func (c *ModuleContext) Logger() *logger.Logger
+func (c *ResourceData) CR() *v1alpha1.SnowflakeAccount
+func (c *ResourceData) ResolvedAccountName() string // tenant.ResolveName(cr.Name, namespace), resolved once
+func (c *ResourceData) NamespaceLabels() map[string]string
+func (c *ResourceData) Logger() *logger.Logger
 
 // OrgAdminDB returns an org-admin-scoped connection (internal/snowflake/pool, 004).
 // Only the account module (012) needs this scope.
-func (c *ModuleContext) OrgAdminDB(ctx context.Context) (*sql.DB, error)
+func (c *ResourceData) OrgAdminDB(ctx context.Context) (*sql.DB, error)
 
 // TenantDB returns a connection scoped to this tenant's own account,
 // resolved on first call and memoized for the rest of the run.
@@ -337,12 +340,12 @@ func (c *ModuleContext) OrgAdminDB(ctx context.Context) (*sql.DB, error)
 //   - System error if CR().Status.AccountLocator is still empty — every
 //     module after 012 needs a locator, and getting one is the whole point
 //     of running 012 first.
-func (c *ModuleContext) TenantDB(ctx context.Context) (*sql.DB, error)
+func (c *ResourceData) TenantDB(ctx context.Context) (*sql.DB, error)
 
 // EvictTenant closes and forgets the pooled connection to this tenant's own
 // account, keyed exactly as TenantDB resolves it. The account module (012)
 // calls it once the account is dropped.
-func (c *ModuleContext) EvictTenant()
+func (c *ResourceData) EvictTenant()
 
 // Custom condition types this package defines for a module to attach to its
 // own Outcome (above); 020 collects and renders them as-is (design.md 7.1).
@@ -360,7 +363,7 @@ const (
 internal/account/pipeline/
 ├── module.go       # Module interface, Outcome (Condition/Events), State, Done/Pending/Drifted/Failed, WithCondition/WithEvent
 ├── pipeline.go     # Pipeline, New, Observe, Apply, Destroy, Outcomes (+ helpers), Observation, Result, Report
-├── context.go      # ModuleContext, NewModuleContext, DBPool, OrgAdminDB/TenantDB/EvictTenant
+├── resourcedata.go # ResourceData, NewResourceData, DBPool, OrgAdminDB/TenantDB/EvictTenant
 └── conditions.go   # TypeQuotaAvailable, TypeIdentitySynced
 ```
 
@@ -373,7 +376,7 @@ package's. There is no separate rejected state: the error itself carries the cla
 
 **System Errors**: likewise none of this package's own, with one exception. Every module wraps its
 own system failures with `fmt.Errorf("...: %w", err)` before returning `Failed(err)`. The one system
-error this package itself can produce is `ModuleContext.TenantDB`'s error when
+error this package itself can produce is `ResourceData.TenantDB`'s error when
 `CR().Status.AccountLocator` is still empty — every other failure surfacing from `OrgAdminDB`/`TenantDB`
 is `internal/snowflake/pool`'s (004) own error, passed through unwrapped for the calling module to
 classify. `Destroy` likewise returns a module's `Teardown` error exactly as that module built it.
@@ -420,7 +423,7 @@ classify. `Destroy` likewise returns a module's `Teardown` error exactly as that
 ## Edge Cases
 
 - **What does the reconciler do if it calls `Observe` without ever calling `Apply` afterward?** -
-  Nothing breaks. `Observe` and `Apply` share no state (`ModuleContext` is rebuilt per call), and
+  Nothing breaks. `Observe` and `Apply` share no state (`ResourceData` is rebuilt per call), and
   `Observe` performs no mutation, so the up-to-date path never touches Snowflake.
 - **Does an aborting outcome from a module's `Observe` stop later modules from running?** - No.
   The signal only matters to `Apply` (Key Concept: Sequential Modules, One Abort Signal); `Observe` always runs every
@@ -483,13 +486,13 @@ classify. `Destroy` likewise returns a module's `Teardown` error exactly as that
 - **`internal/errors` (001)** - Used APIs: `errors.NewUserError()` - Contract: each module calls this
   itself before returning `Failed` for a tenant mistake; this package never calls it.
 - **`internal/logger` (001)** - Used APIs: `logger.New()`, `(*Logger).Handle()` - Contract:
-  `ModuleContext` carries a `*Logger` for modules to log through; only the caller that built the
+  `ResourceData` carries a `*Logger` for modules to log through; only the caller that built the
   context calls `Handle` on a carried error, once per error.
 - **`internal/snowflake/pool` (004)** - Used APIs: `Pool.OrgAdminDB()`, `Pool.TenantDB()`,
-  `Pool.EvictTenant()` - Contract: `ModuleContext.OrgAdminDB`/`TenantDB`/`EvictTenant` wrap these;
+  `Pool.EvictTenant()` - Contract: `ResourceData.OrgAdminDB`/`TenantDB`/`EvictTenant` wrap these;
   `TenantDB` additionally requires a locator.
 - **`internal/account/tenant` (006)** - Used APIs: `tenant.ResolveName()`, `tenant.Department()`,
-  `tenant.CostCenter()`, `tenant.CreditQuota()` - Contract: `NewModuleContext` resolves the account
+  `tenant.CostCenter()`, `tenant.CreditQuota()` - Contract: `NewResourceData` resolves the account
   name once via `ResolveName`; modules read the label accessors from `NamespaceLabels()` themselves.
 - **`crossplane-runtime/v2` `pkg/event`, `pkg/reconciler/managed`** - Used APIs: the `event.Event` and
   `managed.ExternalObservation` types - Contract: `Outcome.Events` only carries values of this type (Key Concept: One Result Type); this package never constructs
@@ -503,7 +506,7 @@ directly.
 No dependency on 007 (backplane config) either: it is a static, binary-lifetime dependency, not a
 per-reconcile one, so a module that needs it (e.g. the account module's region check, or the
 parameter module's global/regional parameters) injects its own `*backplane.Config` at construction
-instead of reading it off `ModuleContext`. This package neither imports nor references
+instead of reading it off `ResourceData`. This package neither imports nor references
 `internal/config/backplane`.
 
 ## Integration Points
@@ -518,7 +521,7 @@ instead of reading it off `ModuleContext`. This package neither imports nor refe
   it computes nothing itself.
   Calls `Pipeline.Destroy` from `Delete`, after the deletion permit's gate (019) has authorized the
   destruction and before that request is marked consumed. - Key functions: `pipeline.New()`,
-  `(*Pipeline).Observe`, `(*Pipeline).Apply`, `(*Pipeline).Destroy`, `pipeline.NewModuleContext()`,
+  `(*Pipeline).Observe`, `(*Pipeline).Apply`, `(*Pipeline).Destroy`, `pipeline.NewResourceData()`,
   `Observation.ExternalObservation()`, `Report`, `Outcomes.Err()`.
 - **`internal/account/modules/{guardrailcheck,quotacheck,account,parameter,network,auth,identity,quotamonitor}`
   (010–015, 017–018)** - Each implements `Module` in full and is registered with `pipeline.New()` by
@@ -548,17 +551,17 @@ instead of reading it off `ModuleContext`. This package neither imports nor refe
    on every collected outcome.
 8. **SC-008**: `Outcomes.AllDone()` is true iff the list is non-empty and every entry's `State` is
    `StateDone`.
-9. **SC-009**: `ModuleContext.TenantDB` returns a system error when `CR().Status.AccountLocator` is
+9. **SC-009**: `ResourceData.TenantDB` returns a system error when `CR().Status.AccountLocator` is
    empty, and never calls the pool when it is.
-10. **SC-010**: `ModuleContext.TenantDB` resolves the connection once and returns the same `*sql.DB`
+10. **SC-010**: `ResourceData.TenantDB` resolves the connection once and returns the same `*sql.DB`
     on every subsequent call within the same context.
-11. **SC-011**: `ModuleContext.ResolvedAccountName()` returns the same value `tenant.ResolveName` would
+11. **SC-011**: `ResourceData.ResolvedAccountName()` returns the same value `tenant.ResolveName` would
     compute directly from the same CRD name and namespace.
 12. **SC-012**: `Pipeline.Destroy` calls each module's `Teardown` in the exact reverse of registration
     order.
 13. **SC-013**: `Destroy` stops at the first `Teardown` error, returns it unchanged, and calls
     `Teardown` on no earlier-registered module.
-14. **SC-014**: `ModuleContext.EvictTenant` calls the pool with the same namespace and account name
+14. **SC-014**: `ResourceData.EvictTenant` calls the pool with the same namespace and account name
     `TenantDB` resolves its connection under.
 15. **SC-015**: Unit test coverage of `internal/account` is at least 95%.
 16. **SC-016**: `Destroy` returns nil once every `Teardown` returned nil, and reports nothing else — no
@@ -581,7 +584,7 @@ instead of reading it off `ModuleContext`. This package neither imports nor refe
 ## Security Considerations
 
 - The pipeline itself never holds a Snowflake connection or executes a statement — each module
-  requests exactly the connection scope it needs through `ModuleContext` (org-admin only for the
+  requests exactly the connection scope it needs through `ResourceData` (org-admin only for the
   account module, the tenant's own account scope for every other module). A bug in sequencing can
   therefore reorder or skip a module's *work*, but cannot hand any module a broader connection than
   the one it explicitly asked for.
@@ -650,8 +653,8 @@ func (e *external) Observe(ctx context.Context, cr *v1alpha1.SnowflakeAccount) (
         }, nil
     }
 
-    mc := pipeline.NewModuleContext(cr, labels, log, e.pool)
-    obs := e.pipeline.Observe(ctx, mc)
+    data := pipeline.NewResourceData(cr, labels, log, e.pool)
+    obs := e.pipeline.Observe(ctx, data)
     e.report(cr, obs)
 
     // log.Handle(nil) == nil. On an error Crossplane ignores the observation, sets
@@ -677,9 +680,9 @@ func (e *external) report(cr *v1alpha1.SnowflakeAccount, r pipeline.Report) {
 // differently.
 func (e *external) apply(ctx context.Context, cr *v1alpha1.SnowflakeAccount) error {
     log := logger.New(e.logger, cr.Namespace, "SnowflakeAccount", cr.Name, logger.OpUpdate)
-    mc := pipeline.NewModuleContext(cr, labels, log, e.pool)
+    data := pipeline.NewResourceData(cr, labels, log, e.pool)
 
-    res := e.pipeline.Apply(ctx, mc)
+    res := e.pipeline.Apply(ctx, data)
     e.report(cr, res)
     err := log.Handle(res.Err())
 
@@ -711,11 +714,11 @@ func (e *external) Delete(ctx context.Context, mg resource.Managed) (managed.Ext
         return managed.ExternalDelete{}, errNoActivePermit
     }
 
-    mc := pipeline.NewModuleContext(cr, e.namespaceLabels(cr.Namespace), log, e.pool)
+    data := pipeline.NewResourceData(cr, e.namespaceLabels(cr.Namespace), log, e.pool)
 
     // Phase 3: every module's Teardown, in reverse. A failure here keeps the
     // request Active, so the next reconcile retries the whole walk.
-    if err := e.pipeline.Destroy(ctx, mc); err != nil {
+    if err := e.pipeline.Destroy(ctx, data); err != nil {
         return managed.ExternalDelete{}, log.Handle(err)
     }
 
@@ -743,19 +746,19 @@ func (m *Module) Name() string { return "parameter" }
 // Observe never reads parameters back — drift detection is deferred (Key
 // Concept: Overwrite Apply) — so this module is always reported Done. Once a
 // module reads back, it reports pipeline.Drifted() instead.
-func (m *Module) Observe(ctx context.Context, mc *pipeline.ModuleContext) pipeline.Outcome {
+func (m *Module) Observe(ctx context.Context, data *pipeline.ResourceData) pipeline.Outcome {
     return pipeline.Done()
 }
 
 // Apply re-asserts every global and regional parameter unconditionally: no
 // SHOW PARAMETERS, no diff against current state.
-func (m *Module) Apply(ctx context.Context, mc *pipeline.ModuleContext) pipeline.Outcome {
-    db, err := mc.TenantDB(ctx)
+func (m *Module) Apply(ctx context.Context, data *pipeline.ResourceData) pipeline.Outcome {
+    db, err := data.TenantDB(ctx)
     if err != nil {
         return pipeline.Failed(fmt.Errorf("getting platform connection: %w", err))
     }
 
-    region, err := m.backplane.Region(mc.CR().Spec.Region)
+    region, err := m.backplane.Region(data.CR().Spec.Region)
     if err != nil {
         return pipeline.Failed(fmt.Errorf("resolving region: %w", err))
     }
@@ -780,7 +783,7 @@ func (m *Module) Apply(ctx context.Context, mc *pipeline.ModuleContext) pipeline
 
 // Teardown removes nothing: account parameters live inside the account and go
 // with it when it is dropped.
-func (m *Module) Teardown(ctx context.Context, mc *pipeline.ModuleContext) error {
+func (m *Module) Teardown(ctx context.Context, data *pipeline.ResourceData) error {
     return nil
 }
 ```
