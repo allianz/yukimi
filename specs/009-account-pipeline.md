@@ -2,119 +2,134 @@
 
 ## Overview
 
-Provisioning a Snowflake account is not one step but many: creating the account, applying its
-parameters, opening network access, binding authentication exceptions, importing identity groups,
-and enforcing a credit quota. This package gives each of those steps its own self-contained unit,
-called a module, and runs them in a fixed order on every reconcile. It exists so that the controller
-for `SnowflakeAccount` stays a thin caller instead of one large function that knows about every
-concern at once, and so each concern can be built and tested on its own. A module reports back one of
-a small, fixed set of outcomes — done, pending, drifted, or failed — and the pipeline answers the
-controller's questions from them (does the account exist, is it up to date, is it ready and if not why,
-which conditions and events arose), so the controller can turn what happened into Kubernetes conditions
-without understanding what any individual module actually did.
+Creating and updating a Snowflake account is split into modules, one per concern: admission checks,
+the account itself, parameters, network, authentication, identity and quota. The pipeline defines the
+contract every module follows and runs the modules in a fixed order. Each module can therefore be
+tested on its own, and the pipeline is extended by adding a module, without changing the controller or
+the other modules.
 
-<!-- DRAFT: new key concepts (bullet outline), to be cleaned up; the existing key concepts below are kept until then. -->
 
 ## Key Concept: The Reconcile Loop 
 
-- A SnowflakeAccount is a Kubernetes resource, and a Kubernetes controller keeps a real Snowflake account
-  in line with it. Whenever the resource changes, and also on a regular poll, the controller looks at
-  the account and then creates it, updates it, or leaves it alone. When the resource is deleted, the
-  controller deletes the account.
-- Each pass starts with two questions: does the account exist, and does it still match the spec? The
-  answers decide the next step: no account means create, an account that differs means update, and an
-  account that matches means nothing to do.
+A SnowflakeAccount is a Kubernetes resource that describes a Snowflake account, and a controller keeps
+the real account in line with it. The controller reconciles the resource whenever it changes and
+again on a regular poll. Each reconcile first observes the account and then creates it, updates it, or
+leaves it unchanged. Deleting the resource deletes the account.
+
+Every reconcile begins with two questions: does the account exist, and does it still match the spec?
+A missing account is created, an account that differs from the spec is updated, and
+an account that matches is left unchanged. If observing fails, neither question is answered, so
+nothing is created or updated and the next reconcile observes again.
+
+```mermaid
+flowchart LR
+    O[Observe] -->|" !(exists)"| C[Create]
+    O -->|" !(upToDate)"| UP[Update]
+    O -->|ok| O
+    C --> O
+    UP --> O
+```
 
 ## Key Concept: The Controller Delegates to a Pipeline of Modules
 
-- The controller hands each step to a pipeline with three entry points. **Observe()** looks at the
-  account and answers the two questions, **Apply()** creates or updates it, and **Destroy()** deletes it.
-  
-- Inside, the pipeline is a chain of modules, one per concern: admission checks, account creation,
-  parameters, network, auth, identity and quota. Every entry point walks that chain one module at a
-  time in a fixed order (Destroy in reverse), and the modules never call each other.
+Provisioning an account spans many separate concerns, and handling them all in the controller would
+make it hard to follow and test. The controller therefore delegates this work to a pipeline and keeps
+only the Kubernetes-facing responsibilities. The pipeline exposes three operations: observe, which
+answers the two questions above; apply, which creates or updates the account; and destroy.
 
-- Apply is declarative and idempotent. Every module states its full desired state from the spec, with
-  no diff against what Snowflake currently holds, and anything the spec no longer lists is removed.
-  Running Apply twice leaves the same result as running it once, so a pass interrupted halfway is simply
-  finished by the next. That is why create and update are the same Apply: there is nothing for the two
-  to do differently.
+The pipeline is built from modules, one per concern: admission checks, account creation, parameters,
+network, auth, identity and quota. Each step runs through the modules one at a time in a fixed order,
+and destruction runs through them in reverse. Modules never call each other, so each concern can be
+built and tested on its own.
+
+```mermaid
+flowchart LR
+    subgraph P[Pipeline]
+        direction LR
+        M1["Admission checks<br/>observe() · apply()"]
+        M2["Account<br/>observe() · apply()"]
+        M3["Parameters<br/>observe() · apply()"]
+        M4["Network<br/>observe() · apply()"]
+        M5["Auth<br/>observe() · apply()"]
+        M6["Identity<br/>observe() · apply()"]
+        M7["Quota<br/>observe() · apply()"]
+        M1 --> M2 --> M3 --> M4 --> M5 --> M6 --> M7
+    end
+```
+
+The controller's create and update both delegate to the pipeline's single apply operation, because
+apply is implemented declaratively. In other words, apply works on a missing account, on an account
+whose creation was interrupted, and on a fully provisioned account.
+
+Apply runs every module, even after one fails, unless a module stops it because nothing after it could
+succeed. Admission checks stop it when the request is not allowed, so no account is created.
 
 
 
-## Key Concept: Four Outcomes, Each Moving One Signal
+## Key Concept: Every Module Reports One of Four Outcomes
 
-- Each module answers each pass with one of four outcomes:
-  - **Done**: "my part is in place." It moves no signal.
-  - **Pending**: "not yet, and that's expected; it will settle without anyone acting," like an account
-    still coming up or a group still syncing. It only keeps Ready at False, with a message saying why.
-    It is not an error.
-  - **Drifted**: "my part exists but no longer matches the spec." It is only meaningful when looking,
-    and it only marks the account as out of date, which leads to an update.
-  - **Failed**: "something went wrong and someone must act." That someone is the tenant (fix the spec)
-    or an operator (fix the infrastructure). It only affects Synced, through the error.
+Whenever the pipeline observes or applies a module, the module answers with one of four outcomes. The
+set is small and fixed, so the pipeline can summarize a whole pass without knowing what any module
+actually does, and a new module fits in without changing the pipeline or the controller.
+
+- **Done**: the module's part of the account is in place and matches the spec. Nothing is left to do.
+- **Pending**: the module's part is not in place yet, but that is expected and will settle without
+  anyone acting, like an account still coming up or a group still being imported. The module says why
+  it is waiting, and the account is not reported ready until it settles. Pending is not an error.
+- **Drifted**: the module's part exists but no longer matches the spec, for example because someone
+  changed it directly in Snowflake. Only observing detects drift. It marks the account as out of date,
+  so the next apply restores what the spec says.
+- **Failed**: something went wrong that will not resolve by waiting, and someone must act: the tenant
+  by fixing the spec, or an operator by fixing the infrastructure. The error is reported on the
+  resource.
 
 
-## Key Concept: From Outcomes to Four Signals
+## Key Concept: From Module Outcomes to Controller State
 
-- The pipeline turns the module outcomes of a pass into four signals, two for each audience:
-  - for the framework, deciding the next step and never shown to the tenant: **exists** and
-    **up to date**
-  - for the tenant, on the resource's status: **Ready** and **Synced**
-- **Exists** answers "is there an account at all?". Only the account module's outcome decides it. Done
-  or Drifted means yes. Pending means not yet, whether the account was never created or is created but
-  still coming up, so the next step is create.
-- **Up to date** answers "is there work left?". Kubernetes counts every edit to the spec, and an Apply
-  in which every module ends Done records the current edit in the status. The account is up to date
-  when that record matches the current edit and no module reported Drifted; otherwise the next step is
-  an update. A Pending or Failed module just leaves the record behind, so the next pass applies again.
-  No outcome needs a retry mechanism of its own.
-- A Failed module while looking leaves both questions unanswered: the framework neither creates nor
-  updates on that pass.
-- **Ready** answers "has the account ever been fully provisioned?". It turns True the first time an
-  Apply ends with every module Done, and from then on stays True whatever later passes report (the
-  latch). Until then it is False, and its message is the first Pending module's reason, so the tenant
-  sees why the account is still waiting; it is empty if nothing is pending. A Failed module adds no
-  message here. Observe never turns Ready True for the first time; only a complete Apply does.
-- **Synced** answers "did this pass hit an error?". It is True unless a module reported Failed; then the
-  first failure's error becomes its message. The controller returns that error, and the controller
-  framework sets Synced from it. A second failure in the same pass shows up only through that module's
-  own condition or events.
-- **Important:** Synced and up to date are not the same thing. Up to date is about work left to do;
-  Synced is only about errors. A group still importing (Pending) leaves the account Synced but not up to
-  date, so it is applied again on every pass without any error showing. Despite its name, Synced does
-  not mean "matches the spec" here.
-- **Module conditions**: a module whose concern deserves its own tenant-facing signal attaches a
-  condition to its outcome, such as quota available (credits exhausted) or identity synced (groups still
-  importing). The pipeline passes it through unchanged, whatever the module's outcome. Once Ready has
-  latched, later waits show up only here, and these conditions never change Ready. A module that did
-  not run, because Apply stopped early, keeps the condition the previous pass set.
-- The framework rewrites Ready and Synced on every pass, so both are worked out fresh each time. The
-  latch survives because each pass starts by reading the Ready that is already persisted.
+After observing or applying, the pipeline holds one outcome for each module that ran. From this list
+it derives the four values the controller reports. Two of them steer the reconcile and are never shown
+to the tenant: whether the account **exists** and whether it is **up to date**. The other two are
+conditions on the resource's status that the tenant sees: **Ready** and **Synced**. The controller
+uses these values as they are and works nothing out itself.
 
-## Key Concept: The Pipeline Summarizes, the Controller Renders
+- **Exists**: is there an account at all? Only the account module decides this. If the account is
+  missing or still coming up, the controller creates it.
+- **Up to date**: is there work left? The account is up to date when the last apply completed with
+  every module Done for the current spec and no module has drifted since. Otherwise the controller
+  updates it.
+- **Ready**: has the account ever been fully provisioned? Ready turns true the first time an apply
+  completes with every module Done, and stays true from then on. Until then it is false and shows
+  the first reason for waiting.
+- **Synced**: did this pass hit an error? Synced is true unless a module failed, in which case it shows
+  the first failure.
 
-- This is the output side. After a pass, the pipeline boils all module outcomes down to exactly what
-  Crossplane asks for:
-  - exists: decided by the account module only
-  - up to date
-  - Ready
-  - the error for Synced
-  - module conditions and events, forwarded unchanged
-- Each summary is computed in exactly one place, and the controller computes nothing itself.
-- The summary deliberately narrows: only the first error and the first pending reason reach the
-  surface.
+Each value is computed from the outcomes of all modules. Each row below is a separate example pass:
+
+| Controller state | Account module | Parameters module | Network module | Identity module | Result |
+|------------------|:--------------:|:-----------------:|:--------------:|:---------------:|:------:|
+| Exists           | Done           | –                 | –              | –               | true   |
+| Exists           | Pending        | –                 | –              | –               | false  |
+| Up to date       | Done           | Done              | Done           | Done            | true   |
+| Up to date       | Done           | Done              | Drifted        | Done            | false  |
+| Ready            | Done           | Done              | Done           | Done            | true   |
+| Ready            | Done           | Done              | Done           | Pending         | false  |
+| Synced           | Done           | Done              | Done           | Pending         | true   |
+| Synced           | Done           | Done              | Failed         | Done            | false  |
+
+Synced and up to date are easy to confuse but answer different questions. Synced is only about errors,
+up to date is about work left. A group that is still being imported leaves the account Synced but not
+up to date: nothing has gone wrong, yet the account is applied again on the next pass.
+
 
 ## Key Concept: Teardown in Reverse
 
-- Mostly as it is today, made shorter: most modules have nothing to remove, the account drop comes
-  last, the first failure stops the walk, and every step must be safe to re-run.
-- A successful teardown means every step's removal was accepted, not that everything is erased.
+Destroying an account runs through the modules in reverse order. Each module removes only what would
+outlive the account. Most have nothing to remove, because dropping the account takes everything inside
+it along, so the account itself is dropped last. The first failure stops the teardown. Every step is
+safe to repeat, so the next attempt simply starts again from the beginning.
 
-<!-- END DRAFT -->
-
-
-
+A dropped account stays restorable for a grace period, together with its credential, and its name stays reserved until
+the period ends.
 
 
 
