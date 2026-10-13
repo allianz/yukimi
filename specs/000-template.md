@@ -13,7 +13,8 @@ edit too — detail belongs in the sections below them.
 ## Key Concept: {Topic Name}
 
 <!--
-Add 1-2 sections explaining key concepts specific to this feature.
+Repeat this section once per key concept specific to this feature — 1 to 8 per spec, each
+with its own "## Key Concept: {Topic Name}" heading.
 Examples: "Key Concept: Connection Format", "Key Concept: Secret Path Structure", "Key Concept: Execution Model"
 Focus on WHAT, not HOW. Explain domain-specific concepts, data formats, or behavioral models.
 
