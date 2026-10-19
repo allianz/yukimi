@@ -2,135 +2,136 @@
 
 ## Overview
 
-Provisioning a Snowflake account is not one step but many: creating the account, applying its
-parameters, opening network access, binding authentication exceptions, importing identity groups,
-and enforcing a credit quota. This package gives each of those steps its own self-contained unit,
-called a module, and runs them in a fixed order on every reconcile. It exists so that the controller
-for `SnowflakeAccount` stays a thin caller instead of one large function that knows about every
-concern at once, and so each concern can be built and tested on its own. A module reports back one of
-a small, fixed set of outcomes — done, pending, drifted, or failed — and the pipeline answers the
-controller's questions from them (does the account exist, is it up to date, is it ready and if not why,
-which conditions and events arose), so the controller can turn what happened into Kubernetes conditions
-without understanding what any individual module actually did.
+Creating and updating a Snowflake account is split into modules, one per concern: admission checks,
+the account itself, parameters, network, authentication, identity and quota. The pipeline defines the
+contract every module follows and runs the modules in a fixed order. Each module can therefore be
+tested on its own, and the pipeline is extended by adding a module, without changing the controller or
+the other modules.
 
-## Key Concept: Sequential Modules, One Abort Signal
 
-Modules run strictly one at a time, in registration order — never in parallel, never calling one
-another. One module plays a distinguished role: the account module (012). It alone determines whether
-the account exists at all, and every module that needs a live connection to it can only run once the
-account module has succeeded. That dependency is about *capability*, not *position* — a module needing
-no Snowflake connection of its own can still be registered ahead of the account module. Guardrail-check
-(010) and quota-check (011) are the concrete cases: each can reject and stop the whole run before the
-account is ever created.
+## Key Concept: The Reconcile Loop 
 
-A module's outcome can carry an abort signal that stops `Apply` for the rest of that pass. The mechanism
-belongs to no module in particular — any module can use it — and it only has an effect on an outcome that
-is not `Done`. It exists for the module whose own failure makes the rest of the run
-pointless — either because later modules depend on something only this one establishes (the account
-module's case), or because this module's whole job is deciding whether the run should happen at all
-(quota-check's case). Only `Apply` honors the signal; `Observe` always asks every module, since nothing there
-mutates and there is nothing a stop would protect against.
+A SnowflakeAccount is a Kubernetes resource that describes a Snowflake account, and a controller keeps
+the real account in line with it. The controller reconciles the resource whenever it changes and
+again on a regular poll. Each reconcile first observes the account and then creates it, updates it, or
+leaves it unchanged. Deleting the resource deletes the account.
 
-**Important**: every other module's failure must never stop the pipeline — a failed network rule, a
-failed auth exception, a pending identity sync all let later modules keep running. That's what makes
-design's "leaves the account on its baseline" guarantee (§3.8/§3.9) hold.
+Every reconcile begins with two questions: does the account exist, and does it still match the spec?
+A missing account is created, an account that differs from the spec is updated, and
+an account that matches is left unchanged. If observing fails, neither question is answered, so
+nothing is created or updated and the next reconcile observes again.
 
-Every module's `Observe` result is kept in full, so a module that owns a condition (quota-monitor's
-`QuotaAvailable`, identity's `IdentitySynced`) can be re-rendered on every `Observe`, not only after an
-`Apply`. This is required because the managed reconciler re-derives `Ready` after every `Observe` on the
-up-to-date path, never just after `Apply` (see References, "Vendored behavior").
+```mermaid
+flowchart LR
+    O[Observe] -->|" !(exists)"| C[Create]
+    O -->|" !(upToDate)"| UP[Update]
+    O -->|ok| O
+    C --> O
+    UP --> O
+```
 
-## Key Concept: One Result Type, Answers Computed Once
+## Key Concept: The Controller Delegates to a Pipeline of Modules
 
-Every module reports through the same `Outcome`, from `Observe` and `Apply` alike: a state, a pending
-reason, an error, optionally a condition it owns, and any events it wants recorded. A run's result is
-essentially the list of those outcomes. Everything the controller needs to know is derived from that
-list by helper methods, and each derived value is computed in exactly one of them — the controller
-calls helpers and calculates nothing itself.
+Provisioning an account spans many separate concerns, and handling them all in the controller would
+make it hard to follow and test. The controller therefore delegates this work to a pipeline and keeps
+only the Kubernetes-facing responsibilities. The pipeline exposes three operations: observe, which
+answers the two questions above; apply, which creates or updates the account; and destroy.
 
-The states keep three concerns apart. *Pending* affects only `Ready` and carries the reason. *Drifted*
-(only meaningful from `Observe`) affects only whether the resource is up to date. *Failed* affects only
-`Synced`, through the error; whether the error is the tenant's or the platform's is carried by the error
-itself. Modules write their status fields directly on the CR through the resource data, because later
-modules in the same run may need them (the account locator), and the pipeline records
-`status.observedGeneration` once a run completed.
+The pipeline is built from modules, one per concern: admission checks, account creation, parameters,
+network, auth, identity and quota. Each step runs through the modules one at a time in a fixed order,
+and destruction runs through them in reverse. Modules never call each other, so each concern can be
+built and tested on its own.
 
-A module's condition and events are values, not live calls — the pipeline collects and forwards them
-untouched; turning them into `status.conditions` or actual Events is the controller's job. A module may
-set neither, either, or both, independent of its state.
+```mermaid
+flowchart LR
+    subgraph P[Pipeline]
+        direction LR
+        M1["Admission checks<br/>observe() · apply()"]
+        M2["Account<br/>observe() · apply()"]
+        M3["Parameters<br/>observe() · apply()"]
+        M4["Network<br/>observe() · apply()"]
+        M5["Auth<br/>observe() · apply()"]
+        M6["Identity<br/>observe() · apply()"]
+        M7["Quota<br/>observe() · apply()"]
+        M1 --> M2 --> M3 --> M4 --> M5 --> M6 --> M7
+    end
+```
 
-Each helper evaluates the states exactly once:
+The controller's create and update both delegate to the pipeline's single apply operation, because
+apply is implemented declaratively. In other words, apply works on a missing account, on an account
+whose creation was interrupted, and on a fully provisioned account.
 
-| Helper | Done | Pending | Drifted | Failed |
-|---|---|---|---|---|
-| `Ready()` / `PendingReason()` | ready | not ready, `Reason` | ready | not ready, no reason (error only on Synced) |
-| up to date (also needs generation applied) | ✓ | ✓ | ✗ | – |
-| exists (account module only) | ✓ | ✗ | ✓ | – |
-| run complete (`Apply`) | ✓ | ✗ | ✗ | ✗ |
-| aborting outcome stops `Apply` | no (signal ignored) | yes | yes | yes |
+Apply runs every module, even after one fails, unless a module stops it because nothing after it could
+succeed. Admission checks stop it when the request is not allowed, so no account is created.
 
-A `Pending` in `Observe` triggers no update by itself and needs none: an `Apply` that reports `Pending`
-does not record the generation, so the next `Observe` sees it unapplied and the resource updates. An
-error in `Observe` makes the controller return it: `Synced` becomes `False`, the previous conditions are
-persisted, and neither create nor update is called.
 
-## Key Concept: Overwrite Apply, Generation-Gated Re-Apply
 
-`Apply` never diffs against current Snowflake state before acting — no module reads back what it
-applied last time. Instead, each module simply re-asserts its whole desired state on every call:
-`CREATE OR REPLACE` for a rule or policy, `SET` for a parameter, re-binding wherever a binding exists.
-This is what makes `Apply` safe to call from both `Create` and `Update` with no other logic in
-between (see Public API) — a run interrupted halfway leaves a partially-applied account that the very
-next `Apply` finishes re-asserting in full, with nothing to resume and nothing to compensate for.
+## Key Concept: Every Module Reports One of Four Outcomes
 
-Because no module diffs to decide whether to act, nothing on the Snowflake side tells the pipeline
-*when* to bother calling `Apply` at all. That decision falls to the Kubernetes generation counter instead: the controller only
-calls `Apply` when the CRD's generation has moved past what the last successful run recorded, and the
-pipeline only records a new generation once every module in that run reported `Done`. A `Pending` identity
-sync or a failed network-rule entry therefore keeps the pipeline re-applying on every reconcile
-until whatever is wrong clears — which is exactly the retry-until-timeout behavior §4.3 needs, and the
-"report until the tenant fixes it" behavior §3.8/§3.9 need.
+Whenever the pipeline observes or applies a module, the module answers with one of four outcomes. The
+set is small and fixed, so the pipeline can summarize a whole pass without knowing what any module
+actually does, and a new module fits in without changing the pipeline or the controller.
 
-**Important**: what a tenant removes from the CRD is removed from Snowflake. Before re-asserting a
-tenant-supplied list, `Apply` enumerates the objects that module owns — `SHOW <objects> LIKE '<its own
-prefix>'` — and drops every one the CRD no longer lists, unbinding it first. Deleting an entry from
-`customNetworkRules` or `customAuthRules` moves the generation like any other edit, so the next
-`Apply` prunes it.
+- **Done**: the module's part of the account is in place and matches the spec. Nothing is left to do.
+- **Pending**: the module's part is not in place yet, but that is expected and will settle without
+  anyone acting, like an account still coming up or a group still being imported. The module says why
+  it is waiting, and the account is not reported ready until it settles. Pending is not an error.
+- **Drifted**: the module's part exists but no longer matches the spec, for example because someone
+  changed it directly in Snowflake. Only observing detects drift. It marks the account as out of date,
+  so the next apply restores what the spec says.
+- **Failed**: something went wrong that will not resolve by waiting, and someone must act: the tenant
+  by fixing the spec, or an operator by fixing the infrastructure. The error is reported on the
+  resource.
 
-Pruning compares names only, never definitions: an object the CRD lists but Snowflake has lost is
-simply recreated by the overwrite. Nothing here repairs drift — Organization Policies (design.md
-Appendix B) will make this state org-owned and tenant-unmodifiable, so a read-back built now would be
-dead code. Only 014 and 015 prune, each naming its own prefix; baseline rules, account parameters and
-identity bindings are untouched.
 
-## Key Concept: Ready Is Computed Here, and Latches
+## Key Concept: From Module Outcomes to Controller State
 
-Design.md §7.1 requires `Ready` to behave as a one-way latch: `False` until the account's first
-fully-`Done` run, `True` forever after, no matter what a later module reports. The pipeline computes the
-finished `Ready` condition itself. At the start of each run it reads the `Ready` condition already
-persisted on the CR; if that is `True`, `Ready` stays `Available`. Otherwise `Ready` is `Available` only
-when the run is complete (`Apply`) and `Unavailable` with the first `Pending` outcome's reason as the
-message in every other case — so a user watching a provisioning that takes minutes learns *why* it is
-not ready. A `Failed` outcome never contributes a message; that belongs on `Synced`, through the error.
+After observing or applying, the pipeline holds one outcome for each module that ran. From this list
+it derives the four values the controller reports. Two of them steer the reconcile and are never shown
+to the tenant: whether the account **exists** and whether it is **up to date**. The other two are
+conditions on the resource's status that the tenant sees: **Ready** and **Synced**. The controller
+uses these values as they are and works nothing out itself.
 
-Once `Ready` is `True`, later waits (e.g. a newly-added group still syncing) show up only on that
-module's own condition (`IdentitySynced`). Deletion needs no special-casing — the managed reconciler
-owns `Ready` during that window, and this package isn't called at all while a resource is being deleted.
+- **Exists**: is there an account at all? Only the account module decides this. If the account is
+  missing or still coming up, the controller creates it.
+- **Up to date**: is there work left? The account is up to date when the last apply completed with
+  every module Done for the current spec and no module has drifted since. Otherwise the controller
+  updates it.
+- **Ready**: has the account ever been fully provisioned? Ready turns true the first time an apply
+  completes with every module Done, and stays true from then on. Until then it is false and shows
+  the first reason for waiting.
+- **Synced**: did this pass hit an error? Synced is true unless a module failed, in which case it shows
+  the first failure.
 
-## Key Concept: Reverse-Order Teardown
+Each value is computed from the outcomes of all modules. Each row below is a separate example pass:
 
-Destroying an account walks the same module list backwards. Each module removes only the state that
-does not die with the account itself — most remove nothing at all, because dropping the account takes
-every object inside it along. The account's own drop therefore comes last, and the first error stops the
-run: nothing further is destroyed while an earlier step is unresolved. Every teardown must be safe to
-re-run, since a destruction interrupted anywhere is retried from the beginning.
+| Controller state | Account module | Parameters module | Network module | Identity module | Result |
+|------------------|:--------------:|:-----------------:|:--------------:|:---------------:|:------:|
+| Exists           | Done           | –                 | –              | –               | true   |
+| Exists           | Pending        | –                 | –              | –               | false  |
+| Up to date       | Done           | Done              | Done           | Done            | true   |
+| Up to date       | Done           | Done              | Drifted        | Done            | false  |
+| Ready            | Done           | Done              | Done           | Done            | true   |
+| Ready            | Done           | Done              | Done           | Pending         | false  |
+| Synced           | Done           | Done              | Done           | Pending         | true   |
+| Synced           | Done           | Done              | Failed         | Done            | false  |
 
-**Important**: a teardown reaches for the org-admin connection or for no connection at all. Objects
-inside the tenant's own account never need removing — they go with it.
+Synced and up to date are easy to confuse but answer different questions. Synced is only about errors,
+up to date is about work left. A group that is still being imported leaves the account Synced but not
+up to date: nothing has gone wrong, yet the account is applied again on the next pass.
 
-A successful `Destroy` means every teardown reported success, not that the external state is gone: a drop
-may only start a grace period, during which the account and its platform credential stay restorable
-(012, 003). What it guarantees is ordering and idempotence.
+
+## Key Concept: Teardown in Reverse
+
+Destroying an account runs through the modules in reverse order. Each module removes only what would
+outlive the account. Most have nothing to remove, because dropping the account takes everything inside
+it along, so the account itself is dropped last. The first failure stops the teardown. Every step is
+safe to repeat, so the next attempt simply starts again from the beginning.
+
+A dropped account stays restorable for a grace period, together with its credential, and its name stays reserved until
+the period ends.
+
+
 
 ## Public API
 
