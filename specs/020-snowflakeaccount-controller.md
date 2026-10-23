@@ -6,82 +6,171 @@ by a numbered spec of its own (design.md §1.2), and this is the first controlle
 
 ## Overview
 
-This is the controller that turns a tenant's committed SnowflakeAccount description into an actual
-Snowflake account, and later back out of existence again. It sits at the end of the platform's
-provisioning chain: configuration loading, secret storage, pooled connections, the step-by-step
-provisioning pipeline, and the two-key deletion safeguard all exist so that this controller can call
-them. Because it is the first controller in this codebase that needs a live connection to both Snowflake
-and a cloud secret store, it is also where the remaining startup wiring gets finished.
+The SnowflakeAccount controller is the component Kubernetes calls whenever a tenant's
+SnowflakeAccount resource is created, changed, deleted, or due for its periodic check. It connects
+two parts of the platform. One is Kubernetes, where tenants describe the accounts they want as
+resources and read back their state. The other is the account pipeline (009), which does the work in
+Snowflake.
 
-## Key Concept: A Deliberately Partial Pipeline
+The controller contains little logic of its own. The pipeline and its modules determine what happens
+to an account: what is created, checked, configured and torn down. The controller passes each request
+to the pipeline and writes the result back onto the resource. The only decision it makes itself is
+whether an account may be deleted. The pipeline (009) and its modules specify how an account behaves.
+This spec covers how that behavior is connected to Kubernetes.
 
-This controller's pipeline carries one module today: the account module (012), which alone is enough to
-create a Snowflake account, give the platform a way to log into it, and drop it again. Every other
-capability a `SnowflakeAccount` can describe — network rules, auth exceptions, identity groups, a credit
-quota, and the admission checks that would normally gate all of them — is accepted by the CRD's schema
-(006) exactly as written, but nothing in this controller's pipeline reads or acts on any of it, because
-the module that owns each concern does not exist yet. This also means the "validation phase" earlier
-designs imagined ahead of the pipeline has nothing left in it beyond what the CRD's own schema (006)
-already enforces at admission, before this controller ever sees the object — no per-reconcile region or
-admission check runs in this controller's own code at all. The one exception is the account module's own
-region-existence check against the Backplane Config (007, 012): that is a pipeline module's step, reached
-through `Pipeline.Apply` like everything else this cut does, not logic this controller carries itself.
 
-**Important**: adding a module later is a one-line change to the pipeline's argument list, not a change
-to this controller's shape — nothing here needs to anticipate which module lands next or expose an
-extension point for it.
+## Key Concept: A Thin Layer Between Kubernetes and the Pipeline
 
-## Key Concept: One Shared Context, Three Uniform Entry Points
+Kubernetes reconciles a resource in two steps. It first observes the resource and then, depending
+on the result, creates, updates or deletes the external state the resource describes (009, The
+Reconcile Loop). The pipeline provides three
+operations: observe, apply and destroy. The controller maps each reconciler request onto one of these
+operations, then converts the pipeline's result back into Kubernetes terms. 
 
-Every reconcile builds exactly one `pipeline.ResourceData` and hands it, unchanged, to whichever of the
-pipeline's three entry points that reconcile method needs: `Observe` calls `Pipeline.Observe`;
-`Create` and `Update` share one internal function that calls `Pipeline.Apply`, since `Apply` is
-idempotent by construction and there is nothing for the two methods to do differently; `Delete` calls
-`Pipeline.Destroy`, but only once the deletion gate below has cleared. Nothing is threaded from one call
-into the next — a fresh context is built every time, from the CRD and namespace labels as they stand at
-that moment, and it carries no live connection until a module first asks for one.
+```mermaid
+flowchart LR
+    subgraph K[Kubernetes reconciler]
+        KO[observe]
+        KC[create]
+        KU[update]
+        KD[delete]
+    end
+    subgraph P[Pipeline]
+        PO[observe]
+        PA[apply]
+        PD[destroy]
+    end
+    KO --> PO
+    KC --> PA
+    KU --> PA
+    KD -->|if allowed| PD
+    P -.->|result| K
+```
 
-## Key Concept: The Controller Renders, the Pipeline Decides
+The reconciler's observe is forwarded to the pipeline's observe. Create and update are both handled
+by only a single apply function. Apply works declaratively from the spec, so a new account and an existing one are handled the same way. Delete is forwarded to destroy only after the deletion gate has authorized 
+it (Key Concept: Enforcing the Deletion Permit).
 
-The controller computes nothing about a run. After each `Observe` and each `Create`/`Update`, the
-pipeline (009) hands back everything it needs: whether the account exists and is up to date, the module
-conditions and events, the finished `Ready` condition and the first error. The controller only records
-the events, sets the conditions, and returns the observation and the handled error. In particular the
-`Ready` latch — once `True`, always `True` — and the pending reason shown while it is `False` live in
-the pipeline, which reads the resource's already-persisted `Ready` condition at the start of each run;
-and `status.observedGeneration` is recorded there as well.
+The controller is stateless. Each request reads the resource and its namespace's labels at the time
+of the request and passes both to the pipeline. Any information that must persist between requests
+is stored on the resource itself.
 
-**Important**: crossplane-runtime's managed reconciler overwrites `Ready`/`Synced` again right after
-`Observe` and after `Create`/`Update` return, on every call — not only the first time. So this controller
-renders `Ready` on every single `Observe`, never relying on what a prior `Apply` already set to still be
-showing.
+The controller is intentionally kept thin. All logic that can be tested without Kubernetes lives in
+the pipeline and its modules.
 
-## Key Concept: Surfacing a Failed Module on `Synced`
 
-A module's own failure (a tenant mistake or a system fault) has nowhere to go once the run for that reconcile ends, unless
-`Create`/`Update` explicitly returns it. Returning `nil` from either method — even after recording every
-module's condition and event correctly — makes the managed reconciler mark the reconcile a success
-immediately afterward, overwriting whatever this controller just set. So `Create`/`Update` must return
-the pipeline's first handled module error, letting the reconciler render it onto `Synced` itself, exactly
-as an ordinary infrastructure failure would be. This never reintroduces a retry storm: the extra retry
-this causes only affects the next poll-driven reconcile of an unchanged, still-rejected resource, and a
-tenant's own edit reconciles immediately regardless.
+## Key Concept: What Observe Reports to Kubernetes
 
-## Key Concept: The Deletion Gate
+Observe runs on every pass, including each periodic check, and changes nothing in Snowflake. It has
+two purposes. It answers the reconciler's questions, which decide whether apply runs next. It also
+refreshes what the resource shows, so the resource reflects the account's current state even when
+nothing needs to change.
 
-Two separate gates stand between a tenant deleting a `SnowflakeAccount` object and its account actually
-being dropped. The first belongs to crossplane-runtime itself, not this controller: `Delete` is only ever
-invoked when the immediately preceding `Observe` reported the account as existing; a resource whose
-account was never created has its finalizer released directly, with `Delete` never called at all. The
-second is this controller's own, and is what design.md §6.3 means by positive control: whenever `Delete`
-*is* invoked, it looks for an `Active` `DeletionPermit` (019) naming this specific resource
-before doing anything else. Finding none — because none was ever created, or because the one that
-existed expired unused — blocks the destruction outright: the resource stalls in `Terminating`, a
-`Warning: DeletionBlocked` event is recorded, and `Ready` is set to `False` so that automated deployment
-tooling reports the failure rather than the deletion silently hanging. Finding one authorizes tearing the
-account down through the pipeline and only then marks that request `Consumed`, so a teardown that fails
-partway leaves the request usable for a retry rather than burning the tenant's one authorization on a run
-that never finished.
+Every value comes from the pipeline's observe (009, From Module Outcomes to Controller State), and the
+controller passes it to Kubernetes unchanged.
+
+| Value             | Meaning                                                                                                        | Effect in Kubernetes                                                                                   |
+|-------------------|----------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------|
+| Exists            | The account has been created. Only the account module decides this.                                           | If false, the reconciler calls create.                                                                 |
+| Up to date        | The last apply completed for the current spec, and nothing has drifted since.                                   | If false, the reconciler calls update.                                                                 |
+| Error             | The first module failure: a message the tenant can act on, or an incident reference for a platform fault (001). | Synced is set to false with that message. Neither create nor update is called, and the pass is retried later. |
+| Ready             | Whether the account has ever been fully provisioned. Once true, it stays true. Until then, it carries the first reason for waiting. | Set on the resource. Tools watching the resource use it to report health.                               |
+| Module conditions | Conditions that individual modules own, such as credits used up or groups still syncing.                       | Set on the resource alongside Ready and Synced.                                                        |
+| Events            | Notable occurrences that modules report, such as a warning when credits run out.                               | Recorded on the resource.                                                                              |
+
+An error ends the pass before anything is changed. The reconciler never creates or updates an
+account based on an incomplete observation.
+
+
+## Key Concept: What Apply Reports to Kubernetes
+
+Create and update run only when observe reports that the account is missing or not up to date. Both
+run apply, which changes the account to match its spec. Apply does not answer the reconciler's
+questions itself. The next observe does that, based on what this apply recorded. Instead, apply
+reports what happened during the pass.
+
+Every value comes from the pipeline's apply (009, From Module Outcomes to Controller State), and the
+controller passes it to Kubernetes unchanged.
+
+| Value                | Meaning                                                                                                        | Effect in Kubernetes                                                                                   |
+|----------------------|----------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------|
+| Error                | The first module failure: a message the tenant can act on, or an incident reference for a platform fault (001). | Synced is set to false with that message, and the pass is retried later. Without an error, Synced is set to true. |
+| Ready                | Turns true the first time an apply completes with every module done, and then stays true. Until then, it carries the first reason for waiting. | Set on the resource. After a create, Kubernetes shows the resource as creating until the next observe. |
+| Module conditions    | Conditions that individual modules own, such as credits used up or groups still syncing.                       | Set on the resource alongside Ready and Synced.                                                        |
+| Events               | Notable occurrences that modules report, such as a warning when credits run out.                               | Recorded on the resource.                                                                              |
+| Applied spec version | Recorded only when every module completed for the current spec.                                                | Lets the next observe report the account as up to date.                                                |
+| Account details      | The account's Snowflake name, login URL and identifier, written by the account module.                         | Saved on the resource immediately, so they are kept even when the pass fails. Without the identifier, the next pass would create the account again. |
+
+A failed apply is always returned to Kubernetes as an error. Otherwise Kubernetes would record the
+pass as successful and hide the failure.
+
+
+## Key Concept: The Resource Is the Tenant's Only Feedback
+
+Tenants never see the controller's logs, so everything they need to know has to appear on the
+SnowflakeAccount resource. That covers whether the account is ready, whether the last pass ran into
+a problem, what individual modules report (credits used up, groups still syncing), events, and the
+account's Snowflake name and login URL. Whatever tool a tenant uses to deploy and watch their
+resources reads the same conditions to show the account as healthy or failing.
+
+The controller writes this picture after every pass, observe and apply alike. The picture therefore
+always reflects the latest pass, not the last pass that happened to change something. The pipeline
+decides what the picture contains, and the controller copies it onto the resource unchanged.
+
+The summary view shows one account that is provisioned, one still being created, and one that failed:
+
+```console
+$ kubectl get snowflakeaccounts -n finance
+NAME                READY   SYNCED   REASON      ACCOUNT-URL                                                                     AGE
+analytics-team-eu   True    True     Available   https://xy12345.eu-central-1.privatelink.snowflakecomputing.com/console/login   12d
+reporting-dev       False   True     Creating    https://ab67890.eu-central-1.privatelink.snowflakecomputing.com/console/login   4m
+sandbox             False   False    Creating                                                                                    1m
+```
+
+The detailed view shows an account that has used up its monthly credits but is still Ready:
+
+```console
+$ kubectl describe snowflakeaccount analytics-team-eu -n finance
+Name:         analytics-team-eu
+Namespace:    finance
+API Version:  base.snowflake.yukimi.io/v1alpha1
+Kind:         SnowflakeAccount
+Spec:
+  ...
+Status:
+  Account Created At:  2026-10-11T08:14:02Z
+  Account Locator:     xy12345
+  Account Name:        analytics_team_eu_5k3wf
+  Account URL:         https://xy12345.eu-central-1.privatelink.snowflakecomputing.com/console/login
+  Conditions:
+    Last Transition Time:  2026-10-11T08:31:47Z
+    Reason:                Available
+    Status:                True
+    Type:                  Ready
+    Last Transition Time:  2026-10-23T09:02:15Z
+    Reason:                ReconcileSuccess
+    Status:                True
+    Type:                  Synced
+    Last Transition Time:  2026-10-23T09:02:15Z
+    Message:               Monthly credit quota of 500 used up; warehouses are suspended until the next billing cycle
+    Reason:                QuotaExhausted
+    Status:                False
+    Type:                  QuotaAvailable
+  Observed Generation:     3
+Events:
+  Type     Reason          Age   From                                                Message
+  ----     ------          ----  ----                                                -------
+  Warning  QuotaExhausted  12m   managed/snowflakeaccount.base.snowflake.yukimi.io  Monthly credit quota of 500 used up; warehouses are suspended until the next billing cycle
+```
+
+
+## Key Concept: Enforcing the Deletion Permit
+
+This controller enforces the deletion permit defined in 019. Without an active permit, a deleted
+resource stays in Terminating, with a warning event and Ready set to false. The permit is marked as
+used only after the teardown succeeds, so a failed teardown can be retried. A resource whose account
+was never created, for example because its name failed validation, is removed without a permit.
+
 
 ## Public API
 
@@ -92,8 +181,8 @@ package snowflakeaccount // internal/controller/snowflakeaccount
 // safe-start support, wired into internal/controller/yukimi.go alongside
 // every other resource's controller (design.md §3.2, §6.3, §7).
 //
-// Registers a pipeline (009) of exactly one module for this cut (Key
-// Concept: A Deliberately Partial Pipeline):
+// Registers a pipeline (009) of exactly one module for this cut (see
+// Scope):
 //
 //	pipeline.New(accountmodule.New(
 //	    keyManager,
@@ -283,8 +372,8 @@ This specification defines the `internal/controller/snowflakeaccount` package th
   and either expires on its own or sits unused; this is a dev/ops opt-out, not a per-resource exception.
 - **The managed reconciler overwrites `Ready`/`Synced` again right after `Observe`, `Create`, and
   `Update` all return, every single time** — this controller relies on nothing from a prior call still
-  being in effect; every `Observe` recomputes `Ready`/`Synced` in full, per Key Concept: The Ready Latch
-  Lives on the Persisted Condition.
+  being in effect; every `Observe` recomputes `Ready`/`Synced` in full, per 009's Key Concept: From Module
+  Outcomes to Controller State.
 
 ## Dependencies
 
@@ -402,7 +491,7 @@ of `internal/account/modules/{guardrailcheck,quotacheck,parameter,network,auth,i
 
 ## Security Considerations
 
-- **No admission control exists in this cut** (D-003/D-005): any syntactically valid `SnowflakeAccount`
+- **No admission control exists in this cut**: any syntactically valid `SnowflakeAccount`
   creates a real Snowflake account, in any region listed in the Backplane Config (007) — regardless of
   that region's `available` flag, which nothing in this cut consults — with any credit quota, network,
   or auth-exception entry it names. This is accepted for the development cluster this code runs against
@@ -440,8 +529,6 @@ of `internal/account/modules/{guardrailcheck,quotacheck,parameter,network,auth,i
   §3.6 (account bootstrapping), §3.11/§3.11.3 (privilege step-down, immutability), §3.12 (account naming),
   §6.1–§6.3 (the deletion flow this controller's `Delete` implements Phases 2–3 of), §7.1/§7.2 (condition
   and status model), Appendix A/B.
-- **Clarification record**: `specs/wip-020-snowflakeaccount-controller.md` — D-001 through D-005 and
-  their rationale; kept until this spec's code lands.
 - **Dependency specs**: `specs/002-base-config.md`, `specs/003-secrets-handling.md`,
   `specs/003.a-aws-secrets-backend.md`, `specs/004-connection-pooling.md`,
   `specs/006-snowflake-account-crd.md`, `specs/007-backplane-config.md` (loaded and forwarded, never
