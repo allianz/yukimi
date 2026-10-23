@@ -30,8 +30,8 @@ import (
 // order, stopping at the first real failure. Every step is safe to re-run:
 // DROP ACCOUNT IF EXISTS makes a missing account a no-op, EvictTenant is a
 // no-op on a key never dialed, and KeyStore.Delete is idempotent on an
-// absent or already-pending credential (003) (Key Concept: Two Restore
-// Windows, specs/012-account-module.md).
+// absent or already-pending credential (003) (Key Concept: Restorable
+// Deletion, specs/012-account-module.md).
 func (m *module) Teardown(ctx context.Context, data *pipeline.ResourceData) error {
 	cr := data.CR()
 
@@ -50,8 +50,8 @@ func (m *module) Teardown(ctx context.Context, data *pipeline.ResourceData) erro
 }
 
 // dropAccount issues DROP ACCOUNT over the org-admin connection, reserved in
-// this module for exactly this call and CREATE ACCOUNT (Key Concept: The
-// Only Module With Organization-Wide Privileges). IF EXISTS makes a
+// this module for exactly this call and CREATE ACCOUNT (Key Concept:
+// Existence Is Recorded, Not Looked Up). IF EXISTS makes a
 // concurrently- or already-dropped account a success rather than an error,
 // so no SQLSTATE needs classifying here.
 func (m *module) dropAccount(ctx context.Context, data *pipeline.ResourceData) error {

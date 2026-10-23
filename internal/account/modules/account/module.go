@@ -55,7 +55,7 @@ type module struct {
 //     fresh-create path, if CreateCredentials fails for any reason other than
 //     ErrPendingDeletion, KeyManager.GetCredentials is called once, read-only,
 //     to decide whether a secret found there is this resource's own crashed
-//     attempt (Key Concept: Resuming a Crashed Create).
+//     attempt (Key Concept: Finishing an Interrupted Create).
 //   - org: Config.Snowflake.Org (002), used to build the tenant secret
 //     identifier (003) exactly as internal/snowflake/pool does.
 //   - gracePeriod: Config.Snowflake.AccountCreationGracePeriod (002); how
@@ -72,7 +72,7 @@ type module struct {
 //   - bpConfig: the loaded Backplane Config (007), consulted on the
 //     fresh-create path for region existence via Region(), and — combined
 //     with the tenant's alpha-tester namespace label — for region
-//     availability via Region.Available (Key Concept: Region Validation).
+//     availability via Region.Available (Key Concept: Validation Checks).
 //
 // Returns:
 //   - pipeline.Module: never nil.
@@ -100,7 +100,7 @@ func withinGracePeriod(cr *v1alpha1.SnowflakeAccount, gracePeriod time.Duration)
 // connectTenant opens the platform connection to an account whose locator is
 // already known. A failure here means the account exists but is currently
 // unreachable — a system error, never a reason to create it again (Key
-// Concept: Create-Then-Verify Lifecycle).
+// Concept: Existence Is Recorded, Not Looked Up).
 func connectTenant(ctx context.Context, data *pipeline.ResourceData) (*sql.DB, error) {
 	db, err := data.TenantDB(ctx)
 	if err != nil {

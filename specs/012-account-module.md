@@ -106,8 +106,9 @@ as a system error instead of continuing, and an operator must resolve it manuall
 ## Key Concept: Restorable Deletion
 
 Deletion is not final right away. The module drops the account and deletes the platform user's key, but
-both remain restorable for the same period, configured by Ops, so a mistaken deletion can be undone.
+both remain restorable for a period configured by Ops, so a mistaken deletion can be undone.
 Until that period has passed, the account name cannot be reused in the same namespace.
+
 
 ```mermaid
 stateDiagram-v2

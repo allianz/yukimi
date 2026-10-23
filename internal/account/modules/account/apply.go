@@ -39,15 +39,15 @@ import (
 const duplicateAccountSQLState = "42710"
 
 // maxAccountLabelLen is Snowflake's DNS label limit on "<org>-<resolvedName>",
-// (specs/012-account-module.md, Key Concept: Account Name Length Limit).
+// (specs/012-account-module.md, Key Concept: Validation Checks).
 const maxAccountLabelLen = 63
 
 // resumeClockSkewBuffer absorbs drift between the kube-apiserver's clock
 // (cr.CreationTimestamp) and the secrets backend's clock (a credential's
 // RotatedAt) when deciding whether an occupied identifier is this resource's
 // own crashed attempt or an unrelated orphan — precision doesn't matter
-// here, only ordering (specs/012-account-module.md, Key Concept: Resuming a
-// Crashed Create).
+// here, only ordering (specs/012-account-module.md, Key Concept: Finishing an
+// Interrupted Create).
 const resumeClockSkewBuffer = 5 * time.Minute
 
 // platformUser is the service user CREATE ACCOUNT bootstraps as the account's
@@ -59,7 +59,7 @@ const platformUser = "platform"
 // the first reconcile, or re-confirm the platform can still reach it — and
 // keep the platform user's EMAIL in sync with spec.Contact — on every later
 // one. It never repeats a create once a locator is known — see Key Concept:
-// Create-Then-Verify Lifecycle, specs/012-account-module.md.
+// Existence Is Recorded, Not Looked Up, specs/012-account-module.md.
 func (m *module) Apply(ctx context.Context, data *pipeline.ResourceData) pipeline.Outcome {
 	out := m.apply(ctx, data)
 	m.syncStatus(data) // after apply: a fresh create has just set the locator
@@ -78,7 +78,7 @@ func (m *module) apply(ctx context.Context, data *pipeline.ResourceData) pipelin
 // reconcileExisting re-confirms the platform can reach an account whose
 // locator is already known, then keeps the platform user's EMAIL in sync with
 // spec.Contact. Within the post-create grace period it attempts no
-// connection at all (Key Concept: Post-Create Grace Period).
+// connection at all (Key Concept: A New Account Needs Time).
 func (m *module) reconcileExisting(ctx context.Context, data *pipeline.ResourceData) pipeline.Outcome {
 	cr := data.CR()
 	if withinGracePeriod(cr, m.gracePeriod) {
@@ -125,8 +125,8 @@ func syncPlatformEmail(ctx context.Context, runner *statement.Runner, contact st
 // connection, then record the resulting locator and creation time directly
 // on the CRD's status. It never runs when a locator is already known, and it
 // never verifies reachability itself — that is deferred to a later
-// reconcile, once the grace period has elapsed (Key Concept: Create-Then-Verify
-// Lifecycle).
+// reconcile, once the grace period has elapsed (Key Concept: A New Account
+// Needs Time).
 func (m *module) createAccount(ctx context.Context, data *pipeline.ResourceData) pipeline.Outcome {
 	cr := data.CR()
 	resolvedName := data.ResolvedAccountName()
@@ -148,7 +148,7 @@ func (m *module) createAccount(ctx context.Context, data *pipeline.ResourceData)
 
 	// Only a resumed attempt can have crashed after CREATE ACCOUNT already
 	// succeeded; reissuing it would surface as a name collision with the
-	// tenant's own account (Key Concept: Resuming a Crashed Create).
+	// tenant's own account (Key Concept: Finishing an Interrupted Create).
 	if resumed {
 		locator, found, err := findAccountLocator(ctx, runner, "check for existing account before resuming create", resolvedName)
 		if err != nil {
@@ -172,9 +172,8 @@ func (m *module) createAccount(ctx context.Context, data *pipeline.ResourceData)
 // checkCreatable runs every fresh-create check that must pass before any
 // side effect — keypair generation, secret storage, or the org-admin
 // connection: the region exists in the Backplane Config (007) and, unless
-// the tenant is an alpha tester, is available (Key Concept: Region
-// Validation), and cr.Name fits this organization's real account-name limit
-// (Key Concept: Account Name Length Limit).
+// the tenant is an alpha tester, is available, and cr.Name fits this
+// organization's real account-name limit (Key Concept: Validation Checks).
 func (m *module) checkCreatable(cr *v1alpha1.SnowflakeAccount, resolvedName string, namespaceLabels map[string]string) error {
 	region, err := m.backplane.Region(cr.Spec.Region)
 	if err != nil {
@@ -243,8 +242,8 @@ func (m *module) acquireCredentials(ctx context.Context, cr *v1alpha1.SnowflakeA
 // refused rather than guessed at. The secrets taxonomy offers no "already
 // exists" error, so createErr may not mean the identifier is occupied at
 // all; if nothing can be read back, there is nothing to resume and createErr
-// is what gets reported (specs/012-account-module.md, Key Concept: Resuming
-// a Crashed Create).
+// is what gets reported (specs/012-account-module.md, Key Concept: Finishing
+// an Interrupted Create).
 func (m *module) resumeCrashedCreate(ctx context.Context, id secrets.Identifier, createdAt time.Time, createErr error) (*secrets.Credentials, error) {
 	creds, err := m.keyManager.GetCredentials(ctx, id)
 	if err != nil {
@@ -265,8 +264,8 @@ func (m *module) resumeCrashedCreate(ctx context.Context, id secrets.Identifier,
 // whether the account was just created by this call or found already
 // existing by the resume pre-check. On the latter path the account is in
 // fact somewhat older than now, which only lengthens the grace period — the
-// safe direction (specs/012-account-module.md, Key Concept: Resuming a
-// Crashed Create).
+// safe direction (specs/012-account-module.md, Key Concept: Finishing an
+// Interrupted Create).
 func finishCreate(cr *v1alpha1.SnowflakeAccount, locator string) pipeline.Outcome {
 	cr.Status.AccountLocator = locator
 	cr.Status.AccountCreatedAt = &metav1.Time{Time: time.Now()}
