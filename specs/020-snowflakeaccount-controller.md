@@ -44,7 +44,6 @@ flowchart LR
     KC --> PA
     KU --> PA
     KD -->|if allowed| PD
-    P -.->|result| K
 ```
 
 The reconciler's observe is forwarded to the pipeline's observe. Create and update are both handled
