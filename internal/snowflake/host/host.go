@@ -30,8 +30,9 @@ const (
 
 // validClouds mirrors internal/config/base.cloudSectionKeys (002) — the same
 // three clouds a Snowflake org's account may live on. Duplicated rather than
-// imported (Key Concept: Duplicated Loaders, 002/007): neither package
-// should depend on the other just for a three-entry map. Onboarding a new
+// imported (specs/002, Key Concept: One --configDir, Separate Config
+// Files): neither package should depend on the other just for a
+// three-entry map. Onboarding a new
 // cloud means updating this map, base.go's cloudSectionKeys, and the CRD's
 // region Pattern (006) together — a deliberate, coordinated change.
 var validClouds = map[string]bool{"aws": true, "azure": true, "gcp": true}
