@@ -1,5 +1,7 @@
 # Specification: Account Pipeline (009)
 
+This specification covers the package: `internal/account/pipeline/`.
+
 ## Overview
 
 Creating and updating a Snowflake account is split into modules, one per concern: admission checks,
