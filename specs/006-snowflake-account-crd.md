@@ -419,19 +419,17 @@ caller (020) already has the namespace object from its own reconcile and passes 
   attempts to write platform credentials or call `CREATE ACCOUNT` for it. Before this rule existed,
   an over-long name reached a real `CREATE ACCOUNT` call, which Snowflake itself rejected — not for
   exceeding a flat 255-character bare-identifier limit, but for exceeding the 63-character DNS
-  label limit on `<org>-<resolvedName>`, the combined form Snowflake actually validates — but only
-  *after* the account module had already written credentials to the secret store, permanently
-  wedging the resource on retry. 55 is the largest `metadata.name` that stays within that
-  63-character limit for any organization name, however short; the account module (012) still
-  re-checks the exact combined length against the real organization name, since this CRD has no
-  visibility into it. The secret-write/retry behavior itself is a separate, known gap this spec
-  does not fix.
+  label limit on `<org>-<resolvedName>`, the combined form Snowflake actually validates — and only
+  *after* the account module had already stored a platform key for it. 55 is the largest
+  `metadata.name` that stays within that 63-character limit for any organization name, however
+  short; the account module (012) still re-checks the exact combined length against the real
+  organization name, before storing any key, since this CRD has no visibility into it.
 - **A `metadata.name` with a leading digit (e.g. `9-team`) or a dot (e.g. `my.team`) — does
   Kubernetes already reject these?** No — both are legal under Kubernetes' own DNS-1123-subdomain
   name validation, and `ResolveName` never translates either away (only `-` becomes `_`). Before
   the shape `XValidation` rule existed, both reached a live `CREATE ACCOUNT` call and failed there
   (a leading digit fails Snowflake's bare-identifier rule; a dot is never a valid identifier
-  character) — the same wedge-bug shape as the length case above. The shape rule rejects both at
+  character) — the same late failure as the length case above. The shape rule rejects both at
   admission instead.
 
 ## Dependencies

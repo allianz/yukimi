@@ -229,7 +229,7 @@ func TestIntegration_CreateThenDestroy(t *testing.T) {
 // ("...exceeds the maximum DNS label length of 63 characters"), well below
 // the resolved name's own 255-character SQL-identifier ceiling. See
 // specs/006-snowflake-account-crd.md's Edge Cases and
-// specs/012-account-module.md's Key Concept: Account Name Length Limit. Kept
+// specs/012-account-module.md's Key Concept: Validation Checks. Kept
 // short enough here to stay well clear of that limit for any real org name,
 // since demonstrating it is not this test's job — reproduce it by making
 // this string as long as the CRD alone allows.
