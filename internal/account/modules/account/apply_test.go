@@ -427,7 +427,7 @@ func TestApply_FreshCreate_SecretIdentifierOccupied(t *testing.T) {
 	}
 }
 
-// Resume (specs/012-account-module.md, Key Concept: Resuming a Crashed
+// Resume (specs/012-account-module.md, Key Concept: Finishing an Interrupted
 // Create): the identifier is occupied by a credential written at or after
 // cr.CreationTimestamp (minus the clock-skew buffer) — this resource's own
 // earlier, crashed attempt. The pre-check (SHOW ACCOUNTS LIKE) finds no
@@ -701,7 +701,7 @@ func TestApply_FreshCreate_UnknownRegion_Rejected(t *testing.T) {
 // SC-034: a fresh create aborts with a user error, issuing no SQL, when
 // cr.Name combined with the configured organization name would exceed
 // Snowflake's 63-character DNS label limit once resolved (Key Concept:
-// Account Name Length Limit). The message names only the max length — never
+// Validation Checks). The message names only the max length — never
 // the organization name — since the tenant can't act on either.
 func TestApply_FreshCreate_AccountNameTooLong_Rejected(t *testing.T) {
 	longName := strings.Repeat("a", 55) // the CRD's own 55-character ceiling (006)
@@ -773,7 +773,7 @@ func TestApply_FreshCreate_NamespaceWithRepeatedSeparator_Rejected(t *testing.T)
 
 // A fresh create aborts with a user error, and no side effects, when the
 // resolved region exists but is not available and the tenant's namespace is
-// not labeled as an alpha tester (Key Concept: Region Validation).
+// not labeled as an alpha tester (Key Concept: Validation Checks).
 func TestApply_FreshCreate_UnavailableRegion_Rejected(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
 	data := pipeline.NewResourceData(cr, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
@@ -803,7 +803,7 @@ func TestApply_FreshCreate_UnavailableRegion_Rejected(t *testing.T) {
 // A fresh create proceeds past the availability gate when the resolved
 // region is unavailable but the tenant's namespace is labeled as an alpha
 // tester, reaching CREATE ACCOUNT exactly as an available region would (Key
-// Concept: Region Validation).
+// Concept: Validation Checks).
 func TestApply_FreshCreate_UnavailableRegion_AlphaTesterBypass(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
 	orgAdminDB, mock := newOrgAdminMock(t)

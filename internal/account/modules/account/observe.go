@@ -24,8 +24,8 @@ import (
 
 // Observe reports whether the account exists (a known locator) and, if so,
 // re-confirms the platform can still log in — it never looks accounts up
-// over the org-admin connection (see Key Concept: Create-Then-Verify
-// Lifecycle, specs/012-account-module.md), since every module downstream of
+// over the org-admin connection (see Key Concept: Existence Is Recorded, Not
+// Looked Up, specs/012-account-module.md), since every module downstream of
 // this one already needs the same platform-authenticated connection. While
 // the account is within its post-create grace period, it skips the
 // connection attempt entirely rather than trying and failing.

@@ -1,129 +1,124 @@
 # Specification: Account Module (012)
 
+This specification covers the package: `internal/account/modules/account/`.
+
 ## Overview
 
-This module creates a brand-new Snowflake account for a tenant and sets up the one service user the
-platform uses to manage it afterward. Nothing else in the pipeline that needs a live Snowflake
-connection can run until an account actually exists and the platform can log into it — a module needing
-no such connection (the quota-check admission gate, 011) may still run earlier. It is needed because
-creating an account requires organization-wide privileges that no other part of the system should hold.
-The approach is simple: generate a fresh login key, save it safely first, ask Snowflake to create the
-account with that key, and then remember the account's unique ID so every later step can find it again.
+This module creates the tenant's Snowflake account and removes it when deletion is authorized, but it
+does not configure the account. Together with the account, it creates a platform user: a technical user
+that only the platform uses to control the account. Creation is complete only when the platform has
+logged in as this user, not as soon as the account exists. Account parameters, network rules and
+policies, authentication settings, users, roles and groups, and quotas are handled by later modules of
+the pipeline, all of which connect through the platform user. On deletion, the module drops the account
+and deletes the platform user's key, and both remain restorable for a configured period.
 
-## Key Concept: Create-Then-Verify Lifecycle
+## Key Concept: The Platform User
 
-A tenant's Snowflake account is created exactly once. Before doing anything else, this module checks
-whether that account already exists; if it does, the module never creates another and never touches the
-stored credential again — it only re-confirms that the platform can still log in. An account that has
-gone missing or become unreachable outside the platform's own deletion flow is reported as a problem, not
-treated as a reason to try creating it again: doing so could orphan a live account or replace a key it
-still depends on.
+Every account this module creates starts with a single user: the platform user. It is a technical user
+that only the platform uses to control the account. Snowflake makes it the account's first
+administrator. It has no password and logs in only with a key that the platform generates and keeps in
+its secret store, so no person can log in as it. 
 
-`Done()` means "verified reachable," not merely "the SQL succeeded." A fresh `CREATE ACCOUNT` therefore
-never verifies reachability inline: a Snowflake account takes minutes to become connectable after
-`CREATE ACCOUNT` returns, so trying to connect in the same pass — which is what would happen next, since
-every later pipeline module needs `TenantDB` — would just produce a predictable string of connection
-failures. Instead, a fresh create records the locator and the moment of creation directly on the CRD's
-status and returns `Pending(...).Abort()`, stopping the pipeline for this pass and deferring the first
-reachability check to a later reconcile. Both `Observe` and `Apply`'s reconnect path skip attempting a
-connection entirely while the account is within its post-create grace period, rather than trying and
-leaving a failure in the log — see Key Concept: Post-Create Grace Period.
+Snowflake has a similar user of its own, `SNOWFLAKE`, which it uses for support access.
 
-## Key Concept: Resuming a Crashed Create
+All later modules configure the account through this user. Its key is therefore the one credential the
+platform must not lose: without it, the platform has no way into the account and loses control over it.
 
-The secret identifier a fresh create reserves (design.md 3.11.1) is unique to this one resource — org,
-namespace, and `metadata.name` all join into it (003's collision-free join), so nothing else in the system
-ever writes to it. That makes a `CreateCredentials` failure on an already-occupied identifier
-disambiguable instead of a permanent dead end: a secret found there, written at or after this resource's
-own `metadata.creationTimestamp`, can only be this resource's own earlier attempt — one that generated and
-stored a keypair, then crashed before `CREATE ACCOUNT` ran or before its locator was persisted to status.
-Nothing in Snowflake has used that keypair yet, so it is safe to reuse it verbatim, without generating a
-new one and without ever calling `KeyManager.Update`.
+## Key Concept: Account Names Are Unique Per Namespace
 
-A small clock-skew buffer (5 minutes, a fixed value — the comparison only needs ordering, not precision,
-since the account's own deletion-recovery window this protects against is measured in days) absorbs drift
-between the kube-apiserver's clock, which stamps `creationTimestamp`, and the secrets backend's clock,
-which stamps the credential's `RotatedAt`. A secret written earlier than `creationTimestamp` minus that
-buffer predates this resource and cannot be its own doing — it is refused exactly as an unreadable or
-unparseable occupant is, rather than guessed at.
+Snowflake requires account names to be unique across the whole organization, but tenants name their
+accounts freely and cannot see other namespaces. Two teams both choosing `dev` is the normal case. Without
+help, tenants would keep being rejected for names they could not have known were taken.
 
-Resuming also has to cover the case where the crash landed *after* `CREATE ACCOUNT` itself already
-succeeded, not just before it ran: blindly reissuing `CREATE ACCOUNT` with the recovered key would then
-collide with the account this resource already created, surfacing as the org-wide name-collision path —
-which is a tenant-facing "rename your resource" message that would be actively wrong here, since the
-collision is with the tenant's own prior attempt. So the resume path checks for the account's existence by
-name first; only when it is not found does it proceed to `CREATE ACCOUNT`, exactly as a fresh create would.
-A genuinely fresh create (the identifier was not previously occupied) skips this check entirely — it costs
-an extra round-trip only on the resume path, never on the common case, and the fresh path's generate-then-store-then-create
-ordering (Public API) is unchanged.
+The platform therefore adds a short suffix derived from the tenant's namespace to the name they chose.
+Accounts from different namespaces never collide, and tenants never have to think about it. Namespaces cannot be renamed, so the suffix never changes. 
 
-This resume decision can, in principle, read a `RotatedAt` served from `KeyManager`'s TTL cache rather than
-a live store read, up to `ttl` stale (003's own already-accepted staleness trade-off) — not a new risk this
-module introduces, just that trade-off surfacing here too.
+```
+name:       analytics-team-eu
+namespace:  finance
+            ↓
+Snowflake:  analytics_team_eu_5k3wf
+```
 
-## Key Concept: Post-Create Grace Period
+## Key Concept: Validation Checks
 
-A brand-new account is not reachable right away. So for a configured period (002) after creation, the
-pipeline waits instead of trying to connect. Every module after this one needs that connection, so the wait
-protects all of them, not just this one.
+Before creating an account, the module checks two inputs that the CRD cannot check with structural
+rules such as a regular expression.
 
-The wait is measured from `status.accountCreatedAt`, which this module sets once, when `CREATE ACCOUNT`
-succeeds. Only this module knows when the account was really created: the resource can be admitted long
-before that, and asking Snowflake would mean reopening the org-admin connection on every reconcile. If the
-field is absent, the wait counts as already over.
+The region is checked against the Backplane Config, a configuration file provided by Ops that lists the
+regions the platform offers for new accounts.
 
-## Key Concept: Contact Email Kept In Sync
+Snowflake allows at most 63 characters for the account identifier
+`<organization>-<account name>_<suffix>`. The organization name and the namespace suffix (see above) use
+part of that, and the tenant's name gets what is left. The CRD does not know the organization name, so a name it accepted can
+still be rejected here.
 
-`spec.contact` is the only account-creation field tenants can change later. It is the `EMAIL` of the
-`platform` user, not an account property. On an existing account, the module updates that user with
-`ALTER USER "platform" SET EMAIL = ...` when its current email differs from `spec.contact`.
+| Organization name | Longest account name |
+|-------------------|----------------------|
+| `a`               | 55 (the CRD's limit) |  
+| `dataplatform`    | 44                   |
 
-## Key Concept: Region Validation
+Both checks run only when the account is created, because region and name cannot change afterwards.
 
-Before creating an account, the module checks that the requested region is listed in the Backplane
-Config (007). Normal tenants can use only regions marked `available: true`. Ops may grant selected
-tenants early access to a staged region with the `alpha-tester: "true"` namespace label.
+## Key Concept: Existence Is Recorded, Not Looked Up
 
-This check happens only when the account is created. The region cannot be changed afterward, so an
-existing account never needs to be checked against a different region.
+The module does not ask Snowflake whether an account exists. Kubernetes is the source of truth: the
+resource describes the intended account, and right after creation the module records the account's
+Snowflake ID in the resource's status.
 
-## Key Concept: Account Name Length Limit
+This has three benefits:
 
-The CRD's own `metadata.name` ceiling (006) is a worst-case bound that holds for any
-organization name, however short. The real limit discovered against live Snowflake is tighter
-and depends on the organization name actually configured for this deployment: `CREATE ACCOUNT`
-rejects the combined `<org>-<resolvedName>` once it exceeds 63 characters, the maximum length
-of a DNS label. Only this module has both the real organization name (`org`, from 002) and the
-resolved account name together, so it re-derives the exact max name length for this
-organization and rejects — before generating a keypair, storing a secret, or opening the
-org-admin connection — whenever `cr.Name` exceeds it, closing the same credential-wedging risk
-the CRD-level check cannot close on its own for an organization name longer than one character.
+- **Cost:** no query to Snowflake on every reconcile, even for idle accounts.
+- **Security:** no need for the organization-wide credential, which the platform uses only to create
+  and drop accounts.
+- **Safety:** once the ID is recorded, the account is never created again. If it later goes missing or
+  cannot be reached, the module reports it instead of repairing it.
 
-The rejection message deliberately reports only that single number — "account name must be N
-characters or fewer" — never the organization name or anything about DNS labels. A tenant
-neither knows nor can change the organization name, so naming it in the error would only add
-confusion, not actionability.
+## Key Concept: A New Account Needs Time
 
-## Key Concept: The Only Module With Organization-Wide Privileges
+A newly created account takes a few minutes before the platform can log in to it. Connecting too early
+would only produce failures, in this module and in every module after it.
 
-Creating a Snowflake account needs privileges that span the whole Snowflake organization, not just one
-tenant's account — and organization-wide credentials are exactly what the platform's security model
-(design.md §3.11) tries hardest to avoid using routinely. This module is the sole exception: it is the
-only place in the whole pipeline that ever connects with those privileges, and only for the two acts that
-span the organization rather than one account — creating the account and dropping it. Every other
-connection this module makes — including its own later checks — authenticates as the tenant's own account
-instead.
+The module therefore waits for a period configured by Ops after creating the account, before it
+connects for the first time. During this wait, no module connects to the account, and the resource
+reports that the account is still being provisioned.
 
-## Key Concept: Two Restore Windows
+## Key Concept: Finishing an Interrupted Create
 
-Teardown does not erase a tenant. It leaves two remnants behind: the account, and the credential that
-connects to it. Each one stays recoverable for a while. A tenant can only be restored while both are still
-there.
+If the controller crashes while creating an account, the next run finds the key that the earlier
+attempt already stored, and continues with it.
 
-So both windows come from the same ops-owned setting, `deletion.gracePeriodDays` (002). The credential's
-window may end earlier than the account's, but never later. Later is the bad direction: the leftover
-credential keeps the tenant's name unusable after the account itself is gone for good. Earlier only means
-an operator has to restore the credential by hand.
+Picking up an existing key is safe. The key is stored in a place reserved for this resource, so a key
+found there never belongs to another tenant.
+
+A real problem must still not be hidden. The module therefore checks when the leftover key was written.
+A key older than the resource cannot come from its own earlier attempt and points to a fundamental
+problem, such as an earlier resource with the same name that was not cleaned up. The module reports it
+as a system error instead of continuing, and an operator must resolve it manually.
+
+```
+    key written before:                     key written after:
+    system error, operator resolves         own earlier attempt, continue
+ ──────────────────────────────────────┼──────────────────────────────────────►  time
+                               resource created
+```
+
+## Key Concept: Restorable Deletion
+
+Deletion is not final right away. The module drops the account and deletes the platform user's key, but
+both remain restorable for a period configured by Ops, so a mistaken deletion can be undone.
+Until that period has passed, the account name cannot be reused in the same namespace.
+
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> Active: created
+    Active --> Restorable: deleted
+    Restorable --> Active: restored
+    Restorable --> Gone: restore period ends
+```
+
 
 ## Public API
 
@@ -133,15 +128,15 @@ an operator has to restore the credential by hand.
 // New constructs the account module (design.md 3.6). It implements
 // internal/account/pipeline.Module's Observe/Apply/Teardown contract,
 // identified by pipeline.AccountModuleName; see Key Concept:
-// Create-Then-Verify Lifecycle, Key Concept: Post-Create Grace Period, and
-// Key Concept: Contact Email Kept In Sync for what each method does.
+// Existence Is Recorded, Not Looked Up, Key Concept: A New Account Needs Time,
+// and SC-031-SC-033 (contact email sync) for what each method does.
 //
 // Parameters:
 //   - keyManager: the *secrets.KeyManager (003) the platform keypair is stored through, via
 //     KeyManager.CreateCredentials and, on teardown, KeyManager.DeleteCredentials — this module never calls
 //     Update. On the fresh-create path, if CreateCredentials fails for any reason other than
 //     ErrPendingDeletion, KeyManager.GetCredentials is called once, read-only, to decide whether a secret
-//     found there is this resource's own crashed attempt (Key Concept: Resuming a Crashed Create).
+//     found there is this resource's own crashed attempt (Key Concept: Finishing an Interrupted Create).
 //   - org: Config.Snowflake.Org (002), used to build the tenant secret identifier (003) exactly as
 //     internal/snowflake/pool does.
 //   - gracePeriod: Config.Snowflake.AccountCreationGracePeriod (002) — how long a fresh account is
@@ -155,7 +150,7 @@ an operator has to restore the credential by hand.
 //     (tenant.AccountURL).
 //   - bpConfig: the loaded Backplane Config (007), consulted on the fresh-create path for region
 //     existence via Region(), and — combined with the tenant's alpha-tester namespace label
-//     (Key Concept: Region Validation) — for region availability via Region.Available.
+//     (Key Concept: Validation Checks) — for region availability via Region.Available.
 //
 // Returns:
 //   - pipeline.Module: never nil.
@@ -164,10 +159,10 @@ func New(keyManager *secrets.KeyManager, org string, gracePeriod time.Duration, 
 
 `Observe`, `Apply` and `Teardown` themselves are unexported methods on the value `New` returns — nothing
 outside this module's own tests calls them directly, so their behavior is documented under Key Concept:
-Create-Then-Verify Lifecycle, Key Concept: Post-Create Grace Period, and Key Concept: Contact Email Kept
-In Sync above rather than here. All three
-read `status.accountLocator`/`status.accountCreatedAt` directly through `ResourceData.CR()`, not through
-any `ResourceData` accessor — `internal/account/pipeline` (009) defines none for either field.
+Existence Is Recorded, Not Looked Up, Key Concept: A New Account Needs Time, and SC-031-SC-033 (contact
+email sync) rather than here. All three read `status.accountLocator`/`status.accountCreatedAt` directly
+through `ResourceData.CR()`, not through any `ResourceData` accessor — `internal/account/pipeline` (009)
+defines none for either field.
 
 `Teardown` runs three steps in a fixed order: `DROP ACCOUNT ... GRACE_PERIOD_IN_DAYS = <configured>` over
 the org-admin connection, then `ResourceData.EvictTenant()` so no stale pooled connection to a dropped
@@ -200,11 +195,11 @@ internal/account/modules/account/
 - `spec.region` is not listed in the loaded Backplane Config (007) — surfaces as `Config.Region`'s own
   user error, passed through unchanged.
 - `spec.region` exists but its `Region.Available` is `false` and the tenant's namespace is not labeled
-  `alpha-tester: "true"` (Key Concept: Region Validation) — this module's own message,
+  `alpha-tester: "true"` (Key Concept: Validation Checks) — this module's own message,
   wording matched to `Config.Region`'s unknown-region error so the two stay indistinguishable to the
   tenant.
 - `cr.Name` combined with the real organization name would exceed Snowflake's 63-character DNS
-  label limit once resolved (Key Concept: Account Name Length Limit) — the message names only
+  label limit once resolved (Key Concept: Validation Checks) — the message names only
   the max length, never the organization name or "DNS label", since the tenant can't act on
   either.
 - `CREATE ACCOUNT` fails because the resolved account name is already taken by another account org-wide.
@@ -216,8 +211,8 @@ internal/account/modules/account/
   `tenant.AlphaTester`'s own system error, passed through unchanged.
 - RSA keypair generation fails.
 - The secret store's create-only write fails for any reason other than `ErrPendingDeletion`, and the
-  occupying secret cannot be resumed as this resource's own crashed attempt (Key Concept: Resuming a
-  Crashed Create) — either because it cannot be read or parsed as valid credentials, or because it was
+  occupying secret cannot be resumed as this resource's own crashed attempt (Key Concept: Finishing an
+  Interrupted Create) — either because it cannot be read or parsed as valid credentials, or because it was
   written before `cr.CreationTimestamp` minus the clock-skew buffer.
 - The resume path's pre-check for an already-existing account (`SHOW ACCOUNTS LIKE`) fails for any reason
   other than finding no match.
@@ -230,7 +225,7 @@ internal/account/modules/account/
 - `DROP ACCOUNT` fails for any reason other than the account already being absent.
 - The credential's deletion fails for any reason other than the secret identifier already being absent.
 - The platform user's `EMAIL` lookup (`SHOW USERS`) or update (`ALTER USER ... SET EMAIL`) fails for any
-  reason (Key Concept: Contact Email Kept In Sync).
+  reason (SC-033).
 
 <br/><br/><br/><br/><br/>
 
@@ -250,8 +245,7 @@ This specification defines the account module that:
 - Tears the account down: `DROP ACCOUNT` over the org-admin connection, eviction of the pooled
   connection to it, and deletion of the stored credential.
 - Keeps the `platform` user's `EMAIL` in sync with `spec.contact` on every `Apply` against an existing
-  account, via a live read-compare-then-write over the tenant connection (Key Concept: Contact Email
-  Kept In Sync).
+  account, via a live read-compare-then-write over the tenant connection (SC-031-SC-033).
 
 **Out of Scope**:
 - Authorizing a deletion (019), and the finalizer and conditions around one (020).
@@ -259,8 +253,7 @@ This specification defines the account module that:
 - Drift detection or repair of the account's own parameters or the `platform` key — not until Snowflake
   ships Organization Policies (design.md Appendix B). This exclusion is about re-provisioning a rotated
   key, an organization-wide, disruptive action; it does not cover reasserting one free-text field
-  (`EMAIL`) on a user this module already exclusively owns — see Key Concept: Contact Email Kept In
-  Sync.
+  (`EMAIL`) on a user this module already exclusively owns — see Scope above.
 
 ## Edge Cases
 
@@ -268,7 +261,7 @@ This specification defines the account module that:
   being persisted to status — what happens on the next reconcile?** The next reconcile still has no
   locator, so it repeats the fresh-create path, and the credential store's create-only write fails because
   the identifier is already occupied from the previous attempt — but this is no longer where the trail ends
-  (Key Concept: Resuming a Crashed Create). The module reads the occupying secret's write time and compares
+  (Key Concept: Finishing an Interrupted Create). The module reads the occupying secret's write time and compares
   it against this resource's own `creationTimestamp`: at or after it (minus a clock-skew buffer), the
   occupant can only be this resource's own earlier attempt, and the module resumes automatically — reusing
   the recovered credential verbatim, checking whether `CREATE ACCOUNT` already succeeded before
@@ -286,6 +279,13 @@ This specification defines the account module that:
   Reconnecting distinguishes "healthy, nothing to do here" from "the account exists but the platform
   cannot reach it" — the second case, and only the second, is a real failure, and only that case is a failure
   (it aborts the pipeline like any other non-`Done` result of this module).
+- **Why does the resource show repeated "Successfully requested creation" events during the post-create
+  grace period?** While the grace period runs, `Observe` returns `Pending` even though a locator is known,
+  so the pipeline (009) reports the account as not existing. Once crossplane-runtime's own default
+  30-second creation grace period has passed, the managed reconciler therefore calls `Create` on every
+  pass and records a `CreatedExternalResource` event each time. This is harmless: `Create` and `Update`
+  run the same `Apply` (020), and `Apply` checks the locator first and never issues `CREATE ACCOUNT`
+  again. Only the events are misleading.
 - **Why does the post-create locator lookup discard rows that aren't an exact, case-insensitive match?**
   A pattern-matching lookup treats every underscore in the resolved account name as a single-character
   wildcard, since the resolved name always contains underscores by construction. Left unguarded, this
@@ -300,7 +300,7 @@ This specification defines the account module that:
   fresh-create path and both before any side effect (keypair generation, secret storage, or the
   org-admin connection): `Region(cr.Spec.Region)`, to confirm the region exists in the loaded config,
   and a check of the returned `Region.Available`, bypassed only for alpha-tester namespaces (Key
-  Concept: Region Validation). The region value `CREATE ACCOUNT` binds still comes
+  Concept: Validation Checks). The region value `CREATE ACCOUNT` binds still comes
   entirely from the CRD plus a fixed transform; the Backplane Config only gates whether that literal
   is attempted at all.
 - **Why does this module re-check an account-name length the CRD (006) already bounds?** The
@@ -358,14 +358,14 @@ This specification defines the account module that:
   tenant-appropriate and user-classified by 007 itself, so this module authors no message of its own
   for that case. It then reads the returned `Region.Available` itself and, combined with
   `tenant.AlphaTester`, authors its own user error when the region is unavailable and the tenant is
-  not an alpha tester (Key Concept: Region Validation), reusing 007's own unknown-region
+  not an alpha tester (Key Concept: Validation Checks), reusing 007's own unknown-region
   wording so the two cases stay indistinguishable to the tenant.
 - **Secrets Handling (003)** — Used APIs: `NewTenantIdentifier()`, `KeyManager.CreateCredentials()`,
   `KeyManager.GetCredentials()`, `KeyManager.DeleteCredentials()`, `ErrPendingDeletion` — Contract:
   `CreateCredentials` and `DeleteCredentials` for normal operation, never `Update`. On the fresh-create
   path, if `CreateCredentials` fails for a reason other than `ErrPendingDeletion`, the module calls
   `GetCredentials` once to read the occupying secret's `RotatedAt` and decide whether to resume (Key
-  Concept: Resuming a Crashed Create) — the only case this module ever reads a stored credential back, and
+  Concept: Finishing an Interrupted Create) — the only case this module ever reads a stored credential back, and
   it still never writes to what it finds there. `DeleteCredentials`'s recovery window is
   the key store's own business — this module passes no window and cannot choose one. Matches
   `CreateCredentials`'s error against `ErrPendingDeletion` via `errors.Is` and decides its own classification and message for
@@ -424,7 +424,8 @@ This specification defines the account module that:
 - **SC-007**: A fresh create aborts with a system error, issuing no SQL, when the resolved secret
   identifier is occupied by a secret that is not this resource's own crashed attempt — because it cannot
   be read or parsed as valid credentials, or because it was written before `cr.CreationTimestamp` minus the
-  clock-skew buffer (Key Concept: Resuming a Crashed Create; see SC-035-SC-037 for the resumable case).
+  clock-skew buffer (Key Concept: Finishing an Interrupted Create; see SC-035-SC-037 for the resumable
+  case).
 - **SC-007a**: A fresh create aborts with a user error naming the account and its deletion recovery
   window — never the secret identifier — when the resolved secret identifier is occupied by a secret scheduled for
   deletion.
@@ -472,7 +473,7 @@ This specification defines the account module that:
 - **SC-025**: `Teardown` drops the account, then evicts the pooled connection, then deletes the
   credential — in that order, and performs no later step once one has failed.
 - **SC-026**: `Teardown` passes `Config.Deletion.GracePeriodDays` straight into the rendered
-  `GRACE_PERIOD_IN_DAYS` for every value 002 admits (3 and 90 at the bounds), and derives no window of its
+  `GRACE_PERIOD_IN_DAYS` for every value 002 admits (7 and 90 at the bounds), and derives no window of its
   own for the credential.
 - **SC-027**: A fresh create calls `Config.Region(cr.Spec.Region)` before generating a keypair,
   storing any secret, or opening the org-admin connection; when `Region()` returns an error, `Apply`
@@ -510,7 +511,7 @@ This specification defines the account module that:
   credential on a retried request. The module does read a stored credential back exactly once — only after
   that create-only write has already failed, and only to compare `RotatedAt` against this resource's own
   `creationTimestamp` to decide whether the occupant is this resource's own crashed attempt (Key Concept:
-  Resuming a Crashed Create). What the create-only write still guarantees is that a found credential is
+  Finishing an Interrupted Create). What the create-only write still guarantees is that a found credential is
   only ever reused verbatim, never regenerated or overwritten — this module calls `KeyManager.Update`
   nowhere, resume included.
 - The post-create locator lookup's pattern matching is a coarse pre-filter only; the exact,
@@ -542,7 +543,7 @@ This specification defines the account module that:
   period — deletion protection would be worthless if the party being protected from could shorten the
   window it is protected by.
 
-- **`SHOW USERS`/`ALTER USER` binding (Key Concept: Contact Email Kept In Sync).** The fixed literal
+- **`SHOW USERS`/`ALTER USER` binding (contact email sync, SC-031-SC-033).** The fixed literal
   `"platform"` — both as the `SHOW USERS LIKE` pattern and as the `ALTER USER` target — and
   `spec.contact` are all bind arguments.
 
@@ -568,8 +569,7 @@ This specification defines the account module that:
   — `GRACE_PERIOD_IN_DAYS` being required, its range of 3-90, and the account staying restorable (and its
   name taken) for that period.
 - **Snowflake `SHOW USERS` reference**: https://docs.snowflake.com/en/sql-reference/sql/show-users —
-  the `name`/`email` columns, and `LIKE`'s wildcard-only, case-insensitive matching (Key Concept: Contact
-  Email Kept In Sync).
+  the `name`/`email` columns, and `LIKE`'s wildcard-only, case-insensitive matching (SC-031).
 - **Snowflake `ALTER USER` reference**: https://docs.snowflake.com/en/sql-reference/sql/alter-user —
   the `SET EMAIL = '<string>'` property.
 - **Base Configuration**: `specs/002-base-config.md` — `deletion.gracePeriodDays`, the single setting both
