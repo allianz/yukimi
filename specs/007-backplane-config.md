@@ -207,8 +207,8 @@ This specification defines the `internal/config/backplane/` package that:
 
 - **`internal/errors` (001)** - Used APIs: `errors.NewUserError()` - Contract: none;
   `internal/config/backplane` has no other internal dependency and does **not** import `internal/config/base`
-  — the two loaders are independently duplicated, per 002's "Shared `--configDir`, Duplicated
-  Loaders" key concept.
+  — the two loaders are independently duplicated, per 002's "One `--configDir`, Separate Config
+  Files" key concept.
 
 ## Integration Points
 

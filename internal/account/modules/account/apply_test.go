@@ -856,7 +856,8 @@ func TestApply_FreshCreate_AlphaTesterLabelMalformed_Failed(t *testing.T) {
 
 // A tenant-controlled description is only ever a bind argument: whatever
 // quotes, semicolons and comment markers it contains, the statement text is
-// the fixed bound template (specs/005, Key Concept: Bind First). The exact
+// the fixed bound template (specs/005, Key Concept: Bind Inputs Where
+// Snowflake Allows). The exact
 // text is matched, so any interpolation would fail the expectation.
 func TestExecCreateAccount_DescriptionIsBoundNeverInterpolated(t *testing.T) {
 	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual))
