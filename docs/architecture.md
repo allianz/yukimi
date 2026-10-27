@@ -1,209 +1,231 @@
 # Architecture
 
-Yukimi has no classical architecture document. Instead, its architecture is described by one product design for the whole platform, and one numbered spec for each
-package in the code. This page explains why the project is documented this way, how to read the
-specs, and how a spec comes into being.
+This document gives a human reader the big picture of Yukimi's architecture: how the parts fit
+together, why they are shaped that way, and where to read further. It follows the
+[arc42](https://arc42.org) template.
 
-- [Why there is no classic architecture document](#why-there-is-no-classic-architecture-document)
-- [How the documentation is layered](#how-the-documentation-is-layered)
-- [Reading a spec](#reading-a-spec)
-- [How a spec comes into being](#how-a-spec-comes-into-being)
-- [Not every change takes the full process](#not-every-change-takes-the-full-process)
+It is a supplement, not a source of truth. [`specs/design.md`](../specs/design.md) defines what the
+platform does, and the numbered specs in [`specs/`](../specs) define what each package promises.
+Where this document and either of them disagree, they win. This document summarises and links
+instead of restating; it does not repeat schemas, SQL, or package APIs.
 
+Chapter numbers follow arc42 so the document is easy to navigate for readers who know the template.
+Chapter 10 (Quality Requirements) is left out on purpose: the quality goals in
+[1.2](#12-quality-goals) and the guarantees in `design.md` cover it, and a separate set of quality
+scenarios would only duplicate them.
 
-## Why there is no classic architecture document
-
-Yukimi was designed from the start to be built with AI coding agents, and its documentation is
-shaped around what an agent needs.
-
-**An agent starts every task from zero.** It remembers nothing from the last session and has no
-picture of what the project is for or what it should do. A person new to a codebase is in the same
-position: code without context is hard to understand, however well it is written.
-
-**What an agent lacks is context, not explanation.** Agents are very good at writing code and good
-at understanding architecture. A classic architecture document spends most of its pages explaining
-structure that an agent can read off the code by itself. What the code cannot tell it is the intent:
-what the platform is for, which behaviour is deliberate, and what a package promises to its callers.
-
-So the documentation provides that context, at two levels:
-
-- **The product design, for the whole project.** [`specs/design.md`](../specs/design.md) describes
-  Yukimi from the point of view of its users: tenants requesting accounts and operators running the
-  platform. Load it into the context whenever you brainstorm a new feature or change an existing
-  one, so the agent works from the full understanding of the project's goals.
-- **One spec per package, for the code.** A spec describes a package's concepts and its public API.
-  It lets an agent, or a person, understand what a package does and how to use it without reading
-  its code.
-
-**Specs are scoped to a package because context is limited.** An agent's context window holds
-around 200K tokens, which is far less than the whole codebase and its history. Keeping each spec
-to one package means a task loads only what it needs: the spec of the package it changes, and the
-specs of the packages that package depends on.
+- [1. Introduction and Goals](#1-introduction-and-goals)
+- [2. Architecture Constraints](#2-architecture-constraints)
+- [3. Context and Scope](#3-context-and-scope)
+- [4. Solution Strategy](#4-solution-strategy)
+- [5. Building Block View](#5-building-block-view)
+- [6. Runtime View](#6-runtime-view)
+- [7. Deployment View](#7-deployment-view)
+- [8. Cross-cutting Concepts](#8-cross-cutting-concepts)
+- [9. Architecture Decisions](#9-architecture-decisions)
+- [11. Risks and Technical Debt](#11-risks-and-technical-debt)
+- [12. Glossary](#12-glossary)
 
 
-## How the documentation is layered
+## 1. Introduction and Goals
 
-There are two permanent documents:
+Yukimi is a self-service platform for provisioning and managing Snowflake accounts at enterprise
+scale. Every team, called a tenant, gets its own isolated Snowflake account. The account is created
+from a declarative request and attached to network, identity and security infrastructure that the
+platform sets up once per cloud region and shares between all accounts there.
 
-| Document | Describes |
-| --- | --- |
-| [`specs/design.md`](../specs/design.md) | The whole product: what it does for tenants and operators, and why. Resource schemas, behaviour, security constraints. |
-| `specs/NNN-<slug>.md` | One package (sometimes two closely related ones): its concepts, its public API and its behaviour, in enough detail to implement it. Authoritative for its package. |
+Yukimi started as an internal platform at Allianz and has since been opened up so that other
+organizations can adopt it. Company-specific choices, such as the identity system, network
+connections or compliance rules, are configuration and not part of the product.
 
-`design.md` answers *what should the platform do*. A numbered spec answers *what does this package
-promise, and how does it behave*. The code answers *how exactly*.
+### 1.1 Requirements Overview
 
-Any other file in `specs/` is a temporary artifact of the process that produces a spec and its code,
-and is deleted once it has served its purpose. See [Temporary documents](#temporary-documents).
+The table summarises the main requirements from a business point of view. The detailed
+requirements are in [`specs/design.md`](../specs/design.md), linked in the last column.
 
-**The numbers are the dependency order.** Specs are written and implemented one at a time, in
-ascending order, and a spec may depend only on specs numbered strictly below it. The numbering is
-therefore also the layering of the code: error handling and configuration come first, Snowflake
-connectivity and statement execution next, then the resources, the account pipeline and its
-modules, and the controllers last. A letter suffix (`003.a`) marks a pluggable backend for an
-interface its parent defines. It sorts between `003` and `004`, and only `cmd/provider/main.go`
-may depend on it.
+| Id | Requirement | Explanation | Details |
+| --- | --- | --- | --- |
+| R1 | Self-service at global scale | Teams get a new Snowflake environment in minutes instead of weeks, and change it themselves. One service for thousands of teams across business units, clouds and regions, without the platform team growing with them. | [§2](../specs/design.md#2-tenant-onboarding), [§3.2](../specs/design.md#32-domain-concepts) |
+| R2 | Secure and compliant by default | Every environment starts from the same hardened, approved baseline, company rules are enforced automatically, and data is protected against accidental loss. | [§3.3](../specs/design.md#33-guardrails)–[§3.11](../specs/design.md#311-security-constraints), [§6](../specs/design.md#6-deletionpermit-resource) |
+| R3 | Cost control | Every team has a credit budget it cannot exceed, and spend is attributed to its cost center. | [§3.10](../specs/design.md#310-credit-quota) |
+| R4 | Flexible integration | Open by design, so it can be plugged into any existing self-service landscape: GitOps, ServiceNow or a custom portal. | [§1.1](../specs/design.md#11-purpose--scope) |
+| R5 | AI ready | Users build complete data products by prompting an AI agent, which deploys them directly to production. | – |
 
-The table mapping each spec to its package is in [`CLAUDE.md`](../CLAUDE.md#specification-documents),
-because the AI agents read it from there.
+### 1.2 Quality Goals
 
+The quality goals that shape the architecture most, in order of priority.
 
-## Reading a spec
-
-Every spec follows [`specs/000-template.md`](../specs/000-template.md), and is written for two
-audiences:
-
-- **`## Overview` and `## Key Concept: …` are for people.** They explain what the subsystem does and
-  why it is shaped the way it is, in domain terms, without type names or algorithms. Read them to
-  understand a package before opening its code. After reading them you should be able to roughly
-  predict how the package behaves.
-- **Everything below is for AI Agents.** Public API, behaviour, error handling, test cases and
-  dependencies, in the detail needed to write or regenerate the code.
-
-To understand the platform as a whole, read `design.md` first, then the Overview and Key Concept
-sections of the specs in ascending order.
+| Priority | Quality goal | What it means for Yukimi |
+| --- | --- | --- |
+| 1 | Security | Multiple independent lines of defense: no single bug, mistake or compromised tenant is enough to reach another tenant's account. |
+| 2 | Reliability | The platform always moves towards the desired state, and a failure never damages an account that already works. |
+| 3 | Scalability | Up to 10,000 accounts for 1,000 tenants across 10 regions, without operations effort growing at the same rate. |
+| 4 | Usability | Requesting an account is simple, and feedback is clear enough for teams to fix problems themselves. |
+| 5 | Performance | A new account is ready in under 60 minutes. Most of that time is spent waiting for the identity sync. |
+| 6 | Operability | Operators can quickly diagnose and fix problems, for example by tracing an error to the logs through its incident ID. |
+| 7 | Cost efficiency | Running the platform costs less than €50 per month per account. |
+| 8 | Adaptability | Non-Allianz organizations can adopt it through configuration, without changing code. |
 
 
-## How a spec comes into being
+## 2. Architecture Constraints
 
-A product design describes where the project should end up, but not where to start or in which
-order to get there. It is far too big to hand to an AI agent in one piece: the agent would run out
-of context long before the end, and would fill every gap in the design with a guess. The problem
-has to be broken down into pieces small enough to finish.
-
-Writing a book works the same way. Ask an agent to write a whole book in one go and it stops after
-a few pages. An author starts with a plan, turns it into an outline of chapters, works out the plot
-of each chapter, and only then writes it, one chapter at a time. Here the plan is `design.md`, the
-outline is the set of scoped work packages, working out the plot is the clarification record of one
-package, and writing the chapter is its spec and then its code.
-
-The design is split into scoped work packages once. Each package is then clarified, specified and
-implemented, one at a time, in ascending order.
-
-The project provides a skill for each step in [`.claude/skills/`](../.claude/skills). The skills
-automate most of the work. Each one loads the right documents into the context, follows the same
-steps every time, checks the rules (dependency order, the spec template, a cleared context), and
-asks you only for the decisions it cannot make on its own. That gives better and more consistent
-results than vibe coding, where every prompt starts from whatever the agent happens to guess about
-the project.
-
-```mermaid
-flowchart TB
-    %% Two stacked halves. Edges run box-to-box, never from an inner node to the outside: an edge
-    %% out of an inner node makes mermaid drop that box's own `direction`, and the directions are
-    %% what shape this diagram (design.md above /yukimi.plan, and the feature rows left to right).
-    subgraph prep["Preparation — once"]
-        direction TB
-        design["design.md"] --> plan("/yukimi.plan")
-    end
-
-    %% Left alignment: mermaid centres every rank, so the Preparation box needs something to its
-    %% right to be pushed left. `spacer` is a transparent node — only its width does any work —
-    %% and the invisible `~~~` link is what pins it to the same rank as the box instead of letting
-    %% it float off on its own. Add or remove dots to nudge Preparation further left or right.
-    spacer["...................................................................................................................."]
-
-    %% `anchor` is the output of Preparation, one rank below it and nothing else — that is what
-    %% makes the arrow drop straight down from the box's centre. It must NOT link to `impl`:
-    %% with that link, mermaid balances the anchor between Preparation and the wide box's centre
-    %% and the arrow leans right again. `mid` carries the invisible route down to `impl` instead,
-    %% which also gives the anchor a rank of its own so the arrow stays short.
-    prep --> anchor["scope-*.md"]
-    spacer ~~~ mid[" "]
-    mid ~~~ impl
-
-    %% Invisible grouping box. The rendered row order is a right-rotation of the declaration order:
-    %% declaring 001, 002, NNN comes out as NNN, 001, 002. Declaring 002, NNN, 001 is therefore what
-    %% renders 001 on top and NNN at the bottom. Verified by rendering, so change it with care.
-    subgraph impl[" "]
-        direction LR
-
-        subgraph spec2["Implement Feature 002"]
-            c2("/yukimi.clarify 002") --> wf2["wip-002-*.md"] --> s2("/yukimi.specify 002") --> sf2["spec-002-*.md"] --> i2("/yukimi.implement 002")
-        end
-
-        subgraph specn["Implement Feature NNN"]
-            cn("/yukimi.clarify NNN") --> wfn["wip-NNN-*.md"] --> sn("/yukimi.specify NNN") --> sfn["spec-NNN-*.md"] --> imn("/yukimi.implement NNN")
-        end
-
-        subgraph spec1["Implement Feature 001"]
-            c1("/yukimi.clarify 001") --> wf1["wip-001-*.md"] --> s1("/yukimi.specify 001") --> sf1["spec-001-*.md"] --> i1("/yukimi.implement 001")
-        end
-
-        sc1["scope-001-*.md"] --> c1
-        sc2["scope-002-*.md"] --> c2
-        scn["scope-NNN-*.md"] --> cn
-    end
-
-    classDef file fill:transparent,stroke:transparent,stroke-width:0
-    classDef skill fill:#e8f4fd,stroke:#22c2ff,color:#123
-    class design,anchor,scn,sc2,sc1,wfn,wf2,wf1,sfn,sf2,sf1 file
-    class plan,cn,sn,imn,c2,s2,i2,c1,s1,i1 skill
-
-    style prep fill:transparent,stroke:#9aa0a6,stroke-dasharray:2 4
-    style spacer fill:transparent,stroke:transparent,color:transparent
-    style mid fill:transparent,stroke:transparent,color:transparent
-    style impl fill:transparent,stroke:transparent
-    style spec1 fill:transparent,stroke:#9aa0a6,stroke-dasharray:4 3
-    style spec2 fill:transparent,stroke:#9aa0a6,stroke-dasharray:4 3
-    style specn fill:transparent,stroke:#9aa0a6,stroke-dasharray:4 3
-```
-
-| Step | Skill | Model | Output |
-|---|---|---|---|
-| Write and iterate the product design | none — direct prompting | Opus 5 | `specs/design.md` |
-| Break the design into numbered scope notes | `/yukimi.plan` (not built yet) | Opus 5, *think hard* | `specs/scope-NNN-*.md` |
-| Settle what the design intentionally leaves out | `/yukimi.clarify NNN` | Sonnet 5 | `specs/wip-NNN-*.md` |
-| Write the spec | `/yukimi.specify NNN` | Sonnet 5 | `specs/NNN-*.md` |
-| Implement it | `/yukimi.implement NNN` | Sonnet 5 | `apis/`, `internal/` |
-
-- **Run `/clear` before invoking any of the skills.** Each one spends its whole run reasoning about
-  a single spec, and unrelated conversation history degrades it. The skills check for this and will
-  ask you to clear rather than push on.
-
-### Temporary documents
-
-Two kinds of documents exist only while a package is being produced. The skills create, read and
-delete them; you do not maintain them by hand.
-
-- **Scope notes, `specs/scope-NNN-<slug>.md`.** Preparation splits the design into packages of work
-  and writes one scope note for each, roughly describing what that package should cover. A scope
-  note is underspecified on purpose: the design leaves out detail that only matters inside one
-  package, and the scope note cannot contain more than the design does. `/yukimi.specify` deletes
-  it once the spec is written.
-- **Clarification records, `specs/wip-NNN-<slug>.md`.** When work on a package starts,
-  `/yukimi.clarify` finds the gaps the scope note leaves, researches them and settles them with
-  you. The record holds those decisions, the open questions and the research results behind them.
-  `/yukimi.specify` writes the spec from the scope note and the record. `/yukimi.implement` reads
-  the record again for the detail the spec leaves out on purpose, then deletes it once the code is
-  written. Where the record and the spec disagree, the spec wins.
-
-Once a package is implemented, only its spec and its code remain.
+_To write:_ what limits the solution space and is not ours to change. Snowflake's SQL surface and the
+missing Organization Policies ([`design.md` Appendix B](../specs/design.md#appendix-b-organization-policy-requirements)),
+Kubernetes and the Crossplane managed-resource reconciler, GitOps delivery via Argo CD, the secret
+store's authorization layer, and the spec-driven process with its dependency ordering
+([spec-driven-development.md](spec-driven-development.md)).
 
 
-## Not every change takes the full process
+## 3. Context and Scope
 
-The pipeline above is for new features and new packages. Bug fixes, refactorings and documentation
-changes are made directly. When a change alters designed behaviour in an existing package, the spec
-and the code must be updated together in one pull request. Don't worry that this adds a maintenance
-burden: in practice the AI agent updates the spec along with the code without being asked.
+### 3.1 Business Context
+
+_To write:_ the platform as a black box and the people and processes around it: who commits CRDs,
+who owns guardrails, exceptions and backplane configuration, and what each gets back. One diagram.
+
+### 3.2 Technical Context
+
+_To write:_ the external systems the controller talks to and through which channel: Kubernetes API
+server, Argo CD and GitHub, the Snowflake organization account and tenant accounts, the secret store,
+the Terraform-provisioned regional backplane, and a company's own identity sync controller. One
+diagram.
+
+
+## 4. Solution Strategy
+
+_To write:_ the handful of fundamental ideas the rest of the architecture follows from, one short
+paragraph each, linked to where they are specified:
+
+- integrate regions, not accounts (the shared backplane)
+- the namespace as the sole trust anchor
+- final enforcement sits outside the controller (secret store, Snowflake, API server)
+- privilege step-down from org admin to per-account access
+- account provisioning as a pipeline of independent modules
+- positive control for deletion
+- specs as the source of truth, code regenerable from them
+
+
+## 5. Building Block View
+
+### 5.1 Level 1: Overall System
+
+_To write:_ the controller binary, the CRDs it serves, and its main package groups (foundation,
+Snowflake connectivity, configuration, account pipeline and modules, controllers), with a diagram of
+how they depend on each other. The spec numbering is the dependency order, so the diagram follows it.
+
+### 5.2 Level 2: Packages and Their Specs
+
+Each package is described by its spec. Read a spec's `Overview` and `Key Concept` sections for the
+human-level explanation; the rest is written for implementers. Specs not yet written are listed in
+[`CLAUDE.md`](../CLAUDE.md#specification-documents).
+
+| Layer | Spec | Package |
+| --- | --- | --- |
+| Foundation | [001 Error and Logging](../specs/001-error-and-logging.md) | `internal/errors/`, `internal/logger/` |
+| Foundation | [002 Base Config](../specs/002-base-config.md) | `internal/config/base/` |
+| Foundation | [003 Secrets Handling](../specs/003-secrets-handling.md) | `internal/secrets/` |
+| Foundation | [003.a AWS Secrets Backend](../specs/003.a-aws-secrets-backend.md) | `internal/secrets/aws/` |
+| Snowflake | [004 Connection Pooling](../specs/004-connection-pooling.md) | `internal/snowflake/pool/`, `internal/snowflake/host/` |
+| Snowflake | [005 Statement Execution](../specs/005-statement-execution.md) | `internal/snowflake/statement/` |
+| Resources | [006 SnowflakeAccount CRD](../specs/006-snowflake-account-crd.md) | `apis/base/v1alpha1/`, `internal/account/tenant/` |
+| Configuration | [007 Backplane Config](../specs/007-backplane-config.md) | `internal/config/backplane/` |
+| Account pipeline | [009 Account Pipeline](../specs/009-account-pipeline.md) | `internal/account/pipeline/` |
+| Account pipeline | [012 Account Module](../specs/012-account-module.md) | `internal/account/modules/account/` |
+| Resources | [019 Deletion Permit](../specs/019-deletion-permit.md) | `apis/base/v1alpha1/`, `internal/deletion/` |
+| Controllers | [020 SnowflakeAccount Controller](../specs/020-snowflakeaccount-controller.md) | `internal/controller/snowflakeaccount/` |
+
+
+## 6. Runtime View
+
+_To write:_ the few scenarios that cross several building blocks, as sequence diagrams that show
+which parts collaborate. Behaviour details stay in `design.md` and the specs.
+
+### 6.1 Creating an Account
+
+_To write:_ from a Git commit to a `Ready` account: Argo CD sync, admission checks, account
+creation with org-admin credentials, step-down to the per-account connection, the remaining modules.
+
+### 6.2 Waiting for an Identity Sync
+
+_To write:_ how an account waits on an `IdentitySyncRequest` fulfilled by another controller without
+blocking a reconcile.
+
+### 6.3 Deleting an Account
+
+_To write:_ the blocked delete, the `DeletionPermit`, and the consumed permit.
+
+### 6.4 Reporting an Error
+
+_To write:_ how a failure becomes a condition the tenant sees in Argo CD, and how a system error is
+correlated with operator logs through its incident ID.
+
+
+## 7. Deployment View
+
+### 7.1 Production
+
+_To write:_ what runs where: the controller deployment in its cluster, the mounted configuration,
+tenant namespaces, the secret store, and the Snowflake organization with its regional backplanes
+and PrivateLink endpoints. Links to the manifests in [`package/`](../package).
+
+### 7.2 Local Development
+
+_To write:_ the kind cluster started by `make dev`. Details in [development.md](development.md).
+
+
+## 8. Cross-cutting Concepts
+
+_To write:_ concepts that span several packages, each as a short summary that links to the spec or
+`design.md` section that owns it.
+
+### 8.1 Tenancy and Isolation
+
+_To write:_ the namespace trust anchor, secret paths, and why a controller bug yields a denied
+request rather than cross-tenant access.
+
+### 8.2 Privilege Model
+
+_To write:_ org-admin versus per-account credentials, and when each is used.
+
+### 8.3 Configuration Ownership
+
+_To write:_ the inputs and who owns each: CRD (tenant), guardrails (OEs), exceptions (ISO and ops),
+backplane and base config (ops), namespace labels (ops at onboarding).
+
+### 8.4 Error Handling and Status Reporting
+
+_To write:_ user versus system errors, incident IDs, and the condition model (`Ready`, `Synced` and
+resource-specific conditions).
+
+### 8.5 Reconciliation Model
+
+_To write:_ idempotent, level-triggered reconciliation, no retries in controller code, and the
+latching `Ready` condition.
+
+### 8.6 Naming and Identifiers
+
+_To write:_ CRD name versus resolved Snowflake name, and which identifier is used where.
+
+
+## 9. Architecture Decisions
+
+_To write:_ the significant decisions, one short entry each: context, decision, consequence, and a
+link to where it is specified. Candidates: Crossplane runtime without being a community provider,
+spec-driven development, namespace-hash account naming, positive-control deletion,
+`IdentitySyncRequest` in its own API group, a pluggable secret store backend.
+
+
+## 11. Risks and Technical Debt
+
+_To write:_ known gaps and the workarounds that cover them, each linked to its source. Candidates:
+tenant account admins can unset platform policies until Organization Policies exist, serverless and
+AI spend is not capped, the `platform` user can be dropped by the tenant, OIDC authentication is
+still open ([`design.md` Appendix A](../specs/design.md#appendix-a-open-todos) and
+[Appendix B](../specs/design.md#appendix-b-organization-policy-requirements)).
+
+
+## 12. Glossary
+
+_To write:_ the domain terms a newcomer meets first. Candidates: tenant, backplane, connection,
+inventory, guardrail, approved exception, OE, ISO, credit quota, resolved account name, positive
+control, deletion permit, identity sync.
