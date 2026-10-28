@@ -86,10 +86,31 @@ who owns guardrails, exceptions and backplane configuration, and what each gets 
 
 ### 3.2 Technical Context
 
-_To write:_ the external systems the controller talks to and through which channel: Kubernetes API
-server, Argo CD and GitHub, the Snowflake organization account and tenant accounts, the secret store,
-the Terraform-provisioned regional backplane, and a company's own identity sync controller. One
-diagram.
+The controller talks to three systems directly: the Kubernetes API server, the secret store and
+Snowflake. Everything else reaches it indirectly, through resources in the API server.
+
+```mermaid
+flowchart LR
+    Git["Tenant Git repositories"] -- "YAML" --> Argo["Argo CD"]
+    Argo -- "sync" --> K8s["Kubernetes API server"]
+    IdSync["Identity sync controller<br/>(company specific)"] <-- "IdentitySyncRequest" --> K8s
+    K8s <-- "watch and update" --> Ctrl["Yukimi controller"]
+    Ctrl <-- "AWS SDK" --> Secrets["Secret store<br/>(AWS Secrets Manager)"]
+    Ctrl -- "SQL via PrivateLink" --> Org["Snowflake organization account"]
+    Ctrl -- "SQL via PrivateLink" --> Acc["Snowflake tenant accounts"]
+    IdSync -- "groups" --> Org
+```
+
+| Neighbour | Channel | Input and output |
+| --- | --- | --- |
+| Kubernetes API server | Kubernetes API | Reads `SnowflakeAccount`, `DeletionPermit` and namespace labels. Writes status, conditions, events and `IdentitySyncRequest`s. |
+| Argo CD and Git | None, through the API server | Tenants' YAML arrives as custom resources in their namespace. Tenants read feedback as conditions in Argo CD. |
+| Secret store | AWS SDK | Reads and writes the keypair of each account and of the organization admin. |
+| Snowflake organization account | SQL via PrivateLink | Creates and deletes accounts with organization admin rights. |
+| Snowflake tenant accounts | SQL via PrivateLink | Configures each account as its `platform` service user. |
+| Identity sync controller | None, through the API server | Fulfils `IdentitySyncRequest`s by syncing groups into the organization account. |
+
+See the [deployment view](#7-deployment-view) for where these run.
 
 
 ## 4. Solution Strategy
