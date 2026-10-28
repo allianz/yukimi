@@ -69,11 +69,12 @@ The quality goals that shape the architecture most, in order of priority.
 
 ## 2. Architecture Constraints
 
-_To write:_ what limits the solution space and is not ours to change. Snowflake's SQL surface and the
-missing Organization Policies ([`design.md` Appendix B](../specs/design.md#appendix-b-organization-policy-requirements)),
-Kubernetes and the Crossplane managed-resource reconciler, GitOps delivery via Argo CD, the secret
-store's authorization layer, and the spec-driven process with its dependency ordering
-([spec-driven-development.md](spec-driven-development.md)).
+Yukimi shall:
+
+- be implemented as a Kubernetes controller in Go
+- create and configure accounts through Snowflake SQL as far as possible, because SQL can be fully automated
+- avoid per-account enterprise integration such as PrivateLink and DNS, because it is often not fully automated and needs tickets, and instead create such infrastructure once per region
+- be open source and adoptable by other organizations
 
 
 ## 3. Context and Scope
