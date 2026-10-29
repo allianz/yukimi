@@ -328,10 +328,6 @@ platform user's key is deleted with it. Both can be restored for a period config
 Only after the teardown has succeeded is the permit marked `Consumed` and the finalizer removed, so
 a failed teardown can be retried with the same permit while it is still active. The consumed permit stays as an audit record.
 
-A resource whose account was never created, for example because its name failed validation, is
-removed without a permit. Operations can also switch deletion protection off for the whole platform
-in the base configuration.
-
 
 ## 7. Deployment View
 
@@ -369,37 +365,15 @@ architecture-beta
     pl2:B --> T:acc2
 ```
 
-| Element | What runs or lives there | Provided by |
-| --- | --- | --- |
-| `yukimi-system` namespace | The controller deployment, its service account and RBAC. | `install.yaml`, rendered from [`package/`](../package) |
-| `yukimi-config` ConfigMap | `base.yaml` ([002](../specs/002-base-config.md)) and `backplane.yaml` ([007](../specs/007-backplane-config.md)), mounted read-only. | Operations, applied separately |
-| Tenant namespaces | The tenants' custom resources, and the namespace labels set at onboarding. | Operations at onboarding, then GitOps |
-| IAM role | The controller's only cloud credential, limited to its own secret paths. | Operations |
-| Secrets Manager | The organization admin keypair and one keypair per tenant account. | Operations for the organization admin, the controller for the rest |
-| Snowflake regions | One PrivateLink endpoint and DNS wildcard per region, shared by all its accounts. | Operations, once per region via Terraform |
-
-`install.yaml` holds the CRDs and the controller manifests and contains nothing site specific.
-Each installation adds a small kustomize overlay for its image and the IAM role annotation on the
-service account, and applies the `yukimi-config` ConfigMap on its own, so an upgrade never
-overwrites real values with placeholders. The controller reads its configuration once at startup,
-so a configuration change takes effect only after a restart.
-
-The controller runs as a single replica with leader election, and a rollout stops the old pod
-before it starts the new one. `CREATE ACCOUNT` is not idempotent, so two active controllers must
-never act on the same resource. Nothing is lost during the short gap, because the next pass
-resumes from the resource's actual state. The pod runs unprivileged under the `restricted` Pod
-Security profile, and it has no access to Kubernetes secrets or ConfigMaps through the API: its
-configuration arrives as a mounted volume, and its credentials come from the pod's cloud identity.
-
-Before it starts reconciling, the controller checks its configuration and connects to the
-organization account. If either fails, the pod does not become ready, so a broken installation
-shows up at deployment time rather than on the first tenant request.
-
-The cluster's network must reach the PrivateLink endpoint of every region the backplane lists,
-because the controller talks to all accounts directly. Bringing a new region online is therefore an
-infrastructure task for operations followed by a configuration entry
-([`design.md` §3.5](../specs/design.md#35-backplane-config)), not a new deployment. The identity
-sync controller is deployed separately by the company and needs only the same API server.
+| Element | Description |
+| --- | --- |
+| Yukimi controller | Installed from `install.yaml`, rendered from [`package/`](../package). Runs as a single replica, because `CREATE ACCOUNT` is not idempotent and two controllers must never act on the same resource. |
+| `yukimi-config` ConfigMap | `base.yaml` ([002](../specs/002-base-config.md)) and `backplane.yaml` ([007](../specs/007-backplane-config.md)), mounted read-only. Applied separately from `install.yaml`, so an upgrade never overwrites it. Read once at startup, so a change takes effect only after a restart. |
+| IAM role | The controller's only cloud credential, taken from the pod's identity and limited to its own secret paths. |
+| Secrets Manager | The organization admin keypair, stored by operations, and one keypair per tenant account, stored by the controller. |
+| PrivateLink endpoint | One per region with a DNS wildcard, shared by all accounts there and set up once by operations. The cluster must reach the endpoint of every region in the backplane. A new region needs a backplane entry ([`design.md` §3.5](../specs/design.md#35-backplane-config)), not a new deployment. |
+| Tenant accounts | The tenants' Snowflake accounts. The controller connects to each one directly through its region's endpoint. |
+| Custom resources | The tenant's resources, e.g. `SnowflakeAccount`, synced by GitOps into the tenant's namespace. Operations creates and labels the namespace at onboarding. |
 
 
 ## 8. Cross-cutting Concepts
