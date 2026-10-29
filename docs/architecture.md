@@ -13,7 +13,6 @@ Chapter 10 (Quality Requirements) is left out on purpose: the quality goals in
 scenarios would only duplicate them.
 
 - [1. Introduction and Goals](#1-introduction-and-goals)
-- [2. Architecture Constraints](#2-architecture-constraints)
 - [3. Context and Scope](#3-context-and-scope)
 - [4. Solution Strategy](#4-solution-strategy)
 - [5. Building Block View](#5-building-block-view)
@@ -64,21 +63,10 @@ The quality goals that shape the architecture most, in order of priority.
 | 8 | Adaptability | Non-Allianz organizations can adopt it through configuration, without changing code. |
 
 
-## 2. Architecture Constraints
-
-Yukimi shall:
-
-- be implemented as a Kubernetes controller in Go
-- create and configure accounts through Snowflake SQL as far as possible, because SQL can be fully automated
-- avoid per-account enterprise integration such as PrivateLink and DNS, because it is often not fully automated and needs tickets, and instead create such infrastructure once per region
-- be open source and adoptable by other organizations
-
-
 ## 3. Context and Scope
 
-The controller has five neighbours. People reach it only through Kubernetes: tenants through the
-custom resources in their namespace, operations through the configuration and the namespace labels.
-The controller itself talks directly to Snowflake and the secret store.
+People and the identity sync reach the controller through Kubernetes, and the controller reaches
+Snowflake and the secret store directly.
 
 ```mermaid
 mindmap
@@ -103,16 +91,23 @@ See the [deployment view](#7-deployment-view) for where these run.
 
 ## 4. Solution Strategy
 
-_To write:_ the handful of fundamental ideas the rest of the architecture follows from, one short
-paragraph each, linked to where they are specified:
+Creating an account has to run without a human in the loop, so it contains only steps that
+Snowflake SQL can perform. Everything that is hard to automate, because it needs tickets, other
+teams or manual testing, is moved out of the account request and done once, in advance, by
+operations:
 
-- integrate regions, not accounts (the shared backplane)
-- the namespace as the sole trust anchor
-- final enforcement sits outside the controller (secret store, Snowflake, API server)
-- privilege step-down from org admin to per-account access
-- account provisioning as a pipeline of independent modules
-- positive control for deletion
-- specs as the source of truth, code regenerable from them
+- **Network.** PrivateLink endpoints and DNS wildcards are set up once per region as a shared
+  backplane, and tested before the region is offered to tenants. A new account only attaches to
+  this backplane with SQL
+  ([`design.md` §3.2](../specs/design.md#32-domain-concepts), [§3.5](../specs/design.md#35-backplane-config)).
+- **Identity.** SSO is integrated once for the whole organization, in the central organization
+  account. A new account does not get its own identity provider integration; it imports the groups
+  it needs from the organization account
+  ([§3.7](../specs/design.md#37-identity-integration)).
+
+As a result, operations effort grows with the number of regions rather than the number of accounts
+([quality goal 3](#12-quality-goals)), and bringing a region online is a project while ordering an
+account is not.
 
 
 ## 5. Building Block View
