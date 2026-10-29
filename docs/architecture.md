@@ -129,32 +129,98 @@ paragraph each, linked to where they are specified:
 
 ## 5. Building Block View
 
-### 5.1 Level 1: Overall System
+### 5.1 Components
 
-_To write:_ the controller binary, the CRDs it serves, and its main package groups (foundation,
-Snowflake connectivity, configuration, account pipeline and modules, controllers), with a diagram of
-how they depend on each other. The spec numbering is the dependency order, so the diagram follows it.
+Yukimi is a single controller running in Kubernetes. Tenants reach it only through the Kubernetes
+API server, and it reaches Snowflake and the secret store directly.
 
-### 5.2 Level 2: Packages and Their Specs
+```mermaid
+flowchart LR
+    Tenant["Tenant team"]
+    Ops["Platform operations"]
+    K8s["Kubernetes API server"]
+    subgraph Yukimi["Yukimi controller"]
+        APIs["APIs"]
+        Ctrl["Controllers"]
+        Pipe["Account logic"]
+        Del["Deletion logic"]
+        Cfg["Configuration"]
+        Conn["Snowflake connectivity"]
+        Sec["Secrets"]
+    end
+    Snow["Snowflake"]
+    Store["Secret store"]
 
-Each package is described by its spec. Read a spec's `Overview` and `Key Concept` sections for the
-human-level explanation; the rest is written for implementers. Specs not yet written are listed in
-[`CLAUDE.md`](../CLAUDE.md#specification-documents).
+    Tenant -- "account requests" --> K8s
+    K8s <--> Ctrl
+    Ops -- "configuration files" --> Cfg
+    Ctrl --> APIs
+    Ctrl --> Pipe
+    Ctrl --> Del
+    Pipe --> APIs
+    Del --> APIs
+    Pipe --> Cfg
+    Pipe --> Conn
+    Pipe --> Sec
+    Conn --> Sec
+    Conn --> Snow
+    Sec --> Store
+```
 
-| Layer | Spec | Package |
+| Component | Specs | Responsibility |
 | --- | --- | --- |
-| Foundation | [001 Error and Logging](../specs/001-error-and-logging.md) | `internal/errors/`, `internal/logger/` |
-| Foundation | [002 Base Config](../specs/002-base-config.md) | `internal/config/base/` |
-| Foundation | [003 Secrets Handling](../specs/003-secrets-handling.md) | `internal/secrets/` |
-| Foundation | [003.a AWS Secrets Backend](../specs/003.a-aws-secrets-backend.md) | `internal/secrets/aws/` |
-| Snowflake | [004 Connection Pooling](../specs/004-connection-pooling.md) | `internal/snowflake/pool/`, `internal/snowflake/host/` |
-| Snowflake | [005 Statement Execution](../specs/005-statement-execution.md) | `internal/snowflake/statement/` |
-| Resources | [006 SnowflakeAccount CRD](../specs/006-snowflake-account-crd.md) | `apis/base/v1alpha1/`, `internal/account/tenant/` |
-| Configuration | [007 Backplane Config](../specs/007-backplane-config.md) | `internal/config/backplane/` |
-| Account pipeline | [009 Account Pipeline](../specs/009-account-pipeline.md) | `internal/account/pipeline/` |
-| Account pipeline | [012 Account Module](../specs/012-account-module.md) | `internal/account/modules/account/` |
-| Resources | [019 Deletion Permit](../specs/019-deletion-permit.md) | `apis/base/v1alpha1/`, `internal/deletion/` |
-| Controllers | [020 SnowflakeAccount Controller](../specs/020-snowflakeaccount-controller.md) | `internal/controller/snowflakeaccount/` |
+| APIs | 006, 016, 019 | Define the custom resources. |
+| Controllers | 019, 020 | Reconcile the custom resources and report status back to the tenant. |
+| Account logic | 006, 009–018 | Provisions an account step by step, with one module per concern, and derives the tenant's facts from its namespace. |
+| Deletion logic | 019 | Lets an account be deleted only with an active permit, and consumes the permit when it is used. |
+| Configuration | 002, 007, 008 | Loads the operations-owned base settings, backplane and guardrails. |
+| Snowflake connectivity | 004, 005 | Holds the connections to the organization and to each account, and runs SQL on them. |
+| Secrets | 003 | Creates, stores and reads the account keypairs in the secret store. |
+
+Error handling and logging (001) are used by every component and are described in
+[8.4](#84-error-handling-and-status-reporting).
+
+### 5.2 Packages
+
+Each component breaks down into Go packages. The table lists only packages that exist today. The
+numbers refer to the specs in [5.3](#53-dependencies).
+
+| Component | Packages | Description | Spec |
+| --- | --- | --- | --- |
+| - | `internal/errors/`<br>`internal/logger/` | User and system errors<br>Operation-scoped logging | 001<br>001 |
+| APIs | `apis/base/v1alpha1/` | SnowflakeAccount and DeletionPermit types | 006, 019 |
+| Controllers | `internal/controller/snowflakeaccount/`<br>`internal/controller/deletionpermit/` | SnowflakeAccount controller<br>DeletionPermit controller | 020<br>019 |
+| Account logic | `internal/account/pipeline/`<br>`internal/account/modules/account/`<br>`internal/account/tenant/` | Module interface and outcomes<br>Account creation<br>Account naming and namespace labels | 009<br>012<br>006 |
+| Deletion logic | `internal/deletion/` | Permit lookup and consumption | 019 |
+| Configuration | `internal/config/base/`<br>`internal/config/backplane/` | Platform-wide settings<br>Regional backplane | 002<br>007 |
+| Snowflake connectivity | `internal/snowflake/pool/`<br>`internal/snowflake/host/`<br>`internal/snowflake/statement/` | Pooled connections<br>Hosts and account URLs<br>SQL execution | 004<br>004<br>005 |
+| Secrets | `internal/secrets/`<br>`internal/secrets/aws/` | Secret paths, keypairs and cache<br>AWS Secrets Manager backend | 003<br>003.a |
+
+### 5.3 Dependencies
+
+The code is generated feature by feature, and every feature is described by a spec. The specs are
+written and implemented in strict numerical order, so a spec may depend only on specs with a lower
+number: the higher-numbered ones do not exist yet when it is written. The packages inherit this
+order. They have no cyclic dependencies, and the table below lists them in dependency order, with
+each row building only on the rows above it. 
+
+Each package is described by exactly one spec, so it is always clear which spec to update when a
+package changes. A spec usually describes one package, sometimes a few. 
+
+| Spec | Packages | Description |
+| --- | --- | --- |
+| [001 Error and Logging](../specs/001-error-and-logging.md) | `internal/errors/`<br>`internal/logger/` | User and system errors, incident IDs, operation-scoped logging |
+| [002 Base Config](../specs/002-base-config.md) | `internal/config/base/` | Platform-wide settings from a mounted ConfigMap |
+| [003 Secrets Handling](../specs/003-secrets-handling.md) | `internal/secrets/` | Backend interface, secret paths, RSA keypairs, TTL cache |
+| [003.a AWS Secrets Backend](../specs/003.a-aws-secrets-backend.md) | `internal/secrets/aws/` | AWS Secrets Manager implementation of the 003 backend |
+| [004 Connection Pooling](../specs/004-connection-pooling.md) | `internal/snowflake/pool/`<br>`internal/snowflake/host/` | Pooled keypair connections, connection hosts and account URLs |
+| [005 Statement Execution](../specs/005-statement-execution.md) | `internal/snowflake/statement/` | Safe SQL rendering and execution |
+| [006 SnowflakeAccount CRD](../specs/006-snowflake-account-crd.md) | `apis/base/v1alpha1/`<br>`internal/account/tenant/` | SnowflakeAccount schema, account naming, namespace labels |
+| [007 Backplane Config](../specs/007-backplane-config.md) | `internal/config/backplane/` | Per-region backplane inventory, parameters, allowlist |
+| [009 Account Pipeline](../specs/009-account-pipeline.md) | `internal/account/pipeline/` | Module interface, outcomes, condition aggregation |
+| [012 Account Module](../specs/012-account-module.md) | `internal/account/modules/account/` | `CREATE ACCOUNT` and platform user bootstrapping |
+| [019 Deletion Permit](../specs/019-deletion-permit.md) | `apis/base/v1alpha1/`<br>`internal/deletion/`<br>`internal/controller/deletionpermit/` | DeletionPermit type, its lifecycle controller, permit lookup and consumption |
+| [020 SnowflakeAccount Controller](../specs/020-snowflakeaccount-controller.md) | `internal/controller/snowflakeaccount/` | Module wiring, validation, deletion gate, reporting |
 
 
 ## 6. Runtime View
