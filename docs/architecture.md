@@ -1,16 +1,9 @@
 # Architecture
 
 This document gives a human reader the big picture of Yukimi's architecture: how the parts fit
-together, why they are shaped that way, and where to read further.
-
-It is a supplement, not a source of truth. [`specs/design.md`](../specs/design.md) defines what the
-platform does, and the numbered specs in [`specs/`](../specs) define what each package promises.
-Where this document and either of them disagree, they win. This document summarises and links
-instead of restating; it does not repeat schemas, SQL, or package APIs.
-
-Chapter 10 (Quality Requirements) is left out on purpose: the quality goals in
-[1.2](#12-quality-goals) and the guarantees in `design.md` cover it, and a separate set of quality
-scenarios would only duplicate them.
+together, why they are shaped that way, and where to read further. The source of truth is
+[`specs/design.md`](../specs/design.md) and the numbered specs in [`specs/`](../specs); where they
+disagree with this document, they win.
 
 - [1. Introduction and Goals](#1-introduction-and-goals)
 - [3. Context and Scope](#3-context-and-scope)
@@ -256,12 +249,7 @@ does not try to connect during a period configured by operations, because a conn
 anyway. 
 
 From then on, each pass logs in to the account as the platform user, and the remaining modules
-configure parameters, network, authentication, identity and quota through it. The platform user is
-the administrator of its own account, but its rights end there: unlike the organization admin, it
-cannot reach any other account. The organization admin is used only to create and drop accounts
-(see [8.2](#82-privilege-model)).
-
-The account becomes `Ready` the first time every module is done, and stays `Ready` from then on.
+configure parameters, network, authentication, identity and quota through it. The account becomes `Ready` the first time every module is done, and stays `Ready` from then on.
 
 ### 6.2 Waiting for an Identity Sync
 
@@ -292,25 +280,16 @@ sequenceDiagram
 
 A tenant gives a company group access to their account by adding it to the `SnowflakeAccount`,
 either when the account is created or later. Before the group can be imported into the account, it
-must exist in the organization account. Where the company does not sync all of its groups there by
-default, the controller asks for them: it keeps one `IdentitySyncRequest` per identity integration
-in the tenant's namespace, listing that integration's groups
-([`design.md` §4](../specs/design.md#4-identitysyncrequest-resource)). A company-specific controller
-fulfils the request: it adds the groups to the Snowflake sync of the enterprise IAM (e.g. Entra
-ID, Okta), and SCIM then provisions them into the organization account. Once every group has
-arrived, the controller reports `Ready=True` on the request. Yukimi ships only the request, not the
-controller that fulfils it.
+must exist in the organization account.
 
-A sync can take most of an hour, so the controller never waits for it inside a pass. Until the
-groups arrive, the identity module reports the account as pending. The account is applied again on
-every pass, and the groups of each fulfilled request are imported as soon as it reports `Ready`.
-The `IdentitySynced` condition shows the wait. If the wait runs past a configured timeout, the
-reason changes from `SyncPending` to `SyncTimeout` with a warning event for operators, but the
-controller keeps trying.
+Every company connects its IAM to Snowflake differently, so Yukimi does not do the sync itself. It
+only says what it needs, in a single `IdentitySyncRequest` listing the account's groups
+([`design.md` §4](../specs/design.md#4-identitysyncrequest-resource)), and leaves the how to a
+company-specific controller. That controller adds the groups to the IAM, e.g. the Snowflake
+enterprise app in Entra ID. SCIM then delivers the groups to the organization
+account in the background, which can take up to an hour. Yukimi therefore waits a while and then
+tries the import on every pass until it works.
 
-The diagram shows a group added to an account that is already `Ready`, which stays `Ready`
-throughout. For a new account the first sync also holds `Ready` at false, because nobody can
-administer the account before the group bound to `ACCOUNTADMIN` has been imported.
 
 ### 6.3 Deleting an Account
 
