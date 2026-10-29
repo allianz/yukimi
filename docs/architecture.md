@@ -1,15 +1,13 @@
 # Architecture
 
 This document gives a human reader the big picture of Yukimi's architecture: how the parts fit
-together, why they are shaped that way, and where to read further. It follows the
-[arc42](https://arc42.org) template.
+together, why they are shaped that way, and where to read further.
 
 It is a supplement, not a source of truth. [`specs/design.md`](../specs/design.md) defines what the
 platform does, and the numbered specs in [`specs/`](../specs) define what each package promises.
 Where this document and either of them disagree, they win. This document summarises and links
 instead of restating; it does not repeat schemas, SQL, or package APIs.
 
-Chapter numbers follow arc42 so the document is easy to navigate for readers who know the template.
 Chapter 10 (Quality Requirements) is left out on purpose: the quality goals in
 [1.2](#12-quality-goals) and the guarantees in `design.md` cover it, and a separate set of quality
 scenarios would only duplicate them.
@@ -23,8 +21,7 @@ scenarios would only duplicate them.
 - [7. Deployment View](#7-deployment-view)
 - [8. Cross-cutting Concepts](#8-cross-cutting-concepts)
 - [9. Architecture Decisions](#9-architecture-decisions)
-- [11. Risks and Technical Debt](#11-risks-and-technical-debt)
-- [12. Glossary](#12-glossary)
+- [11. Technical Debt](#11-technical-debt)
 
 
 ## 1. Introduction and Goals
@@ -225,27 +222,150 @@ package changes. A spec usually describes one package, sometimes a few.
 
 ## 6. Runtime View
 
-_To write:_ the few scenarios that cross several building blocks, as sequence diagrams that show
-which parts collaborate. Behaviour details stay in `design.md` and the specs.
+The scenarios below each involve several building blocks. The diagrams show which parts
+collaborate and in what order. The detailed behaviour is in `design.md` and the specs.
+
+Every arrow into the controller starts one reconcile pass. A pass never waits: it does what it can,
+writes the result onto the resource and returns. Work that is still open is picked up by a later
+pass, which Kubernetes triggers on a change or on its regular poll.
 
 ### 6.1 Creating an Account
 
-_To write:_ from a Git commit to a `Ready` account: Argo CD sync, admission checks, account
-creation with org-admin credentials, step-down to the per-account connection, the remaining modules.
+```mermaid
+sequenceDiagram
+    actor Tenant
+    participant Argo as Argo CD
+    participant K8s as API server
+    participant Ctrl as Yukimi controller
+    participant Store as Secret store
+    participant Org as Organization account
+    participant Acc as Tenant account
+
+    Tenant->>Argo: commit SnowflakeAccount
+    Argo->>K8s: sync into the tenant namespace
+    K8s->>Ctrl: reconcile
+    Note over Ctrl: no account recorded yet,<br/>admission checks pass
+    Ctrl->>Store: store new keypair
+    Ctrl->>Org: CREATE ACCOUNT (organization admin)
+    Ctrl->>K8s: status: account name, URL, Ready=False
+    Note over Ctrl,Acc: account comes up
+    K8s->>Ctrl: reconcile
+    Ctrl->>Store: read keypair
+    Ctrl->>Acc: configure as platform user
+    Ctrl->>K8s: Ready=True
+    Argo-->>Tenant: account healthy
+```
+
+A tenant commits a `SnowflakeAccount` to Git, and Argo CD syncs it into the tenant's namespace. The
+controller sees that no account has been recorded for it yet and runs the account pipeline
+([009](../specs/009-account-pipeline.md)) module by module. The admission checks run first. If the
+request breaks a guardrail or does not fit the credit quota, they stop the pipeline before anything
+is created.
+
+The account module ([012](../specs/012-account-module.md)) generates the platform user's keypair,
+stores it in the secret store and runs `CREATE ACCOUNT` in the organization account. It then records
+the account's name, login URL and identifier on the resource. From then on the account is never
+created again. A new account takes a few minutes before anyone can log in to it, so the controller
+does not try to connect during a period configured by operations, because a connection would fail
+anyway. 
+
+From then on, each pass logs in to the account as the platform user, and the remaining modules
+configure parameters, network, authentication, identity and quota through it. The platform user is
+the administrator of its own account, but its rights end there: unlike the organization admin, it
+cannot reach any other account. The organization admin is used only to create and drop accounts
+(see [8.2](#82-privilege-model)).
+
+The account becomes `Ready` the first time every module is done, and stays `Ready` from then on.
 
 ### 6.2 Waiting for an Identity Sync
 
-_To write:_ how an account waits on an `IdentitySyncRequest` fulfilled by another controller without
-blocking a reconcile.
+```mermaid
+sequenceDiagram
+    actor Tenant
+    participant K8s as API server
+    participant Ctrl as Yukimi controller
+    participant IdSync as Identity sync controller
+    participant IAM as Enterprise IAM<br/>(e.g. Entra ID)
+    participant Org as Organization account
+    participant Acc as Tenant account
+
+    Tenant->>K8s: add group
+    K8s->>Ctrl: reconcile
+    Ctrl->>K8s: create or update IdentitySyncRequest
+    Ctrl->>K8s: IdentitySynced=False (SyncPending)
+    K8s->>IdSync: request changed
+    IdSync->>IAM: add groups to the Snowflake sync
+    IAM->>Org: SCIM provisions groups
+    IdSync->>K8s: request Ready=True
+    K8s->>Ctrl: reconcile
+    Ctrl->>K8s: read request status
+    Ctrl->>Acc: import groups, grant roles
+    Ctrl->>K8s: IdentitySynced=True
+    Tenant->>Acc: group members log in via SSO
+```
+
+A tenant gives a company group access to their account by adding it to the `SnowflakeAccount`,
+either when the account is created or later. Before the group can be imported into the account, it
+must exist in the organization account. Where the company does not sync all of its groups there by
+default, the controller asks for them: it keeps one `IdentitySyncRequest` per identity integration
+in the tenant's namespace, listing that integration's groups
+([`design.md` §4](../specs/design.md#4-identitysyncrequest-resource)). A company-specific controller
+fulfils the request: it adds the groups to the enterprise IAM's Snowflake sync, for example in
+Azure Entra ID, and SCIM then provisions them into the organization account. Once every group has
+arrived, the controller reports `Ready=True` on the request. Yukimi ships only the request, not the
+controller that fulfils it.
+
+A sync can take most of an hour, so the controller never waits for it inside a pass. Until the
+groups arrive, the identity module reports the account as pending. The account is applied again on
+every pass, and the groups of each fulfilled request are imported as soon as it reports `Ready`.
+The `IdentitySynced` condition shows the wait. If the wait runs past a configured timeout, the
+reason changes from `SyncPending` to `SyncTimeout` with a warning event for operators, but the
+controller keeps trying.
+
+The diagram shows a group added to an account that is already `Ready`, which stays `Ready`
+throughout. For a new account the first sync also holds `Ready` at false, because nobody can
+administer the account before the group bound to `ACCOUNTADMIN` has been imported.
 
 ### 6.3 Deleting an Account
 
-_To write:_ the blocked delete, the `DeletionPermit`, and the consumed permit.
+```mermaid
+sequenceDiagram
+    actor Tenant
+    participant K8s as API server
+    participant Ctrl as Yukimi controller
+    participant Store as Secret store
+    participant Org as Organization account
 
-### 6.4 Reporting an Error
+    Tenant->>K8s: delete SnowflakeAccount
+    K8s->>Ctrl: reconcile
+    Ctrl->>K8s: look up active permit: none
+    Ctrl->>K8s: DeletionBlocked event, Ready=False
+    Tenant->>K8s: create DeletionPermit
+    K8s->>Ctrl: reconcile
+    Ctrl->>K8s: look up active permit: found
+    Ctrl->>Org: DROP ACCOUNT (organization admin)
+    Ctrl->>Store: delete keypair
+    Ctrl->>K8s: permit Consumed
+    Ctrl->>K8s: remove finalizer
+```
 
-_To write:_ how a failure becomes a condition the tenant sees in Argo CD, and how a system error is
-correlated with operator logs through its incident ID.
+Deleting a `SnowflakeAccount`, for example by removing its file from Git, does not delete the
+account by itself. A finalizer holds the resource in `Terminating`, and the controller looks for an
+active `DeletionPermit` for it in the same namespace ([019](../specs/019-deletion-permit.md)). If
+there is none, the controller refuses, records a `DeletionBlocked` warning event and sets
+`Ready=False`, which Argo CD reports as a failure. The tenant then either restores the file or
+creates a permit.
+
+A permit names the account, gives a reason and is valid for at most eight hours. A separate
+controller marks it `Expired` when the window closes unused. With an active permit, the pipeline
+tears the account down, running the modules in reverse. The account is dropped last, and the
+platform user's key is deleted with it. Both can be restored for a period configured by operations.
+Only after the teardown has succeeded is the permit marked `Consumed` and the finalizer removed, so
+a failed teardown can be retried with the same permit while it is still active. The consumed permit stays as an audit record.
+
+A resource whose account was never created, for example because its name failed validation, is
+removed without a permit. Operations can also switch deletion protection off for the whole platform
+in the base configuration.
 
 
 ## 7. Deployment View
@@ -303,17 +423,8 @@ spec-driven development, namespace-hash account naming, positive-control deletio
 `IdentitySyncRequest` in its own API group, a pluggable secret store backend.
 
 
-## 11. Risks and Technical Debt
+## 11. Technical Debt
 
-_To write:_ known gaps and the workarounds that cover them, each linked to its source. Candidates:
-tenant account admins can unset platform policies until Organization Policies exist, serverless and
-AI spend is not capped, the `platform` user can be dropped by the tenant, OIDC authentication is
-still open ([`design.md` Appendix A](../specs/design.md#appendix-a-open-todos) and
-[Appendix B](../specs/design.md#appendix-b-organization-policy-requirements)).
-
-
-## 12. Glossary
-
-_To write:_ the domain terms a newcomer meets first. Candidates: tenant, backplane, connection,
-inventory, guardrail, approved exception, OE, ISO, credit quota, resolved account name, positive
-control, deletion permit, identity sync.
+- **OIDC authentication.** The controller reaches tenant accounts only with the `platform` user's
+  key pair from the secret store. The optional OIDC path, which avoids reading that key on every
+  connection, is still open ([`design.md` 3.11.2](../specs/design.md#3112-oidc-authentication-optional-todo)).
