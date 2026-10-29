@@ -45,7 +45,7 @@ requirements are in [`specs/design.md`](../specs/design.md), linked in the last 
 | R1 | Self-service at global scale | Teams get a new Snowflake environment in minutes instead of weeks, and change it themselves. One service for thousands of teams across business units, clouds and regions, without the platform team growing with them. | [§2](../specs/design.md#2-tenant-onboarding), [§3.2](../specs/design.md#32-domain-concepts) |
 | R2 | Secure and compliant by default | Every environment starts from the same hardened, approved baseline, company rules are enforced automatically, and data is protected against accidental loss. | [§3.3](../specs/design.md#33-guardrails)–[§3.11](../specs/design.md#311-security-constraints), [§6](../specs/design.md#6-deletionpermit-resource) |
 | R3 | Cost control | Every team has a credit budget it cannot exceed, and spend is attributed to its cost center. | [§3.10](../specs/design.md#310-credit-quota) |
-| R4 | Flexible integration | Open by design, so it can be plugged into any existing self-service landscape: GitOps, ServiceNow or a custom portal. | [§1.1](../specs/design.md#11-purpose--scope) |
+| R4 | Flexible integration | Open by design, so it can be plugged into any existing self-service landscape: GitOps (e.g. Argo CD, Flux), ServiceNow or a custom portal. | [§1.1](../specs/design.md#11-purpose--scope) |
 | R5 | AI ready | Users build complete data products by prompting an AI agent, which deploys them directly to production. | – |
 
 ### 1.2 Quality Goals
@@ -76,36 +76,27 @@ Yukimi shall:
 
 ## 3. Context and Scope
 
-### 3.1 Business Context
-
-_To write:_ the platform as a black box and the people and processes around it: who commits CRDs,
-who owns guardrails, exceptions and backplane configuration, and what each gets back. One diagram.
-
-### 3.2 Technical Context
-
-The controller talks to three systems directly: the Kubernetes API server, the secret store and
-Snowflake. Everything else reaches it indirectly, through resources in the API server.
+The controller has five neighbours. People reach it only through Kubernetes: tenants through the
+custom resources in their namespace, operations through the configuration and the namespace labels.
+The controller itself talks directly to Snowflake and the secret store.
 
 ```mermaid
-flowchart LR
-    Git["Tenant Git repositories"] -- "YAML" --> Argo["Argo CD"]
-    Argo -- "sync" --> K8s["Kubernetes API server"]
-    IdSync["Identity sync controller<br/>(company specific)"] <-- "IdentitySyncRequest" --> K8s
-    K8s <-- "watch and update" --> Ctrl["Yukimi controller"]
-    Ctrl <-- "AWS SDK" --> Secrets["Secret store<br/>(AWS Secrets Manager)"]
-    Ctrl -- "SQL via PrivateLink" --> Org["Snowflake organization account"]
-    Ctrl -- "SQL via PrivateLink" --> Acc["Snowflake tenant accounts"]
-    IdSync -- "groups" --> Org
+mindmap
+  root((Yukimi controller))
+    tenant[👤 Tenant team]
+    ops[👤 Platform operations]
+    snow[Snowflake]
+    store[Secret store]
+    idsync[Identity sync]
 ```
 
-| Neighbour | Channel | Input and output |
-| --- | --- | --- |
-| Kubernetes API server | Kubernetes API | Reads `SnowflakeAccount`, `DeletionPermit` and namespace labels. Writes status, conditions, events and `IdentitySyncRequest`s. |
-| Argo CD and Git | None, through the API server | Tenants' YAML arrives as custom resources in their namespace. Tenants read feedback as conditions in Argo CD. |
-| Secret store | AWS SDK | Reads and writes the keypair of each account and of the organization admin. |
-| Snowflake organization account | SQL via PrivateLink | Creates and deletes accounts with organization admin rights. |
-| Snowflake tenant accounts | SQL via PrivateLink | Configures each account as its `platform` service user. |
-| Identity sync controller | None, through the API server | Fulfils `IdentitySyncRequest`s by syncing groups into the organization account. |
+| Neighbour | Input and output |
+| --- | --- |
+| Tenant team | Requests, changes and deletes accounts with `SnowflakeAccount`. |
+| Platform operations | Provisions the regional backplane and maintains its network inventory, together with the platform settings, in a ConfigMap. Onboards tenant teams by creating and labelling their namespaces. |
+| Snowflake | Provisions and deletes accounts through the central organization account. Configures each tenant account with its own `platform` service user. |
+| Secret store | Reads and writes the keypair of each account and of the organization admin. A pluggable interface allows different stores, e.g. AWS Secrets Manager, Azure Key Vault, GCP Secret Manager or HashiCorp Vault. The store stays necessary with OIDC too, because an account can only be created with a keypair. |
+| Identity sync | A company-specific controller that syncs the requested groups into the organization account and reports when they have arrived. |
 
 See the [deployment view](#7-deployment-view) for where these run.
 
@@ -234,15 +225,15 @@ pass, which Kubernetes triggers on a change or on its regular poll.
 ```mermaid
 sequenceDiagram
     actor Tenant
-    participant Argo as Argo CD
+    participant GitOps as GitOps<br/>(e.g. Argo CD, Flux)
     participant K8s as API server
     participant Ctrl as Yukimi controller
     participant Store as Secret store
     participant Org as Organization account
     participant Acc as Tenant account
 
-    Tenant->>Argo: commit SnowflakeAccount
-    Argo->>K8s: sync into the tenant namespace
+    Tenant->>GitOps: commit SnowflakeAccount
+    GitOps->>K8s: sync into the tenant namespace
     K8s->>Ctrl: reconcile
     Note over Ctrl: no account recorded yet,<br/>admission checks pass
     Ctrl->>Store: store new keypair
@@ -253,14 +244,14 @@ sequenceDiagram
     Ctrl->>Store: read keypair
     Ctrl->>Acc: configure as platform user
     Ctrl->>K8s: Ready=True
-    Argo-->>Tenant: account healthy
+    GitOps-->>Tenant: account healthy
 ```
 
-A tenant commits a `SnowflakeAccount` to Git, and Argo CD syncs it into the tenant's namespace. The
-controller sees that no account has been recorded for it yet and runs the account pipeline
-([009](../specs/009-account-pipeline.md)) module by module. The admission checks run first. If the
-request breaks a guardrail or does not fit the credit quota, they stop the pipeline before anything
-is created.
+A tenant commits a `SnowflakeAccount` to Git, and the GitOps tool (e.g. Argo CD, Flux) syncs it
+into the tenant's namespace. The controller sees that no account has been recorded for it yet and
+runs the account pipeline ([009](../specs/009-account-pipeline.md)) module by module. The admission
+checks run first. If the request breaks a guardrail or does not fit the credit quota, they stop the
+pipeline before anything is created.
 
 The account module ([012](../specs/012-account-module.md)) generates the platform user's keypair,
 stores it in the secret store and runs `CREATE ACCOUNT` in the organization account. It then records
@@ -285,7 +276,7 @@ sequenceDiagram
     participant K8s as API server
     participant Ctrl as Yukimi controller
     participant IdSync as Identity sync controller
-    participant IAM as Enterprise IAM<br/>(e.g. Entra ID)
+    participant IAM as Enterprise IAM<br/>(e.g. Entra ID, Okta)
     participant Org as Organization account
     participant Acc as Tenant account
 
@@ -310,8 +301,8 @@ must exist in the organization account. Where the company does not sync all of i
 default, the controller asks for them: it keeps one `IdentitySyncRequest` per identity integration
 in the tenant's namespace, listing that integration's groups
 ([`design.md` §4](../specs/design.md#4-identitysyncrequest-resource)). A company-specific controller
-fulfils the request: it adds the groups to the enterprise IAM's Snowflake sync, for example in
-Azure Entra ID, and SCIM then provisions them into the organization account. Once every group has
+fulfils the request: it adds the groups to the Snowflake sync of the enterprise IAM (e.g. Entra
+ID, Okta), and SCIM then provisions them into the organization account. Once every group has
 arrived, the controller reports `Ready=True` on the request. Yukimi ships only the request, not the
 controller that fulfils it.
 
@@ -353,7 +344,7 @@ Deleting a `SnowflakeAccount`, for example by removing its file from Git, does n
 account by itself. A finalizer holds the resource in `Terminating`, and the controller looks for an
 active `DeletionPermit` for it in the same namespace ([019](../specs/019-deletion-permit.md)). If
 there is none, the controller refuses, records a `DeletionBlocked` warning event and sets
-`Ready=False`, which Argo CD reports as a failure. The tenant then either restores the file or
+`Ready=False`, which the GitOps tool reports as a failure. The tenant then either restores the file or
 creates a permit.
 
 A permit names the account, gives a reason and is valid for at most eight hours. A separate
@@ -370,15 +361,71 @@ in the base configuration.
 
 ## 7. Deployment View
 
-### 7.1 Production
+One controller in one Kubernetes cluster serves every region. Tenants share the cluster, each in
+their own namespace, and the controller reaches the secret store and every Snowflake region from
+there. The diagram shows the AWS reference setup.
 
-_To write:_ what runs where: the controller deployment in its cluster, the mounted configuration,
-tenant namespaces, the secret store, and the Snowflake organization with its regional backplanes
-and PrivateLink endpoints. Links to the manifests in [`package/`](../package).
+```mermaid
+architecture-beta
+    group k8s(cloud)[Kubernetes cluster]
+    group sys(server)[Namespace yukimi-system] in k8s
+    group ten(server)[Tenant namespaces] in k8s
+    group aws(cloud)[AWS account]
+    group sf(cloud)[Snowflake organization]
+    group r1(cloud)[Region aws-ap-southeast-2] in sf
+    group r2(cloud)[Region gcp-us-east4] in sf
 
-### 7.2 Local Development
+    service cfg(disk)[ConfigMap yukimi-config] in sys
+    service ctrl(server)[Yukimi controller] in sys
+    service crs(disk)[Custom resources] in ten
+    service iam(server)[IAM role] in aws
+    service sm(database)[Secrets Manager] in aws
+    service pl1(internet)[PrivateLink endpoint] in r1
+    service acc1(database)[Tenant accounts] in r1
+    service pl2(internet)[PrivateLink endpoint] in r2
+    service acc2(database)[Tenant accounts] in r2
 
-_To write:_ the kind cluster started by `make dev`. Details in [development.md](development.md).
+    cfg:R --> L:ctrl
+    ctrl:T <--> B:crs
+    ctrl:R --> L:iam
+    iam:R --> L:sm
+    ctrl:B --> T:pl1
+    pl1:B --> T:acc1
+    ctrl:B --> T:pl2
+    pl2:B --> T:acc2
+```
+
+| Element | What runs or lives there | Provided by |
+| --- | --- | --- |
+| `yukimi-system` namespace | The controller deployment, its service account and RBAC. | `install.yaml`, rendered from [`package/`](../package) |
+| `yukimi-config` ConfigMap | `base.yaml` ([002](../specs/002-base-config.md)) and `backplane.yaml` ([007](../specs/007-backplane-config.md)), mounted read-only. | Operations, applied separately |
+| Tenant namespaces | The tenants' custom resources, and the namespace labels set at onboarding. | Operations at onboarding, then GitOps |
+| IAM role | The controller's only cloud credential, limited to its own secret paths. | Operations |
+| Secrets Manager | The organization admin keypair and one keypair per tenant account. | Operations for the organization admin, the controller for the rest |
+| Snowflake regions | One PrivateLink endpoint and DNS wildcard per region, shared by all its accounts. | Operations, once per region via Terraform |
+
+`install.yaml` holds the CRDs and the controller manifests and contains nothing site specific.
+Each installation adds a small kustomize overlay for its image and the IAM role annotation on the
+service account, and applies the `yukimi-config` ConfigMap on its own, so an upgrade never
+overwrites real values with placeholders. The controller reads its configuration once at startup,
+so a configuration change takes effect only after a restart.
+
+The controller runs as a single replica with leader election, and a rollout stops the old pod
+before it starts the new one. `CREATE ACCOUNT` is not idempotent, so two active controllers must
+never act on the same resource. Nothing is lost during the short gap, because the next pass
+resumes from the resource's actual state. The pod runs unprivileged under the `restricted` Pod
+Security profile, and it has no access to Kubernetes secrets or ConfigMaps through the API: its
+configuration arrives as a mounted volume, and its credentials come from the pod's cloud identity.
+
+Before it starts reconciling, the controller checks its configuration and connects to the
+organization account. If either fails, the pod does not become ready, so a broken installation
+shows up at deployment time rather than on the first tenant request.
+
+The cluster's network must reach the PrivateLink endpoint of every region the backplane lists,
+because the controller talks to all accounts directly. Bringing a new region online is therefore an
+infrastructure task for operations followed by a configuration entry
+([`design.md` §3.5](../specs/design.md#35-backplane-config)), not a new deployment. The identity
+sync controller is deployed separately by the company and needs only the same API server.
 
 
 ## 8. Cross-cutting Concepts
