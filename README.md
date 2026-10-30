@@ -90,7 +90,7 @@ make dev             # creates a kind cluster, applies CRDs, runs the controller
 
 ## Documentation
 
-- [docs/architecture.md](docs/architecture.md) — how the system is designed and documented: the
+- [docs/spec-driven-development.md](docs/spec-driven-development.md) — how the system is designed and documented: the
   product design, one spec per package, and the spec-driven process that produces them
 - [docs/development.md](docs/development.md) — setup, make targets,
   testing, local development and scaffolding
