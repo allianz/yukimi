@@ -2,7 +2,7 @@
 #
 # Before this file existed, the only Dependabot activity on the repository came
 # from org-level security updates -- so nothing kept ordinary dependencies or the
-# pinned action SHAs current. Both ecosystems below are also graded by OpenSSF
+# pinned action SHAs current. The ecosystems below are also graded by OpenSSF
 # Scorecard (Dependency-Update-Tool), whose badge the README carries.
 version: 2
 
@@ -20,13 +20,27 @@ updates:
     open-pull-requests-limit: 5
     labels:
       - dependencies
-      - go
     commit-message:
       prefix: "deps"
+    # New releases wait a few days before Dependabot proposes them, which is
+    # usually long enough for a hijacked or broken release to be caught and yanked.
+    # Security updates are not delayed.
+    cooldown:
+      default-days: 5
+    # A new k8s.io/* minor ships weeks before controller-runtime and
+    # crossplane-runtime are built against it, so bumping it early produces a
+    # build that does not compile -- and holds the group's patches hostage in a
+    # red pull request. Those minors arrive through crossplane-runtime instead,
+    # whose bump pulls them up as far as it needs.
+    ignore:
+      - dependency-name: "k8s.io/*"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "sigs.k8s.io/controller-runtime"
+        update-types: ["version-update:semver-minor"]
     groups:
-      # The k8s.io/* and sigs.k8s.io/* modules are released in lockstep and are
-      # not independently upgradable: bumping one without the others produces a
-      # build that does not compile. One pull request per release train.
+      # The k8s.io/* modules are released in lockstep and are not independently
+      # upgradable: bumping one without the others produces a build that does
+      # not compile. One pull request per release train.
       kubernetes:
         patterns:
           - "k8s.io/*"
@@ -61,10 +75,33 @@ updates:
     open-pull-requests-limit: 5
     labels:
       - dependencies
-      - github-actions
     commit-message:
       prefix: "ci"
+    cooldown:
+      default-days: 5
     groups:
       actions:
         patterns:
           - "*"
+
+  # ----------------------------------------------------------------------------
+  # Container base image
+  # ----------------------------------------------------------------------------
+  #
+  # The controller image's base is pinned by digest for the same reason the
+  # actions are pinned by SHA. The tag beside the digest is what Dependabot
+  # tracks: it moves the digest whenever that tag moves.
+  - package-ecosystem: docker
+    directory: /cluster/images/yukimi
+    schedule:
+      interval: weekly
+      day: monday
+      time: "05:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+    commit-message:
+      prefix: "deps"
+    cooldown:
+      default-days: 5
