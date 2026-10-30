@@ -5,18 +5,17 @@ together, why they are shaped that way, and where to read further. The source of
 [`specs/design.md`](../specs/design.md) and the numbered specs in [`specs/`](../specs); where they
 disagree with this document, they win.
 
-- [1. Introduction and Goals](#1-introduction-and-goals)
+- [1. Introduction](#1-introduction)
+- [2. Quality Goals](#2-quality-goals)
 - [3. Context and Scope](#3-context-and-scope)
 - [4. Solution Strategy](#4-solution-strategy)
 - [5. Building Block View](#5-building-block-view)
 - [6. Runtime View](#6-runtime-view)
 - [7. Deployment View](#7-deployment-view)
 - [8. Cross-cutting Concepts](#8-cross-cutting-concepts)
-- [9. Architecture Decisions](#9-architecture-decisions)
-- [11. Technical Debt](#11-technical-debt)
 
 
-## 1. Introduction and Goals
+## 1. Introduction
 
 Yukimi is a self-service platform for provisioning and managing Snowflake accounts at enterprise
 scale. Every team, called a tenant, gets its own isolated Snowflake account. The account is created
@@ -40,7 +39,7 @@ requirements are in [`specs/design.md`](../specs/design.md), linked in the last 
 | R4 | Flexible integration | Open by design, so it can be plugged into any existing self-service landscape: GitOps (e.g. Argo CD, Flux), ServiceNow or a custom portal. | [§1.1](../specs/design.md#11-purpose--scope) |
 | R5 | AI ready | Users build complete data products by prompting an AI agent, which deploys them directly to production. | – |
 
-### 1.2 Quality Goals
+## 2. Quality Goals
 
 The quality goals that shape the architecture most, in order of priority.
 
@@ -99,7 +98,7 @@ operations:
   ([§3.7](../specs/design.md#37-identity-integration)).
 
 As a result, operations effort grows with the number of regions rather than the number of accounts
-([quality goal 3](#12-quality-goals)), and bringing a region online is a project while ordering an
+([quality goal 3](#2-quality-goals)), and bringing a region online is a project while ordering an
 account is not.
 
 
@@ -154,7 +153,7 @@ flowchart LR
 | Secrets | 003 | Creates, stores and reads the account keypairs in the secret store. |
 
 Error handling and logging (001) are used by every component and are described in
-[8.4](#84-error-handling-and-status-reporting).
+[8.3](#83-error-handling-and-status-reporting).
 
 ### 5.2 Packages
 
@@ -378,48 +377,135 @@ architecture-beta
 
 ## 8. Cross-cutting Concepts
 
-_To write:_ concepts that span several packages, each as a short summary that links to the spec or
-`design.md` section that owns it.
+The concepts below apply to several building blocks at once. Each section summarises the idea and
+links to the spec or `design.md` section that owns the details.
 
 ### 8.1 Tenancy and Isolation
 
-_To write:_ the namespace trust anchor, secret paths, and why a controller bug yields a denied
-request rather than cross-tenant access.
+The Kubernetes namespace is the tenancy boundary. Operations creates and labels it at onboarding,
+and tenants can neither rename it, move resources into another one nor change its labels. The
+platform therefore trusts the namespace and its labels, such as department, cost center and credit
+quota, but nothing a tenant writes into a `SnowflakeAccount`
+([006](../specs/006-snowflake-account-crd.md), [`design.md` §3.11.1](../specs/design.md#3111-tenant-isolation-via-secret-paths)).
+
+The namespace is also part of the identifier under which each account's keypair is stored,
+`yk-<org>--<namespace>--<account>` ([003](../specs/003-secrets-handling.md)). The controller takes
+the namespace from where the resource lives, never from its spec. A tenant can therefore only reach
+the credentials of accounts in its own namespace, and with them only its own Snowflake accounts.
+Two tenants can both name an account `analytics` without ever touching each other's.
+
+The aim is that the final check always sits outside the controller, so that a bug in the controller
+yields a denied request rather than cross-tenant access. Today this holds in two places: the
+Kubernetes API server keeps tenants inside their namespace, and Snowflake limits each tenant
+connection to its own account ([8.2](#82-privilege-model)). The secret store does not hold it yet.
+The controller has a single role that can read every tenant's secret, so the identifier scheme
+protects against tenants, but not against a controller bug that builds the wrong identifier
+([003](../specs/003-secrets-handling.md#security-considerations)). OIDC is meant to close this gap,
+by letting Snowflake itself verify which namespace a connection comes from
+([`design.md` §3.11.2](../specs/design.md#3112-oidc-authentication-optional-todo)).
 
 ### 8.2 Privilege Model
 
-_To write:_ org-admin versus per-account credentials, and when each is used.
+The controller uses two kinds of credential and keeps them strictly apart
+([`design.md` §3.11](../specs/design.md#311-security-constraints),
+[004](../specs/004-connection-pooling.md)).
 
-### 8.3 Configuration Ownership
+| Identity | Used for |
+| --- | --- |
+| Organization admin | Creating and dropping accounts in the organization account, and nothing else. |
+| Platform user, one per account | Everything inside the account: parameters, network, authentication, identity and quota. |
 
-_To write:_ the inputs and who owns each: CRD (tenant), guardrails (OEs), exceptions (ISO and ops),
-backplane and base config (ops), namespace labels (ops at onboarding).
+Right after creating an account, the controller steps down from the organization admin to the
+account's own platform user. This is a service user without a password that Snowflake makes the
+account's first administrator, and only the platform holds its key
+([012](../specs/012-account-module.md)). The two kinds of connection are requested through separate
+entry points, and only the account module asks for the organization connection, so no other module
+can get it by mistake. Whatever goes wrong on a tenant connection can at most affect that one
+account.
 
-### 8.4 Error Handling and Status Reporting
+The organization credential is also kept out of routine passes. The controller records an account's
+existence on the resource instead of asking Snowflake for it ([8.4](#84-reconciliation-model)), so
+the regular poll needs no organization-wide access. Only creating and dropping an account need it.
 
-_To write:_ user versus system errors, incident IDs, and the condition model (`Ready`, `Synced` and
-resource-specific conditions).
+Platform user keys are rotated over the open connection once they reach a configured age. Snowflake
+accepts two keys per user, so the new key is registered next to the old one and the working key is
+never lost ([004](../specs/004-connection-pooling.md)). One gap remains: a tenant who holds
+`ACCOUNTADMIN` can drop or re-key the platform user and lock the platform out. Closing it needs
+Snowflake's Organization Policies
+([`design.md` Appendix B, X1](../specs/design.md#b5-platform-access)).
 
-### 8.5 Reconciliation Model
+### 8.3 Error Handling and Status Reporting
 
-_To write:_ idempotent, level-triggered reconciliation, no retries in controller code, and the
-latching `Ready` condition.
+Every error is either a user error or a system error
+([001](../specs/001-error-and-logging.md)).
 
-### 8.6 Naming and Identifiers
+| | User error | System error |
+| --- | --- | --- |
+| Cause | A mistake in the resource that the tenant can fix, e.g. an unknown region or a malformed CIDR. | A failure in the infrastructure that an operator must fix, e.g. Snowflake or the secret store is unreachable. |
+| Shown on the resource | The message itself, saying what to correct. | `An internal error occurred (f47ac10b)`: an incident ID, without internal details. |
+| Logged | Only at debug level. | Always, with the incident ID and the full details. |
 
-_To write:_ CRD name versus resolved Snowflake name, and which identifier is used where.
+Business logic only classifies an error. The controller turns it into a status message and a log
+entry in one place. Every log entry carries the tenant namespace, the resource and the operation,
+so operators can filter on them instead of searching message text.
 
+Tenants never see the controller's logs, so the resource is their only feedback
+([020](../specs/020-snowflakeaccount-controller.md#key-concept-the-resource-is-the-tenants-only-feedback)).
+Every resource reports two standard conditions
+([`design.md` §7.1](../specs/design.md#71-condition-model)):
 
-## 9. Architecture Decisions
+- **`Ready`**: the resource has been provisioned and can be used.
+- **`Synced`**: the last pass ran without an error. If it did not, the condition carries the error
+  message.
 
-_To write:_ the significant decisions, one short entry each: context, decision, consequence, and a
-link to where it is specified. Candidates: Crossplane runtime without being a community provider,
-spec-driven development, namespace-hash account naming, positive-control deletion,
-`IdentitySyncRequest` in its own API group, a pluggable secret store backend.
+A resource adds conditions of its own for states that are neither an error nor a lack of
+readiness. `SnowflakeAccount` reports `QuotaAvailable=False` when its credits are used up and
+`IdentitySynced=False` while groups are still being synced. Notable moments, such as running out
+of credits or a blocked deletion, are also recorded as Kubernetes events. GitOps tools read the
+same conditions to show an account as healthy or failing.
 
+### 8.4 Reconciliation Model
 
-## 11. Technical Debt
+The controller works from the current state, not from individual changes. Whether it is woken by
+an edit, a restart or the regular poll, it does the same thing: it compares the whole resource with
+what it knows about the account and fixes whatever differs. It never needs to know what changed or
+why, so a missed or repeated trigger does no harm. Each pass observes first and then creates the account, updates it or leaves it alone
+([009](../specs/009-account-pipeline.md#key-concept-the-reconcile-loop)). Create and update are
+the same declarative apply, which works on a missing, a half-created and a fully provisioned
+account alike. A pass interrupted at any point is therefore simply finished by the next one.
+Teardown steps are safe to repeat as well.
 
-- **OIDC authentication.** The controller reaches tenant accounts only with the `platform` user's
-  key pair from the secret store. The optional OIDC path, which avoids reading that key on every
-  connection, is still open ([`design.md` 3.11.2](../specs/design.md#3112-oidc-authentication-optional-todo)).
+The work is done by a pipeline of modules, one per concern. Each module reports one of four
+outcomes: done, pending, drifted or failed. Pending means an expected wait, such as an account
+still coming up or a group still being synced, and is not an error. The pipeline derives everything
+the controller reports from these outcomes, and the controller works nothing out itself.
+
+No pass waits, and no controller code retries. A failure is returned to Kubernetes as an error,
+and Kubernetes runs the pass again later. A wait is picked up by a later pass. If observing fails,
+nothing is created or updated in that pass.
+
+Kubernetes, not Snowflake, is the source of truth for whether an account exists. Right after
+`CREATE ACCOUNT`, the controller records the account's identifier on the resource. From then on the
+account is never created again. If it goes missing, the controller reports this instead of
+recreating it ([012](../specs/012-account-module.md#key-concept-existence-is-recorded-not-looked-up)).
+
+`Ready` latches. It turns true the first time every module is done, and stays true afterwards. A
+later change that cannot be applied, or drift in Snowflake, shows on `Synced` and does not take
+`Ready` away, because the account itself still works ([quality goal 2](#2-quality-goals)). The
+one exception is a blocked deletion, which sets `Ready=False` so that the GitOps tool reports it
+([6.3](#63-deleting-an-account)).
+
+### 8.5 Naming and Identifiers
+
+An account has several identifiers. The tenant chooses the name of the resource, and Snowflake
+assigns its own locator. Snowflake also needs a name that is unique across the whole organization.
+Tenants can't see each other's namespaces, so two of them picking the same name is normal. A suffix
+hashed from the namespace keeps their Snowflake names apart
+([`design.md` §3.12](../specs/design.md#312-account-naming)).
+
+| Identifier | Example | Derived from | Used for |
+| --- | --- | --- | --- |
+| CRD name | `analytics-team-eu` | `metadata.name`, chosen by the tenant | Everything on the Kubernetes and configuration side: guardrail targets, approved exceptions, deletion permits, identity sync requests and replication. |
+| Snowflake name | `analytics_team_eu_5k3wf` | The CRD name with `-` turned into `_`, plus a suffix hashed from the namespace | Display only: the account's name in the Snowflake UI. |
+| Locator | `xy12345` | Assigned by Snowflake at `CREATE ACCOUNT` and recorded in the status | The connection host and the login URL. |
+| Secret identifier | `yk-my-org--finance--analytics-team-eu` | Organization, namespace and CRD name | The account's keypair in the secret store. |
