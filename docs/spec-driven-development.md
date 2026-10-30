@@ -1,29 +1,32 @@
-# Architecture
+# Spec-Driven Development
 
-Yukimi has no classical architecture document. Instead, its architecture is described by one product design for the whole platform, and one numbered spec for each
-package in the code. This page explains why the project is documented this way, how to read the
-specs, and how a spec comes into being.
+Yukimi is built with AI coding agents, following a spec-driven process: one product design for the
+whole platform, and one numbered spec for each package in the code, written before the code itself.
+This page explains why the project works this way, why it uses its own process and skills, how to
+read the specs, and how a spec comes into being. For the big picture of how the platform is built,
+see [`architecture.md`](architecture.md).
 
-- [Why there is no classic architecture document](#why-there-is-no-classic-architecture-document)
+- [Why spec-driven development](#why-spec-driven-development)
 - [How the documentation is layered](#how-the-documentation-is-layered)
 - [Reading a spec](#reading-a-spec)
 - [How a spec comes into being](#how-a-spec-comes-into-being)
+- [Why a custom process and skills](#why-a-custom-process-and-skills)
 - [Not every change takes the full process](#not-every-change-takes-the-full-process)
 
 
-## Why there is no classic architecture document
+## Why spec-driven development
 
-Yukimi was designed from the start to be built with AI coding agents, and its documentation is
-shaped around what an agent needs.
+Yukimi was designed from the start to be built with AI coding agents, and its specs are shaped
+around what an agent needs.
 
 **An agent starts every task from zero.** It remembers nothing from the last session and has no
 picture of what the project is for or what it should do. A person new to a codebase is in the same
 position: code without context is hard to understand, however well it is written.
 
 **What an agent lacks is context, not explanation.** Agents are very good at writing code and good
-at understanding architecture. A classic architecture document spends most of its pages explaining
-structure that an agent can read off the code by itself. What the code cannot tell it is the intent:
-what the platform is for, which behaviour is deliberate, and what a package promises to its callers.
+at understanding structure they can read off the code by themselves. What the code cannot tell them
+is the intent: what the platform is for, which behaviour is deliberate, and what a package promises
+to its callers.
 
 So the documentation provides that context, at two levels:
 
@@ -199,6 +202,17 @@ delete them; you do not maintain them by hand.
   written. Where the record and the spec disagree, the spec wins.
 
 Once a package is implemented, only its spec and its code remain.
+
+
+## Why a custom process and skills
+
+Spec-driven development with AI agents is not new, and ready-made tools for it exist. Before
+building its own, the project tried existing ones. At the time the project started, their results
+were not satisfying for this kind of project and its problems. The custom skills, built around
+Yukimi's own spec template and dependency order, produced better results.
+
+Tools in this area are evolving quickly, so this is a decision of its time, not a permanent one. It
+is worth reconsidering when existing tools have caught up.
 
 
 ## Not every change takes the full process

@@ -46,13 +46,13 @@ The quality goals that shape the architecture most, in order of priority.
 | Priority | Quality goal | What it means for Yukimi |
 | --- | --- | --- |
 | 1 | Security | Multiple independent lines of defense: no single bug, mistake or compromised tenant is enough to reach another tenant's account. |
-| 2 | Reliability | The platform always moves towards the desired state, and a failure never damages an account that already works. |
+| 2 | Reliability | A crash, restart or failover of the controller never damages, duplicates or loses an account. After a 10-minute chaos monkey test, all accounts reach a healthy end state. |
 | 3 | Scalability | Up to 10,000 accounts for 1,000 tenants across 10 regions, without operations effort growing at the same rate. |
-| 4 | Usability | Requesting an account is simple, and feedback is clear enough for teams to fix problems themselves. |
+| 4 | Usability | Teams request an account without training or reading the documentation. In a UX test with 10 users, each gets a working account on their own, making at most one mistake on average and fixing it from the error message alone. |
 | 5 | Performance | A new account is ready in under 60 minutes. Most of that time is spent waiting for the identity sync. |
-| 6 | Operability | Operators can quickly diagnose and fix problems, for example by tracing an error to the logs through its incident ID. |
-| 7 | Cost efficiency | Running the platform costs less than €50 per month per account. |
-| 8 | Adaptability | Non-Allianz organizations can adopt it through configuration, without changing code. |
+| 6 | Operability | Operators trace a deliberately introduced system error to its cause within 15 minutes, starting from the incident ID in the resource's status. |
+| 7 | Cost efficiency | Running the platform costs less than €10 per month per account. |
+| 8 | Testability | Code coverage of 95% from unit tests, 80% from integration tests in packages that talk to Snowflake or AWS, and 70% from end-to-end tests. |
 
 
 ## 3. Context and Scope
