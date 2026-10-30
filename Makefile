@@ -129,7 +129,40 @@ dev-clean: $(KIND) $(KUBECTL)
 	@$(INFO) Deleting kind cluster
 	@$(KIND) delete cluster --name=$(PROJECT_NAME)-dev
 
-.PHONY: submodules fallthrough run dev dev-clean promote tag release.tag e2e e2e.run test-integration
+# ====================================================================================
+# End-to-end tests (e2e/)
+#
+# `make e2e` is the inherited target from build/makelib/common.mk, which runs
+# e2e.init, e2e.run and e2e.done in order. The template's own e2e machinery
+# (deploy a built package to a kind cluster) cannot work here, so only the three
+# hooks are filled in. The suite takes the cluster that is configured and does not
+# create or deploy anything; see e2e/README.md for the preconditions
+# (`make dev` running, AWS credentials available).
+#
+# The suite is behind the `e2e` build tag, so `make test` never compiles it.
+
+E2E_CONFIG_DIR ?= $(ROOT_DIR)/_output/config
+E2E_TIMEOUT ?= 60m
+# The full test output goes to E2E_LOG; the terminal shows a summary of the cases.
+# Set E2E_VERBOSE=1 to print the full output as well.
+E2E_LOG ?= $(ROOT_DIR)/_output/e2e/run.log
+E2E_VERBOSE ?=
+# Run only the tests matching this go test -run expression, for example E2E_RUN='TestB([0-9]|1[01])_|TestC'
+# for the fast cases that create no real account.
+E2E_RUN ?=
+
+e2e.init:
+	@$(INFO) "e2e preconditions: cluster from the default kubeconfig, AWS default credentials, operator running via make dev"
+	@$(INFO) "The suite checks them first and stops before creating anything if one is missing"
+
+e2e.run:
+	@E2E_CONFIG_DIR=$(E2E_CONFIG_DIR) $(GO) test -tags e2e -count=1 -timeout $(E2E_TIMEOUT) $(if $(E2E_RUN),-run '$(E2E_RUN)') -json ./e2e \
+		| $(GO) run -tags e2e ./e2e/report -raw $(E2E_LOG) $(if $(E2E_VERBOSE),-v) || $(FAIL)
+
+e2e.done:
+	@$(OK) e2e
+
+.PHONY: submodules fallthrough run dev dev-clean promote tag release.tag e2e e2e.init e2e.run e2e.done test-integration
 
 # ====================================================================================
 # Disabled Targets
@@ -146,22 +179,6 @@ tag:
 release.tag:
 	@echo "ERROR: 'make release.tag' has been disabled for this project"
 	@exit 1
-
-# There is no end-to-end suite. The template's e2e machinery deploys a built
-# package to a kind cluster, which cannot work here: the package is not published
-# and the controller needs a real Snowflake organization and AWS Secrets Manager
-# to get past startup. Anything needing those is covered by `make
-# test-integration` instead, which is why those tests are guarded by
-# testing.Short() rather than run in CI.
-#
-# Both targets fail loudly rather than being deleted, because the submodule
-# defines them and a silent inherited definition is worse than an explicit no.
-e2e:
-	@echo "ERROR: 'make e2e' is not supported for this project -- there is no e2e suite."
-	@echo "       For tests against real Snowflake and AWS, use 'make test-integration'."
-	@exit 1
-
-e2e.run: e2e
 
 test-integration:
 	@$(INFO) go test integration-tests
