@@ -12,3 +12,4 @@ aws:
 
 deletion:
   protection: {{ getenv "DELETION_PROTECTION" "true" }}
+  gracePeriodDays: {{ getenv "DELETION_GRACE_PERIOD_DAYS" "7" }}
