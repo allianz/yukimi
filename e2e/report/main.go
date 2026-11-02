@@ -18,7 +18,8 @@ limitations under the License.
 
 // Command report turns the JSON output of `go test -json` into a short summary
 // of the cases: one line per case with its result and, for a failure, the step that failed and
-// what it said. The full test output is written to a file for debugging.
+// what it said. While the tests run, the line of a case is printed as soon as
+// it has finished. The full test output is written to a file for debugging.
 //
 //	go test -tags e2e -json ./e2e/... | go run -tags e2e ./e2e/report -raw run.log
 //
@@ -76,6 +77,7 @@ type report struct {
 	stray    []string // lines that are not JSON, for example compiler errors
 	build    []string // compiler output reported by go test
 	outputs  map[string][]string
+	progress io.Writer // gets the line of every test as soon as it has finished
 }
 
 var (
@@ -105,12 +107,14 @@ func main() {
 		defer f.Close()
 		raw = f
 	}
-	var echo io.Writer = io.Discard
+	// The full output shows every result already, so the progress lines are
+	// printed only without it.
+	var echo, progress io.Writer = io.Discard, os.Stdout
 	if *verbose {
-		echo = os.Stdout
+		echo, progress = os.Stdout, io.Discard
 	}
 
-	rep, err := process(os.Stdin, raw, echo)
+	rep, err := process(os.Stdin, raw, echo, progress)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "report:", err)
 		os.Exit(2)
@@ -125,9 +129,11 @@ func main() {
 }
 
 // process reads the JSON stream. Every output line is also written to raw, in
-// the form `go test -v` prints it, and to echo.
-func process(in io.Reader, raw, echo io.Writer) (*report, error) {
+// the form `go test -v` prints it, and to echo. The line of every finished
+// test goes to progress.
+func process(in io.Reader, raw, echo, progress io.Writer) (*report, error) {
 	rep := &report{
+		progress: progress,
 		results:  map[string]*result{},
 		pkgLines: map[string][]string{},
 		pkgFail:  map[string]bool{},
@@ -202,6 +208,8 @@ func (r *report) add(ev event) {
 		if ev.Action == "fail" && len(res.failures) == 0 {
 			res.failures = append(res.failures, failure{step: "(test body)", lines: meaningful(r.outputs[ev.Test])})
 		}
+		// The width of the summary is not known yet, so the title gets a fixed one.
+		fmt.Fprintf(r.progress, "%-5s %-6s %-60s  %s\n", res.caseID(), strings.ToUpper(res.status), res.title(), res.detail())
 	case !isStep(last):
 		// A subtest that is not a step is a case of a table.
 		if depth == 1 {
@@ -213,6 +221,31 @@ func (r *report) add(ev event) {
 			lines: meaningful(r.outputs[ev.Test]),
 		})
 	}
+}
+
+// caseID is the case number, or "-" for a test whose name has none.
+func (res *result) caseID() string {
+	if res.id == "" {
+		return "-"
+	}
+	return res.id
+}
+
+// title is the test name without the case number, as words.
+func (res *result) title() string {
+	if m := testNamePattern.FindStringSubmatch(res.name); m != nil {
+		return humanize(m[2])
+	}
+	return humanize(strings.TrimPrefix(res.name, "Test"))
+}
+
+// detail is the duration and, for a table, the number of its cases.
+func (res *result) detail() string {
+	d := fmt.Sprintf("%.2fs", res.elapsed)
+	if res.cases > 0 {
+		d = fmt.Sprintf("%d cases, %s", res.cases, d)
+	}
+	return d
 }
 
 func isStep(name string) bool {
@@ -301,23 +334,9 @@ func render(w io.Writer, rep *report, rawPath string) (failed bool) {
 	sort.Slice(withID, func(i, j int) bool { return idLess(withID[i].id, withID[j].id) })
 	sort.Slice(other, func(i, j int) bool { return other[i].name < other[j].name })
 
-	title := func(res *result) string {
-		if m := testNamePattern.FindStringSubmatch(res.name); m != nil {
-			return humanize(m[2])
-		}
-		return humanize(strings.TrimPrefix(res.name, "Test"))
-	}
-	detail := func(res *result) string {
-		d := fmt.Sprintf("%.2fs", res.elapsed)
-		if res.cases > 0 {
-			d = fmt.Sprintf("%d cases, %s", res.cases, d)
-		}
-		return d
-	}
-
 	width := 0
 	for _, res := range append(append([]*result{}, withID...), other...) {
-		if n := len(title(res)); n > width {
+		if n := len(res.title()); n > width {
 			width = n
 		}
 	}
@@ -328,11 +347,11 @@ func render(w io.Writer, rep *report, rawPath string) (failed bool) {
 	for _, res := range withID {
 		counts[res.status]++
 		tested[res.id] = true
-		fmt.Fprintf(w, "%-5s %-6s %-*s  %s\n", res.id, strings.ToUpper(res.status), width, title(res), detail(res))
+		fmt.Fprintf(w, "%-5s %-6s %-*s  %s\n", res.id, strings.ToUpper(res.status), width, res.title(), res.detail())
 	}
 	for _, res := range other {
 		counts[res.status]++
-		fmt.Fprintf(w, "%-5s %-6s %-*s  %s\n", "-", strings.ToUpper(res.status), width, title(res), detail(res))
+		fmt.Fprintf(w, "%-5s %-6s %-*s  %s\n", res.caseID(), strings.ToUpper(res.status), width, res.title(), res.detail())
 	}
 	fmt.Fprintln(w)
 
@@ -341,14 +360,14 @@ func render(w io.Writer, rep *report, rawPath string) (failed bool) {
 		if res.status == "" {
 			// The stream ended while the test was running: go test was killed.
 			failed = true
-			fmt.Fprintf(w, "FAILED %s %s: the test did not finish; go test was probably killed (for example by its timeout)\n", res.id, title(res))
+			fmt.Fprintf(w, "FAILED %s %s: the test did not finish; go test was probably killed (for example by its timeout)\n", res.id, res.title())
 			continue
 		}
 		if res.status != "fail" {
 			continue
 		}
 		failed = true
-		fmt.Fprintf(w, "FAILED %s %s\n", res.id, title(res))
+		fmt.Fprintf(w, "FAILED %s %s\n", res.id, res.title())
 		for _, f := range res.failures {
 			fmt.Fprintf(w, "  step: %s\n", f.step)
 			for _, l := range f.lines {

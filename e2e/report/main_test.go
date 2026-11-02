@@ -57,7 +57,7 @@ const sampleStream = `{"Action":"output","Package":"p","Output":"e2e target: kub
 `
 
 func TestSummary(t *testing.T) {
-	rep, err := process(strings.NewReader(sampleStream), io.Discard, io.Discard)
+	rep, err := process(strings.NewReader(sampleStream), io.Discard, io.Discard, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +94,7 @@ func TestSummary(t *testing.T) {
 // whether the run failed.
 func renderStream(t *testing.T, stream string) (string, bool) {
 	t.Helper()
-	rep, err := process(strings.NewReader(stream), io.Discard, io.Discard)
+	rep, err := process(strings.NewReader(stream), io.Discard, io.Discard, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,5 +127,23 @@ func TestATestThatNeverFinishedFails(t *testing.T) {
 `)
 	if !failed || !strings.Contains(out, "did not finish") {
 		t.Errorf("failed = %v, want true with \"did not finish\" in:\n%s", failed, out)
+	}
+}
+
+func TestAFinishedTestIsPrintedRightAway(t *testing.T) {
+	var progress bytes.Buffer
+	_, err := process(strings.NewReader(`{"Action":"run","Package":"p","Test":"TestB1_NonASCIINameIsRejected"}
+{"Action":"pass","Package":"p","Test":"TestB1_NonASCIINameIsRejected","Elapsed":0.01}
+{"Action":"run","Package":"p","Test":"TestA1_Slow"}
+`), io.Discard, io.Discard, &progress)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := progress.String()
+	if !strings.Contains(out, "B1    PASS   Non ASCII name is rejected") {
+		t.Errorf("the finished test is not in the progress:\n%s", out)
+	}
+	if strings.Contains(out, "A1") {
+		t.Errorf("a test that is still running is in the progress:\n%s", out)
 	}
 }

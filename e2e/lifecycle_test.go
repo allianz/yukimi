@@ -251,6 +251,13 @@ func TestA3_ASettledAccountCausesNoFurtherChange(t *testing.T) {
 	})
 }
 
+// The controller writes the description to the Snowflake comment only at
+// CREATE ACCOUNT. That is the wanted behavior, not a gap: Snowflake cannot
+// change the comment of an account afterwards
+// (https://community.snowflake.com/s/article/How-to-Update-Account-Comment).
+// That the CRD still accepts a description added later is the bug of B11; this
+// case only checks that Snowflake is left alone, so it passes before and after
+// that fix.
 func TestB12_TheSnowflakeCommentIsNotUpdatedFromTheDescription(t *testing.T) {
 	t.Parallel()
 	ctx := env.Ctx
@@ -274,7 +281,14 @@ func TestB12_TheSnowflakeCommentIsNotUpdatedFromTheDescription(t *testing.T) {
 	support.When(t, "a description is added with a real update and the operator has reconciled it", func(t *testing.T) {
 		current := account.DeepCopy()
 		current.Spec.Description = description
-		if err := env.Kube.Patch(ctx, current, client.MergeFrom(account)); err != nil {
+		err := env.Kube.Patch(ctx, current, client.MergeFrom(account))
+		if apierrors.IsInvalid(err) {
+			// The CRD rejects it once B11 is fixed; then there is nothing the
+			// controller could apply, and the comment is checked all the same.
+			t.Logf("the API server rejected the description: %v", err)
+			return
+		}
+		if err != nil {
 			t.Fatalf("the description could not be added: %v", err)
 		}
 		generation = current.Generation
@@ -288,11 +302,7 @@ func TestB12_TheSnowflakeCommentIsNotUpdatedFromTheDescription(t *testing.T) {
 		})
 	})
 
-	// This documents a gap, not a wanted behavior: the description is only
-	// written at CREATE ACCOUNT, so a description added later never reaches the
-	// Snowflake comment. When the gap is closed, this case flips: change the
-	// expectation to comment == description.
-	support.Then(t, "the Snowflake comment still does not hold the description (known gap: spec and Snowflake drift)", func(t *testing.T) {
+	support.Then(t, "the Snowflake comment still does not hold the description", func(t *testing.T) {
 		row, err := env.AccountRow(ctx, resolved)
 		if err != nil {
 			t.Fatalf("looking the account up in Snowflake: %v", err)
@@ -302,11 +312,16 @@ func TestB12_TheSnowflakeCommentIsNotUpdatedFromTheDescription(t *testing.T) {
 		}
 		comment, _ := row.StringValue("comment")
 		if comment == description {
-			t.Fatalf("the comment now holds the description, so the gap is closed; change this case to expect it")
+			t.Fatalf("the comment changed after CREATE ACCOUNT, which Snowflake is not expected to allow; check whether Snowflake or the controller changed")
 		}
 	})
 }
 
+// Refusing the name is the wanted behavior: Snowflake keeps a dropped account
+// restorable for the drop grace period, and the name stays taken until then.
+// The message does not say how long that is; this is known and accepted for
+// now, because the deletion time is not at hand with the current secret
+// handling. The case checks only that the refusal mentions the recovery window.
 func TestA5_RecreatingADeletedNameIsRefused(t *testing.T) {
 	t.Parallel()
 	ctx := env.Ctx

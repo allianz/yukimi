@@ -26,6 +26,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 
 	v1alpha1 "github.com/allianz/yukimi/apis/base/v1alpha1"
@@ -95,8 +96,9 @@ func TestD2_QuotesAndBackslashesAreInterpretedByTheBoundParameter(t *testing.T) 
 	t.Parallel()
 	// Snowflake interprets backslash escapes and doubled quotes in a bound
 	// string (specs/005-statement-execution.md), so what is stored is not what
-	// was sent. This case records that behavior: a doubled quote becomes one,
-	// \n becomes a newline, and \\ becomes one backslash.
+	// was sent: a doubled quote becomes one, \n becomes a newline, and \\
+	// becomes one backslash. This is Snowflake's behavior, and it is decided not
+	// to work around it in the operator, so the case expects it and passes.
 	const sent = `quote a''b, newline a\nb, backslash a\\b`
 	const want = "quote a'b, newline a\nb, backslash a\\b"
 	descriptionIsStored(t, "d2-escapes", "d2-escapes", sent, want)
@@ -108,7 +110,14 @@ func TestD4_ADescriptionOfTheMaximumLengthIsStoredCompletely(t *testing.T) {
 	descriptionIsStored(t, "d4-long", "d4-long", description, description)
 }
 
-func TestD3_UnicodeInTheContactEndsInAKnownOutcome(t *testing.T) {
+// The CRD pattern and Snowflake both accept a contact with non-ASCII
+// characters, but most mail systems reject such an address, and the operator
+// cannot check whether it would be delivered. It is decided to stay on the safe
+// side and reject it (this may be opened up later), either in the API server or
+// in the controller before any account is created.
+//
+// This case fails today, and that is a known bug: the account is created.
+func TestD3_UnicodeInTheContactIsRejected(t *testing.T) {
 	t.Parallel()
 	ctx := env.Ctx
 	const name = "d3-contact"
@@ -119,14 +128,19 @@ func TestD3_UnicodeInTheContactEndsInAKnownOutcome(t *testing.T) {
 	})
 	key := types.NamespacedName{Namespace: env.Namespace, Name: name}
 
-	support.Given(t, "a contact with Japanese characters, which the CRD pattern accepts", func(t *testing.T) {})
+	support.Given(t, "a contact with Japanese characters", func(t *testing.T) {})
 
 	var outcome, message string
-	support.When(t, "the account is applied and the operator either creates it or fails", func(t *testing.T) {
-		if _, err := fixture.Start(ctx); err != nil {
+	support.When(t, "the account is applied and either rejected or created", func(t *testing.T) {
+		_, err := fixture.Start(ctx)
+		if apierrors.IsInvalid(err) {
+			outcome, message = "rejected by the API server", err.Error()
+			return
+		}
+		if err != nil {
 			t.Fatal(err)
 		}
-		support.Eventually(ctx, t, readyTimeout, 10*time.Second, "the account to be created or to fail", func(ctx context.Context) (bool, error) {
+		support.Eventually(ctx, t, readyTimeout, 10*time.Second, "the account to be created or rejected", func(ctx context.Context) (bool, error) {
 			var got v1alpha1.SnowflakeAccount
 			if err := env.Kube.Get(ctx, key, &got); err != nil {
 				return false, err
@@ -138,31 +152,29 @@ func TestD3_UnicodeInTheContactEndsInAKnownOutcome(t *testing.T) {
 				outcome = "created"
 				return true, nil
 			case synced.Status == corev1.ConditionFalse && synced.Message != "":
-				outcome, message = "failed", synced.Message
+				outcome, message = "rejected by the controller", synced.Message
 				return true, nil
 			}
-			return false, fmt.Errorf("neither created nor failed yet: %s", support.DescribeConditions(&got))
+			return false, fmt.Errorf("neither created nor rejected yet: %s", support.DescribeConditions(&got))
 		})
 	})
 
-	// The outcome is not decided by the operator but by what Snowflake accepts, so
-	// this case records it. A failure has to be readable, and it must not leave a
-	// Snowflake account behind.
-	support.Then(t, "the outcome is known and, if it is a failure, readable and without a Snowflake account", func(t *testing.T) {
+	support.Then(t, "it is rejected with a message, and Snowflake has no account", func(t *testing.T) {
 		t.Logf("outcome: %s %s", outcome, message)
-		if outcome == "failed" {
-			resolved := tenant.ResolveName(name, env.Namespace)
-			row, err := env.AccountRow(ctx, resolved)
-			if err != nil {
-				t.Fatalf("looking the account up in Snowflake: %v", err)
-			}
-			if row.Found() {
-				t.Errorf("the account failed, but Snowflake lists %q", resolved)
-			}
-			// Whether a credential secret stays behind is case E1.
-			if info, err := env.SecretInfo(ctx, name); err == nil {
-				t.Logf("credential secret exists: %v", info.Exists)
-			}
+		if outcome == "created" {
+			t.Errorf("the account was created with a non-ASCII contact; it must be rejected")
+		}
+		resolved := tenant.ResolveName(name, env.Namespace)
+		row, err := env.AccountRow(ctx, resolved)
+		if err != nil {
+			t.Fatalf("looking the account up in Snowflake: %v", err)
+		}
+		if outcome != "created" && row.Found() {
+			t.Errorf("the account was rejected, but Snowflake lists %q", resolved)
+		}
+		// Whether a credential secret stays behind is case E1.
+		if info, err := env.SecretInfo(ctx, name); err == nil {
+			t.Logf("credential secret exists: %v", info.Exists)
 		}
 	})
 }

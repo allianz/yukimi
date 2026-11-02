@@ -94,9 +94,16 @@ func TestB10_RegionAndEnvironmentCannotBeChanged(t *testing.T) {
 	}
 }
 
-// This is the CRD half of the gap. That the controller never updates the
-// Snowflake comment (the drift) is case B12, which needs a real account.
-func TestB11_ADescriptionCanBeAddedLaterButThenNeverChanged(t *testing.T) {
+// Snowflake cannot change the comment of an account after CREATE ACCOUNT
+// (https://community.snowflake.com/s/article/How-to-Update-Account-Comment), so
+// the description, which becomes that comment, must not change after creation:
+// not changed, not removed and not added later.
+//
+// This case fails today, and that is a known bug of the CRD: the rule
+// "description is immutable" (self == oldSelf) is not evaluated when the old
+// value is absent, so an account created without a description accepts one
+// later. B12 shows that such a description never reaches Snowflake.
+func TestB11_ADescriptionCannotBeAddedLater(t *testing.T) {
 	ctx := env.Ctx
 
 	var account *v1alpha1.SnowflakeAccount
@@ -113,13 +120,7 @@ func TestB11_ADescriptionCanBeAddedLaterButThenNeverChanged(t *testing.T) {
 		account.Spec.Description = "added later"
 		err = dryRunChange(ctx, before, account)
 	})
-	// This documents a gap of the CRD, not a wanted behavior: the rule
-	// "description is immutable" is not evaluated when the old value is absent.
-	// When the gap is closed, this case flips:
-	// change the expectation to a rejection.
-	support.Then(t, "the API server accepts it (known gap: the immutability rule does not apply to an absent old value)", func(t *testing.T) {
-		if err != nil {
-			t.Fatalf("the update was rejected, so the gap is closed; change this case to expect the rejection: %v", err)
-		}
+	support.Then(t, "the API server rejects it and names the rule", func(t *testing.T) {
+		requireInvalid(t, err, "description is immutable")
 	})
 }
