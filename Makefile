@@ -133,11 +133,10 @@ dev-clean: $(KIND) $(KUBECTL)
 # End-to-end tests (e2e/)
 #
 # `make e2e` is the inherited target from build/makelib/common.mk, which runs
-# e2e.init, e2e.run and e2e.done in order. The template's own e2e machinery
-# (deploy a built package to a kind cluster) cannot work here, so only the three
-# hooks are filled in. The suite takes the cluster that is configured and does not
-# create or deploy anything; see e2e/README.md for the preconditions
-# (`make dev` running, AWS credentials available).
+# e2e.init, e2e.run and e2e.done in order. Only e2e.run is filled in; the other two
+# stay empty. The suite takes the cluster that is configured and does not create
+# or deploy anything; see e2e/README.md for the preconditions (`make dev` running,
+# AWS credentials available).
 #
 # The suite is behind the `e2e` build tag, so `make test` never compiles it.
 
@@ -151,18 +150,11 @@ E2E_VERBOSE ?=
 # for the fast cases that create no real account.
 E2E_RUN ?=
 
-e2e.init:
-	@$(INFO) "e2e preconditions: cluster from the default kubeconfig, AWS default credentials, operator running via make dev"
-	@$(INFO) "The suite checks them first and stops before creating anything if one is missing"
-
 e2e.run:
 	@E2E_CONFIG_DIR=$(E2E_CONFIG_DIR) $(GO) test -tags e2e -count=1 -timeout $(E2E_TIMEOUT) $(if $(E2E_RUN),-run '$(E2E_RUN)') -json ./e2e \
 		| $(GO) run -tags e2e ./e2e/report -raw $(E2E_LOG) $(if $(E2E_VERBOSE),-v) || $(FAIL)
 
-e2e.done:
-	@$(OK) e2e
-
-.PHONY: submodules fallthrough run dev dev-clean promote tag release.tag e2e e2e.init e2e.run e2e.done test-integration
+.PHONY: submodules fallthrough run dev dev-clean promote tag release.tag e2e e2e.run test-integration
 
 # ====================================================================================
 # Disabled Targets
