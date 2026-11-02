@@ -94,11 +94,14 @@ func TestD1_JapaneseAndSQLInjectionLikeDescriptionIsStoredAsText(t *testing.T) {
 
 func TestD2_QuotesAndBackslashesAreInterpretedByTheBoundParameter(t *testing.T) {
 	t.Parallel()
-	// Snowflake interprets backslash escapes and doubled quotes in a bound
-	// string (specs/005-statement-execution.md), so what is stored is not what
-	// was sent: a doubled quote becomes one, \n becomes a newline, and \\
-	// becomes one backslash. This is Snowflake's behavior, and it is decided not
-	// to work around it in the operator, so the case expects it and passes.
+	// The operator binds the description as a parameter, as
+	// specs/005-statement-execution.md requires: a bound value cannot change the
+	// statement, so security takes priority over a byte-exact copy. That side is
+	// implemented correctly. The defect is on Snowflake's side: it interprets
+	// backslash escapes and doubled quotes inside a bound string, so a doubled
+	// quote becomes one, \n becomes a newline and \\ becomes one backslash.
+	// Spec 005 accepts and documents this rather than working around it, so the
+	// case expects what Snowflake stores and passes.
 	const sent = `quote a''b, newline a\nb, backslash a\\b`
 	const want = "quote a'b, newline a\nb, backslash a\\b"
 	descriptionIsStored(t, "d2-escapes", "d2-escapes", sent, want)

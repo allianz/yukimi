@@ -142,17 +142,18 @@ dev-clean: $(KIND) $(KUBECTL)
 
 E2E_CONFIG_DIR ?= $(ROOT_DIR)/_output/config
 E2E_TIMEOUT ?= 60m
-# The full test output goes to E2E_LOG; the terminal shows a summary of the cases.
-# Set E2E_VERBOSE=1 to print the full output as well.
+# The full test output goes to E2E_LOG and, by default, to the terminal as well; the
+# summary of the cases follows at the end. Set E2E_VERBOSE=0 to see only one line
+# per case while the tests run.
 E2E_LOG ?= $(ROOT_DIR)/_output/e2e/run.log
-E2E_VERBOSE ?=
+E2E_VERBOSE ?= 1
 # Run only the tests matching this go test -run expression, for example E2E_RUN='TestB([0-9]|1[01])_|TestC'
 # for the fast cases that create no real account.
 E2E_RUN ?=
 
 e2e.run:
 	@E2E_CONFIG_DIR=$(E2E_CONFIG_DIR) $(GO) test -tags e2e -count=1 -timeout $(E2E_TIMEOUT) $(if $(E2E_RUN),-run '$(E2E_RUN)') -json ./e2e \
-		| $(GO) run -tags e2e ./e2e/report -raw $(E2E_LOG) $(if $(E2E_VERBOSE),-v) || $(FAIL)
+		| $(GO) run -tags e2e ./e2e/report -raw $(E2E_LOG) $(if $(filter 1,$(E2E_VERBOSE)),-v) || $(FAIL)
 
 .PHONY: submodules fallthrough run dev dev-clean promote tag release.tag e2e e2e.run test-integration
 
