@@ -4,7 +4,8 @@ Creates SnowflakeAccounts in growing steps, up to 10,000, to find where the syst
 steps: scale up until something fails, look at what broke, fix or tune, continue from where it stopped.
 
 - The accounts live in the namespace `scaletest` and stay there. **A run never deletes anything**, also not after a
-  failure or Ctrl-C, so the state that broke can be inspected.
+  failure or Ctrl-C, so the state that broke can be inspected. Only `make scaletest-delete` removes them, when the
+  scale test is over.
 - `SCALETEST_ACCOUNTS` is the total number of accounts that should exist, not the number to add. A run creates only
   the missing ones, and first waits for accounts of an earlier run that are not ready.
 - It runs against the local `make dev` setup, AWS Secrets Manager and a real Snowflake organization, and is behind
@@ -29,19 +30,21 @@ checked, so switching the context in another terminal while the run is going cha
 |---|---|---|
 | `SCALETEST_ACCOUNTS` | total number of accounts that should exist after the run, at most 10000 | required |
 | `SCALETEST_CONFIRM` | must repeat `SCALETEST_ACCOUNTS`; without it the run refuses to start | required |
-| `SCALETEST_BATCH` | how many accounts are applied at once | 10 |
+| `SCALETEST_BATCH` | how many accounts are applied (or, for the clean-up, deleted) at once | 10 |
 | `SCALETEST_BATCH_INTERVAL` | pause between two batches, for example `30s` | 0 |
 | `SCALETEST_READY_TIMEOUT` | how long an account may take to become ready before the run stops | 30m |
 | `SCALETEST_ERROR_GRACE` | how long an account may report an error (`Synced=False`) before the run stops; the operator retries on its own, so a short error is not a failure | 5m |
 | `SCALETEST_DEGRADE_GRACE` | how long an account that was ready may stay not ready before the run stops; longer than the error grace, because with thousands of accounts the operator needs minutes to come back to one | 15m |
 | `SCALETEST_START_TIMEOUT` | how long an account may have no condition at all before the run stops, which means the operator does not react to it | 5m |
+| `SCALETEST_DELETE_TIMEOUT` | how long an account may take to be deleted before `make scaletest-delete` stops | 30m |
+| `SCALETEST_CONFIRM_DELETE` | for `make scaletest-delete`: must be the number of accounts in the namespace | required there |
 | `SCALETEST_ALLOW_CONTEXT` | a kube context besides `kind-yukimi-dev` that the run may use | none |
 | `SCALETEST_CONFIG_DIR` | operator configuration directory | `_output/config` |
 | `SCALETEST_TIMEOUT` (make) | `go test -timeout`; 0 means none | 0 |
 
-The full output is also written to `_output/scaletest/run.log`.
+The full output is also written to `_output/scaletest/run.log` (`delete.log` for the clean-up).
 
-The tests that create accounts run only when `SCALETEST_ACTION` is set, which the make targets do. A plain
+The tests that create or delete accounts run only when `SCALETEST_ACTION` is set, which the make targets do. A plain
 `go test -tags scaletest ./scaletest` therefore runs only the unit tests.
 
 ## What a run does
@@ -67,7 +70,35 @@ The tests that create accounts run only when `SCALETEST_ACTION` is set, which th
    the end, or -1 if they could not be counted. The times are those of the polls (every 10 seconds), so they are
    accurate to that.
 
+## Deleting everything
+
+When the scale test is over, and only then:
+
+```bash
+SCALETEST_CONFIRM_DELETE=<number of accounts> make scaletest-delete
+```
+
+The number must be the number of accounts in the namespace; the refusal names it. The run deletes the accounts
+the way a tenant does, batch by batch: a `DeletionPermit` first, then the delete, and it waits for each batch to be
+gone before it starts the next one. The permits of accounts that are gone are removed, also those that an earlier,
+interrupted run left (only permits whose name starts with `delete-scaletest-`). It stops at the first batch
+with an account that stays too long (`SCALETEST_DELETE_TIMEOUT`) or reports an error for longer than
+`SCALETEST_ERROR_GRACE`. Running the command again continues where it stopped.
+
+When everything is gone it checks the outside:
+
+- Snowflake lists no account whose name starts with `scaletest`, in any namespace, and
+- no credential secret of the namespace exists in AWS Secrets Manager without being scheduled for deletion. This
+  also finds the secrets of accounts that an earlier, interrupted clean-up removed. The listing may lag behind by
+  up to five minutes, so every secret it shows as not scheduled is looked at again with `DescribeSecret` before it
+  is reported. It needs the permissions `secretsmanager:ListSecrets` and `secretsmanager:DescribeSecret`; it reads
+  metadata only, never a secret value.
+
+Anything left behind is listed, and the run fails. The namespace is kept for the next scale test. The result is
+written to `_output/scaletest/delete-<time>.json`, also when the run stopped early, but not when it refused to
+start for lack of the confirmation. A dropped account keeps its name for the deletion grace period of
+the operator, so a new scale test may have to wait for it.
+
 ## Not done yet
 
-Removing the accounts again, errors grouped by their source (Snowflake, AWS, Kubernetes), a CSV output, and the
-metrics of the operator.
+Errors grouped by their source (Snowflake, AWS, Kubernetes), a CSV output, and the metrics of the operator.

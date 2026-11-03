@@ -70,6 +70,36 @@ func TestResultSummarizeAndWrite(t *testing.T) {
 	}
 }
 
+func TestDeleteResultSummarizeAndWrite(t *testing.T) {
+	r := &DeleteResult{Started: t0, Accounts: 2, SecretsLeft: []string{"a"}}
+	r.Summarize([]DeleteTiming{
+		{Name: "a", Deleted: t0, Gone: t0.Add(60 * time.Second)},
+		{Name: "b", Deleted: t0, LastError: "stuck"}, // not gone
+	})
+	if r.Gone != 1 || r.ToGone.Max != 60 {
+		t.Fatalf("gone %d, to gone %+v", r.Gone, r.ToGone)
+	}
+
+	path, err := r.Write(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back DeleteResult
+	if err := json.Unmarshal(data, &back); err != nil {
+		t.Fatalf("the file is not valid JSON: %v", err)
+	}
+	if back.Accounts != 2 || len(back.SecretsLeft) != 1 || back.Timings[1].LastError != "stuck" {
+		t.Fatalf("read back = %+v", back)
+	}
+	if _, err := r.Write("/proc/scaletest-cannot-create"); err == nil {
+		t.Fatal("expected an error for a directory that cannot be created")
+	}
+}
+
 func TestSummarizeLeavesResumedAccountsOutOfTheDistributions(t *testing.T) {
 	r := &Result{}
 	r.Summarize([]Timing{

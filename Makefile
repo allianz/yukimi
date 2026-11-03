@@ -161,21 +161,25 @@ e2e.run:
 # Creates SnowflakeAccounts in growing steps to find the limits of the system. It runs
 # against the local `make dev` setup (kind cluster, CRDs, operator), AWS Secrets Manager
 # and a real Snowflake organization, and is behind the `scaletest` build tag, so
-# `make test` never compiles it. A run never deletes anything. See scaletest/README.md.
+# `make test` never compiles it. A run never deletes anything; only `make scaletest-delete`
+# does, when the scale test is over. See scaletest/README.md.
 #
 #   SCALETEST_ACCOUNTS=10 SCALETEST_CONFIRM=10 make scaletest
+#   SCALETEST_CONFIRM_DELETE=<number of accounts> make scaletest-delete
 #
 # SCALETEST_ACTION tells the tests what the run is for; without it the tests that
-# create accounts skip themselves. The -run patterns are anchored, so no unit test
+# create or delete accounts skip themselves. The -run patterns are anchored, so no unit test
 # runs along with the real thing.
 
 SCALETEST_TIMEOUT ?= 0
 SCALETEST_LOG ?= $(ROOT_DIR)/_output/scaletest/run.log
+SCALETEST_DELETE_LOG ?= $(ROOT_DIR)/_output/scaletest/delete.log
 
 # Checks that the run can start (settings, configuration, cluster, AWS) and creates nothing.
+# SCALETEST_ACTION=delete checks the settings of the clean-up instead.
 scaletest-check:
 	@$(INFO) scaletest-check
-	@SCALETEST_ACTION=create $(GO) test -tags scaletest -count=1 -v -run '^TestPreflight$$' ./scaletest
+	@SCALETEST_ACTION=$(or $(SCALETEST_ACTION),create) $(GO) test -tags scaletest -count=1 -v -run '^TestPreflight$$' ./scaletest
 	@$(OK) scaletest-check
 
 scaletest:
@@ -185,7 +189,14 @@ scaletest:
 		test $${PIPESTATUS[0]} -eq 0 || $(FAIL)
 	@$(OK) scaletest
 
-.PHONY: submodules fallthrough run dev dev-clean promote tag release.tag e2e e2e.run test-integration scaletest-check scaletest
+scaletest-delete:
+	@$(INFO) scaletest-delete
+	@mkdir -p $(dir $(SCALETEST_DELETE_LOG))
+	@SCALETEST_ACTION=delete $(GO) test -tags scaletest -count=1 -v -timeout $(SCALETEST_TIMEOUT) -run '^TestDelete$$' ./scaletest 2>&1 | tee -i $(SCALETEST_DELETE_LOG); \
+		test $${PIPESTATUS[0]} -eq 0 || $(FAIL)
+	@$(OK) scaletest-delete
+
+.PHONY: submodules fallthrough run dev dev-clean promote tag release.tag e2e e2e.run test-integration scaletest-check scaletest scaletest-delete
 
 # ====================================================================================
 # Disabled Targets

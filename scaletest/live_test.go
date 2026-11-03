@@ -20,9 +20,11 @@ package scaletest
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"syscall"
 	"testing"
 	"time"
@@ -30,32 +32,37 @@ import (
 
 // The tests in this file run against the real cluster, AWS and Snowflake. They run
 // only through the make targets, which set SCALETEST_ACTION; a plain `go test` or a
-// click in the IDE skips them, so they can never create real accounts by
+// click in the IDE skips them, so they can never create or delete real accounts by
 // accident.
 
-// requireAction skips the test unless the run is for the given action. A value that
-// is no action at all, such as a typo, fails the test: a run that skips everything
-// must not look like a success.
-func requireAction(t *testing.T, action string) {
+// requireAction skips the test unless the run is for one of the given actions. A
+// value that is no action at all, such as a typo, fails the test: a run that skips
+// everything must not look like a success.
+func requireAction(t *testing.T, actions ...string) string {
 	t.Helper()
 	got := os.Getenv(EnvAction)
-	if got != "" && got != "create" {
-		t.Fatalf("%s is %q; it must be create (the make targets set it)", EnvAction, got)
+	if got != "" && !slices.Contains([]string{"create", "delete"}, got) {
+		t.Fatalf("%s is %q; it must be create or delete (the make targets set it)", EnvAction, got)
 	}
-	if got != action {
-		t.Skipf("%s is %q; the make targets set it to %q", EnvAction, got, action)
+	if !slices.Contains(actions, got) {
+		t.Skipf("%s is %q; the make targets set it to %v", EnvAction, got, actions)
 	}
+	return got
 }
 
 // setup loads the configuration, connects and runs the start-up checks. It
 // creates nothing. The test fails, with a message that says what to do, if the
 // run cannot start.
-func setup(t *testing.T) *Env {
+func setup(t *testing.T, action string) *Env {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	cfg, err := LoadConfig()
+	load := LoadConfig
+	if action == "delete" {
+		load = LoadDeleteConfig
+	}
+	cfg, err := load()
 	if err != nil {
 		t.Fatalf("configuration: %v", err)
 	}
@@ -74,8 +81,13 @@ func setup(t *testing.T) *Env {
 
 	t.Logf("target: kube context %q, AWS account %s, organization %q, configuration %s",
 		env.Context, awsAccount, cfg.Org(), cfg.Dir)
-	t.Logf("accounts in namespace %q: %d existing, %d wanted (batch %d, interval %s); missing: %d",
-		Namespace, existing, cfg.Accounts, cfg.Batch, cfg.BatchInterval, max(cfg.Accounts-existing, 0))
+	if action == "delete" {
+		t.Logf("accounts in namespace %q: %d existing, all of them will be deleted (batch %d, interval %s)",
+			Namespace, existing, cfg.Batch, cfg.BatchInterval)
+	} else {
+		t.Logf("accounts in namespace %q: %d existing, %d wanted (batch %d, interval %s); missing: %d",
+			Namespace, existing, cfg.Accounts, cfg.Batch, cfg.BatchInterval, max(cfg.Accounts-existing, 0))
+	}
 	return env
 }
 
@@ -83,8 +95,8 @@ func setup(t *testing.T) *Env {
 // configuration, the kube context, a reachable cluster and working AWS
 // credentials. It creates nothing.
 func TestPreflight(t *testing.T) {
-	requireAction(t, "create")
-	setup(t)
+	action := requireAction(t, "create", "delete")
+	setup(t, action).Close()
 }
 
 // TestCreate brings the number of accounts in the namespace up to
@@ -93,7 +105,8 @@ func TestPreflight(t *testing.T) {
 // again continues where it stopped. It runs the start-up checks of TestPreflight first.
 func TestCreate(t *testing.T) {
 	requireAction(t, "create")
-	env := setup(t)
+	env := setup(t, "create")
+	defer env.Close()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -117,4 +130,52 @@ func TestCreate(t *testing.T) {
 	if runErr != nil {
 		t.Fatalf("the run stopped: %v", runErr)
 	}
+}
+
+// TestDelete deletes every account in the namespace and checks that Snowflake and
+// AWS Secrets Manager are clean afterwards. It is the end of the scale test and runs
+// only through `make scaletest-delete`, which needs SCALETEST_CONFIRM_DELETE.
+func TestDelete(t *testing.T) {
+	requireAction(t, "delete")
+	env := setup(t, "delete")
+	defer env.Close()
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	result, runErr := env.DeleteAll(ctx, t.Logf)
+
+	// A refusal has nothing to report; every other outcome is written down, also a
+	// stop before the first delete or a leftover found with no account to delete.
+	if !errors.Is(runErr, errNotConfirmed) {
+		root, err := repoRoot()
+		if err != nil {
+			t.Fatal(err)
+		}
+		path, err := result.Write(filepath.Join(root, "_output", "scaletest"))
+		if err != nil {
+			t.Errorf("writing the result: %v", err)
+		}
+		t.Logf("result: %d of %d accounts gone; file %s", result.Gone, result.Accounts, path)
+		t.Logf("until gone: %s", result.ToGone)
+	}
+	logLeft(t, "still listed by Snowflake", result.SnowflakeLeft)
+	logLeft(t, "secrets not scheduled for deletion", result.SecretsLeft)
+	if runErr != nil {
+		t.Fatalf("the run stopped: %v", runErr)
+	}
+}
+
+// logLeft logs what the clean-up left behind, the first names only; the result file has all of them.
+func logLeft(t *testing.T, what string, names []string) {
+	t.Helper()
+	const shown = 20
+	if len(names) == 0 {
+		return
+	}
+	if len(names) > shown {
+		t.Logf("%s: %d, the first %d: %v", what, len(names), shown, names[:shown])
+		return
+	}
+	t.Logf("%s: %v", what, names)
 }

@@ -132,6 +132,28 @@ func TestLoadConfig(t *testing.T) {
 		}
 	})
 
+	t.Run("the delete run needs no target number", func(t *testing.T) {
+		dir := configDir(t, map[string]string{"base.yaml": validBaseYAML, "backplane.yaml": "regions: {}\n"})
+		t.Setenv(EnvConfigDir, dir)
+		t.Setenv(EnvAccounts, "")
+		t.Setenv(EnvConfirmDelete, "7")
+
+		cfg, err := LoadDeleteConfig()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg.ConfirmDelete != "7" || cfg.Org() != "testorg" {
+			t.Fatalf("config = %+v", cfg.Settings)
+		}
+	})
+
+	t.Run("the delete run reports invalid settings", func(t *testing.T) {
+		t.Setenv(EnvBatch, "0")
+		if _, err := LoadDeleteConfig(); err == nil || !strings.Contains(err.Error(), EnvBatch) {
+			t.Fatalf("error = %v, want one about %s", err, EnvBatch)
+		}
+	})
+
 	t.Run("invalid settings", func(t *testing.T) {
 		dir := configDir(t, map[string]string{"base.yaml": validBaseYAML, "backplane.yaml": "regions: {}\n"})
 		runEnv(t, dir)
@@ -212,4 +234,39 @@ func TestRepoRoot(t *testing.T) {
 			t.Fatalf("error = %v, want one that names %s", err, EnvConfigDir)
 		}
 	})
+}
+
+func TestParseDeleteSettings(t *testing.T) {
+	got, err := ParseDeleteSettings(env(map[string]string{EnvConfirmDelete: "50", EnvBatch: "20"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Settings{Batch: 20, ErrorGrace: defaultErrorGrace, DeleteTimeout: defaultDeleteTimeout, ConfirmDelete: "50"}
+	if got != want {
+		t.Fatalf("settings = %+v, want %+v", got, want)
+	}
+	// No target number is needed, and an unconfirmed value is the delete's own business.
+	if _, err := ParseDeleteSettings(env(nil)); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := ParseDeleteSettings(env(map[string]string{EnvBatch: "0"})); err == nil {
+		t.Fatal("expected an error for a zero batch")
+	}
+}
+
+func TestParseDeleteSettingsReadsTheDeleteTimeout(t *testing.T) {
+	got, err := ParseDeleteSettings(env(map[string]string{EnvDeleteTimeout: "2h"}))
+	if err != nil || got.DeleteTimeout != 2*time.Hour {
+		t.Fatalf("settings = %+v, err = %v", got, err)
+	}
+	if _, err := ParseDeleteSettings(env(map[string]string{EnvDeleteTimeout: "0s"})); err == nil {
+		t.Fatal("expected an error for a zero delete timeout")
+	}
+	// The settings of a create run are not the business of the clean-up, and the other way round.
+	if _, err := ParseDeleteSettings(env(map[string]string{EnvReadyTimeout: "soon"})); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := ParseSettings(env(map[string]string{EnvAccounts: "1", EnvConfirm: "1", EnvDeleteTimeout: "soon"})); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 }

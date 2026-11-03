@@ -22,6 +22,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -37,6 +38,7 @@ import (
 
 	v1alpha1 "github.com/allianz/yukimi/apis/base/v1alpha1"
 	"github.com/allianz/yukimi/internal/secrets"
+	"github.com/allianz/yukimi/internal/snowflake/pool"
 )
 
 // DevContext is the kube context of the cluster `make dev` creates
@@ -45,7 +47,7 @@ const DevContext = "kind-yukimi-dev"
 
 // CheckContext refuses any kube context but the one of `make dev`, unless the run
 // was told explicitly to use it. A run creates real accounts on the current
-// cluster, and they stay.
+// cluster, and the clean-up deletes them there.
 func CheckContext(current, allowed string) error {
 	if current == DevContext || (allowed != "" && current == allowed) {
 		return nil
@@ -64,6 +66,24 @@ type Env struct {
 
 	// PollInterval is how often the accounts are listed; zero means the default.
 	PollInterval time.Duration
+	// PermitWait is how long a delete waits for the permits to be processed; zero means the default.
+	PermitWait time.Duration
+
+	// The Snowflake pool is opened on first use (see verify.go).
+	poolOnce sync.Once
+	pool     *pool.Pool
+	poolErr  error
+
+	// The lookups of the verification after a delete; tests replace them.
+	listSnowflake func(ctx context.Context) ([]string, error)
+	listSecrets   func(ctx context.Context) ([]string, error)
+}
+
+func (e *Env) permitWait() time.Duration {
+	if e.PermitWait > 0 {
+		return e.PermitWait
+	}
+	return defaultPermitWait
 }
 
 func (e *Env) pollInterval() time.Duration {

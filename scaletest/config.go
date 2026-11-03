@@ -17,8 +17,8 @@ limitations under the License.
 */
 
 // Package scaletest creates SnowflakeAccounts in growing steps, up to 10,000,
-// to find where the system reaches its limits. A run never removes anything. It
-// runs against the local `make dev` setup.
+// to find where the system reaches its limits. A run never removes anything; only
+// the explicit clean-up at the end does. It runs against the local `make dev` setup.
 package scaletest
 
 import (
@@ -63,17 +63,23 @@ const (
 	// EnvAllowContext names a kube context other than the one of `make dev` that the
 	// run may use. Without it the run refuses to touch any other cluster.
 	EnvAllowContext = "SCALETEST_ALLOW_CONTEXT"
-	// EnvAction tells the tests what the run is for. The make targets set it, so no
-	// test that creates accounts runs by accident.
+	// EnvConfirmDelete must hold the number of accounts in the namespace for
+	// `make scaletest-delete` to delete them. The refusal names the number.
+	EnvConfirmDelete = "SCALETEST_CONFIRM_DELETE"
+	// EnvDeleteTimeout is how long an account may take to be deleted.
+	EnvDeleteTimeout = "SCALETEST_DELETE_TIMEOUT"
+	// EnvAction tells the tests what the run is for: "create" or "delete". The make
+	// targets set it, so no test that creates or deletes accounts runs by accident.
 	EnvAction = "SCALETEST_ACTION"
 
 	// MaxAccounts is the most accounts the scale test creates.
-	MaxAccounts         = 10000
-	defaultBatch        = 10
-	defaultReadyTimeout = 30 * time.Minute
-	defaultErrorGrace   = 5 * time.Minute
-	defaultStartTimeout = 5 * time.Minute
-	defaultDegradeGrace = 15 * time.Minute
+	MaxAccounts          = 10000
+	defaultBatch         = 10
+	defaultReadyTimeout  = 30 * time.Minute
+	defaultErrorGrace    = 5 * time.Minute
+	defaultStartTimeout  = 5 * time.Minute
+	defaultDegradeGrace  = 15 * time.Minute
+	defaultDeleteTimeout = 30 * time.Minute
 )
 
 // Settings are the parameters of a run.
@@ -85,9 +91,14 @@ type Settings struct {
 	ErrorGrace    time.Duration
 	StartTimeout  time.Duration
 	DegradeGrace  time.Duration
+	DeleteTimeout time.Duration
 
 	// AllowContext is a kube context besides DevContext that the run may use.
 	AllowContext string
+
+	// ConfirmDelete is the raw value of EnvConfirmDelete; the number it must
+	// match is known only once the accounts are listed.
+	ConfirmDelete string
 }
 
 // Config is what a run needs to know: its settings and the configuration of the
@@ -121,14 +132,27 @@ func (c *Config) AvailableRegion() (string, error) {
 	return names[0], nil
 }
 
-// LoadConfig reads the settings from the environment and the operator
-// configuration directory.
+// LoadConfig reads the settings of a run that creates accounts from the
+// environment and the operator configuration directory.
 func LoadConfig() (*Config, error) {
 	s, err := ParseSettings(os.Getenv)
 	if err != nil {
 		return nil, err
 	}
+	return loadOperatorConfig(s)
+}
 
+// LoadDeleteConfig is LoadConfig for the run that deletes all accounts. It needs
+// no target number.
+func LoadDeleteConfig() (*Config, error) {
+	s, err := ParseDeleteSettings(os.Getenv)
+	if err != nil {
+		return nil, err
+	}
+	return loadOperatorConfig(s)
+}
+
+func loadOperatorConfig(s Settings) (*Config, error) {
 	dir := os.Getenv(EnvConfigDir)
 	if dir == "" {
 		root, err := repoRoot()
@@ -151,7 +175,7 @@ func LoadConfig() (*Config, error) {
 // ParseSettings reads and validates the run settings. The run refuses to start
 // unless EnvConfirm repeats EnvAccounts.
 func ParseSettings(getenv func(string) string) (Settings, error) {
-	s := Settings{AllowContext: getenv(EnvAllowContext)}
+	var s Settings
 	accounts, err := positiveInt(getenv, EnvAccounts, 0)
 	if err != nil {
 		return s, err
@@ -176,6 +200,24 @@ func ParseSettings(getenv func(string) string) (Settings, error) {
 	if s.DegradeGrace, err = duration(getenv, EnvDegradeGrace, defaultDegradeGrace, false); err != nil {
 		return s, err
 	}
+	return withCommon(getenv, s)
+}
+
+// ParseDeleteSettings reads the settings of the run that deletes all accounts.
+func ParseDeleteSettings(getenv func(string) string) (Settings, error) {
+	s := Settings{ConfirmDelete: getenv(EnvConfirmDelete)}
+	var err error
+	if s.DeleteTimeout, err = duration(getenv, EnvDeleteTimeout, defaultDeleteTimeout, false); err != nil {
+		return s, err
+	}
+	return withCommon(getenv, s)
+}
+
+// withCommon reads the settings that both kinds of run share: the batches, the error
+// grace and the context.
+func withCommon(getenv func(string) string, s Settings) (Settings, error) {
+	s.AllowContext = getenv(EnvAllowContext)
+	var err error
 	if s.Batch, err = positiveInt(getenv, EnvBatch, defaultBatch); err != nil {
 		return s, err
 	}

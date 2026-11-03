@@ -121,3 +121,37 @@ func writeJSON(dir, prefix string, started time.Time, v any) (string, error) {
 	path := filepath.Join(dir, prefix+started.UTC().Format("20060102T150405Z")+".json")
 	return path, os.WriteFile(path, data, 0o644)
 }
+
+// DeleteResult is the outcome of deleting everything.
+type DeleteResult struct {
+	Started  time.Time    `json:"started"`
+	Finished time.Time    `json:"finished"`
+	Accounts int          `json:"accounts"` // accounts in the namespace when the run started
+	Gone     int          `json:"gone"`
+	ToGone   Distribution `json:"toGone"` // delete request until the account was gone
+
+	// What the verification found behind. Both are empty when the clean-up is complete.
+	SnowflakeLeft []string       `json:"snowflakeLeft,omitempty"`
+	SecretsLeft   []string       `json:"secretsLeft,omitempty"`
+	Failures      []Failure      `json:"failures,omitempty"`
+	Error         string         `json:"error,omitempty"` // why the run stopped, if it did
+	Timings       []DeleteTiming `json:"timings"`
+}
+
+// Summarize fills in the numbers of a result from the timings.
+func (r *DeleteResult) Summarize(timings []DeleteTiming) {
+	var seconds []float64
+	for _, t := range timings {
+		if s, ok := t.SecondsToGone(); ok {
+			seconds = append(seconds, s)
+		}
+	}
+	r.Timings = timings
+	r.Gone = len(seconds)
+	r.ToGone = Distribute(seconds)
+}
+
+// Write stores the result as JSON in dir and returns the path of the file.
+func (r *DeleteResult) Write(dir string) (string, error) {
+	return writeJSON(dir, "delete-", r.Started, r)
+}
