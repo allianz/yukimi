@@ -155,7 +155,37 @@ e2e.run:
 	@E2E_CONFIG_DIR=$(E2E_CONFIG_DIR) $(GO) test -tags e2e -count=1 -timeout $(E2E_TIMEOUT) $(if $(E2E_RUN),-run '$(E2E_RUN)') -json ./e2e \
 		| $(GO) run -tags e2e ./e2e/report -raw $(E2E_LOG) $(if $(filter 1,$(E2E_VERBOSE)),-v) || $(FAIL)
 
-.PHONY: submodules fallthrough run dev dev-clean promote tag release.tag e2e e2e.run test-integration
+# ====================================================================================
+# Scale test (scaletest/)
+#
+# Creates SnowflakeAccounts in growing steps to find the limits of the system. It runs
+# against the local `make dev` setup (kind cluster, CRDs, operator), AWS Secrets Manager
+# and a real Snowflake organization, and is behind the `scaletest` build tag, so
+# `make test` never compiles it. A run never deletes anything. See scaletest/README.md.
+#
+#   SCALETEST_ACCOUNTS=10 SCALETEST_CONFIRM=10 make scaletest
+#
+# SCALETEST_ACTION tells the tests what the run is for; without it the tests that
+# create accounts skip themselves. The -run patterns are anchored, so no unit test
+# runs along with the real thing.
+
+SCALETEST_TIMEOUT ?= 0
+SCALETEST_LOG ?= $(ROOT_DIR)/_output/scaletest/run.log
+
+# Checks that the run can start (settings, configuration, cluster, AWS) and creates nothing.
+scaletest-check:
+	@$(INFO) scaletest-check
+	@SCALETEST_ACTION=create $(GO) test -tags scaletest -count=1 -v -run '^TestPreflight$$' ./scaletest
+	@$(OK) scaletest-check
+
+scaletest:
+	@$(INFO) scaletest
+	@mkdir -p $(dir $(SCALETEST_LOG))
+	@SCALETEST_ACTION=create $(GO) test -tags scaletest -count=1 -v -timeout $(SCALETEST_TIMEOUT) -run '^TestCreate$$' ./scaletest 2>&1 | tee -i $(SCALETEST_LOG); \
+		test $${PIPESTATUS[0]} -eq 0 || $(FAIL)
+	@$(OK) scaletest
+
+.PHONY: submodules fallthrough run dev dev-clean promote tag release.tag e2e e2e.run test-integration scaletest-check scaletest
 
 # ====================================================================================
 # Disabled Targets
