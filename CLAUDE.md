@@ -215,6 +215,6 @@ Follow `.github/PULL_REQUEST_TEMPLATE.md` for the PR title and body.
 
 ### General Reference Specs
 - `specs/design.md` - Product requirements, resource schemas, and behavior specifications
-- `docs/architecture.md` - Human-facing explanation of the spec-driven process and how the specs are layered
+- `docs/spec-driven-development.md` - Human-facing explanation of the spec-driven process and how the specs are layered
 - `docs/development.md` - Development setup, Makefile targets, and scaffolding new managed resource types
 
