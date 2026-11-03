@@ -366,7 +366,7 @@ architecture-beta
 
 | Element | Description |
 | --- | --- |
-| Yukimi controller | Installed from `install.yaml`, rendered from [`package/`](../package). Runs as a single replica, because `CREATE ACCOUNT` is not idempotent and two controllers must never act on the same resource. |
+| Yukimi controller | Runs as a single replica, because `CREATE ACCOUNT` is not idempotent and two controllers must never act on the same resource. |
 | `yukimi-config` ConfigMap | `base.yaml` ([002](../specs/002-base-config.md)) and `backplane.yaml` ([007](../specs/007-backplane-config.md)), mounted read-only. Applied separately from `install.yaml`, so an upgrade never overwrites it. Read once at startup, so a change takes effect only after a restart. |
 | IAM role | The controller's only cloud credential, taken from the pod's identity and limited to its own secret paths. |
 | Secrets Manager | The organization admin keypair, stored by operations, and one keypair per tenant account, stored by the controller. |
