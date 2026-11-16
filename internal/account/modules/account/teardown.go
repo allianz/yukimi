@@ -27,7 +27,8 @@ import (
 
 // Teardown drops the account (if one was ever created), evicts the pooled
 // connection to it, and deletes the platform credential — in that fixed
-// order, stopping at the first real failure. Every step is safe to re-run:
+// order, stopping at the first real failure — then clears
+// status.accountLocator and status.accountBootstrap. Every step is safe to re-run:
 // DROP ACCOUNT IF EXISTS makes a missing account a no-op, EvictTenant is a
 // no-op on a key never dialed, and KeyStore.Delete is idempotent on an
 // absent or already-pending credential (003) (Key Concept: Restorable
@@ -40,13 +41,20 @@ func (m *module) Teardown(ctx context.Context, data *pipeline.ResourceData) erro
 			return err
 		}
 		data.EvictTenant()
-		// Observe's deletion check (020) reports ResourceExists solely from
-		// this field, so leaving it set would make the account look
-		// permanently undeleted and the finalizer would never clear.
-		cr.Status.AccountLocator = ""
 	}
 
-	return m.deleteCredential(ctx, data)
+	if err := m.deleteCredential(ctx, data); err != nil {
+		return err
+	}
+
+	// Observe's deletion check (020) reports ResourceExists from these two
+	// fields, so leaving either set would keep the finalizer forever. They are
+	// cleared only now, once every step succeeded: a retry after a failed
+	// credential delete still sees the locator, so it still goes through the
+	// deletion permit gate (020) and re-runs the idempotent DROP.
+	cr.Status.AccountLocator = ""
+	cr.Status.AccountBootstrap = ""
+	return nil
 }
 
 // dropAccount issues DROP ACCOUNT over the org-admin connection, reserved in

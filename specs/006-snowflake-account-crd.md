@@ -183,7 +183,28 @@ type SnowflakeAccountStatus struct {
 	// Built via internal/account/tenant.AccountURL (design.md 7.2).
 	// +optional
 	AccountURL string `json:"accountUrl,omitempty"`
+
+	// How far the account module (012) got creating the account: Started
+	// once the platform user's key is stored, Completed once CREATE ACCOUNT
+	// succeeded and the locator is recorded. Empty before either, and again
+	// after teardown (012). Lets a deletion find a key a failed create left
+	// behind (020).
+	// +optional
+	AccountBootstrap AccountBootstrap `json:"accountBootstrap,omitempty"`
 }
+
+// AccountBootstrap is status.accountBootstrap's value set.
+// +kubebuilder:validation:Enum=Started;Completed
+type AccountBootstrap string
+
+const (
+	// AccountBootstrapStarted: the platform user's key is stored, but no
+	// account has been recorded yet.
+	AccountBootstrapStarted AccountBootstrap = "Started"
+	// AccountBootstrapCompleted: CREATE ACCOUNT succeeded and the account's
+	// locator is recorded.
+	AccountBootstrapCompleted AccountBootstrap = "Completed"
+)
 
 // A SnowflakeAccount is the resource a team creates to describe the
 // Snowflake account they want (design.md 3.1). Both rules below are
@@ -310,6 +331,7 @@ func AccountURL(locator, region string, usePrivateLink bool) (string, error)
 | `accountLocator` | string | No | Controller-set | Captured from `CREATE ACCOUNT` (012) |
 | `accountCreatedAt` | timestamp | No | Controller-set | Set once by 012 when the account is first created; anchors the post-create connection grace period |
 | `accountUrl` | string | No | Controller-set | Built via `internal/account/tenant.AccountURL` (§7.2) |
+| `accountBootstrap` | string | No | Controller-set | Enum: `Started`, `Completed`. Set by 012: `Started` once the platform key is stored, `Completed` together with `accountLocator`; cleared by 012's teardown. 020 reads it to decide whether a deletion has anything to clean up |
 | `conditions[]` | Condition | No | Controller-set | Standard `Ready`/`Synced` per design.md §7.1 |
 
 ## Project Structure
@@ -367,7 +389,8 @@ caller (020) already has the namespace object from its own reconcile and passes 
   002's `base.orgAdminRegionPattern` allowlist; a root-level rule on
   `metadata.name` rejects a name too long for the resolved Snowflake account name (§3.12) to fit
   Snowflake's identifier limit (see Key Concept: Only Structural Admission Checks).
-- The `status.accountName` / `accountLocator` / `accountUrl` / `conditions` shape (§7.2).
+- The `status.accountName` / `accountLocator` / `accountUrl` / `accountBootstrap` / `conditions`
+  shape (§7.2).
 - The `internal/account/tenant/` package: `ResolveName` (§3.12), the `Department`/`CostCenter`/
   `CreditQuota`/`AlphaTester` namespace-label readers (chapter 2), and `AccountURL` (§7.2, built on
   spec 004's host package).
@@ -440,6 +463,15 @@ caller (020) already has the namespace object from its own reconcile and passes 
   (a leading digit fails Snowflake's bare-identifier rule; a dot is never a valid identifier
   character) — the same late failure as the length case above. The shape rule rejects both at
   admission instead.
+- **Why does `accountBootstrap` exist when `accountLocator` already shows the account was created?**
+  Because the platform user's key is stored before `CREATE ACCOUNT` runs (012). If that create
+  fails, there is a stored key but no locator, and without a second marker a deletion could not tell
+  this resource apart from one that never got that far. `Started` covers exactly that gap.
+  `Completed` adds no fact beyond the locator, but keeps the field readable to a tenant: an empty or
+  `Started` value next to a missing locator says the create did not finish.
+- **A resource created before `accountBootstrap` existed — is the field empty forever?** No. The
+  account module (012) sets `Completed` on the next reconcile of any resource whose locator is known.
+  Until then, the locator alone still marks the account as existing (020).
 
 ## Dependencies
 
@@ -464,7 +496,8 @@ caller (020) already has the namespace object from its own reconcile and passes 
   resource monitor for this account - Key functions: `tenant.CreditQuota` - Notes: the resource-monitor
   arithmetic itself belongs to 018, not to this spec.
 - **SnowflakeAccount controller (020)** - wires the CRD into `managed.NewReconciler`, calls every
-  `internal/account/tenant` function, and sets `status.accountName`/`accountLocator`/`accountUrl` - Key
+  `internal/account/tenant` function, and persists `status.accountName`/`accountLocator`/`accountUrl`/
+  `accountBootstrap` (all written by the account module, 012) - Key
   functions: all of `internal/account/tenant`'s public API - Notes: this spec defines the type and helpers
   only; 020 owns `Observe`/`Create`/`Update`/`Delete`.
 

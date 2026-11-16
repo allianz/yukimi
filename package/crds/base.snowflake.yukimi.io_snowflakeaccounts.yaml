@@ -237,6 +237,17 @@ spec:
           status:
             description: SnowflakeAccountStatus defines the observed state of a SnowflakeAccount.
             properties:
+              accountBootstrap:
+                description: |-
+                  How far the account module (012) got creating the account: Started
+                  once the platform user's key is stored, Completed once CREATE ACCOUNT
+                  succeeded and the locator is recorded. Empty before either, and again
+                  after teardown (012). Lets a deletion find a key a failed create left
+                  behind (020).
+                enum:
+                - Started
+                - Completed
+                type: string
               accountCreatedAt:
                 description: |-
                   Set once, on the reconcile that first creates the account (012);

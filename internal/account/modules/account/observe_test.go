@@ -121,6 +121,20 @@ func TestObserve_KnownLocator_ConnectionSucceeds(t *testing.T) {
 	if fake.tenantCalls != 1 {
 		t.Errorf("TenantDB called %d times, want 1", fake.tenantCalls)
 	}
+	// SC-041: a known locator with no bootstrap value gets Completed backfilled.
+	assertBootstrap(t, cr, v1alpha1.AccountBootstrapCompleted)
+}
+
+// SC-001/SC-041: with no locator, Observe leaves a Started value alone — it
+// marks a key that a later deletion must still find.
+func TestObserve_NoLocator_KeepsBootstrapStarted(t *testing.T) {
+	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
+	cr.Status.AccountBootstrap = v1alpha1.AccountBootstrapStarted
+	data := pipeline.NewResourceData(cr, nil, nil, &fakeDBPool{t: t, forbidCalls: true})
+
+	(&module{}).Observe(context.Background(), data)
+
+	assertBootstrap(t, cr, v1alpha1.AccountBootstrapStarted)
 }
 
 // SC-003: Observe returns Failed, with a system error, when a known

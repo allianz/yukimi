@@ -162,7 +162,28 @@ type SnowflakeAccountStatus struct {
 	// Built via internal/account/tenant.AccountURL (design.md 7.2).
 	// +optional
 	AccountURL string `json:"accountUrl,omitempty"`
+
+	// How far the account module (012) got creating the account: Started
+	// once the platform user's key is stored, Completed once CREATE ACCOUNT
+	// succeeded and the locator is recorded. Empty before either, and again
+	// after teardown (012). Lets a deletion find a key a failed create left
+	// behind (020).
+	// +optional
+	AccountBootstrap AccountBootstrap `json:"accountBootstrap,omitempty"`
 }
+
+// AccountBootstrap is status.accountBootstrap's value set.
+// +kubebuilder:validation:Enum=Started;Completed
+type AccountBootstrap string
+
+const (
+	// AccountBootstrapStarted: the platform user's key is stored, but no
+	// account has been recorded yet.
+	AccountBootstrapStarted AccountBootstrap = "Started"
+	// AccountBootstrapCompleted: CREATE ACCOUNT succeeded and the account's
+	// locator is recorded.
+	AccountBootstrapCompleted AccountBootstrap = "Completed"
+)
 
 // +kubebuilder:object:root=true
 

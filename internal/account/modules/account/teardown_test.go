@@ -26,14 +26,17 @@ import (
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 
+	v1alpha1 "github.com/allianz/yukimi/apis/base/v1alpha1"
 	"github.com/allianz/yukimi/internal/account/pipeline"
 	"github.com/allianz/yukimi/internal/secrets"
 )
 
-// SC-023: Teardown issues no SQL and evicts nothing when
-// cr.Status.AccountLocator is empty, and still deletes the credential.
+// SC-023, SC-040: Teardown issues no SQL and evicts nothing when
+// cr.Status.AccountLocator is empty — a create that failed after the key was
+// stored — and still deletes the credential, then clears accountBootstrap.
 func TestTeardown_NoLocator_SkipsAccountSteps_DeletesCredential(t *testing.T) {
 	cr := newTestCR("acct", "ns", "aws-eu-central-1", "", "a@b.com", "")
+	cr.Status.AccountBootstrap = v1alpha1.AccountBootstrapStarted
 	fake := &fakeDBPool{t: t, forbidCalls: true}
 	store := secrets.NewFakeKeyStore()
 	id, err := secrets.NewTenantIdentifier("myorg", cr.Namespace, cr.Name)
@@ -56,6 +59,7 @@ func TestTeardown_NoLocator_SkipsAccountSteps_DeletesCredential(t *testing.T) {
 	if _, _, err := store.Get(context.Background(), id); err == nil {
 		t.Error("credential still present after Teardown")
 	}
+	assertBootstrap(t, cr, "")
 }
 
 // SC-022, SC-025, SC-026: a known locator drops the account (bound name,
@@ -65,6 +69,7 @@ func TestTeardown_KnownLocator_DropsEvictsDeletes_InOrder(t *testing.T) {
 	for _, days := range []int{3, 90} {
 		t.Run(fmt.Sprintf("gracePeriodDays=%d", days), func(t *testing.T) {
 			cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345", "a@b.com", "")
+			cr.Status.AccountBootstrap = v1alpha1.AccountBootstrapCompleted
 			orgAdminDB, mock := newOrgAdminMock(t)
 			fake := &fakeDBPool{orgAdminDB: orgAdminDB}
 			store := secrets.NewFakeKeyStore()
@@ -103,8 +108,33 @@ func TestTeardown_KnownLocator_DropsEvictsDeletes_InOrder(t *testing.T) {
 			if cr.Status.AccountLocator != "" {
 				t.Errorf("cr.Status.AccountLocator = %q, want empty after a successful teardown", cr.Status.AccountLocator)
 			}
+			assertBootstrap(t, cr, "") // SC-040
 		})
 	}
+}
+
+// SC-040: when the credential delete fails after DROP ACCOUNT succeeded, both
+// fields keep their values, so the retry still has a locator and still goes
+// through the deletion permit gate (020).
+func TestTeardown_KnownLocator_CredentialDeleteFails_KeepsStatus(t *testing.T) {
+	cr := newTestCR("acct", "ns", "aws-eu-central-1", "AB12345", "a@b.com", "")
+	cr.Status.AccountBootstrap = v1alpha1.AccountBootstrapCompleted
+	orgAdminDB, mock := newOrgAdminMock(t)
+	fake := &fakeDBPool{orgAdminDB: orgAdminDB}
+	store := secrets.NewFakeKeyStore()
+	store.OnDelete = func(secrets.Identifier) error { return errors.New("store unreachable") }
+	data := pipeline.NewResourceData(cr, nil, nil, fake)
+
+	mock.ExpectExec("DROP ACCOUNT").WillReturnResult(sqlmock.NewResult(0, 0))
+
+	m := &module{keyManager: secrets.NewKeyManager(store, time.Hour), org: "myorg", deletionGracePeriodDays: 30}
+	if err := m.Teardown(context.Background(), data); err == nil {
+		t.Fatal("expected an error, got nil")
+	}
+	if cr.Status.AccountLocator != "AB12345" {
+		t.Errorf("cr.Status.AccountLocator = %q, want it kept after a failed credential delete", cr.Status.AccountLocator)
+	}
+	assertBootstrap(t, cr, v1alpha1.AccountBootstrapCompleted)
 }
 
 // SC-025: a DROP ACCOUNT failure stops the run before EvictTenant or the
@@ -136,6 +166,9 @@ func TestTeardown_DropAccountFails_StopsBeforeEvictOrDelete(t *testing.T) {
 	}
 	if _, _, err := store.Get(context.Background(), id); err != nil {
 		t.Error("credential deleted despite the account drop failing")
+	}
+	if cr.Status.AccountLocator != "AB12345" {
+		t.Errorf("cr.Status.AccountLocator = %q, want it kept after a failed drop", cr.Status.AccountLocator)
 	}
 }
 

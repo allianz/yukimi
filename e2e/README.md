@@ -157,11 +157,11 @@ chain.
 
 ### E. Leaks and orphans
 
-Ways a deletion could leave something behind. This case is not automated yet.
+Ways a deletion could leave something behind. This case is covered by a unit test, not by the suite.
 
 | # | Scenario | Given / When | Expected |
 |---|---|---|---|
-| E1 | A failed create leaves no secret | a create fails after the secret was stored; then the CR is deleted | no secret remains. Today it appears to stay, because an account without a locator gets no delete call. Not automated: there is no reliable way yet to make a create fail at that point. Snowflake accepted every unusual contact tried; a duplicate account name would work, but the suite would need its own `CREATE ACCOUNT` as org admin (undecided) |
+| E1 | A failed create leaves no secret | a create fails after the secret was stored; then the CR is deleted | no secret remains, and no deletion permit is needed. The status shows `accountBootstrap: Started` and no locator, so the controller still tears down and removes the secret. Not automated here: there is no reliable way to make a create fail at that point (Snowflake accepted every unusual contact tried; a duplicate account name would need the suite's own `CREATE ACCOUNT` as org admin). Covered instead by the controller's unit test `TestFailedCreateThenDelete_RemovesCredential` (020 SC-023) |
 ### Not covered
 
 - **Unavailable regions.** The operator refuses a region that is not yet available only for regular tenants. The test
