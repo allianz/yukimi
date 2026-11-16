@@ -219,6 +219,7 @@ func NewAccount(name, namespace, region string) *v1alpha1.SnowflakeAccount {
 	return &v1alpha1.SnowflakeAccount{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 		Spec: v1alpha1.SnowflakeAccountSpec{
+			Description: "e2e test account",
 			Contact:     "e2e@example.com",
 			Region:      region,
 			Environment: "dev",

@@ -19,7 +19,9 @@ Some fields are fixed once the account exists:
 - **Region** — an account cannot move to another region.
 - **Environment** — DEV/PROD decides which policies apply, so switching it could leave the account
   violating many of them at once.
-- **Description** — Snowflake cannot change it after creation.
+- **Description** — Snowflake cannot change it after creation. It is therefore required: Kubernetes
+  skips an immutability rule when the field is missing on either side, so an optional description
+  could be added or removed later and the resource would drift from the Snowflake account.
 
 ## Key Concept: Only Structural Admission Checks
 
@@ -60,11 +62,14 @@ type SnowflakeAccountSpec struct {
 	// account's COMMENT after CREATE ACCOUNT (verified directly against
 	// Snowflake; design.md does not document this — see Key Concept:
 	// Immutable Fields After Creation). Mapped to COMMENT in CREATE ACCOUNT
-	// (design.md 3.6).
-	// +optional
+	// (design.md 3.6). Required and non-empty: the API server skips the
+	// immutability rule when the field is absent from the old or the new
+	// object, so an optional description could be added or removed later and
+	// drift from the Snowflake comment.
+	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=1024
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="description is immutable"
-	Description string `json:"description,omitempty"`
+	Description string `json:"description"`
 
 	// +kubebuilder:validation:Pattern=`^[^\s@]+@[^\s@]+\.[^\s@]+$`
 	Contact string `json:"contact"`
@@ -276,7 +281,7 @@ func AccountURL(locator, region string, usePrivateLink bool) (string, error)
 
 | Field Path | Type | Required | Mutability | Validation/Constraints |
 |---|---|---|---|---|
-| `description` | string | No | Immutable | `MaxLength`: 1024 (product choice, not a discovered Snowflake limit); `XValidation`: `self == oldSelf` (Snowflake's `COMMENT` can't be altered post-creation — see Key Concept: Immutable Fields After Creation) |
+| `description` | string | Yes | Immutable | `MinLength`: 1 (a missing or empty value would let the immutability rule be skipped); `MaxLength`: 1024 (product choice, not a discovered Snowflake limit); `XValidation`: `self == oldSelf` (Snowflake's `COMMENT` can't be altered post-creation — see Key Concept: Immutable Fields After Creation) |
 | `contact` | string | Yes | Mutable | `Pattern`: `` `^[\x21-\x3f\x41-\x7e]+@[\x21-\x3f\x41-\x7e]+\.[\x21-\x3f\x41-\x7e]+$` `` — email shape in printable ASCII only (non-ASCII addresses are refused), checked by the API server; carried into `CREATE ACCOUNT`'s `EMAIL` (012) |
 | `region` | string | Yes | Immutable | `Pattern`: `` `^(aws|azure|gcp)-[a-z][a-z0-9-]*$` `` — identical to 002's `base.orgAdminRegionPattern`; region availability enforced by Guardrails (008), not here |
 | `environment` | string | Yes | Immutable | Enum: `dev`, `prod` |
@@ -403,6 +408,10 @@ caller (020) already has the namespace object from its own reconcile and passes 
   entirely, not because it calls for it to be mutable. Direct verification against Snowflake found
   that `COMMENT` (`description`'s target, design.md §3.6) cannot be altered once `CREATE ACCOUNT`
   has run.
+- **Why is `description` required?** The `self == oldSelf` rule is not evaluated when the field is
+  absent from the old object (adding) or the new object (removing). Only a required, non-empty
+  field is always present on both sides, so the rule always runs, as it does for `region` and
+  `environment`.
 - **Is a malformed `region` (e.g. `aaa`) rejected the same way as a Guardrails violation?** No —
   the `Pattern` marker is a schema check, so the API server itself rejects the write before the
   object is ever persisted; the controller never observes it, never reconciles it, and never gets a
@@ -475,11 +484,13 @@ caller (020) already has the namespace object from its own reconcile and passes 
 - **SC-003d**: a second root-level `XValidation` rule rejects a `metadata.name` that starts with a
   digit (e.g. `9-team`) or contains a dot (e.g. `my.team`) on both create and update;
   `analytics-team-eu` is accepted.
-- **SC-003c**: `description` carries a `MaxLength` marker that rejects a value longer than 1024
-  characters; a description of exactly 1024 characters is accepted.
+- **SC-003c**: `description` is required and carries `MinLength` 1 and `MaxLength` 1024 markers: a
+  missing or empty description and a value longer than 1024 characters are rejected; a description
+  of exactly 1024 characters is accepted.
 - **SC-003e**: `description` carries an `x-kubernetes-validations` CEL rule that rejects a changed
   value on update but imposes no constraint on create, matching Snowflake's inability to alter
-  `COMMENT` after account creation.
+  `COMMENT` after account creation. Because `description` is required, the rule also rejects
+  removing it (an empty value violates `MinLength`) and is never skipped for an absent field.
 - **SC-004**: attempting to change an existing `SnowflakeAccount`'s `metadata.name` is rejected by
   the Kubernetes API server itself — no CEL rule needed or present for that.
 - **SC-005**: `environment` accepts only `dev` or `prod`; any other value is rejected at admission.

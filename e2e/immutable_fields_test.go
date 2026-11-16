@@ -96,28 +96,28 @@ func TestB10_RegionAndEnvironmentCannotBeChanged(t *testing.T) {
 
 // Snowflake cannot change the comment of an account after CREATE ACCOUNT
 // (https://community.snowflake.com/s/article/How-to-Update-Account-Comment), so
-// the description, which becomes that comment, must not change after creation:
-// not changed, not removed and not added later.
+// the description, which becomes that comment, must not change after creation.
 //
-// This case fails today, and that is a known bug of the CRD: the rule
-// "description is immutable" (self == oldSelf) is not evaluated when the old
-// value is absent, so an account created without a description accepts one
-// later. B12 shows that such a description never reaches Snowflake.
-func TestB11_ADescriptionCannotBeAddedLater(t *testing.T) {
+// The description is required and non-empty because the rule "description is
+// immutable" (self == oldSelf) is not evaluated when the field is absent from
+// the old or the new object: with an optional description it could be added or
+// removed later without the rule ever running. Removing it is checked by B9
+// (an empty description is rejected as a required field).
+func TestB11_ADescriptionCannotBeChangedLater(t *testing.T) {
 	ctx := env.Ctx
 
 	var account *v1alpha1.SnowflakeAccount
 	var err error
 
-	support.Given(t, "a stored account that has no description", func(t *testing.T) {
+	support.Given(t, "a stored account that has a description", func(t *testing.T) {
 		account = immutabilityFixture(ctx, t)
-		if account.Spec.Description != "" {
-			t.Fatalf("the fixture account already has a description: %q", account.Spec.Description)
+		if account.Spec.Description == "" {
+			t.Fatal("the fixture account has no description")
 		}
 	})
-	support.When(t, "a description is added in a dry-run patch", func(t *testing.T) {
+	support.When(t, "the description is changed in a dry-run patch", func(t *testing.T) {
 		before := account.DeepCopy()
-		account.Spec.Description = "added later"
+		account.Spec.Description = "changed later"
 		err = dryRunChange(ctx, before, account)
 	})
 	support.Then(t, "the API server rejects it and names the rule", func(t *testing.T) {

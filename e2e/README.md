@@ -79,7 +79,6 @@ reports `FAILED` until then.
 
 | Case | Bug |
 |---|---|
-| **B11** | A description can be added to an account that has none. Snowflake cannot change the comment of an account after creation ([Snowflake article](https://community.snowflake.com/s/article/How-to-Update-Account-Comment)), so the CRD must reject it, and its rule `self == oldSelf` says so. The rule is not evaluated when the old value is absent, so the API server accepts the description, which then never reaches Snowflake: the spec and the account drift. That the controller does not write it later is correct (see B12); the bug is that the CRD allows it. |
 | **D3** | A contact with non-ASCII characters creates the account. Most mail systems reject such addresses and the operator cannot check delivery, so it must reject them (this may be opened up later). |
 
 **A bug in Snowflake.** The case passes and records what Snowflake does.
@@ -92,7 +91,6 @@ reports `FAILED` until then.
 
 | Case | Why it is correct |
 |---|---|
-| **B12** | The controller writes the description to the Snowflake comment only at `CREATE ACCOUNT`, because Snowflake cannot change the comment of an account later ([Snowflake article](https://community.snowflake.com/s/article/How-to-Update-Account-Comment)). |
 | **A5** | A deleted name stays taken while the credential secret is in its recovery window. The message does not say how long that is; this is accepted for now. |
 
 ## Test cases
@@ -128,10 +126,10 @@ and no real account is needed. There is one representative case per rule; the fu
 | B6 | Contact | no `@`, whitespace | rejected |
 | B7 | Description too long | 1025 characters | too long |
 | B8 | Role bindings | no `ACCOUNTADMIN` | "roleBindings must bind ACCOUNTADMIN" |
-| B9 | Required fields | empty region, environment or contact; no role bindings | rejected |
+| B9 | Required fields | empty region, environment, contact or description; no role bindings | rejected |
 | B10 | Region and environment are immutable | a stored account; its `region` or `environment` is changed | "... is immutable" |
-| B11 | A description cannot be added later | the same stored account, which has no description; one is added | "description is immutable". **Fails today**, see [Known bugs](#known-bugs-and-decided-behavior) |
-| B12 | The controller never changes the Snowflake comment | the `lifecycle` account, ready; a description is added with a real update (accepted today, see B11), and the operator reconciles it | `SHOW ACCOUNTS` still shows the comment from `CREATE ACCOUNT` |
+| B11 | A description cannot be changed later | the same stored account, which has a description; it is changed | "description is immutable". The description is required, because the rule is not evaluated for an absent field; removing it is rejected by B9 |
+| B12 | The Snowflake comment stays the creation description | the `lifecycle` account, ready; its description is changed with a real update | the API server rejects it ("description is immutable") and `SHOW ACCOUNTS` still shows the comment from `CREATE ACCOUNT` |
 
 B10 and B11 need an account that is already stored, because immutability is a rule about a change. They use one in a
 region the operator does not know: the controller rejects it at once (see C2), so it never becomes a real account.

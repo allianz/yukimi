@@ -151,8 +151,12 @@ spec:
                   account's COMMENT after CREATE ACCOUNT (verified directly against
                   Snowflake; design.md does not document this — see Key Concept:
                   Immutable Fields After Creation in spec 006). Mapped to COMMENT in
-                  CREATE ACCOUNT (design.md 3.6).
+                  CREATE ACCOUNT (design.md 3.6). Required and non-empty: the API server
+                  skips the immutability rule when the field is absent from the old or the
+                  new object, so an optional description could be added or removed later
+                  and drift from the Snowflake comment.
                 maxLength: 1024
+                minLength: 1
                 type: string
                 x-kubernetes-validations:
                 - message: description is immutable
@@ -225,6 +229,7 @@ spec:
                   rule: self == oldSelf
             required:
             - contact
+            - description
             - environment
             - identityIntegration
             - region

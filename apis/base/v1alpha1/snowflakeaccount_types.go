@@ -38,11 +38,14 @@ type SnowflakeAccountSpec struct {
 	// account's COMMENT after CREATE ACCOUNT (verified directly against
 	// Snowflake; design.md does not document this — see Key Concept:
 	// Immutable Fields After Creation in spec 006). Mapped to COMMENT in
-	// CREATE ACCOUNT (design.md 3.6).
-	// +optional
+	// CREATE ACCOUNT (design.md 3.6). Required and non-empty: the API server
+	// skips the immutability rule when the field is absent from the old or the
+	// new object, so an optional description could be added or removed later
+	// and drift from the Snowflake comment.
+	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=1024
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="description is immutable"
-	Description string `json:"description,omitempty"`
+	Description string `json:"description"`
 
 	// Email shape in printable ASCII only (no whitespace, no control or
 	// non-ASCII characters): most mail systems reject non-ASCII addresses and
