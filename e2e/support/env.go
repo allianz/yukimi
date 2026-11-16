@@ -22,6 +22,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -142,7 +143,7 @@ func (e *Env) checkKubernetes(ctx context.Context) error {
 func (e *Env) checkAWS(ctx context.Context) (string, error) {
 	out, err := sts.NewFromConfig(e.AWS).GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
 	if err != nil {
-		return "", fmt.Errorf("AWS check failed: the default AWS credentials do not work (log in with the AWS CLI and select the profile with the AWS_PROFILE environment variable; `--profile` on the CLI does not apply to this process): %w", err)
+		return "", fmt.Errorf("AWS check failed: the AWS credentials do not work (%s). Log in with the AWS CLI (`aws sso login --profile <profile>`) and select the profile with AWS_PROFILE in the environment or in .env; `--profile` on the CLI does not apply to this process: %w", awsSource(), err)
 	}
 
 	id, err := secrets.NewOrgAdminIdentifier(e.Cfg.Org(), e.Cfg.OrgAdminAccount())
@@ -227,5 +228,18 @@ func NewAccount(name, namespace, region string) *v1alpha1.SnowflakeAccount {
 				RoleBindings: map[string]string{"ACCOUNTADMIN": "E2E_GROUP"},
 			},
 		},
+	}
+}
+
+// awsSource says where the AWS credentials of this process come from, for the
+// error message of the start-up check.
+func awsSource() string {
+	switch {
+	case os.Getenv("AWS_PROFILE") != "":
+		return "using profile " + os.Getenv("AWS_PROFILE")
+	case os.Getenv("AWS_ACCESS_KEY_ID") != "":
+		return "using the AWS_ACCESS_KEY_ID environment variables"
+	default:
+		return "AWS_PROFILE is not set and there are no key environment variables, so the default credential chain was used"
 	}
 }

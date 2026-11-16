@@ -120,6 +120,9 @@ func run(m *testing.M) (code int) {
 		fmt.Fprintf(os.Stderr, "e2e: %s; stopping the tests and cleaning up (press Ctrl-C again to abort without clean-up)\n", reason)
 	}()
 
+	if _, err := support.LoadDotEnv(); err != nil {
+		return abort("configuration", err)
+	}
 	cfg, err := support.LoadConfig()
 	if err != nil {
 		return abort("configuration", err)

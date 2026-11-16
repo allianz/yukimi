@@ -15,11 +15,14 @@ You need three things, and the suite checks all of them before it creates anythi
 1. `make dev` is running in another terminal. It provides the kind cluster, the CRDs and the operator, and the
    default kubeconfig context points at that cluster.
 2. AWS credentials that can read the operator's secrets, through the default credential chain: environment
-   variables, or the profile selected with `AWS_PROFILE`.
+   variables, or the profile selected with `AWS_PROFILE`. The `.env` file in the repository root is read if it
+   exists (as the integration tests and `hack/dev/sync-aws-credentials.sh` do), so an `AWS_PROFILE` there is
+   enough. A variable that is already set in your shell wins over `.env`.
 3. The operator configuration that `make dev` generated in `_output/config`.
 
 ```bash
-AWS_PROFILE=<profile> make e2e
+make e2e                         # AWS_PROFILE from .env
+AWS_PROFILE=<profile> make e2e   # or from the shell
 ```
 
 The full test output is printed while the tests run, followed by a summary with one line per case and, for every
