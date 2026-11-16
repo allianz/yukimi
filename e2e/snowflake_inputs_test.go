@@ -173,7 +173,8 @@ func TestD3_UnicodeInTheContactIsRejected(t *testing.T) {
 		if outcome != "created" && row.Found() {
 			t.Errorf("the account was rejected, but Snowflake lists %q", resolved)
 		}
-		// A secret stored before a rejection is removed on deletion (case E1).
+		// A secret stored before a rejection is removed on deletion; see
+		// "Not covered" in the README.
 		if info, err := env.SecretInfo(ctx, name); err == nil {
 			t.Logf("credential secret exists: %v", info.Exists)
 		}
