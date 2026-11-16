@@ -44,7 +44,10 @@ type SnowflakeAccountSpec struct {
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="description is immutable"
 	Description string `json:"description,omitempty"`
 
-	// +kubebuilder:validation:Pattern=`^[^\s@]+@[^\s@]+\.[^\s@]+$`
+	// Email shape in printable ASCII only (no whitespace, no control or
+	// non-ASCII characters): most mail systems reject non-ASCII addresses and
+	// the operator cannot check delivery, so they are refused up front.
+	// +kubebuilder:validation:Pattern=`^[\x21-\x3f\x41-\x7e]+@[\x21-\x3f\x41-\x7e]+\.[\x21-\x3f\x41-\x7e]+$`
 	Contact string `json:"contact"`
 
 	// Immutable after creation (design.md 3.11.3). Structural cloud-region

@@ -277,7 +277,7 @@ func AccountURL(locator, region string, usePrivateLink bool) (string, error)
 | Field Path | Type | Required | Mutability | Validation/Constraints |
 |---|---|---|---|---|
 | `description` | string | No | Immutable | `MaxLength`: 1024 (product choice, not a discovered Snowflake limit); `XValidation`: `self == oldSelf` (Snowflake's `COMMENT` can't be altered post-creation — see Key Concept: Immutable Fields After Creation) |
-| `contact` | string | Yes | Mutable | `Pattern`: `` `^[^\s@]+@[^\s@]+\.[^\s@]+$` `` — email shape, checked by the API server; carried into `CREATE ACCOUNT`'s `EMAIL` (012) |
+| `contact` | string | Yes | Mutable | `Pattern`: `` `^[\x21-\x3f\x41-\x7e]+@[\x21-\x3f\x41-\x7e]+\.[\x21-\x3f\x41-\x7e]+$` `` — email shape in printable ASCII only (non-ASCII addresses are refused), checked by the API server; carried into `CREATE ACCOUNT`'s `EMAIL` (012) |
 | `region` | string | Yes | Immutable | `Pattern`: `` `^(aws|azure|gcp)-[a-z][a-z0-9-]*$` `` — identical to 002's `base.orgAdminRegionPattern`; region availability enforced by Guardrails (008), not here |
 | `environment` | string | Yes | Immutable | Enum: `dev`, `prod` |
 | `creditQuota` | int32 | No | Mutable | Ceiling enforced by Guardrails/Quota (008/011), not here |

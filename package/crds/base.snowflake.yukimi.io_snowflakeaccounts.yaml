@@ -62,7 +62,11 @@ spec:
               spec 006).
             properties:
               contact:
-                pattern: ^[^\s@]+@[^\s@]+\.[^\s@]+$
+                description: |-
+                  Email shape in printable ASCII only (no whitespace, no control or
+                  non-ASCII characters): most mail systems reject non-ASCII addresses and
+                  the operator cannot check delivery, so they are refused up front.
+                pattern: ^[\x21-\x3f\x41-\x7e]+@[\x21-\x3f\x41-\x7e]+\.[\x21-\x3f\x41-\x7e]+$
                 type: string
               creditQuota:
                 description: |-
