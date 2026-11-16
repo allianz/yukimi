@@ -157,13 +157,11 @@ chain.
 
 ### E. Leaks and orphans
 
-Ways a deletion could leave something behind. Neither case is automated yet.
+Ways a deletion could leave something behind. This case is not automated yet.
 
 | # | Scenario | Given / When | Expected |
 |---|---|---|---|
 | E1 | A failed create leaves no secret | a create fails after the secret was stored; then the CR is deleted | no secret remains. Today it appears to stay, because an account without a locator gets no delete call. Not automated: there is no reliable way yet to make a create fail at that point. Snowflake accepted every unusual contact tried; a duplicate account name would work, but the suite would need its own `CREATE ACCOUNT` as org admin (undecided) |
-| E2 | Removing `Delete` from `managementPolicies` | a tenant removes `Delete` and deletes the CR | a known gap: the CR disappears and the Snowflake account stays, without any permit. Tested by hand only, because it leaves a real account behind |
-
 ### Not covered
 
 - **Unavailable regions.** The operator refuses a region that is not yet available only for regular tenants. The test
