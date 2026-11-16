@@ -200,28 +200,20 @@ func (e *Env) leftovers(ctx context.Context, namespace string, names []string) [
 // runNamespacePattern matches the namespaces CreateRunNamespace makes.
 var runNamespacePattern = regexp.MustCompile(`^e2e-[0-9]{14}(-[0-9a-f]{4})?$`)
 
-// SweepStale cleans up the namespaces that earlier runs left behind, for example
-// after the process was killed. Only namespaces of the run pattern that are older
-// than olderThan are touched, so a run that is still going is left alone; olderThan
-// is the go test timeout. Each is cleaned the way a run cleans its own namespace,
-// including the check of Snowflake and AWS. The lines it returns say what was
-// done or what is left; a problem does not stop the run.
-func (e *Env) SweepStale(ctx context.Context, olderThan, timeout time.Duration) []string {
+// LeftoverNamespaces lists the run namespaces that exist, so a run can point at
+// `make e2e.clean` instead of cleaning up by itself. A failure to list is not
+// worth stopping for and returns nothing.
+func (e *Env) LeftoverNamespaces(ctx context.Context) []string {
 	var namespaces corev1.NamespaceList
 	if err := e.Kube.List(ctx, &namespaces); err != nil {
-		return []string{fmt.Sprintf("could not list the namespaces of earlier runs: %v", err)}
+		return nil
 	}
-	var lines []string
+	var names []string
 	for _, ns := range namespaces.Items {
-		if !runNamespacePattern.MatchString(ns.Name) || ns.DeletionTimestamp != nil ||
-			time.Since(ns.CreationTimestamp.Time) < olderThan {
-			continue
+		if runNamespacePattern.MatchString(ns.Name) {
+			names = append(names, ns.Name)
 		}
-		if err := e.cleanupNamespace(ctx, ns.Name, timeout); err != nil {
-			lines = append(lines, fmt.Sprintf("namespace %s of an earlier run: %v", ns.Name, err))
-			continue
-		}
-		lines = append(lines, fmt.Sprintf("cleaned up namespace %s of an earlier run", ns.Name))
 	}
-	return lines
+	sort.Strings(names)
+	return names
 }

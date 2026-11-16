@@ -36,7 +36,6 @@ Snowflake accounts of a run are created at the same time, so a run takes about a
 | `E2E_TIMEOUT` (make) | The `go test -timeout`. The tests stop 20 minutes before it, so the clean-up always has time to run; it must therefore be longer than 20m. | `60m` |
 | `E2E_MAX_ACCOUNTS` | The most real accounts the suite may have at the same time; at most 10. | `10` |
 | `E2E_CONFIG_DIR` | Where the operator's `base.yaml` and `backplane.yaml` are. The suite reads the organization and the regions from them. | `_output/config` |
-| `E2E_STALE_AFTER` | How old the namespace of an earlier run must be to count as abandoned (see below). | the go test timeout |
 
 Running against a deployed cluster, with the configuration taken from the operator's ConfigMap, is not implemented
 yet.
@@ -46,10 +45,9 @@ yet.
 1. **Checks.** The Kubernetes API answers and both Yukimi CRDs are installed; the AWS credentials work and reach the
    org-admin secret; the operator is alive; the configuration has an available region. If one fails, the run stops
    with a message and nothing has been created.
-2. **Cleans up after earlier runs.** A run that was killed (for example with `kill -9`) cannot clean up after itself.
-   So every run first looks for namespaces of earlier runs (`e2e-<timestamp>`) that are older than `E2E_STALE_AFTER`,
-   deletes the accounts in them and drops them. Each one is reported in an `e2e sweep:` line. A namespace that is
-   younger, such as one of a run that is still going, is left alone.
+2. **Reports earlier runs.** A run that was killed (for example with `kill -9`) cannot clean up after itself. The run
+   does not clean up after it; it prints a line if namespaces of earlier runs (`e2e-<timestamp>`) still exist.
+   `make e2e.clean` removes them (see [Force clean](#force-clean)).
 3. **Creates one namespace for the run**, `e2e-<timestamp>`, with the labels the controller reads. The Snowflake name
    of an account is derived from its namespace, so every run gets new Snowflake names and the accounts themselves need
    no timestamp.
@@ -68,6 +66,25 @@ is what A5 sees.
 
 The suite always creates a `DeletionPermit` before it deletes an account, so it works with deletion protection on and
 off. It checks nothing about permits: not that a deletion is blocked, not that a permit is consumed.
+
+## Force clean
+
+`make e2e.clean` removes what earlier runs left behind, without asking the operator. Use it when a run has left
+namespaces behind, for example when accounts are stuck in `Deleting` because their finalizer cannot be removed. For every
+namespace of the form `e2e-<timestamp>` it:
+
+1. drops each account in Snowflake (`DROP ACCOUNT IF EXISTS`, with the configured grace period),
+2. deletes the account's AWS secret at once, without a recovery window (only after the drop succeeded),
+3. removes the finalizers of the accounts and deletion permits, and deletes the namespace.
+
+It skips the deletion permit gate, so use it only against a test organization. Every step tolerates that its work is
+already done, so it can be run again after a failure.
+
+```bash
+make e2e.clean E2E_CLEAN_FLAGS=-dry-run        # print what would be done
+make e2e.clean                                 # clean every run namespace
+make e2e.clean E2E_CLEAN_FLAGS='-older-than 1h'  # spare a run that is still going
+```
 
 ## Known bugs and decided behavior
 
