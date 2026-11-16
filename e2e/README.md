@@ -74,13 +74,6 @@ off. It checks nothing about permits: not that a deletion is blocked, not that a
 Some cases test behavior that is a known bug, or that looks like one but is correct. They are listed here, so that a
 reader (or a reviewer) does not have to work it out from the test.
 
-**Bugs in the operator.** These cases test the wanted behavior, so they fail until the bug is fixed, and a full run
-reports `FAILED` until then.
-
-| Case | Bug |
-|---|---|
-| **D3** | A contact with non-ASCII characters creates the account. Most mail systems reject such addresses and the operator cannot check delivery, so it must reject them (this may be opened up later). |
-
 **A bug in Snowflake.** The case passes and records what Snowflake does.
 
 | Case | Bug |
@@ -159,7 +152,7 @@ chain.
 |---|---|---|---|
 | D1 | Japanese and SQL-injection-like description | Japanese text plus `x'); SELECT CURRENT_USER(); --` | the account is created and the comment read back equals the input. The number of accounts in the organization is not checked, because the other cases create accounts at the same time |
 | D2 | Quotes and backslashes in the description | `a''b`, `a\nb`, `a\\b` (typed as these characters) | the account is created; the comment holds `a'b`, a newline and `a\b`. See [Known bugs](#known-bugs-and-decided-behavior) |
-| D3 | Non-ASCII contact | `日本@example.com`, which the CRD pattern accepts | refused by the API server or the controller with a readable message; no account in Snowflake. **Fails today**, see [Known bugs](#known-bugs-and-decided-behavior) |
+| D3 | Non-ASCII contact | `日本@example.com` | refused (the CRD pattern allows printable ASCII only) with a readable message; no account in Snowflake |
 | D4 | Description of the maximum length | 1024 characters | the account is created and the comment read back is complete |
 
 ### E. Leaks and orphans
