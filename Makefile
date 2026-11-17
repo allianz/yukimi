@@ -216,8 +216,6 @@ osv-scan:
 	@go run github.com/google/osv-scanner/v2/cmd/osv-scanner@$(OSV_SCANNER_VERSION) scan source --recursive --no-call-analysis=go --config=osv-scanner.toml . || $(FAIL)
 	@$(OK) osv-scanner
 
-lint.run: osv-scan
-
 .PHONY: osv-scan
 
 # ====================================================================================
