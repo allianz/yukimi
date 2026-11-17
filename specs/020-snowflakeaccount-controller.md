@@ -170,11 +170,9 @@ This controller enforces the deletion permit defined in 019. Without an active p
 resource stays in Terminating, with a warning event and Ready set to false. The permit is marked as
 used only after the teardown succeeds, so a failed teardown can be retried.
 
-A permit protects an account, so it is needed only once an account exists. A resource whose creation
-never started, for example because its name failed validation, is removed right away. A resource whose
-creation started but produced no account, for example because Snowflake refused it, is cleaned up first:
-the platform removes the key it had already stored, and then the resource is removed. Neither needs a
-permit.
+A permit protects a Snowflake account, so it is only needed when there is an account to drop. If
+creation failed before an account was made, the platform cleans up whatever it had set up and
+removes the resource without asking for a permit.
 
 | Creation got to | On deletion | Permit needed |
 |---|---|---|

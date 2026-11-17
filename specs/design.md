@@ -100,7 +100,7 @@ metadata:
   name: analytics-team-eu      # created in Snowflake as analytics_team_eu_5k3wf (3.12)
 spec:
   # --- General metadata ---
-  description: "Analytics team Snowflake environment for EU operations"  # required, immutable (Snowflake cannot change the account comment)
+  description: "Analytics team Snowflake environment for EU operations"  
   contact: alice.smith@company.com
   # --- Snowflake account configuration ---
   region: aws-eu-central-1

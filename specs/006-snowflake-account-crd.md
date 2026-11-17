@@ -19,9 +19,7 @@ Some fields are fixed once the account exists:
 - **Region** — an account cannot move to another region.
 - **Environment** — DEV/PROD decides which policies apply, so switching it could leave the account
   violating many of them at once.
-- **Description** — Snowflake cannot change it after creation. It is therefore required: Kubernetes
-  skips an immutability rule when the field is missing on either side, so an optional description
-  could be added or removed later and the resource would drift from the Snowflake account.
+- **Description** — Snowflake cannot change it after creation.
 
 ## Key Concept: Only Structural Admission Checks
 
