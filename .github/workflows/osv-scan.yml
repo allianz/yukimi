@@ -1,0 +1,31 @@
+name: OSV Scan
+
+# Blocks a pull request that introduces a known vulnerability through a
+# dependency change. Runs only on pull requests, and only when go.mod or
+# go.sum changed -- a PR that touches neither cannot change the dependency set,
+# so there is nothing new for osv-scanner to find. workflow_dispatch allows an
+# on-demand scan of any branch, e.g. after a new advisory is published.
+on:
+  pull_request:
+    paths:
+      - go.mod
+      - go.sum
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  osv-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The Makefile includes build/makelib, which lives in the submodule.
+          submodules: recursive
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - run: make osv-scan
