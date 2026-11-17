@@ -27,6 +27,7 @@ import (
 	"os"
 	"os/signal"
 	"regexp"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -71,21 +72,6 @@ func suiteBudget() (time.Duration, error) {
 	return timeout - cleanupBudget, nil
 }
 
-// staleAfter is the age from which the namespace of an earlier run counts as
-// abandoned: E2E_STALE_AFTER, or else the go test timeout, since a run that is
-// still going is younger than that.
-func staleAfter() (time.Duration, error) {
-	if v := os.Getenv("E2E_STALE_AFTER"); v != "" {
-		return time.ParseDuration(v)
-	}
-	if f := flag.Lookup("test.timeout"); f != nil {
-		if d, ok := f.Value.(flag.Getter).Get().(time.Duration); ok && d > 0 {
-			return d, nil
-		}
-	}
-	return time.Hour, nil
-}
-
 // run performs the start-up checks, creates the namespace of this run, runs the
 // tests and cleans up. Nothing is created before the checks pass.
 func run(m *testing.M) (code int) {
@@ -120,6 +106,9 @@ func run(m *testing.M) (code int) {
 		fmt.Fprintf(os.Stderr, "e2e: %s; stopping the tests and cleaning up (press Ctrl-C again to abort without clean-up)\n", reason)
 	}()
 
+	if _, err := support.LoadDotEnv(); err != nil {
+		return abort("configuration", err)
+	}
 	cfg, err := support.LoadConfig()
 	if err != nil {
 		return abort("configuration", err)
@@ -135,12 +124,9 @@ func run(m *testing.M) (code int) {
 		return abort("start-up check", err)
 	}
 
-	stale, err := staleAfter()
-	if err != nil {
-		return abort("E2E_STALE_AFTER", err)
-	}
-	for _, line := range e.SweepStale(ctx, stale, 15*time.Minute) {
-		fmt.Printf("e2e sweep: %s\n", line)
+	// Nothing is cleaned up implicitly. Namespaces of earlier runs are only reported.
+	if left := e.LeftoverNamespaces(ctx); len(left) > 0 {
+		fmt.Printf("e2e: namespaces of earlier runs exist (%s); `make e2e.clean` removes them\n", strings.Join(left, ", "))
 	}
 
 	if err := e.CreateRunNamespace(ctx); err != nil {

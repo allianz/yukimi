@@ -251,58 +251,37 @@ func TestA3_ASettledAccountCausesNoFurtherChange(t *testing.T) {
 	})
 }
 
-// The controller writes the description to the Snowflake comment only at
-// CREATE ACCOUNT. That is the wanted behavior, not a gap: Snowflake cannot
-// change the comment of an account afterwards
+// The description becomes the Snowflake comment at CREATE ACCOUNT and nowhere
+// else: Snowflake cannot change the comment of an account afterwards
 // (https://community.snowflake.com/s/article/How-to-Update-Account-Comment).
-// That the CRD still accepts a description added later is the bug of B11; this
-// case only checks that Snowflake is left alone, so it passes before and after
-// that fix.
-func TestB12_TheSnowflakeCommentIsNotUpdatedFromTheDescription(t *testing.T) {
+// So the CRD must refuse a real change of the description of a running account
+// (see B11 for the dry-run variant on a stored account), and the comment stays
+// what it was at creation.
+func TestB12_TheSnowflakeCommentStaysTheCreationDescription(t *testing.T) {
 	t.Parallel()
 	ctx := env.Ctx
 	fixture := lifecycleFixture()
 	resolved := tenant.ResolveName(lifecycleName(), env.Namespace)
-	const description = "added later by the e2e suite"
 
 	var account *v1alpha1.SnowflakeAccount
+	var err error
 
-	support.Given(t, "a ready account that was created without a description", func(t *testing.T) {
-		var err error
-		if account, err = fixture.Ready(ctx, readyTimeout); err != nil {
-			t.Fatal(err)
+	support.Given(t, "a ready account that was created with a description", func(t *testing.T) {
+		var gerr error
+		if account, gerr = fixture.Ready(ctx, readyTimeout); gerr != nil {
+			t.Fatal(gerr)
 		}
-		if account.Spec.Description != "" {
-			t.Fatalf("the account has a description already: %q", account.Spec.Description)
+		if account.Spec.Description == "" {
+			t.Fatal("the account has no description")
 		}
 	})
-
-	var generation int64
-	support.When(t, "a description is added with a real update and the operator has reconciled it", func(t *testing.T) {
+	support.When(t, "the description is changed with a real update", func(t *testing.T) {
 		current := account.DeepCopy()
-		current.Spec.Description = description
-		err := env.Kube.Patch(ctx, current, client.MergeFrom(account))
-		if apierrors.IsInvalid(err) {
-			// The CRD rejects it once B11 is fixed; then there is nothing the
-			// controller could apply, and the comment is checked all the same.
-			t.Logf("the API server rejected the description: %v", err)
-			return
-		}
-		if err != nil {
-			t.Fatalf("the description could not be added: %v", err)
-		}
-		generation = current.Generation
-		key := types.NamespacedName{Namespace: env.Namespace, Name: account.Name}
-		support.Eventually(ctx, t, 5*time.Minute, 5*time.Second, "the operator to reconcile the new generation", func(ctx context.Context) (bool, error) {
-			var got v1alpha1.SnowflakeAccount
-			if err := env.Kube.Get(ctx, key, &got); err != nil {
-				return false, err
-			}
-			return got.GetCondition(xpv1.TypeSynced).ObservedGeneration >= generation, nil
-		})
+		current.Spec.Description = "changed later by the e2e suite"
+		err = env.Kube.Patch(ctx, current, client.MergeFrom(account))
 	})
-
-	support.Then(t, "the Snowflake comment still does not hold the description", func(t *testing.T) {
+	support.Then(t, "the API server rejects it and the Snowflake comment is still the creation description", func(t *testing.T) {
+		requireInvalid(t, err, "description is immutable")
 		row, err := env.AccountRow(ctx, resolved)
 		if err != nil {
 			t.Fatalf("looking the account up in Snowflake: %v", err)
@@ -311,8 +290,8 @@ func TestB12_TheSnowflakeCommentIsNotUpdatedFromTheDescription(t *testing.T) {
 			t.Fatalf("Snowflake does not list %q", resolved)
 		}
 		comment, _ := row.StringValue("comment")
-		if comment == description {
-			t.Fatalf("the comment changed after CREATE ACCOUNT, which Snowflake is not expected to allow; check whether Snowflake or the controller changed")
+		if comment != account.Spec.Description {
+			t.Fatalf("the Snowflake comment is %q, want the creation description %q", comment, account.Spec.Description)
 		}
 	})
 }

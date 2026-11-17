@@ -139,6 +139,9 @@ func (m *module) createAccount(ctx context.Context, data *pipeline.ResourceData)
 	if err != nil {
 		return pipeline.Failed(err)
 	}
+	// From here on a credential exists. Record that before anything can fail,
+	// so a deletion after a failed create still removes it (020).
+	cr.Status.AccountBootstrap = v1alpha1.AccountBootstrapStarted
 
 	orgAdminDB, err := data.OrgAdminDB(ctx)
 	if err != nil {
@@ -269,6 +272,7 @@ func (m *module) resumeCrashedCreate(ctx context.Context, id secrets.Identifier,
 func finishCreate(cr *v1alpha1.SnowflakeAccount, locator string) pipeline.Outcome {
 	cr.Status.AccountLocator = locator
 	cr.Status.AccountCreatedAt = &metav1.Time{Time: time.Now()}
+	cr.Status.AccountBootstrap = v1alpha1.AccountBootstrapCompleted
 	return pipeline.Pending("account created; waiting for it to become reachable before continuing")
 }
 

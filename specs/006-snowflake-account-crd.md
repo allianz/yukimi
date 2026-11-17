@@ -60,11 +60,14 @@ type SnowflakeAccountSpec struct {
 	// account's COMMENT after CREATE ACCOUNT (verified directly against
 	// Snowflake; design.md does not document this — see Key Concept:
 	// Immutable Fields After Creation). Mapped to COMMENT in CREATE ACCOUNT
-	// (design.md 3.6).
-	// +optional
+	// (design.md 3.6). Required and non-empty: the API server skips the
+	// immutability rule when the field is absent from the old or the new
+	// object, so an optional description could be added or removed later and
+	// drift from the Snowflake comment.
+	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=1024
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="description is immutable"
-	Description string `json:"description,omitempty"`
+	Description string `json:"description"`
 
 	// +kubebuilder:validation:Pattern=`^[^\s@]+@[^\s@]+\.[^\s@]+$`
 	Contact string `json:"contact"`
@@ -178,7 +181,28 @@ type SnowflakeAccountStatus struct {
 	// Built via internal/account/tenant.AccountURL (design.md 7.2).
 	// +optional
 	AccountURL string `json:"accountUrl,omitempty"`
+
+	// How far the account module (012) got creating the account: Started
+	// once the platform user's key is stored, Completed once CREATE ACCOUNT
+	// succeeded and the locator is recorded. Empty before either, and again
+	// after teardown (012). Lets a deletion find a key a failed create left
+	// behind (020).
+	// +optional
+	AccountBootstrap AccountBootstrap `json:"accountBootstrap,omitempty"`
 }
+
+// AccountBootstrap is status.accountBootstrap's value set.
+// +kubebuilder:validation:Enum=Started;Completed
+type AccountBootstrap string
+
+const (
+	// AccountBootstrapStarted: the platform user's key is stored, but no
+	// account has been recorded yet.
+	AccountBootstrapStarted AccountBootstrap = "Started"
+	// AccountBootstrapCompleted: CREATE ACCOUNT succeeded and the account's
+	// locator is recorded.
+	AccountBootstrapCompleted AccountBootstrap = "Completed"
+)
 
 // A SnowflakeAccount is the resource a team creates to describe the
 // Snowflake account they want (design.md 3.1). Both rules below are
@@ -276,8 +300,8 @@ func AccountURL(locator, region string, usePrivateLink bool) (string, error)
 
 | Field Path | Type | Required | Mutability | Validation/Constraints |
 |---|---|---|---|---|
-| `description` | string | No | Immutable | `MaxLength`: 1024 (product choice, not a discovered Snowflake limit); `XValidation`: `self == oldSelf` (Snowflake's `COMMENT` can't be altered post-creation — see Key Concept: Immutable Fields After Creation) |
-| `contact` | string | Yes | Mutable | `Pattern`: `` `^[^\s@]+@[^\s@]+\.[^\s@]+$` `` — email shape, checked by the API server; carried into `CREATE ACCOUNT`'s `EMAIL` (012) |
+| `description` | string | Yes | Immutable | `MinLength`: 1 (a missing or empty value would let the immutability rule be skipped); `MaxLength`: 1024 (product choice, not a discovered Snowflake limit); `XValidation`: `self == oldSelf` (Snowflake's `COMMENT` can't be altered post-creation — see Key Concept: Immutable Fields After Creation) |
+| `contact` | string | Yes | Mutable | `Pattern`: `` `^[\x21-\x3f\x41-\x7e]+@[\x21-\x3f\x41-\x7e]+\.[\x21-\x3f\x41-\x7e]+$` `` — email shape in printable ASCII only (non-ASCII addresses are refused), checked by the API server; carried into `CREATE ACCOUNT`'s `EMAIL` (012) |
 | `region` | string | Yes | Immutable | `Pattern`: `` `^(aws|azure|gcp)-[a-z][a-z0-9-]*$` `` — identical to 002's `base.orgAdminRegionPattern`; region availability enforced by Guardrails (008), not here |
 | `environment` | string | Yes | Immutable | Enum: `dev`, `prod` |
 | `creditQuota` | int32 | No | Mutable | Ceiling enforced by Guardrails/Quota (008/011), not here |
@@ -305,6 +329,7 @@ func AccountURL(locator, region string, usePrivateLink bool) (string, error)
 | `accountLocator` | string | No | Controller-set | Captured from `CREATE ACCOUNT` (012) |
 | `accountCreatedAt` | timestamp | No | Controller-set | Set once by 012 when the account is first created; anchors the post-create connection grace period |
 | `accountUrl` | string | No | Controller-set | Built via `internal/account/tenant.AccountURL` (§7.2) |
+| `accountBootstrap` | string | No | Controller-set | Enum: `Started`, `Completed`. Set by 012: `Started` once the platform key is stored, `Completed` together with `accountLocator`; cleared by 012's teardown. 020 reads it to decide whether a deletion has anything to clean up |
 | `conditions[]` | Condition | No | Controller-set | Standard `Ready`/`Synced` per design.md §7.1 |
 
 ## Project Structure
@@ -362,7 +387,8 @@ caller (020) already has the namespace object from its own reconcile and passes 
   002's `base.orgAdminRegionPattern` allowlist; a root-level rule on
   `metadata.name` rejects a name too long for the resolved Snowflake account name (§3.12) to fit
   Snowflake's identifier limit (see Key Concept: Only Structural Admission Checks).
-- The `status.accountName` / `accountLocator` / `accountUrl` / `conditions` shape (§7.2).
+- The `status.accountName` / `accountLocator` / `accountUrl` / `accountBootstrap` / `conditions`
+  shape (§7.2).
 - The `internal/account/tenant/` package: `ResolveName` (§3.12), the `Department`/`CostCenter`/
   `CreditQuota`/`AlphaTester` namespace-label readers (chapter 2), and `AccountURL` (§7.2, built on
   spec 004's host package).
@@ -403,6 +429,10 @@ caller (020) already has the namespace object from its own reconcile and passes 
   entirely, not because it calls for it to be mutable. Direct verification against Snowflake found
   that `COMMENT` (`description`'s target, design.md §3.6) cannot be altered once `CREATE ACCOUNT`
   has run.
+- **Why is `description` required?** The `self == oldSelf` rule is not evaluated when the field is
+  absent from the old object (adding) or the new object (removing). Only a required, non-empty
+  field is always present on both sides, so the rule always runs, as it does for `region` and
+  `environment`.
 - **Is a malformed `region` (e.g. `aaa`) rejected the same way as a Guardrails violation?** No —
   the `Pattern` marker is a schema check, so the API server itself rejects the write before the
   object is ever persisted; the controller never observes it, never reconciles it, and never gets a
@@ -431,6 +461,15 @@ caller (020) already has the namespace object from its own reconcile and passes 
   (a leading digit fails Snowflake's bare-identifier rule; a dot is never a valid identifier
   character) — the same late failure as the length case above. The shape rule rejects both at
   admission instead.
+- **Why does `accountBootstrap` exist when `accountLocator` already shows the account was created?**
+  Because the platform user's key is stored before `CREATE ACCOUNT` runs (012). If that create
+  fails, there is a stored key but no locator, and without a second marker a deletion could not tell
+  this resource apart from one that never got that far. `Started` covers exactly that gap.
+  `Completed` adds no fact beyond the locator, but keeps the field readable to a tenant: an empty or
+  `Started` value next to a missing locator says the create did not finish.
+- **A resource created before `accountBootstrap` existed — is the field empty forever?** No. The
+  account module (012) sets `Completed` on the next reconcile of any resource whose locator is known.
+  Until then, the locator alone still marks the account as existing (020).
 
 ## Dependencies
 
@@ -455,7 +494,8 @@ caller (020) already has the namespace object from its own reconcile and passes 
   resource monitor for this account - Key functions: `tenant.CreditQuota` - Notes: the resource-monitor
   arithmetic itself belongs to 018, not to this spec.
 - **SnowflakeAccount controller (020)** - wires the CRD into `managed.NewReconciler`, calls every
-  `internal/account/tenant` function, and sets `status.accountName`/`accountLocator`/`accountUrl` - Key
+  `internal/account/tenant` function, and persists `status.accountName`/`accountLocator`/`accountUrl`/
+  `accountBootstrap` (all written by the account module, 012) - Key
   functions: all of `internal/account/tenant`'s public API - Notes: this spec defines the type and helpers
   only; 020 owns `Observe`/`Create`/`Update`/`Delete`.
 
@@ -475,11 +515,13 @@ caller (020) already has the namespace object from its own reconcile and passes 
 - **SC-003d**: a second root-level `XValidation` rule rejects a `metadata.name` that starts with a
   digit (e.g. `9-team`) or contains a dot (e.g. `my.team`) on both create and update;
   `analytics-team-eu` is accepted.
-- **SC-003c**: `description` carries a `MaxLength` marker that rejects a value longer than 1024
-  characters; a description of exactly 1024 characters is accepted.
+- **SC-003c**: `description` is required and carries `MinLength` 1 and `MaxLength` 1024 markers: a
+  missing or empty description and a value longer than 1024 characters are rejected; a description
+  of exactly 1024 characters is accepted.
 - **SC-003e**: `description` carries an `x-kubernetes-validations` CEL rule that rejects a changed
   value on update but imposes no constraint on create, matching Snowflake's inability to alter
-  `COMMENT` after account creation.
+  `COMMENT` after account creation. Because `description` is required, the rule also rejects
+  removing it (an empty value violates `MinLength`) and is never skipped for an absent field.
 - **SC-004**: attempting to change an existing `SnowflakeAccount`'s `metadata.name` is rejected by
   the Kubernetes API server itself — no CEL rule needed or present for that.
 - **SC-005**: `environment` accepts only `dev` or `prod`; any other value is rejected at admission.

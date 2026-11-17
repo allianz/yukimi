@@ -155,7 +155,16 @@ e2e.run:
 	@E2E_CONFIG_DIR=$(E2E_CONFIG_DIR) $(GO) test -tags e2e -count=1 -timeout $(E2E_TIMEOUT) $(if $(E2E_RUN),-run '$(E2E_RUN)') -json ./e2e \
 		| $(GO) run -tags e2e ./e2e/report -raw $(E2E_LOG) $(if $(filter 1,$(E2E_VERBOSE)),-v) || $(FAIL)
 
-.PHONY: submodules fallthrough run dev dev-clean promote tag release.tag e2e e2e.run test-integration
+# Force clean of what earlier e2e runs left behind (Snowflake accounts, AWS secrets,
+# Kubernetes objects and run namespaces), without asking the operator. It skips the
+# deletion permit gate: use it only against a test organization.
+#   make e2e.clean E2E_CLEAN_FLAGS=-dry-run
+E2E_CLEAN_FLAGS ?=
+
+e2e.clean:
+	@$(GO) run -tags e2e ./e2e/clean $(E2E_CLEAN_FLAGS)
+
+.PHONY: submodules fallthrough run dev dev-clean promote tag release.tag e2e e2e.run e2e.clean test-integration
 
 # ====================================================================================
 # Disabled Targets
@@ -194,13 +203,18 @@ go.test.unit:
 # finding is fixed by upgrading, or -- if it genuinely does not apply -- by adding
 # an [[IgnoredVulns]] entry to osv-scanner.toml with a reason that says how that
 # was established, in the style of the entry already there.
+#
+# The flags mirror how the OpenSSF Scorecard "Vulnerabilities" check scans the
+# repo, so both report the same findings: --recursive because Scorecard scans
+# every manifest in the tree, and --no-call-analysis=go because Scorecard does
+# no call analysis. Without it, osv-scanner v2 sets aside advisories whose
+# vulnerable symbols are never called as "uncalled" and does not fail on them,
+# but Scorecard still counts them.
 
 osv-scan:
 	@$(INFO) osv-scanner
-	@go run github.com/google/osv-scanner/v2/cmd/osv-scanner@$(OSV_SCANNER_VERSION) scan source --config=osv-scanner.toml . || $(FAIL)
+	@go run github.com/google/osv-scanner/v2/cmd/osv-scanner@$(OSV_SCANNER_VERSION) scan source --recursive --no-call-analysis=go --config=osv-scanner.toml . || $(FAIL)
 	@$(OK) osv-scanner
-
-lint.run: osv-scan
 
 .PHONY: osv-scan
 

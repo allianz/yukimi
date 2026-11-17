@@ -18,15 +18,18 @@ package snowflakeaccount
 
 import (
 	"context"
+	"database/sql"
 	stderrors "errors"
 	"testing"
 	"time"
 
+	sqlmock "github.com/DATA-DOG/go-sqlmock"
 	xpv1 "github.com/crossplane/crossplane-runtime/v2/apis/common/v1"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/controller"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/event"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/feature"
 	"github.com/crossplane/crossplane-runtime/v2/pkg/logging"
+	"github.com/snowflakedb/gosnowflake/v2"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -39,6 +42,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/config"
 
 	"github.com/allianz/yukimi/apis/base/v1alpha1"
+	accountmodule "github.com/allianz/yukimi/internal/account/modules/account"
 	"github.com/allianz/yukimi/internal/account/pipeline"
 	"github.com/allianz/yukimi/internal/config/backplane"
 	"github.com/allianz/yukimi/internal/config/base"
@@ -116,6 +120,15 @@ func newTestCR(name, namespace, region string) *v1alpha1.SnowflakeAccount {
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 		Spec:       v1alpha1.SnowflakeAccountSpec{Region: region},
 	}
+}
+
+// newTestCRWithAccount is newTestCR for a resource whose account was created,
+// which is what puts its deletion behind the permit gate (SC-014/SC-015).
+func newTestCRWithAccount(name, namespace, region string) *v1alpha1.SnowflakeAccount {
+	cr := newTestCR(name, namespace, region)
+	cr.Status.AccountLocator = "xy12345"
+	cr.Status.AccountBootstrap = v1alpha1.AccountBootstrapCompleted
+	return cr
 }
 
 func newTestNamespace(name string, labels map[string]string) *corev1.Namespace {
@@ -286,6 +299,25 @@ func TestObserve_Deleting_WithLocator_KeepsFinalizer(t *testing.T) {
 	e, _ := newExternal(t, m)
 	cr := newTestCR("acct", "ns", "aws-eu-central-1")
 	cr.Status.AccountLocator = "xy12345"
+	now := metav1.NewTime(time.Now())
+	cr.DeletionTimestamp = &now
+
+	got, err := e.Observe(context.Background(), cr)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !got.ResourceExists || !got.ResourceUpToDate {
+		t.Fatalf("unexpected observation: %+v", got)
+	}
+}
+
+// SC-006: a create that failed after the key was stored (Started, no locator)
+// still has something to tear down, so Delete must be reached.
+func TestObserve_Deleting_BootstrapStarted_KeepsFinalizer(t *testing.T) {
+	m := &fakeModule{name: pipeline.AccountModuleName, forbidApply: true}
+	e, _ := newExternal(t, m)
+	cr := newTestCR("acct", "ns", "aws-eu-central-1")
+	cr.Status.AccountBootstrap = v1alpha1.AccountBootstrapStarted
 	now := metav1.NewTime(time.Now())
 	cr.DeletionTimestamp = &now
 
@@ -547,7 +579,7 @@ func TestApply_NamespaceLabelsError_ReturnsHandledError(t *testing.T) {
 func TestDelete_NoActivePermit_Blocks(t *testing.T) {
 	m := &fakeModule{name: pipeline.AccountModuleName, forbidTeardown: true}
 	e, _ := newExternal(t, m, newTestNamespace("ns", nil))
-	cr := newTestCR("acct", "ns", "aws-eu-central-1")
+	cr := newTestCRWithAccount("acct", "ns", "aws-eu-central-1")
 
 	_, err := e.Delete(context.Background(), cr)
 	if err == nil {
@@ -567,7 +599,7 @@ func TestDelete_DestroyFails_LeavesRequestActive(t *testing.T) {
 	req := newTestDeletionPermit("req", "ns", "acct", "Active", time.Now())
 	m := &fakeModule{name: pipeline.AccountModuleName, teardownErr: assertNewSystemError()}
 	e, kube := newExternal(t, m, newTestNamespace("ns", nil), req)
-	cr := newTestCR("acct", "ns", "aws-eu-central-1")
+	cr := newTestCRWithAccount("acct", "ns", "aws-eu-central-1")
 
 	_, err := e.Delete(context.Background(), cr)
 	if err == nil {
@@ -588,7 +620,7 @@ func TestDelete_Success_MarksConsumed(t *testing.T) {
 	req := newTestDeletionPermit("req", "ns", "acct", "Active", time.Now())
 	m := &fakeModule{name: pipeline.AccountModuleName}
 	e, kube := newExternal(t, m, newTestNamespace("ns", nil), req)
-	cr := newTestCR("acct", "ns", "aws-eu-central-1")
+	cr := newTestCRWithAccount("acct", "ns", "aws-eu-central-1")
 
 	if _, err := e.Delete(context.Background(), cr); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -617,7 +649,7 @@ func TestDelete_TearsDownInReverseOrder(t *testing.T) {
 	req := newTestDeletionPermit("req", "ns", "acct", "Active", time.Now())
 	e, _ := newExternal(t, first, newTestNamespace("ns", nil), req)
 	e.pipeline = pipeline.New(first, second)
-	cr := newTestCR("acct", "ns", "aws-eu-central-1")
+	cr := newTestCRWithAccount("acct", "ns", "aws-eu-central-1")
 
 	if _, err := e.Delete(context.Background(), cr); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -663,7 +695,7 @@ func TestDelete_FindActivePermitError_ReturnsHandledError(t *testing.T) {
 	m := &fakeModule{name: pipeline.AccountModuleName, forbidTeardown: true}
 	e, kube := newExternal(t, m, newTestNamespace("ns", nil))
 	e.kube = &erroringListClient{Client: kube}
-	cr := newTestCR("acct", "ns", "aws-eu-central-1")
+	cr := newTestCRWithAccount("acct", "ns", "aws-eu-central-1")
 
 	if _, err := e.Delete(context.Background(), cr); err == nil {
 		t.Fatal("expected an error, got nil")
@@ -685,7 +717,7 @@ func TestDelete_NamespaceLabelsError_AfterActivePermit(t *testing.T) {
 	m := &fakeModule{name: pipeline.AccountModuleName, forbidTeardown: true}
 	e, kube := newExternal(t, m, req) // no namespace object: Get fails naturally, but wrap anyway for clarity
 	e.kube = &erroringGetClient{Client: kube}
-	cr := newTestCR("acct", "ns", "aws-eu-central-1")
+	cr := newTestCRWithAccount("acct", "ns", "aws-eu-central-1")
 
 	if _, err := e.Delete(context.Background(), cr); err == nil {
 		t.Fatal("expected an error, got nil")
@@ -698,7 +730,7 @@ func TestDelete_ProtectionDisabled_SkipsGate(t *testing.T) {
 	m := &fakeModule{name: pipeline.AccountModuleName}
 	e, _ := newExternal(t, m, newTestNamespace("ns", nil))
 	e.cfg = &base.Config{Deletion: base.DeletionSettings{Protection: false}}
-	cr := newTestCR("acct", "ns", "aws-eu-central-1")
+	cr := newTestCRWithAccount("acct", "ns", "aws-eu-central-1")
 
 	if _, err := e.Delete(context.Background(), cr); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -711,6 +743,112 @@ func TestDelete_ProtectionDisabled_SkipsGate(t *testing.T) {
 	}
 }
 
+// SC-022: with no locator there is no account for a permit to protect, so
+// Delete skips the gate even with protection on, tears down, and leaves an
+// Active permit that happens to exist untouched.
+func TestDelete_NoLocator_SkipsPermitGate(t *testing.T) {
+	req := newTestDeletionPermit("req", "ns", "acct", "Active", time.Now())
+	m := &fakeModule{name: pipeline.AccountModuleName}
+	e, kube := newExternal(t, m, newTestNamespace("ns", nil), req)
+	cr := newTestCR("acct", "ns", "aws-eu-central-1")
+	cr.Status.AccountBootstrap = v1alpha1.AccountBootstrapStarted
+
+	if _, err := e.Delete(context.Background(), cr); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if m.teardownCalled != 1 {
+		t.Fatalf("expected Teardown to be called once, got %d", m.teardownCalled)
+	}
+	if rec := e.record.(*fakeRecorder); len(rec.events) != 0 {
+		t.Fatalf("expected no events, got %+v", rec.events)
+	}
+
+	var persisted v1alpha1.DeletionPermit
+	if err := kube.Get(context.Background(), client.ObjectKeyFromObject(req), &persisted); err != nil {
+		t.Fatalf("unexpected error fetching persisted request: %v", err)
+	}
+	if persisted.Status.State != "Active" {
+		t.Fatalf("expected request to remain untouched (Active), got %q", persisted.Status.State)
+	}
+}
+
+// failingCreatePool is a pipeline.DBPool whose org-admin connection rejects
+// CREATE ACCOUNT as a name collision; the tenant connection is never needed.
+type failingCreatePool struct {
+	orgAdmin *sql.DB
+}
+
+func (p *failingCreatePool) OrgAdminDB(context.Context) (*sql.DB, error) { return p.orgAdmin, nil }
+func (p *failingCreatePool) TenantDB(context.Context, string, string, string, string) (*sql.DB, error) {
+	return nil, stderrors.New("TenantDB must not be called")
+}
+func (p *failingCreatePool) EvictTenant(string, string) {}
+
+// SC-023 (E1): a create that fails after the key was stored, followed by a
+// deletion with no permit, removes the key and releases the finalizer —
+// exercised with the real account module, not a fake.
+func TestFailedCreateThenDelete_RemovesCredential(t *testing.T) {
+	ctx := context.Background()
+
+	orgAdmin, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	t.Cleanup(func() { _ = orgAdmin.Close() })
+	mock.ExpectExec("CREATE ACCOUNT").WillReturnError(&gosnowflake.SnowflakeError{
+		Number: 2003, SQLState: "42710", Message: "SQL compilation error: object already exists",
+	})
+
+	store := secrets.NewFakeKeyStore()
+	keyManager := secrets.NewKeyManager(store, time.Hour)
+	bp := &backplane.Config{Regions: map[string]backplane.Region{"aws-eu-central-1": {Available: true}}}
+	module := accountmodule.New(keyManager, "myorg", 5*time.Minute, 30, true, bp)
+
+	cr := newTestCR("acct", "ns", "aws-eu-central-1")
+	cr.Spec.Contact = "a@b.com"
+	cr.Spec.Description = "test"
+	e, _ := newExternal(t, module, newTestNamespace("ns", nil), cr)
+	e.pool = &failingCreatePool{orgAdmin: orgAdmin}
+
+	// The create fails, but the key is already stored and marked.
+	if _, err := e.Create(ctx, cr); err == nil {
+		t.Fatal("expected Create to fail on the name collision")
+	}
+	if cr.Status.AccountLocator != "" || cr.Status.AccountBootstrap != v1alpha1.AccountBootstrapStarted {
+		t.Fatalf("after failed create: locator=%q bootstrap=%q, want \"\" and Started",
+			cr.Status.AccountLocator, cr.Status.AccountBootstrap)
+	}
+	id, err := secrets.NewTenantIdentifier("myorg", cr.Namespace, cr.Name)
+	if err != nil {
+		t.Fatalf("secrets.NewTenantIdentifier: %v", err)
+	}
+	if _, _, err := store.Get(ctx, id); err != nil {
+		t.Fatalf("expected the credential to be stored after the failed create: %v", err)
+	}
+
+	// The tenant deletes the resource, without a permit.
+	now := metav1.NewTime(time.Now())
+	cr.DeletionTimestamp = &now
+	obs, err := e.Observe(ctx, cr)
+	if err != nil || !obs.ResourceExists {
+		t.Fatalf("Observe before Delete = %+v, %v; want ResourceExists", obs, err)
+	}
+	if _, err := e.Delete(ctx, cr); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, _, err := store.Get(ctx, id); err == nil {
+		t.Error("credential still present after Delete")
+	}
+
+	obs, err = e.Observe(ctx, cr)
+	if err != nil || obs.ResourceExists {
+		t.Fatalf("Observe after Delete = %+v, %v; want !ResourceExists so the finalizer is released", obs, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sqlmock expectations: %v", err)
+	}
+}
+
 // Even when an Active request happens to exist, a disabled gate ignores it:
 // destruction proceeds without consulting or consuming it.
 func TestDelete_ProtectionDisabled_IgnoresExistingActivePermit(t *testing.T) {
@@ -718,7 +856,7 @@ func TestDelete_ProtectionDisabled_IgnoresExistingActivePermit(t *testing.T) {
 	m := &fakeModule{name: pipeline.AccountModuleName}
 	e, kube := newExternal(t, m, newTestNamespace("ns", nil), req)
 	e.cfg = &base.Config{Deletion: base.DeletionSettings{Protection: false}}
-	cr := newTestCR("acct", "ns", "aws-eu-central-1")
+	cr := newTestCRWithAccount("acct", "ns", "aws-eu-central-1")
 
 	if _, err := e.Delete(context.Background(), cr); err != nil {
 		t.Fatalf("unexpected error: %v", err)

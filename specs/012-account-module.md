@@ -74,6 +74,20 @@ This has three benefits:
 - **Safety:** once the ID is recorded, the account is never created again. If it later goes missing or
   cannot be reached, the module reports it instead of repairing it.
 
+The resource also records how far creation got. The platform user's key is stored before the account
+is created, so a create can fail in between and leave a key without an account. The resource then
+shows that the bootstrap started but did not complete, and a later deletion still knows there is a key
+to remove.
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> Started: key stored
+    Started --> Completed: account created
+    Started --> [*]: deleted, key removed
+    Completed --> [*]: deleted, account dropped and key removed
+```
+
 ## Key Concept: A New Account Needs Time
 
 A newly created account takes a few minutes before the platform can log in to it. Connecting too early
@@ -160,15 +174,29 @@ func New(keyManager *secrets.KeyManager, org string, gracePeriod time.Duration, 
 `Observe`, `Apply` and `Teardown` themselves are unexported methods on the value `New` returns — nothing
 outside this module's own tests calls them directly, so their behavior is documented under Key Concept:
 Existence Is Recorded, Not Looked Up, Key Concept: A New Account Needs Time, and SC-031-SC-033 (contact
-email sync) rather than here. All three read `status.accountLocator`/`status.accountCreatedAt` directly
-through `ResourceData.CR()`, not through any `ResourceData` accessor — `internal/account/pipeline` (009)
-defines none for either field.
+email sync) rather than here. All three read `status.accountLocator`/`status.accountCreatedAt`/
+`status.accountBootstrap` directly through `ResourceData.CR()`, not through any `ResourceData` accessor —
+`internal/account/pipeline` (009) defines none for these fields.
+
+`status.accountBootstrap` (006) is written at exactly three points:
+
+| When | Value | Where |
+|---|---|---|
+| the platform credential is acquired on the fresh-create path — freshly stored, or recovered from this resource's own crashed attempt — before the org-admin connection is opened | `Started` | `Apply` |
+| the locator is recorded (`CREATE ACCOUNT` succeeded, or the resume pre-check found the account) | `Completed` | `Apply`, together with `accountLocator`/`accountCreatedAt` |
+| `KeyManager.DeleteCredentials` succeeded | cleared (empty) | `Teardown` |
+
+In addition, `Observe` and `Apply` set `Completed` on any resource whose locator is known but whose field
+is empty — a resource created before the field existed (006).
 
 `Teardown` runs three steps in a fixed order: `DROP ACCOUNT ... GRACE_PERIOD_IN_DAYS = <configured>` over
 the org-admin connection, then `ResourceData.EvictTenant()` so no stale pooled connection to a dropped
 account survives, then `KeyManager.DeleteCredentials` on the tenant secret identifier. Each step runs only once the one before
 it succeeded, and a step whose object is already absent counts as success, so the whole sequence is safe to
-re-run.
+re-run. The first two steps run only when a locator is known. Only once the credential is deleted are
+`status.accountLocator` and `status.accountBootstrap` both cleared, so the controller (020) sees nothing
+left to tear down. Clearing the locator any earlier would let a retry after a failed credential delete run
+without a locator, and so without the deletion permit gate (020), leaving the permit unconsumed.
 
 **Note**: every position of `CREATE ACCOUNT` was confirmed against live Snowflake to accept a bind (the
 account name through `IDENTIFIER(?)`, every value through a plain `?`), so this module binds all of them
@@ -240,6 +268,8 @@ This specification defines the account module that:
   alpha tester, is available, before generating any credential or issuing any SQL.
 - Generates and stores the `platform` service user's RSA keypair, create-only.
 - Issues `CREATE ACCOUNT` over the org-admin connection and captures the returned account locator.
+- Records how far the create got in `status.accountBootstrap` (`Started`, then `Completed`), so a
+  deletion can clean up a credential a failed create left behind.
 - Detects, on every reconcile, whether the account already exists — the pipeline's sole existence signal.
 - Publishes the resolved account name and locator onto the shared `ResourceData` for every later module.
 - Tears the account down: `DROP ACCOUNT` over the org-admin connection, eviction of the pooled
@@ -272,7 +302,10 @@ This specification defines the account module that:
   did not fully clean up), which this module still cannot safely guess at. In either of those, an operator
   inspects the account directly in Snowflake and either patches the resource's status to point at the live
   account's locator, or deletes both the stray secret and any orphaned account so the resource can create
-  cleanly on its next reconcile.
+  cleanly on its next reconcile. A crash in this window can also lose `accountBootstrap: Started`, which is
+  set in memory and persisted only when the reconcile returns (020). The next reconcile sets it again on
+  the resume path. If the resource is deleted before that, the stray secret stays behind: an accepted,
+  rare gap, since it needs a crash and a deletion inside the same short window.
 - **Why does `Apply` reconnect instead of failing outright whenever a locator is already known?** A
   locator being known does not by itself mean anything is wrong — it is also true of a perfectly healthy
   account whose `Apply` is running only because some other module further down the pipeline has drifted.
@@ -323,11 +356,16 @@ This specification defines the account module that:
   system error `tenant.AlphaTester` itself returns (006) — an ops-caused label problem, like a malformed
   `credit-quota` label — before the region-existence check's result is even used to decide anything,
   and before any side effect.
-- **A deletion arrives when no locator was ever recorded — what does `Teardown` do?** With no locator
-  there is no account to drop and no pooled connection to evict, so both steps are skipped and only the
-  credential is deleted. That clears the stray secret a crashed create leaves behind (see above); if an
-  account really was created and its locator never persisted, dropping it stays the manual operator job
-  that case already describes.
+- **A deletion arrives when no locator was ever recorded — what does `Teardown` do?** It is reached in
+  that state only when `accountBootstrap` is `Started` (020): the credential was stored, but `CREATE
+  ACCOUNT` failed, or its locator lookup did, before a locator could be recorded. With no locator there is
+  no account to drop and no pooled connection to evict, so both steps are skipped, the credential is
+  deleted, and `accountBootstrap` is cleared. If an account really was created and its locator never
+  persisted, dropping it stays the manual operator job the crash case above describes.
+- **Why is `Started` set before `CREATE ACCOUNT` rather than only on failure?** Because the failure can be
+  a crash, and nothing runs on a crash. Setting it as soon as the credential is acquired means every
+  outcome after that point — a failed `CREATE ACCOUNT`, a failed locator lookup, a failed org-admin
+  connection — leaves it in place, and 020 persists status even when `Apply` fails.
 - **The credential identifier is scheduled for deletion but not yet gone — what does the next reconcile see?**
   Neither present nor absent. An identifier inside its recovery window cannot be read and cannot be re-created
   (003), so `Observe` cannot treat it as a live credential and `Apply`'s fresh-create path cannot claim it
@@ -377,9 +415,10 @@ This specification defines the account module that:
   `*statement.Error` — Contract: every tenant-influenced value is passed as a bind argument, never
   concatenated into statement text; none of 005's rendering primitives is used.
 - **SnowflakeAccount CRD (006)** — Used APIs: `SnowflakeAccountSpec.Description`, `.Contact`, `.Region`,
-  `SnowflakeAccountStatus.AccountLocator`, `.AccountCreatedAt`, `internal/account/tenant.AlphaTester()`
-  — Contract: reads the spec fields read-only; writes `AccountLocator`/`AccountCreatedAt` directly on
-  `ResourceData.CR().Status`, plus `AccountName`/`AccountURL` (Integration Points). Calls
+  `SnowflakeAccountStatus.AccountLocator`, `.AccountCreatedAt`, `.AccountBootstrap`,
+  `AccountBootstrapStarted`/`AccountBootstrapCompleted`, `internal/account/tenant.AlphaTester()`
+  — Contract: reads the spec fields read-only; writes `AccountLocator`/`AccountCreatedAt`/`AccountBootstrap`
+  directly on `ResourceData.CR().Status`, plus `AccountName`/`AccountURL` (Integration Points). Calls
   `tenant.AlphaTester()` once on the fresh-create path against `ResourceData.NamespaceLabels()`,
   before any side effect, and passes its returned error (a malformed label value, a system error) straight into
   `Failed` unmodified.
@@ -395,12 +434,14 @@ This specification defines the account module that:
 - **SnowflakeAccount Controller (020)** — Registers this module in the pipeline via
   `account.New(keyManager, baseConfig.Snowflake.Org, baseConfig.Snowflake.AccountCreationGracePeriod,
   baseConfig.Deletion.GracePeriodDays, baseConfig.Snowflake.UsePrivateLink, bpConfig))`,
-  after the guardrail-check (010) and quota-check (011) modules. This module itself writes all four
+  after the guardrail-check (010) and quota-check (011) modules. This module itself writes all five
   account status fields on the CRD: `status.accountLocator` and `status.accountCreatedAt` on create,
+  `status.accountBootstrap` at the points listed under Public API,
   and `status.accountName` (from `ResourceData.ResolvedAccountName()`) and `status.accountUrl` (via
   `internal/account/tenant.AccountURL`, using `usePrivateLink`) on every `Observe` once a locator is known and
   on every `Apply`. A `tenant.AccountURL` error is logged through `ResourceData.Logger()` and never fails the
-  run; the URL then simply stays unset. None of the four needs a separate persist step: this module writes
+  run; the URL then simply stays unset. The controller (020) reads `status.accountBootstrap` together with
+  `status.accountLocator` to decide whether a deleted resource still needs `Teardown`. None of the five needs a separate persist step: this module writes
   them straight onto the same `*v1alpha1.SnowflakeAccount` the controller already holds and will persist
   when the reconcile returns. Minimizing how long that persist is deferred is still 020's responsibility,
   since every reconcile between a successful `CREATE ACCOUNT` and the actual API-server write is the
@@ -449,9 +490,10 @@ This specification defines the account module that:
   case-insensitive match to the resolved name, even when the lookup's own pattern matching returns it.
 - **SC-014**: A fresh create aborts with a system error when the post-create locator lookup finds no
   matching row.
-- **SC-015**: A successful fresh create sets `cr.Status.AccountLocator` to the looked-up locator and
-  `cr.Status.AccountCreatedAt` to the current time, directly on the CRD, before returning
-  `Pending(...)` — never `Done()`.
+- **SC-015**: A successful fresh create sets `cr.Status.AccountLocator` to the looked-up locator,
+  `cr.Status.AccountCreatedAt` to the current time and `cr.Status.AccountBootstrap` to `Completed`,
+  directly on the CRD, before returning `Pending(...)` — never `Done()`. The resume path that finds an
+  existing account (SC-036) does the same.
 - **SC-016**: Every `Apply` outcome other than `Done()` carries `Aborted == true`; `Done()` does not.
 - **SC-017**: Unit test coverage exceeds 95%.
 - **SC-018**: Integration test coverage includes a full create-then-reconnect-then-destroy round trip
@@ -499,6 +541,18 @@ This specification defines the account module that:
   when `cr.Name` is longer than `63 - 1 - 6 - len(org)` characters; it proceeds normally at
   exactly that length. The error message states only the numeric max length — never `org` or
   "DNS label".
+- **SC-038**: A fresh create sets `cr.Status.AccountBootstrap` to `Started` once the credential is
+  acquired — freshly stored (SC-006) or recovered (SC-035/SC-036) — and before the org-admin connection
+  is opened. It stays `Started` when anything after that point fails: the org-admin connection, `CREATE
+  ACCOUNT` (both the user-error collision and system errors), or the post-create locator lookup.
+- **SC-039**: A fresh create that fails before a credential is acquired — any validation check
+  (SC-027-SC-030, SC-034), keypair generation, a pending-deletion identifier (SC-007a) or a non-resumable
+  occupant (SC-007) — leaves `cr.Status.AccountBootstrap` unchanged (empty).
+- **SC-040**: `Teardown` clears `cr.Status.AccountLocator` and `cr.Status.AccountBootstrap` only after
+  `KeyManager.DeleteCredentials` returned nil, with or without a locator; when any step fails, including
+  the credential delete after a successful `DROP ACCOUNT`, both keep their values.
+- **SC-041**: `Observe` and `Apply` set `cr.Status.AccountBootstrap` to `Completed` when a locator is
+  known and the field is empty, and never change a `Completed` value to anything else.
 
 ## Security Considerations
 
@@ -619,9 +673,13 @@ data := pipeline.NewResourceData(cr, nsLabels, log, pool)
 
 // First reconcile: no locator yet.
 o := module.Observe(ctx, data)           // Pending("account not created yet"), nothing has been touched yet
-outcome := module.Apply(ctx, data)       // generates keypair, stores it, issues CREATE ACCOUNT,
-                                        // sets cr.Status.AccountLocator/.AccountCreatedAt directly,
+outcome := module.Apply(ctx, data)       // generates keypair, stores it, sets
+                                        // cr.Status.AccountBootstrap = Started, issues CREATE ACCOUNT,
+                                        // sets cr.Status.AccountLocator/.AccountCreatedAt and
+                                        // AccountBootstrap = Completed directly,
                                         // returns Pending(...).Abort() — the pipeline stops here
+                                        // (had CREATE ACCOUNT failed, AccountBootstrap would stay
+                                        // Started and the locator empty)
 
 // A reconcile landing inside the grace period, against the same cr (status.accountLocator and
 // status.accountCreatedAt already set by the pass above):
@@ -639,5 +697,6 @@ outcome3 := module.Apply(ctx, data3)     // reconnects again; SHOW USERS LIKE 'p
 // Deletion, reached through Pipeline.Destroy once a deletion permit (019) has authorized it:
 err := module.Teardown(ctx, data3)       // DROP ACCOUNT ... GRACE_PERIOD_IN_DAYS = 30, evicts the
                                         // pooled connection, deletes the stored credential — which
-                                        // the store keeps restorable for 30 days too, never longer
+                                        // the store keeps restorable for 30 days too, never longer —
+                                        // and clears AccountLocator and AccountBootstrap
 ```

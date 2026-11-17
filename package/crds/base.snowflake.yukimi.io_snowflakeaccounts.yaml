@@ -62,7 +62,11 @@ spec:
               spec 006).
             properties:
               contact:
-                pattern: ^[^\s@]+@[^\s@]+\.[^\s@]+$
+                description: |-
+                  Email shape in printable ASCII only (no whitespace, no control or
+                  non-ASCII characters): most mail systems reject non-ASCII addresses and
+                  the operator cannot check delivery, so they are refused up front.
+                pattern: ^[\x21-\x3f\x41-\x7e]+@[\x21-\x3f\x41-\x7e]+\.[\x21-\x3f\x41-\x7e]+$
                 type: string
               creditQuota:
                 description: |-
@@ -147,8 +151,12 @@ spec:
                   account's COMMENT after CREATE ACCOUNT (verified directly against
                   Snowflake; design.md does not document this — see Key Concept:
                   Immutable Fields After Creation in spec 006). Mapped to COMMENT in
-                  CREATE ACCOUNT (design.md 3.6).
+                  CREATE ACCOUNT (design.md 3.6). Required and non-empty: the API server
+                  skips the immutability rule when the field is absent from the old or the
+                  new object, so an optional description could be added or removed later
+                  and drift from the Snowflake comment.
                 maxLength: 1024
+                minLength: 1
                 type: string
                 x-kubernetes-validations:
                 - message: description is immutable
@@ -221,6 +229,7 @@ spec:
                   rule: self == oldSelf
             required:
             - contact
+            - description
             - environment
             - identityIntegration
             - region
@@ -228,6 +237,17 @@ spec:
           status:
             description: SnowflakeAccountStatus defines the observed state of a SnowflakeAccount.
             properties:
+              accountBootstrap:
+                description: |-
+                  How far the account module (012) got creating the account: Started
+                  once the platform user's key is stored, Completed once CREATE ACCOUNT
+                  succeeded and the locator is recorded. Empty before either, and again
+                  after teardown (012). Lets a deletion find a key a failed create left
+                  behind (020).
+                enum:
+                - Started
+                - Completed
+                type: string
               accountCreatedAt:
                 description: |-
                   Set once, on the reconcile that first creates the account (012);

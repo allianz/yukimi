@@ -113,13 +113,11 @@ func TestD4_ADescriptionOfTheMaximumLengthIsStoredCompletely(t *testing.T) {
 	descriptionIsStored(t, "d4-long", "d4-long", description, description)
 }
 
-// The CRD pattern and Snowflake both accept a contact with non-ASCII
-// characters, but most mail systems reject such an address, and the operator
-// cannot check whether it would be delivered. It is decided to stay on the safe
-// side and reject it (this may be opened up later), either in the API server or
-// in the controller before any account is created.
-//
-// This case fails today, and that is a known bug: the account is created.
+// Snowflake accepts a contact with non-ASCII characters, but most mail systems
+// reject such an address, and the operator cannot check whether it would be
+// delivered. It is decided to stay on the safe side and reject it (this may be
+// opened up later), either in the API server or in the controller before any
+// account is created. Today the CRD pattern allows printable ASCII only.
 func TestD3_UnicodeInTheContactIsRejected(t *testing.T) {
 	t.Parallel()
 	ctx := env.Ctx
@@ -175,7 +173,8 @@ func TestD3_UnicodeInTheContactIsRejected(t *testing.T) {
 		if outcome != "created" && row.Found() {
 			t.Errorf("the account was rejected, but Snowflake lists %q", resolved)
 		}
-		// Whether a credential secret stays behind is case E1.
+		// A secret stored before a rejection is removed on deletion; see
+		// "Not covered" in the README.
 		if info, err := env.SecretInfo(ctx, name); err == nil {
 			t.Logf("credential secret exists: %v", info.Exists)
 		}

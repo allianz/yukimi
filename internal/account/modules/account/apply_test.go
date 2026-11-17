@@ -61,6 +61,14 @@ func testBackplaneConfig(regions ...string) *backplane.Config {
 	return &backplane.Config{Regions: m}
 }
 
+// assertBootstrap checks status.accountBootstrap (SC-038-SC-041).
+func assertBootstrap(t *testing.T, cr *v1alpha1.SnowflakeAccount, want v1alpha1.AccountBootstrap) {
+	t.Helper()
+	if cr.Status.AccountBootstrap != want {
+		t.Errorf("cr.Status.AccountBootstrap = %q, want %q", cr.Status.AccountBootstrap, want)
+	}
+}
+
 // seedResumableCredential stores a valid "platform" credential at id in
 // store, recording it as written at writtenAt — simulating an earlier,
 // crashed attempt by this same resource. It uses a throwaway
@@ -117,6 +125,7 @@ func TestApply_FreshCreate_Success(t *testing.T) {
 	if cr.Status.AccountCreatedAt.Time.Before(before) {
 		t.Errorf("AccountCreatedAt = %v, want at or after %v", cr.Status.AccountCreatedAt.Time, before)
 	}
+	assertBootstrap(t, cr, v1alpha1.AccountBootstrapCompleted)
 	if fake.tenantCalls != 0 {
 		t.Errorf("TenantDB called %d times, want 0 — a fresh create must not verify reachability itself", fake.tenantCalls)
 	}
@@ -144,6 +153,8 @@ func TestApply_KnownLocator_NilCreatedAt_ConnectionSucceeds(t *testing.T) {
 	if fake.tenantCalls != 1 {
 		t.Errorf("TenantDB called %d times, want 1", fake.tenantCalls)
 	}
+	// SC-041: a resource that predates the field gets it backfilled.
+	assertBootstrap(t, cr, v1alpha1.AccountBootstrapCompleted)
 }
 
 // SC-005: Apply aborts with a system error, issuing no SQL of its own, when
@@ -205,6 +216,8 @@ func TestApply_KnownLocator_PastGracePeriod_ConnectionSucceeds(t *testing.T) {
 	if fake.tenantCalls != 1 {
 		t.Errorf("TenantDB called %d times, want 1", fake.tenantCalls)
 	}
+	// SC-041: a resource that predates the field gets it backfilled.
+	assertBootstrap(t, cr, v1alpha1.AccountBootstrapCompleted)
 }
 
 // SC-032: the platform user's email differs from spec.Contact, so Apply
@@ -321,6 +334,8 @@ func TestApply_FreshCreate_DuplicateAccountName_Rejected(t *testing.T) {
 	if cr.Status.AccountLocator != "" {
 		t.Errorf("cr.Status.AccountLocator = %q, want empty", cr.Status.AccountLocator)
 	}
+	// SC-038: the key is stored, so a later deletion must still find it.
+	assertBootstrap(t, cr, v1alpha1.AccountBootstrapStarted)
 }
 
 // SC-012: every other CREATE ACCOUNT failure is classified as a system error.
@@ -340,6 +355,7 @@ func TestApply_FreshCreate_CreateAccountFails_SystemError(t *testing.T) {
 	if internalerrors.IsUserError(outcome.Err) {
 		t.Errorf("expected a system error, got a user error: %v", outcome.Err)
 	}
+	assertBootstrap(t, cr, v1alpha1.AccountBootstrapStarted) // SC-038
 }
 
 // The org-admin connection cannot be opened — a system error, no SQL issued.
@@ -354,6 +370,7 @@ func TestApply_FreshCreate_OrgAdminConnectionFails(t *testing.T) {
 	if outcome.State != pipeline.StateFailed {
 		t.Errorf("outcome.State = %v, want StateFailed", outcome.State)
 	}
+	assertBootstrap(t, cr, v1alpha1.AccountBootstrapStarted) // SC-038
 }
 
 // SC-014: a fresh create aborts with a system error when the post-create
@@ -375,6 +392,7 @@ func TestApply_FreshCreate_LocateAccount_NoMatch(t *testing.T) {
 	if cr.Status.AccountLocator != "" {
 		t.Errorf("cr.Status.AccountLocator = %q, want empty", cr.Status.AccountLocator)
 	}
+	assertBootstrap(t, cr, v1alpha1.AccountBootstrapStarted) // SC-038
 }
 
 // SC-013: the post-create lookup discards a row whose account name is not an
@@ -425,6 +443,8 @@ func TestApply_FreshCreate_SecretIdentifierOccupied(t *testing.T) {
 	if cr.Status.AccountLocator != "" {
 		t.Errorf("cr.Status.AccountLocator = %q, want empty", cr.Status.AccountLocator)
 	}
+	// SC-039: the secret there is not ours, so nothing marks it for teardown.
+	assertBootstrap(t, cr, "")
 }
 
 // Resume (specs/012-account-module.md, Key Concept: Finishing an Interrupted
@@ -502,6 +522,7 @@ func TestApply_FreshCreate_ResumeCrashedCreate_AccountAlreadyExists(t *testing.T
 	if cr.Status.AccountLocator != "AB12345" {
 		t.Errorf("cr.Status.AccountLocator = %q, want %q", cr.Status.AccountLocator, "AB12345")
 	}
+	assertBootstrap(t, cr, v1alpha1.AccountBootstrapCompleted) // SC-015
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet sqlmock expectations: %v", err)
 	}
@@ -602,6 +623,8 @@ func TestApply_FreshCreate_ResumeCrashedCreate_ExistenceCheckFails_SystemError(t
 	if cr.Status.AccountLocator != "" {
 		t.Errorf("cr.Status.AccountLocator = %q, want empty", cr.Status.AccountLocator)
 	}
+	// SC-038: the recovered credential is ours, so it is marked for teardown.
+	assertBootstrap(t, cr, v1alpha1.AccountBootstrapStarted)
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet sqlmock expectations: %v", err)
 	}
@@ -670,6 +693,7 @@ func TestApply_FreshCreate_SecretIdentifierPendingDeletion_Rejected(t *testing.T
 	if outcome.Err != nil && strings.Contains(outcome.Err.Error(), id.String()) {
 		t.Errorf("expected the message to never name the secret id, got: %v", outcome.Err)
 	}
+	assertBootstrap(t, cr, "") // SC-039
 }
 
 // A fresh create aborts with backplane.Config.Region's own user error, and no
@@ -696,6 +720,7 @@ func TestApply_FreshCreate_UnknownRegion_Rejected(t *testing.T) {
 	if cr.Status.AccountLocator != "" {
 		t.Errorf("cr.Status.AccountLocator = %q, want empty", cr.Status.AccountLocator)
 	}
+	assertBootstrap(t, cr, "") // SC-039: rejected before any key was stored
 }
 
 // SC-034: a fresh create aborts with a user error, issuing no SQL, when
@@ -798,6 +823,7 @@ func TestApply_FreshCreate_UnavailableRegion_Rejected(t *testing.T) {
 	if cr.Status.AccountLocator != "" {
 		t.Errorf("cr.Status.AccountLocator = %q, want empty", cr.Status.AccountLocator)
 	}
+	assertBootstrap(t, cr, "") // SC-039: rejected before any key was stored
 }
 
 // A fresh create proceeds past the availability gate when the resolved

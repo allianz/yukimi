@@ -203,6 +203,9 @@ func TestB9_EmptyRequiredFieldsAreRejected(t *testing.T) {
 		{"region", func(a *v1alpha1.SnowflakeAccount) { a.Spec.Region = "" }},
 		{"environment", func(a *v1alpha1.SnowflakeAccount) { a.Spec.Environment = "" }},
 		{"contact", func(a *v1alpha1.SnowflakeAccount) { a.Spec.Contact = "" }},
+		// Required so that the immutability rule of the description always
+		// runs (see B11).
+		{"description", func(a *v1alpha1.SnowflakeAccount) { a.Spec.Description = "" }},
 		{"role bindings", func(a *v1alpha1.SnowflakeAccount) { a.Spec.IdentityIntegration.RoleBindings = nil }},
 	}
 	for _, tc := range cases {

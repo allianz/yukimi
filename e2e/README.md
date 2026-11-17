@@ -15,11 +15,14 @@ You need three things, and the suite checks all of them before it creates anythi
 1. `make dev` is running in another terminal. It provides the kind cluster, the CRDs and the operator, and the
    default kubeconfig context points at that cluster.
 2. AWS credentials that can read the operator's secrets, through the default credential chain: environment
-   variables, or the profile selected with `AWS_PROFILE`.
+   variables, or the profile selected with `AWS_PROFILE`. The `.env` file in the repository root is read if it
+   exists (as the integration tests and `hack/dev/sync-aws-credentials.sh` do), so an `AWS_PROFILE` there is
+   enough. A variable that is already set in your shell wins over `.env`.
 3. The operator configuration that `make dev` generated in `_output/config`.
 
 ```bash
-AWS_PROFILE=<profile> make e2e
+make e2e                         # AWS_PROFILE from .env
+AWS_PROFILE=<profile> make e2e   # or from the shell
 ```
 
 The full test output is printed while the tests run, followed by a summary with one line per case and, for every
@@ -33,7 +36,6 @@ Snowflake accounts of a run are created at the same time, so a run takes about a
 | `E2E_TIMEOUT` (make) | The `go test -timeout`. The tests stop 20 minutes before it, so the clean-up always has time to run; it must therefore be longer than 20m. | `60m` |
 | `E2E_MAX_ACCOUNTS` | The most real accounts the suite may have at the same time; at most 10. | `10` |
 | `E2E_CONFIG_DIR` | Where the operator's `base.yaml` and `backplane.yaml` are. The suite reads the organization and the regions from them. | `_output/config` |
-| `E2E_STALE_AFTER` | How old the namespace of an earlier run must be to count as abandoned (see below). | the go test timeout |
 
 Running against a deployed cluster, with the configuration taken from the operator's ConfigMap, is not implemented
 yet.
@@ -43,10 +45,9 @@ yet.
 1. **Checks.** The Kubernetes API answers and both Yukimi CRDs are installed; the AWS credentials work and reach the
    org-admin secret; the operator is alive; the configuration has an available region. If one fails, the run stops
    with a message and nothing has been created.
-2. **Cleans up after earlier runs.** A run that was killed (for example with `kill -9`) cannot clean up after itself.
-   So every run first looks for namespaces of earlier runs (`e2e-<timestamp>`) that are older than `E2E_STALE_AFTER`,
-   deletes the accounts in them and drops them. Each one is reported in an `e2e sweep:` line. A namespace that is
-   younger, such as one of a run that is still going, is left alone.
+2. **Reports earlier runs.** A run that was killed (for example with `kill -9`) cannot clean up after itself. The run
+   does not clean up after it; it prints a line if namespaces of earlier runs (`e2e-<timestamp>`) still exist.
+   `make e2e.clean` removes them (see [Force clean](#force-clean)).
 3. **Creates one namespace for the run**, `e2e-<timestamp>`, with the labels the controller reads. The Snowflake name
    of an account is derived from its namespace, so every run gets new Snowflake names and the accounts themselves need
    no timestamp.
@@ -66,18 +67,29 @@ is what A5 sees.
 The suite always creates a `DeletionPermit` before it deletes an account, so it works with deletion protection on and
 off. It checks nothing about permits: not that a deletion is blocked, not that a permit is consumed.
 
+## Force clean
+
+`make e2e.clean` removes what earlier runs left behind, without asking the operator. Use it when a run has left
+namespaces behind, for example when accounts are stuck in `Deleting` because their finalizer cannot be removed. For every
+namespace of the form `e2e-<timestamp>` it:
+
+1. drops each account in Snowflake (`DROP ACCOUNT IF EXISTS`, with the configured grace period),
+2. deletes the account's AWS secret at once, without a recovery window (only after the drop succeeded),
+3. removes the finalizers of the accounts and deletion permits, and deletes the namespace.
+
+It skips the deletion permit gate, so use it only against a test organization. Every step tolerates that its work is
+already done, so it can be run again after a failure.
+
+```bash
+make e2e.clean E2E_CLEAN_FLAGS=-dry-run        # print what would be done
+make e2e.clean                                 # clean every run namespace
+make e2e.clean E2E_CLEAN_FLAGS='-older-than 1h'  # spare a run that is still going
+```
+
 ## Known bugs and decided behavior
 
 Some cases test behavior that is a known bug, or that looks like one but is correct. They are listed here, so that a
 reader (or a reviewer) does not have to work it out from the test.
-
-**Bugs in the operator.** These cases test the wanted behavior, so they fail until the bug is fixed, and a full run
-reports `FAILED` until then.
-
-| Case | Bug |
-|---|---|
-| **B11** | A description can be added to an account that has none. Snowflake cannot change the comment of an account after creation ([Snowflake article](https://community.snowflake.com/s/article/How-to-Update-Account-Comment)), so the CRD must reject it, and its rule `self == oldSelf` says so. The rule is not evaluated when the old value is absent, so the API server accepts the description, which then never reaches Snowflake: the spec and the account drift. That the controller does not write it later is correct (see B12); the bug is that the CRD allows it. |
-| **D3** | A contact with non-ASCII characters creates the account. Most mail systems reject such addresses and the operator cannot check delivery, so it must reject them (this may be opened up later). |
 
 **A bug in Snowflake.** The case passes and records what Snowflake does.
 
@@ -89,7 +101,6 @@ reports `FAILED` until then.
 
 | Case | Why it is correct |
 |---|---|
-| **B12** | The controller writes the description to the Snowflake comment only at `CREATE ACCOUNT`, because Snowflake cannot change the comment of an account later ([Snowflake article](https://community.snowflake.com/s/article/How-to-Update-Account-Comment)). |
 | **A5** | A deleted name stays taken while the credential secret is in its recovery window. The message does not say how long that is; this is accepted for now. |
 
 ## Test cases
@@ -125,10 +136,10 @@ and no real account is needed. There is one representative case per rule; the fu
 | B6 | Contact | no `@`, whitespace | rejected |
 | B7 | Description too long | 1025 characters | too long |
 | B8 | Role bindings | no `ACCOUNTADMIN` | "roleBindings must bind ACCOUNTADMIN" |
-| B9 | Required fields | empty region, environment or contact; no role bindings | rejected |
+| B9 | Required fields | empty region, environment, contact or description; no role bindings | rejected |
 | B10 | Region and environment are immutable | a stored account; its `region` or `environment` is changed | "... is immutable" |
-| B11 | A description cannot be added later | the same stored account, which has no description; one is added | "description is immutable". **Fails today**, see [Known bugs](#known-bugs-and-decided-behavior) |
-| B12 | The controller never changes the Snowflake comment | the `lifecycle` account, ready; a description is added with a real update (accepted today, see B11), and the operator reconciles it | `SHOW ACCOUNTS` still shows the comment from `CREATE ACCOUNT` |
+| B11 | A description cannot be changed later | the same stored account, which has a description; it is changed | "description is immutable". The description is required, because the rule is not evaluated for an absent field; removing it is rejected by B9 |
+| B12 | The Snowflake comment stays the creation description | the `lifecycle` account, ready; its description is changed with a real update | the API server rejects it ("description is immutable") and `SHOW ACCOUNTS` still shows the comment from `CREATE ACCOUNT` |
 
 B10 and B11 need an account that is already stored, because immutability is a rule about a change. They use one in a
 region the operator does not know: the controller rejects it at once (see C2), so it never becomes a real account.
@@ -158,17 +169,8 @@ chain.
 |---|---|---|---|
 | D1 | Japanese and SQL-injection-like description | Japanese text plus `x'); SELECT CURRENT_USER(); --` | the account is created and the comment read back equals the input. The number of accounts in the organization is not checked, because the other cases create accounts at the same time |
 | D2 | Quotes and backslashes in the description | `a''b`, `a\nb`, `a\\b` (typed as these characters) | the account is created; the comment holds `a'b`, a newline and `a\b`. See [Known bugs](#known-bugs-and-decided-behavior) |
-| D3 | Non-ASCII contact | `日本@example.com`, which the CRD pattern accepts | refused by the API server or the controller with a readable message; no account in Snowflake. **Fails today**, see [Known bugs](#known-bugs-and-decided-behavior) |
+| D3 | Non-ASCII contact | `日本@example.com` | refused (the CRD pattern allows printable ASCII only) with a readable message; no account in Snowflake |
 | D4 | Description of the maximum length | 1024 characters | the account is created and the comment read back is complete |
-
-### E. Leaks and orphans
-
-Ways a deletion could leave something behind. Neither case is automated yet.
-
-| # | Scenario | Given / When | Expected |
-|---|---|---|---|
-| E1 | A failed create leaves no secret | a create fails after the secret was stored; then the CR is deleted | no secret remains. Today it appears to stay, because an account without a locator gets no delete call. Not automated: there is no reliable way yet to make a create fail at that point. Snowflake accepted every unusual contact tried; a duplicate account name would work, but the suite would need its own `CREATE ACCOUNT` as org admin (undecided) |
-| E2 | Removing `Delete` from `managementPolicies` | a tenant removes `Delete` and deletes the CR | a known gap: the CR disappears and the Snowflake account stays, without any permit. Tested by hand only, because it leaves a real account behind |
 
 ### Not covered
 
@@ -179,6 +181,10 @@ Ways a deletion could leave something behind. Neither case is automated yet.
   and `customAuthRules`. The controller does not act on these fields yet, because the modules that would apply them
   are not implemented, so there is nothing to observe in Snowflake. Of the fields that can change after creation,
   only `contact` is tested (A2).
+- **A create that fails after the key was stored.** Deleting such a resource must remove the stored key, without a
+  deletion permit. The suite cannot make a create fail at exactly that point (Snowflake accepted every unusual
+  contact tried, and a duplicate account name would need the suite's own `CREATE ACCOUNT` as org admin), so the
+  controller's unit test `TestFailedCreateThenDelete_RemovesCredential` covers it instead.
 
 ## Writing a test
 

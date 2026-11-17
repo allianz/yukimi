@@ -111,7 +111,9 @@ func connectTenant(ctx context.Context, data *pipeline.ResourceData) (*sql.DB, e
 }
 
 // syncStatus sets status.accountName and, once a locator is known,
-// status.accountUrl on the CRD. A tenant.AccountURL error is logged and
+// status.accountUrl on the CRD, and status.accountBootstrap to Completed if
+// it is still empty (a resource created before the field existed, 006). A
+// tenant.AccountURL error is logged and
 // swallowed, never failing the caller: it can only fire despite CREATE ACCOUNT
 // having already succeeded with that same region string
 // (specs/012-account-module.md, Integration Points).
@@ -120,6 +122,9 @@ func (m *module) syncStatus(data *pipeline.ResourceData) {
 	cr.Status.AccountName = data.ResolvedAccountName()
 	if cr.Status.AccountLocator == "" {
 		return
+	}
+	if cr.Status.AccountBootstrap == "" {
+		cr.Status.AccountBootstrap = v1alpha1.AccountBootstrapCompleted
 	}
 	url, err := tenant.AccountURL(cr.Status.AccountLocator, cr.Spec.Region, m.usePrivateLink)
 	if err != nil {

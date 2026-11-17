@@ -28,6 +28,8 @@ import (
 	"sort"
 	"strconv"
 
+	"github.com/joho/godotenv"
+
 	"github.com/allianz/yukimi/internal/account/tenant"
 	"github.com/allianz/yukimi/internal/config/backplane"
 	"github.com/allianz/yukimi/internal/config/base"
@@ -60,6 +62,25 @@ type Config struct {
 	Base        *base.Config
 	Backplane   *backplane.Config
 	MaxAccounts int
+}
+
+// LoadDotEnv loads the .env file in the repository root, if there is one, the
+// way the integration tests and hack/dev/sync-aws-credentials.sh do. Variables
+// that are already set win over the file, so `AWS_PROFILE=x make e2e` still
+// selects x. A missing file is not an error. It reports whether a file was read.
+func LoadDotEnv() (bool, error) {
+	root, err := repoRoot()
+	if err != nil {
+		return false, nil // no repository around: the environment alone is used
+	}
+	path := filepath.Join(root, ".env")
+	if _, err := os.Stat(path); err != nil {
+		return false, nil
+	}
+	if err := godotenv.Load(path); err != nil {
+		return false, fmt.Errorf("reading %s: %w", path, err)
+	}
+	return true, nil
 }
 
 // LoadConfig reads the operator configuration directory and the e2e settings.

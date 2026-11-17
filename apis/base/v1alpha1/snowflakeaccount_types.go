@@ -38,13 +38,19 @@ type SnowflakeAccountSpec struct {
 	// account's COMMENT after CREATE ACCOUNT (verified directly against
 	// Snowflake; design.md does not document this — see Key Concept:
 	// Immutable Fields After Creation in spec 006). Mapped to COMMENT in
-	// CREATE ACCOUNT (design.md 3.6).
-	// +optional
+	// CREATE ACCOUNT (design.md 3.6). Required and non-empty: the API server
+	// skips the immutability rule when the field is absent from the old or the
+	// new object, so an optional description could be added or removed later
+	// and drift from the Snowflake comment.
+	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=1024
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="description is immutable"
-	Description string `json:"description,omitempty"`
+	Description string `json:"description"`
 
-	// +kubebuilder:validation:Pattern=`^[^\s@]+@[^\s@]+\.[^\s@]+$`
+	// Email shape in printable ASCII only (no whitespace, no control or
+	// non-ASCII characters): most mail systems reject non-ASCII addresses and
+	// the operator cannot check delivery, so they are refused up front.
+	// +kubebuilder:validation:Pattern=`^[\x21-\x3f\x41-\x7e]+@[\x21-\x3f\x41-\x7e]+\.[\x21-\x3f\x41-\x7e]+$`
 	Contact string `json:"contact"`
 
 	// Immutable after creation (design.md 3.11.3). Structural cloud-region
@@ -156,7 +162,28 @@ type SnowflakeAccountStatus struct {
 	// Built via internal/account/tenant.AccountURL (design.md 7.2).
 	// +optional
 	AccountURL string `json:"accountUrl,omitempty"`
+
+	// How far the account module (012) got creating the account: Started
+	// once the platform user's key is stored, Completed once CREATE ACCOUNT
+	// succeeded and the locator is recorded. Empty before either, and again
+	// after teardown (012). Lets a deletion find a key a failed create left
+	// behind (020).
+	// +optional
+	AccountBootstrap AccountBootstrap `json:"accountBootstrap,omitempty"`
 }
+
+// AccountBootstrap is status.accountBootstrap's value set.
+// +kubebuilder:validation:Enum=Started;Completed
+type AccountBootstrap string
+
+const (
+	// AccountBootstrapStarted: the platform user's key is stored, but no
+	// account has been recorded yet.
+	AccountBootstrapStarted AccountBootstrap = "Started"
+	// AccountBootstrapCompleted: CREATE ACCOUNT succeeded and the account's
+	// locator is recorded.
+	AccountBootstrapCompleted AccountBootstrap = "Completed"
+)
 
 // +kubebuilder:object:root=true
 

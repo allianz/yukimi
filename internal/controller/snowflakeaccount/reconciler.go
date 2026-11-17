@@ -179,8 +179,10 @@ func (e *external) Observe(ctx context.Context, cr *v1alpha1.SnowflakeAccount) (
 	log := logger.New(e.logger, cr.Namespace, "SnowflakeAccount", cr.Name, logger.OpObserve)
 
 	if cr.GetDeletionTimestamp() != nil {
+		// Something to tear down: an account, or a key a failed create left
+		// behind (012). Teardown clears both fields once it succeeded.
 		return managed.ExternalObservation{
-			ResourceExists:   cr.Status.AccountLocator != "",
+			ResourceExists:   cr.Status.AccountLocator != "" || cr.Status.AccountBootstrap != "",
 			ResourceUpToDate: true,
 		}, nil
 	}
@@ -252,10 +254,12 @@ func (e *external) Delete(ctx context.Context, cr *v1alpha1.SnowflakeAccount) (m
 	log := logger.New(e.logger, cr.Namespace, "SnowflakeAccount", cr.Name, logger.OpDelete)
 
 	// Phase 2: no active request, no destruction — unless deletion protection
-	// is disabled platform-wide (deletion.protection: false, 002), in which
-	// case this gate is skipped entirely and permit stays nil.
+	// is disabled platform-wide (deletion.protection: false, 002), or no
+	// account was ever recorded, so only a key from a failed create is left
+	// and there is nothing for a permit to protect (012). Then this gate is
+	// skipped entirely and permit stays nil.
 	var permit *v1alpha1.DeletionPermit
-	if e.cfg.Deletion.Protection {
+	if e.cfg.Deletion.Protection && cr.Status.AccountLocator != "" {
 		var err error
 		permit, err = deletion.FindActivePermit(ctx, e.kube, cr.Namespace, v1alpha1.SnowflakeAccountKind, cr.Name)
 		if err != nil {

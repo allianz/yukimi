@@ -98,7 +98,7 @@ controller passes it to Kubernetes unchanged.
 | Module conditions    | Conditions that individual modules own, such as credits used up or groups still syncing.                       | Set on the resource alongside Ready and Synced.                                                        |
 | Events               | Notable occurrences that modules report, such as a warning when credits run out.                               | Recorded on the resource.                                                                              |
 | Applied spec version | Recorded only when every module completed for the current spec.                                                | Lets the next observe report the account as up to date.                                                |
-| Account details      | The account's Snowflake name, login URL and identifier, written by the account module.                         | Saved on the resource immediately, so they are kept even when the pass fails. Without the identifier, the next pass would create the account again. |
+| Account details      | The account's Snowflake name, login URL and identifier, and how far creation got, written by the account module. | Saved on the resource immediately, so they are kept even when the pass fails. Without the identifier, the next pass would create the account again. Without the creation progress, deleting the resource after a failed create would leave the stored key behind. |
 
 A failed apply is always returned to Kubernetes as an error. Otherwise Kubernetes would record the
 pass as successful and hide the failure.
@@ -137,6 +137,7 @@ Kind:         SnowflakeAccount
 Spec:
   ...
 Status:
+  Account Bootstrap:   Completed
   Account Created At:  2026-10-11T08:14:02Z
   Account Locator:     xy12345
   Account Name:        analytics_team_eu_5k3wf
@@ -167,8 +168,17 @@ Events:
 
 This controller enforces the deletion permit defined in 019. Without an active permit, a deleted
 resource stays in Terminating, with a warning event and Ready set to false. The permit is marked as
-used only after the teardown succeeds, so a failed teardown can be retried. A resource whose account
-was never created, for example because its name failed validation, is removed without a permit.
+used only after the teardown succeeds, so a failed teardown can be retried.
+
+A permit protects a Snowflake account, so it is only needed when there is an account to drop. If
+creation failed before an account was made, the platform cleans up whatever it had set up and
+removes the resource without asking for a permit.
+
+| Creation got to | On deletion | Permit needed |
+|---|---|---|
+| nothing | resource removed | no |
+| key stored, no account | key removed, then resource removed | no |
+| account created | account dropped and key removed, then resource removed | yes |
 
 
 ## Public API
@@ -279,9 +289,10 @@ This specification defines the `internal/controller/snowflakeaccount` package th
   (010, 011, 013–015, 017, 018) are not registered because none of them is written yet.
 - Calls `Pipeline.Observe` from the controller's `Observe` and `Pipeline.Apply` from both `Create` and
   `Update` (one shared body). Calls `Pipeline.Destroy` from `Delete` — which the managed reconciler only
-  ever invokes when the preceding `Observe` reported the account as existing; if none was ever created,
-  the reconciler releases the finalizer on its own, without calling `Delete` at all — and only once this
-  controller's own deletion gate (below) has separately authorized the destruction.
+  ever invokes when the preceding `Observe` reported something to tear down (a locator, or an
+  `accountBootstrap` value, 012); if creation never started, the reconciler releases the finalizer on its
+  own, without calling `Delete` at all — and, when a locator is known, only once this controller's own
+  deletion gate (below) has separately authorized the destruction.
 - Builds one `pipeline.ResourceData` per reconcile call, passing the target namespace's labels, read
   fresh from the Kubernetes API on every call — `NewResourceData` takes no backplane config; a module
   that needs one injects its own copy at construction instead.
@@ -294,7 +305,7 @@ This specification defines the `internal/controller/snowflakeaccount` package th
   handled error from `Observe` and from `Create`/`Update`, so a failure lands on `Synced` instead of
   being silently overwritten (an error from `Observe` also stops `Create`/`Update` from being called).
 - Implements the deletion gate (design.md §6.3 Phases 2–3): looks up an `Active`
-  `DeletionPermit` (019) before honoring a `SnowflakeAccount` deletion, blocks and emits
+  `DeletionPermit` (019) before honoring the deletion of a `SnowflakeAccount` whose locator is known, blocks and emits
   `Warning: DeletionBlocked` when none is found, and marks the request `Consumed` once `Pipeline.Destroy`
   succeeds.
 - Finishes `cmd/provider/main.go`'s startup wiring: a `--configDir` flag, `base.Load` (002),
@@ -356,9 +367,21 @@ This specification defines the `internal/controller/snowflakeaccount` package th
   `accountLocator`, or a condition owned by a module that never ran) is left exactly as the previous
   reconcile set it; nothing here blanks or defaults it.
 - **`Observe` runs on a resource that is being deleted** — it reports `ResourceExists:
-  cr.Status.AccountLocator != ""` and returns immediately, without building a `ResourceData` or calling
-  the pipeline at all; only a resource whose account was never created reports `false` here, releasing
-  the finalizer without ever reaching `Delete`.
+  cr.Status.AccountLocator != "" || cr.Status.AccountBootstrap != ""` and returns immediately, without
+  building a `ResourceData` or calling the pipeline at all. Only a resource whose creation never started
+  reports `false` here, releasing the finalizer without ever reaching `Delete`. After a successful
+  teardown the account module (012) has cleared both fields, so the next `Observe` reports `false` and the
+  finalizer is released.
+- **A create failed after the platform key was stored (`accountBootstrap: Started`, no locator), and the
+  resource is deleted** — `Observe` reports the resource as existing, so `Delete` runs. With no locator
+  there is no account for a permit to protect, so `Delete` skips the permit lookup — the same way as
+  with `cfg.Deletion.Protection: false` — and calls `Pipeline.Destroy`, whose account-module teardown
+  deletes only the credential (012). Any `Active` permit that happens to exist is left alone, unconsumed.
+  Typical cause: an account-name collision with an account created outside the platform.
+- **Why is the permit gate keyed on the locator, not on `accountBootstrap`?** The locator is what proves
+  an account exists, and `Completed` is never set without it (012). Keying on the locator also covers
+  resources created before `accountBootstrap` existed, whose field stays empty until their next
+  reconcile.
 - **More than one `Active` `DeletionPermit` targets the same resource** — this controller does
   not resolve that itself; `deletion.FindActivePermit` (019) already returns a single, deterministic
   candidate (earliest `creationTimestamp`), so `Delete` only ever sees one request or `nil`.
@@ -450,8 +473,8 @@ of `internal/account/modules/{guardrailcheck,quotacheck,parameter,network,auth,i
 - **SC-005**: every `pipeline.NewResourceData` call this controller makes passes no backplane
   config — the constructor itself accepts none.
 - **SC-006**: `Observe` on a resource with a non-nil `GetDeletionTimestamp()` reports `ResourceExists:
-  cr.Status.AccountLocator != ""` and `ResourceUpToDate: true` without building a `ResourceData` or
-  calling any pipeline method.
+  cr.Status.AccountLocator != "" || cr.Status.AccountBootstrap != ""` and `ResourceUpToDate: true`
+  without building a `ResourceData` or calling any pipeline method.
 - **SC-007**: `Create` and `Update` both delegate to the same internal function, which calls
   `Pipeline.Apply` exactly once per call.
 - **SC-008**: whenever `Result.Err()` is non-nil, `Create`/`Update` returns the handled error —
@@ -468,10 +491,12 @@ of `internal/account/modules/{guardrailcheck,quotacheck,parameter,network,auth,i
   exist yet — and computes none of them.
 - **SC-013**: `Observe` returns `obs.ExternalObservation()` and the handled `obs.Err()`; the controller
   contains no generation comparison and no `Ready`-latch check.
-- **SC-014**: `Delete` returns a user error and records a `Warning: DeletionBlocked` event when
-  `deletion.FindActivePermit` returns `nil`, and does not release the finalizer.
-- **SC-015**: `Delete` calls `Pipeline.Destroy` only once `FindActivePermit` has returned a non-nil
-  request, and calls `deletion.MarkConsumed` only once `Pipeline.Destroy` has returned `nil`.
+- **SC-014**: For a resource with a locator, `Delete` returns a user error and records a `Warning:
+  DeletionBlocked` event when `deletion.FindActivePermit` returns `nil`, and does not release the
+  finalizer.
+- **SC-015**: For a resource with a locator, `Delete` calls `Pipeline.Destroy` only once
+  `FindActivePermit` has returned a non-nil request, and calls `deletion.MarkConsumed` only once
+  `Pipeline.Destroy` has returned `nil`.
 - **SC-016**: a `Pipeline.Destroy` failure leaves the matched `DeletionPermit` `Active` (never
   calls `MarkConsumed`) and returns a handled error.
 - **SC-017**: `internal/controller/snowflakeaccount` imports none of
@@ -487,6 +512,13 @@ of `internal/account/modules/{guardrailcheck,quotacheck,parameter,network,auth,i
 - **SC-021**: when `cfg.Deletion.Protection` is `false`, `Delete` never calls `deletion.FindActivePermit`
   or `deletion.MarkConsumed`, never emits `DeletionBlocked`, and still calls `Pipeline.Destroy` exactly
   once; when `true` (including the zero-config default), behavior is unchanged from SC-014–SC-016.
+- **SC-022**: For a resource with no locator, `Delete` never calls `deletion.FindActivePermit` or
+  `deletion.MarkConsumed` and never emits `DeletionBlocked`, whatever `cfg.Deletion.Protection` says, and
+  calls `Pipeline.Destroy` exactly once.
+- **SC-023**: A resource whose `Apply` failed after the platform key was stored (`accountBootstrap:
+  Started`, no locator) and which is then deleted gets its credential deleted and its finalizer released,
+  with no `DeletionPermit` present (unit test: fail `CREATE ACCOUNT`, delete, assert
+  `KeyManager.DeleteCredentials` was called and a following `Observe` reports `ResourceExists: false`).
 
 ## Security Considerations
 
@@ -499,6 +531,12 @@ of `internal/account/modules/{guardrailcheck,quotacheck,parameter,network,auth,i
 - **Deletion's positive control is fully enforced regardless of how small the provisioning pipeline is**
   — the deletion gate depends only on 019's own lifecycle, never on which modules happen to be
   registered, so today's reduced pipeline does not weaken it.
+- **The gate is skipped only when no locator is recorded.** Without a locator the account module's
+  teardown issues no `DROP ACCOUNT` (012), so skipping the permit can only ever delete a credential for an
+  account that was never recorded, never drop one. A tenant could reach that path for a live account
+  only by blanking the locator, which requires write access to the `status` subresource; tenant RBAC
+  must not grant it. Even then, the result is a lost credential, not a dropped account. An account that was
+  created but whose locator was never persisted stays an operator job (012).
 - **`cfg.Deletion.Protection: false` (002) removes the positive-control guarantee platform-wide** — a
   deliberate operator opt-out (e.g. for a constantly-wiped dev cluster), not a per-resource exception;
   every `SnowflakeAccount` in the deployment loses the deletion gate at once, with no way to re-enable it
@@ -560,8 +598,9 @@ func (e *external) Observe(ctx context.Context, cr *v1alpha1.SnowflakeAccount) (
     log := logger.New(e.logger, cr.Namespace, "SnowflakeAccount", cr.Name, logger.OpObserve)
 
     if cr.GetDeletionTimestamp() != nil {
+        // Something to tear down: an account, or a key a failed create left behind (012).
         return managed.ExternalObservation{
-            ResourceExists:   cr.Status.AccountLocator != "",
+            ResourceExists:   cr.Status.AccountLocator != "" || cr.Status.AccountBootstrap != "",
             ResourceUpToDate: true,
         }, nil
     }
@@ -637,10 +676,11 @@ func (e *external) Delete(ctx context.Context, cr *v1alpha1.SnowflakeAccount) (m
     log := logger.New(e.logger, cr.Namespace, "SnowflakeAccount", cr.Name, logger.OpDelete)
 
     // Phase 2: no active request, no destruction — unless deletion protection
-    // is disabled platform-wide (cfg.Deletion.Protection, 002), in which case
+    // is disabled platform-wide (cfg.Deletion.Protection, 002), or no account
+    // was ever recorded (only a key from a failed create is left, 012); then
     // this gate is skipped entirely and req stays nil.
     var req *v1alpha1.DeletionPermit
-    if e.cfg.Deletion.Protection {
+    if e.cfg.Deletion.Protection && cr.Status.AccountLocator != "" {
         var err error
         req, err = deletion.FindActivePermit(ctx, e.kube, cr.Namespace, v1alpha1.SnowflakeAccountKind, cr.Name)
         if err != nil {
@@ -661,7 +701,8 @@ func (e *external) Delete(ctx context.Context, cr *v1alpha1.SnowflakeAccount) (m
     data := pipeline.NewResourceData(cr, labels, log, e.pool)
 
     // Phase 3: every module's Teardown, in reverse — today, just the account
-    // module's DROP ACCOUNT and credential cleanup.
+    // module's DROP ACCOUNT and credential cleanup, which also clears
+    // status.accountLocator and status.accountBootstrap.
     if err := e.pipeline.Destroy(ctx, data); err != nil {
         return managed.ExternalDelete{}, log.Handle(err)
     }
