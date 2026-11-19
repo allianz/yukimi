@@ -123,3 +123,83 @@ func TestIdentifierString_ContainsOnlyIdentifiers(t *testing.T) {
 		t.Errorf("String() = %q, must not contain '/' (illegal in some secrets-manager backends)", got)
 	}
 }
+
+// splitIdentifierParts splits the part of an identifier after its "yk-"
+// prefix back into the segments it was joined from. It is written
+// independently of the production code: a segment never starts with '-' and
+// never contains "--", but it may end with '-', so a separator is the "--"
+// that is directly followed by a character other than '-' (in "a---b" the
+// segments are "a-" and "b").
+func splitIdentifierParts(s string) []string {
+	var parts []string
+	start := 0
+	for i := 0; i+2 < len(s); i++ {
+		if s[i] == '-' && s[i+1] == '-' && s[i+2] != '-' {
+			parts = append(parts, s[start:i])
+			start = i + 2
+			i++
+		}
+	}
+	return append(parts, s[start:])
+}
+
+// FuzzNewTenantIdentifier checks the guarantee the identifier format exists
+// for: two different (org, namespace, accountName) tuples never share a
+// secret, because every identifier decodes back to exactly its own segments
+// (after the documented '_' to '-' mapping). It also checks the charset and
+// length every backend relies on, and that a rejected input is always a
+// user error for an invalid segment and a system error only for the length.
+func FuzzNewTenantIdentifier(f *testing.F) {
+	f.Add("my_org", "finance", "analytics-team-eu")
+	f.Add("a-", "b", "c")
+	f.Add("a", "b-", "c-")
+	f.Add("a", "-b", "c")
+	f.Add("a", "b--c", "d")
+	f.Add("a", "b_-c", "d")
+	f.Add("a", "b", "c/../d")
+	f.Add("", "b", "c")
+	f.Add(strings.Repeat("a", 60), strings.Repeat("b", 60), "c")
+	f.Fuzz(func(t *testing.T, org, namespace, accountName string) {
+		id, err := NewTenantIdentifier(org, namespace, accountName)
+		if err != nil {
+			if id != (Identifier{}) {
+				t.Fatalf("NewTenantIdentifier(%q, %q, %q) returned %q together with an error", org, namespace, accountName, id)
+			}
+			segmentsValid := validateSegment("", org) == nil && validateSegment("", namespace) == nil &&
+				validateSegment("", accountName) == nil
+			if errors.IsUserError(err) == segmentsValid {
+				t.Fatalf("NewTenantIdentifier(%q, %q, %q): user error = %v, but segments valid = %v: %v",
+					org, namespace, accountName, errors.IsUserError(err), segmentsValid, err)
+			}
+			return
+		}
+
+		got := id.String()
+		if len(got) > maxIdentifierLen {
+			t.Fatalf("identifier %q is %d characters, limit is %d", got, len(got), maxIdentifierLen)
+		}
+		for _, r := range got {
+			if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-') {
+				t.Fatalf("identifier %q contains %q, outside the charset shared by all backends", got, r)
+			}
+		}
+		rest, ok := strings.CutPrefix(got, "yk-")
+		if !ok {
+			t.Fatalf("identifier %q does not start with \"yk-\"", got)
+		}
+		want := []string{
+			strings.ReplaceAll(org, "_", "-"),
+			strings.ReplaceAll(namespace, "_", "-"),
+			strings.ReplaceAll(accountName, "_", "-"),
+		}
+		parts := splitIdentifierParts(rest)
+		if len(parts) != len(want) {
+			t.Fatalf("identifier %q decodes to %d segments %q, want %q", got, len(parts), parts, want)
+		}
+		for i := range want {
+			if parts[i] != want[i] {
+				t.Fatalf("identifier %q decodes to %q, want %q", got, parts, want)
+			}
+		}
+	})
+}

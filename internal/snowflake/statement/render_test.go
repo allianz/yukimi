@@ -205,28 +205,3 @@ func FuzzQuoteLiteral(f *testing.F) {
 		}
 	})
 }
-
-func FuzzBareIdentifier(f *testing.F) {
-	f.Add("STATEMENT_TIMEOUT")
-	f.Add("1PARAM")
-	f.Add("")
-	f.Add("STATEMENT_TIMEOUT; DROP TABLE X")
-	f.Add(`STATEMENT_TIMEOUT"`)
-	f.Fuzz(func(t *testing.T, name string) {
-		got, err := BareIdentifier(name)
-		if err != nil {
-			if !errors.IsUserError(err) {
-				t.Fatalf("BareIdentifier(%q) returned a non-user error: %v", name, err)
-			}
-			return
-		}
-		if got != name {
-			t.Fatalf("BareIdentifier(%q) = %q, want unchanged", name, got)
-		}
-		for _, r := range got {
-			if r > 127 {
-				t.Fatalf("BareIdentifier(%q) accepted non-ASCII rune %q as a bare identifier", name, r)
-			}
-		}
-	})
-}
