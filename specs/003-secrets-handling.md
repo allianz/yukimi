@@ -44,7 +44,7 @@ Each tenant has its own Kubernetes namespace, which anchors access to its Snowfl
 
 ## Key Concept: One Identifier Shape for Every Store
 
-The identifier is used as the key name in every secret store. Azure Key Vault is the most restrictive: at most 127 characters, and `-` is the only special character allowed. Parts are separated by `--` to avoid collisions, so a part itself must never contain `--`; this is validated.
+The identifier is used as the key name in every secret store. Azure Key Vault is the most restrictive: at most 127 characters, and `-` is the only special character allowed. Parts are separated by `--` to avoid collisions, so a part itself must never contain `--`; this is validated. The identifier is always lowercase: Snowflake treats organization and account names as case-insensitive, so `MyOrg` and `myorg` must lead to the same credential.
 
 ## Key Concept: Recover Accounts and Credentials Together
 
@@ -123,6 +123,8 @@ type Identifier struct{ /* unexported */ }
 // upstream invariant drift, see Error Classification). "__", "-_" and "_-"
 // are rejected because '_' becomes '-'. Segments are re-validated even if
 // the caller already did, so isolation never depends on upstream checks.
+// Also a user error if org is "orgadmin" in any case: that org would let a
+// tenant identifier take the org-admin identifier's shape.
 func NewTenantIdentifier(org, namespace, accountName string) (Identifier, error)
 
 // NewOrgAdminIdentifier builds yk-orgadmin--<org>--<orgAdminAccount> from
@@ -236,6 +238,7 @@ internal/secrets/
 
 **User Errors** (use `errors.NewUserError()`):
 - Identifier validation failure: `invalid secret identifier segment 'team/a': must not contain '/'`
+- An org named `orgadmin` (any case), reserved for the org-admin identifier: `organization name "OrgAdmin" is reserved`
 
 **System Errors** (use `fmt.Errorf("context: %w", err)`):
 - Identifier exceeding the shared backend length limit: `secret identifier "yk-..." is 140 characters, which exceeds the 127-character limit shared by supported secrets-manager backends`. Every length this package can see is already bounded tightly enough elsewhere (006, 012) that this should never actually trigger — if it does, an invariant drifted out of sync upstream, which is an operator's problem to reconcile, not a caller's fixable input mistake.
@@ -301,10 +304,11 @@ This specification defines the `internal/secrets/` package that:
 
 - **SC-001**: `KeyStore` has exactly four methods — `Get`, `Create`, `Update`, `Delete` — each taking an `Identifier`.
 - **SC-002**: Every `KeyStore` method carries its value as a `string` — `Get` returns one (alongside a `time.Time`), `Create` and `Update` accept one; no method exposes `[]byte`.
-- **SC-003**: `NewTenantIdentifier` constructs `yk-<org>--<namespace>--<accountName>` from exactly those three inputs, mapping `_` to `-` in each.
-- **SC-004**: `NewOrgAdminIdentifier` constructs `yk-orgadmin--<org>--<orgAdminAccount>`, mapping `_` to `-` in each.
+- **SC-003**: `NewTenantIdentifier` constructs `yk-<org>--<namespace>--<accountName>` from exactly those three inputs, mapping `_` to `-` and uppercase to lowercase in each.
+- **SC-004**: `NewOrgAdminIdentifier` constructs `yk-orgadmin--<org>--<orgAdminAccount>`, mapping `_` to `-` and uppercase to lowercase in each.
 - **SC-005**: Both identifier constructors return a user error for any empty segment, one starting with `-`/`_`, one containing `/`, `.`, `..`, any of `--`, `__`, `-_`, `_-`, or a character outside `[A-Za-z0-9_-]`.
 - **SC-005a**: Both identifier constructors return a system error, not a user error, for a resulting identifier longer than 127 characters — this is a last-resort invariant check, not a condition a caller's input can normally reach.
+- **SC-005b**: Both identifier constructors return a user error for an org of `orgadmin` in any case. Otherwise a tenant in namespace `orgadmin` with an account named like `orgAdminAccount` would get the org-admin identifier `yk-orgadmin--orgadmin--<orgAdminAccount>`.
 - **SC-006**: `Identifier` values are constructible only via `NewTenantIdentifier`/`NewOrgAdminIdentifier` — no exported field or function accepts an arbitrary unvalidated string as an `Identifier`.
 - **SC-007**: `Credentials` marshals to JSON with exactly the fields `username`, `public_key`, `private_key` — no `account` field.
 - **SC-008**: `GenerateKeyPair` produces a minimum 2048-bit RSA key from `crypto/rand`: PKCS#8-encoded, PEM-wrapped private key; PKIX-encoded, single-line base64 public key with no PEM delimiters.

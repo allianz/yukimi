@@ -47,6 +47,73 @@ func TestNewOrgAdminIdentifier_BuildsExpectedIdentifier(t *testing.T) {
 	}
 }
 
+// SC-003, SC-004: both constructors lowercase every segment. Snowflake org
+// and account names are case-insensitive, so spellings that differ only in
+// case name the same org and must reach the same credential.
+func TestIdentifiers_AreLowercase(t *testing.T) {
+	tenant, err := NewTenantIdentifier("My_Org", "finance", "analytics-team-eu")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := "yk-my-org--finance--analytics-team-eu"; tenant.String() != want {
+		t.Errorf("tenant: got %q, want %q", tenant.String(), want)
+	}
+	admin, err := NewOrgAdminIdentifier("MY_ORG", "Platform_Admin")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := "yk-orgadmin--my-org--platform-admin"; admin.String() != want {
+		t.Errorf("org-admin: got %q, want %q", admin.String(), want)
+	}
+}
+
+// A tenant identifier must never equal the org-admin identifier of the same
+// deployment, or a tenant account would share the org-admin credential's
+// secret. Both use the same org from base.yaml (002). The tenant identifier
+// yk-<org>--<namespace>--<accountName> takes the org-admin shape
+// yk-orgadmin--<org>--<orgAdminAccount> when org is "orgadmin" (in any case),
+// the namespace equals the org, and the account is named like
+// orgAdminAccount. Either constructor rejecting its input also prevents the
+// collision.
+func TestIdentifiers_TenantNeverCollidesWithOrgAdmin(t *testing.T) {
+	cases := []struct{ org, orgAdminAccount, namespace, accountName string }{
+		{"orgadmin", "platform", "orgadmin", "platform"},
+		{"OrgAdmin", "platform", "orgadmin", "platform"},
+		{"ORGADMIN", "PLATFORM_ADMIN", "orgadmin", "platform-admin"},
+	}
+	for _, c := range cases {
+		admin, adminErr := NewOrgAdminIdentifier(c.org, c.orgAdminAccount)
+		tenant, tenantErr := NewTenantIdentifier(c.org, c.namespace, c.accountName)
+		if adminErr != nil || tenantErr != nil {
+			continue
+		}
+		if admin == tenant {
+			t.Errorf("org=%q orgAdminAccount=%q: tenant (namespace=%q, accountName=%q) gets the org-admin identifier %q",
+				c.org, c.orgAdminAccount, c.namespace, c.accountName, admin)
+		}
+	}
+}
+
+// SC-005b: both constructors reject "orgadmin" as org, in any case, with a
+// user error: the value comes from base.yaml and is fixed by editing it.
+func TestIdentifiers_RejectOrgAdminAsOrg(t *testing.T) {
+	for _, org := range []string{"orgadmin", "OrgAdmin", "ORGADMIN"} {
+		if id, err := NewTenantIdentifier(org, "finance", "analytics-team-eu"); !errors.IsUserError(err) || id != (Identifier{}) {
+			t.Errorf("NewTenantIdentifier(org=%q) = (%q, %v), want zero value and a user error", org, id, err)
+		}
+		if id, err := NewOrgAdminIdentifier(org, "platform"); !errors.IsUserError(err) || id != (Identifier{}) {
+			t.Errorf("NewOrgAdminIdentifier(org=%q) = (%q, %v), want zero value and a user error", org, id, err)
+		}
+	}
+	// Only the org is reserved: the same name in another segment is fine.
+	if _, err := NewTenantIdentifier("my_org", "orgadmin", "orgadmin"); err != nil {
+		t.Errorf("namespace/accountName \"orgadmin\" must be allowed, got %v", err)
+	}
+	if _, err := NewOrgAdminIdentifier("my_org", "orgadmin"); err != nil {
+		t.Errorf("orgAdminAccount \"orgadmin\" must be allowed, got %v", err)
+	}
+}
+
 // SC-005: NewTenantIdentifier rejects an empty, '/'-containing, '.'-containing,
 // '..'-containing, leading-separator, repeated-separator, or out-of-class
 // segment in any of its three positions.
@@ -146,7 +213,7 @@ func splitIdentifierParts(s string) []string {
 // FuzzNewTenantIdentifier checks the guarantee the identifier format exists
 // for: two different (org, namespace, accountName) tuples never share a
 // secret, because every identifier decodes back to exactly its own segments
-// (after the documented '_' to '-' mapping). It also checks the charset and
+// (after the documented mapping of '_' to '-' and of uppercase to lowercase). It also checks the charset and
 // length every backend relies on, and that a rejected input is always a
 // user error for an invalid segment and a system error only for the length.
 func FuzzNewTenantIdentifier(f *testing.F) {
@@ -187,11 +254,8 @@ func FuzzNewTenantIdentifier(f *testing.F) {
 		if !ok {
 			t.Fatalf("identifier %q does not start with \"yk-\"", got)
 		}
-		want := []string{
-			strings.ReplaceAll(org, "_", "-"),
-			strings.ReplaceAll(namespace, "_", "-"),
-			strings.ReplaceAll(accountName, "_", "-"),
-		}
+		secretSafe := func(seg string) string { return strings.ToLower(strings.ReplaceAll(seg, "_", "-")) }
+		want := []string{secretSafe(org), secretSafe(namespace), secretSafe(accountName)}
 		parts := splitIdentifierParts(rest)
 		if len(parts) != len(want) {
 			t.Fatalf("identifier %q decodes to %d segments %q, want %q", got, len(parts), parts, want)
