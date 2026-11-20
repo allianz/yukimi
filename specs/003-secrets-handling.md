@@ -123,8 +123,6 @@ type Identifier struct{ /* unexported */ }
 // upstream invariant drift, see Error Classification). "__", "-_" and "_-"
 // are rejected because '_' becomes '-'. Segments are re-validated even if
 // the caller already did, so isolation never depends on upstream checks.
-// Also a user error if org is "orgadmin" in any case: that org would let a
-// tenant identifier take the org-admin identifier's shape.
 func NewTenantIdentifier(org, namespace, accountName string) (Identifier, error)
 
 // NewOrgAdminIdentifier builds yk-orgadmin--<org>--<orgAdminAccount> from

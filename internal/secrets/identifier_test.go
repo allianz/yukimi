@@ -246,7 +246,7 @@ func FuzzNewTenantIdentifier(f *testing.F) {
 			t.Fatalf("identifier %q is %d characters, limit is %d", got, len(got), maxIdentifierLen)
 		}
 		for _, r := range got {
-			if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-') {
+			if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '-' {
 				t.Fatalf("identifier %q contains %q, outside the charset shared by all backends", got, r)
 			}
 		}
