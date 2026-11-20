@@ -57,12 +57,27 @@ func validateSegment(name, value string) error {
 	return nil
 }
 
+// validateOrg rejects the org "orgadmin" in any case: with it, a tenant in
+// namespace "orgadmin" could get the org-admin identifier
+// yk-orgadmin--orgadmin--<orgAdminAccount> and share its secret.
+func validateOrg(org string) error {
+	if strings.EqualFold(org, "orgadmin") {
+		return errors.NewUserError(fmt.Sprintf("organization name %q is reserved", org))
+	}
+	return nil
+}
+
 // toSecretSafe maps a validated segment onto the charset shared by every
 // supported secrets-manager backend (letters, digits, '-'): Azure Key Vault
 // secret names disallow '_', which is otherwise the only character
-// validateSegment permits beyond that charset.
+// validateSegment permits beyond that charset. It also lowercases the
+// segment: Snowflake account and organization names are case-insensitive,
+// so "MyOrg" and "myorg" name the same org and must map to the same
+// identifier, and Kubernetes names are lowercase anyway. Lowercasing also
+// keeps the identifier unique on a backend that compares secret names
+// case-insensitively.
 func toSecretSafe(s string) string {
-	return strings.ReplaceAll(s, "_", "-")
+	return strings.ToLower(strings.ReplaceAll(s, "_", "-"))
 }
 
 // checkLen rejects an identifier that would exceed maxIdentifierLen. This is
@@ -101,6 +116,7 @@ type Identifier struct {
 // Returns:
 //   - User error if any segment is empty, starts with '-'/'_', contains '/',
 //     '.', a repeated '-'/'_', or a character outside [A-Za-z0-9_-]
+//   - User error if org is "orgadmin" in any case (see validateOrg)
 //   - System error if the resulting identifier exceeds maxIdentifierLen —
 //     every caller-visible length is already bounded tightly enough
 //     elsewhere that this should never actually happen (see checkLen)
@@ -113,6 +129,9 @@ func NewTenantIdentifier(org, namespace, accountName string) (Identifier, error)
 		if err := validateSegment(seg.name, seg.value); err != nil {
 			return Identifier{}, err
 		}
+	}
+	if err := validateOrg(org); err != nil {
+		return Identifier{}, err
 	}
 	value := fmt.Sprintf("yk-%s--%s--%s", toSecretSafe(org), toSecretSafe(namespace), toSecretSafe(accountName))
 	if err := checkLen(value); err != nil {
@@ -129,7 +148,8 @@ func NewTenantIdentifier(org, namespace, accountName string) (Identifier, error)
 //   - orgAdminAccount: Config.Snowflake.OrgAdminAccount (002)
 //
 // Returns:
-//   - User error under the same validation rule as NewTenantIdentifier
+//   - User error under the same validation rules as NewTenantIdentifier,
+//     including the rejection of "orgadmin" as org
 func NewOrgAdminIdentifier(org, orgAdminAccount string) (Identifier, error) {
 	for _, seg := range []struct{ name, value string }{
 		{"org", org},
@@ -138,6 +158,9 @@ func NewOrgAdminIdentifier(org, orgAdminAccount string) (Identifier, error) {
 		if err := validateSegment(seg.name, seg.value); err != nil {
 			return Identifier{}, err
 		}
+	}
+	if err := validateOrg(org); err != nil {
+		return Identifier{}, err
 	}
 	value := fmt.Sprintf("yk-orgadmin--%s--%s", toSecretSafe(org), toSecretSafe(orgAdminAccount))
 	if err := checkLen(value); err != nil {

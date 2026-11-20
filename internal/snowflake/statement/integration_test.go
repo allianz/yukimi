@@ -300,12 +300,11 @@ func fuzzedTextPayloads() []string {
 // SQL statement with every reason to expect success — SELECT <literal> AS
 // VALUE, the simplest possible vehicle for a string literal — across
 // fuzzedTextPayloads()'s sweep, asserting Snowflake returns each payload
-// back byte-for-byte. FuzzQuoteLiteral (render_test.go) already proves
-// QuoteLiteral's output is self-consistently reversible by this package's
-// own decode rule; it can never notice a live disagreement with Snowflake's
-// actual grammar — which is exactly how QuoteLiteral's backslash-escaping
-// gap went unnoticed until a real account's COMMENT came back corrupted
-// (see QuoteLiteral's doc comment, render.go, and
+// back byte-for-byte. Only a live round trip can confirm QuoteLiteral
+// matches Snowflake's actual grammar: a unit-level check against this
+// package's own decode rule cannot — which is exactly how QuoteLiteral's
+// backslash-escaping gap went unnoticed until a real account's COMMENT came
+// back corrupted (see QuoteLiteral's doc comment, render.go, and
 // account/modules/account/integration_test.go's
 // TestIntegration_CreateWithFuzzedFields, which first surfaced it).
 func TestIntegration_QuoteLiteralFuzzedRoundTrip(t *testing.T) {
@@ -336,12 +335,10 @@ func TestIntegration_QuoteLiteralFuzzedRoundTrip(t *testing.T) {
 // has no production caller yet — its doc comment marks IDENTIFIER(?) binding
 // at every position that would use it "Unconfirmed" (render.go) — so this is
 // the only live confirmation anywhere in this codebase that its own quoting
-// is correct at all, not just self-consistent with its own decode rule the
-// way FuzzQuoteIdentifier's round trip (render_test.go) is. SELECT 1 AS
-// <identifier> is the simplest SQL with every reason to expect success; a
-// quoted alias's column name comes back exactly as written, so
-// fuzzedTextPayloads()'s sweep is asserted against Result.Columns instead of
-// a row value.
+// is correct at all. SELECT 1 AS <identifier> is the simplest SQL with
+// every reason to expect success; a quoted alias's column name comes back
+// exactly as written, so fuzzedTextPayloads()'s sweep is asserted against
+// Result.Columns instead of a row value.
 func TestIntegration_QuoteIdentifierFuzzedRoundTrip(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test — run via `make test-integration`")

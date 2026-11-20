@@ -26,7 +26,7 @@
 # the same way as internal/secrets/identifier.go: "yk-<org>--<namespace>--
 # <account>" for a tenant credential, "yk-orgadmin--<org>--<orgAdminAccount>"
 # for the org-admin credential, with every '_' mapped to '-' (Azure Key
-# Vault's secret-name charset excludes '_').
+# Vault's secret-name charset excludes '_') and every letter lowercased.
 #
 
 set -euo pipefail
@@ -198,15 +198,20 @@ echo "  Overwrite existing:  ${OVERWRITE}"
 echo ""
 
 # Define secrets to create (parallel arrays for bash 3.2 compatibility).
-# '_' is mapped to '-' to match internal/secrets/identifier.go's
-# toSecretSafe -- Azure Key Vault's secret-name charset excludes '_'.
-ORG_ADMIN_SECRET_PATH="yk-orgadmin--${SNOWFLAKE_ORG//_/-}--${SNOWFLAKE_ORG_ADMIN_ACCOUNT//_/-}"
+# Each segment is mapped like internal/secrets/identifier.go's toSecretSafe:
+# '_' becomes '-' (Azure Key Vault's secret-name charset excludes '_') and
+# uppercase becomes lowercase (Snowflake names are case-insensitive).
+# tr instead of ${var,,} keeps this bash 3.2 compatible.
+secret_safe() {
+    printf '%s' "${1//_/-}" | tr '[:upper:]' '[:lower:]'
+}
+ORG_ADMIN_SECRET_PATH="yk-orgadmin--$(secret_safe "${SNOWFLAKE_ORG}")--$(secret_safe "${SNOWFLAKE_ORG_ADMIN_ACCOUNT}")"
 
 echo "Secrets to create:"
 echo "  - ${ORG_ADMIN_SECRET_PATH} (username: ${USERNAME})"
 
 if [[ "${GENERATE_TEST_KEYS}" == "true" ]]; then
-    TENANT_SECRET_PATH="yk-${SNOWFLAKE_ORG//_/-}--${SAMPLE_CUSTOMER_NAMESPACE//_/-}--${SAMPLE_CUSTOMER_ACCOUNT//_/-}"
+    TENANT_SECRET_PATH="yk-$(secret_safe "${SNOWFLAKE_ORG}")--$(secret_safe "${SAMPLE_CUSTOMER_NAMESPACE}")--$(secret_safe "${SAMPLE_CUSTOMER_ACCOUNT}")"
     echo "  - ${TENANT_SECRET_PATH} (username: ${USERNAME})"
 fi
 echo ""

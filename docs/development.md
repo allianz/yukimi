@@ -41,6 +41,7 @@ These tools are downloaded to `.cache/tools/`.
 - **`make dev-clean`**: Clean up local development environment (deletes kind cluster)
 - **`make test`**: Run unit tests (with `-short`, which skips integration tests)
 - **`make test-integration`**: Run integration tests only. **Requires real AWS and Snowflake access** via `.env`
+- **`make test-fuzz`**: Fuzz every `Fuzz*` target in turn for `FUZZ_TIME` each (default `30s`); `FUZZ_RUN` limits it to the targets whose name matches. 
 - **`make reviewable`**: Ensures PR readiness — `generate`, `lint`, `test`. This is what CI gates on
 
 #### Code Quality & Testing
