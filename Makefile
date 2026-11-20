@@ -164,7 +164,7 @@ E2E_CLEAN_FLAGS ?=
 e2e.clean:
 	@$(GO) run -tags e2e ./e2e/clean $(E2E_CLEAN_FLAGS)
 
-.PHONY: submodules fallthrough run dev dev-clean promote tag release.tag e2e e2e.run e2e.clean test-integration
+.PHONY: submodules fallthrough run dev dev-clean promote tag release.tag e2e e2e.run e2e.clean test-integration test-fuzz
 
 # ====================================================================================
 # Disabled Targets
@@ -187,6 +187,29 @@ test-integration:
 	@mkdir -p $(GO_TEST_OUTPUT)
 	@CGO_ENABLED=$(GO_CGO_ENABLED) $(GOHOST) test -v -run Integration $(GO_TEST_FLAGS) $(GO_STATIC_FLAGS) $(GO_PACKAGES) 2>&1 | tee $(GO_TEST_OUTPUT)/integration-tests.log || $(FAIL)
 	@$(OK) go test integration-tests
+
+# Fuzz every Fuzz* target in GO_PACKAGES in turn for FUZZ_TIME each (`go test -fuzz`
+# takes one target per run). Failing inputs land in testdata/fuzz/<FuzzName>/;
+# commit them and `make test` replays them as regression cases.
+#   make test-fuzz FUZZ_TIME=5m FUZZ_RUN=NewTenantIdentifier
+FUZZ_TIME ?= 30s
+# Fuzz only the targets whose name matches this awk regular expression.
+FUZZ_RUN ?= .
+
+test-fuzz:
+	@$(INFO) go test fuzz-tests
+	@mkdir -p $(GO_TEST_OUTPUT)
+	@set -o pipefail; \
+	targets=$$(CGO_ENABLED=$(GO_CGO_ENABLED) $(GOHOST) test -list '^Fuzz' $(GO_STATIC_FLAGS) $(GO_PACKAGES) \
+		| awk -v re='$(FUZZ_RUN)' '/^Fuzz/ && $$1 ~ re { f = f " " $$1 } /^ok / { if (f != "") print $$2 f; f = "" }') || { $(FAIL); exit 1; }; \
+	[ -n "$$targets" ] || { echo "no fuzz targets match FUZZ_RUN='$(FUZZ_RUN)'"; $(FAIL); exit 1; }; \
+	echo "$$targets" | while read -r pkg names; do \
+		for name in $$names; do \
+			echo "--- $$name ($$pkg, $(FUZZ_TIME))"; \
+			CGO_ENABLED=$(GO_CGO_ENABLED) $(GOHOST) test -run '^$$' -fuzz "^$$name\$$" -fuzztime $(FUZZ_TIME) $(GO_TEST_FLAGS) $(GO_STATIC_FLAGS) "$$pkg" || exit 1; \
+		done; \
+	done 2>&1 | tee $(GO_TEST_OUTPUT)/fuzz-tests.log || $(FAIL)
+	@$(OK) go test fuzz-tests
 
 # Override go.test.unit to add -short flag for skipping integration tests
 go.test.unit:
@@ -258,6 +281,7 @@ Manifest Targets:
 Test Targets:
     test                  Unit tests only (-short, which skips the integration tests).
     test-integration      Integration tests only. Needs real AWS and Snowflake access via .env.
+    test-fuzz             Fuzz every Fuzz* target for FUZZ_TIME each (default 30s); FUZZ_RUN filters by name.
 
 endef
 # The reason CROSSPLANE_MAKE_HELP is used instead of CROSSPLANE_HELP is because the crossplane
