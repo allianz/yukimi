@@ -9,9 +9,8 @@
 <br />
 <br />
 
-[![License](https://img.shields.io/badge/License-Apache%202.0-22C2FF.svg)](LICENSE)
-[![Go Version](https://img.shields.io/badge/Go-1.27-22C2FF.svg)](https://golang.org/doc/go1.27)
 [![OpenSSF Scorecard](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fapi.securityscorecards.dev%2Fprojects%2Fgithub.com%2Fallianz%2Fyukimi&query=%24.score&label=OpenSSF%20Scorecard&suffix=%2F10&color=22C2FF)](https://scorecard.dev/viewer/?uri=github.com/allianz/yukimi)
+[![OpenSSF Best Practices](https://img.shields.io/cii/level/16922?label=OpenSSF%20Best%20Practices&color=22C2FF)](https://www.bestpractices.dev/projects/16922)
 [![GitHub Stars](https://img.shields.io/github/stars/allianz/yukimi?color=22C2FF)](https://github.com/allianz/yukimi/stargazers)
 
 
