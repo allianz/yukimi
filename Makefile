@@ -188,13 +188,10 @@ test-integration:
 	@CGO_ENABLED=$(GO_CGO_ENABLED) $(GOHOST) test -v -run Integration $(GO_TEST_FLAGS) $(GO_STATIC_FLAGS) $(GO_PACKAGES) 2>&1 | tee $(GO_TEST_OUTPUT)/integration-tests.log || $(FAIL)
 	@$(OK) go test integration-tests
 
-# Fuzz tests. `go test -fuzz` accepts exactly one target in one package per run, so
-# test-fuzz lists every Fuzz* function in GO_PACKAGES and fuzzes each in turn for
-# FUZZ_TIME. `make test` already runs their seed corpus; this target is the one that
-# actually mutates inputs. A failing input is written to the package's
-# testdata/fuzz/<FuzzName>/ directory: commit it, and it becomes a regression case
-# that `make test` replays from then on.
-#   make test-fuzz FUZZ_TIME=5m FUZZ_RUN=QuoteLiteral
+# Fuzz every Fuzz* target in GO_PACKAGES in turn for FUZZ_TIME each (`go test -fuzz`
+# takes one target per run). Failing inputs land in testdata/fuzz/<FuzzName>/;
+# commit them and `make test` replays them as regression cases.
+#   make test-fuzz FUZZ_TIME=5m FUZZ_RUN=NewTenantIdentifier
 FUZZ_TIME ?= 30s
 # Fuzz only the targets whose name matches this awk regular expression.
 FUZZ_RUN ?= .

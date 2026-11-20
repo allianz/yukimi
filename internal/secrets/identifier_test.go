@@ -267,3 +267,60 @@ func FuzzNewTenantIdentifier(f *testing.F) {
 		}
 	})
 }
+
+// maxSeenIdentifiers bounds the memory FuzzNewTenantIdentifier_NoCollisions
+// uses; the table of seen identifiers is cleared once it reaches this size.
+const maxSeenIdentifiers = 100_000
+
+// FuzzNewTenantIdentifier_NoCollisions treats NewTenantIdentifier as a
+// one-way function and checks that two different tenants never get the same
+// identifier. From four fuzzed values it builds a few tenant tuples by
+// swapping values, leaving one empty, or joining two neighbors with a
+// separator, and remembers which tuple produced each identifier. The same
+// identifier from a different tuple is a collision. Tuples are compared after
+// the documented mapping of '_' to '-' and of uppercase to lowercase, since
+// those are meant to name the same tenant.
+func FuzzNewTenantIdentifier_NoCollisions(f *testing.F) {
+	f.Add("my_org", "finance", "analytics-team-eu", "eu")
+	f.Add("a", "b", "c", "d")
+	f.Add("a-", "b", "c", "d")
+
+	type tuple [3]string
+	canonical := func(t tuple) tuple {
+		for i := range t {
+			t[i] = strings.ToLower(strings.ReplaceAll(t[i], "_", "-"))
+		}
+		return t
+	}
+	seen := make(map[string]tuple)
+
+	f.Fuzz(func(t *testing.T, a, b, c, d string) {
+		tuples := []tuple{
+			// swapped values
+			{a, b, c}, {a, c, b}, {b, a, c}, {b, c, a}, {c, a, b}, {c, b, a},
+			// empty values
+			{"", b, c}, {a, "", c}, {a, b, ""},
+		}
+		// two neighbors joined, moving the boundary between segments
+		for _, sep := range []string{"", "-", "_", "--"} {
+			tuples = append(tuples,
+				tuple{a + sep + b, c, d},
+				tuple{a, b + sep + c, d},
+				tuple{a, b, c + sep + d})
+		}
+
+		for _, tu := range tuples {
+			id, err := NewTenantIdentifier(tu[0], tu[1], tu[2])
+			if err != nil {
+				continue
+			}
+			if len(seen) >= maxSeenIdentifiers {
+				clear(seen)
+			}
+			if prev, ok := seen[id.String()]; ok && prev != canonical(tu) {
+				t.Fatalf("identifier %q is produced by %q and by %q", id, prev, canonical(tu))
+			}
+			seen[id.String()] = canonical(tu)
+		}
+	})
+}
